@@ -26,7 +26,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install just
-        uses: extra-actions/setup-just@v2
+        run: cargo install just
 
       # Ensure tests pass before publishing
       - name: Run tests

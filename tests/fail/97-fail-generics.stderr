@@ -1,0 +1,29 @@
+error[E0107]: missing generics for struct `GenericStruct`
+ --> tests/fail/97-fail-generics.rs:8:8
+  |
+8 | struct GenericStruct<T> {
+  |        ^^^^^^^^^^^^^ expected 1 generic argument
+  |
+note: struct defined here, with 1 generic parameter: `T`
+ --> tests/fail/97-fail-generics.rs:8:8
+  |
+8 | struct GenericStruct<T> {
+  |        ^^^^^^^^^^^^^ -
+help: add missing generic argument
+  |
+8 | struct GenericStruct<T><T> {
+  |                     +++
+
+error[E0599]: no function or associated item named `schema` found for struct `PhantomData` in the current scope
+ --> tests/fail/97-fail-generics.rs:7:10
+  |
+7 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ function or associated item not found in `PhantomData<_>`
+  |
+  = help: items from traits can only be used if the trait is implemented and in scope
+note: `ToDataFrame` defines an item `schema`, perhaps you need to implement it
+ --> tests/fail/../common.rs
+  |
+  |     pub trait ToDataFrame {
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

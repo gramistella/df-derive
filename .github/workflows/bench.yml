@@ -1,0 +1,90 @@
+# .github/workflows/bench.yml
+
+name: Run Benchmarks
+
+# Controls when the action will run.
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  benchmark:
+    name: Run and Compare Benchmarks
+    runs-on: ubuntu-latest
+
+    # Set permissions for GitHub token.
+    # Required for deploying to GitHub Pages and for bencher/gha-adapter to comment on PRs.
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      # 1. Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch the main branch to compare against.
+          # Set fetch-depth to 0 to fetch all history for all branches and tags.
+          fetch-depth: 0
+
+      # 2. Set up Rust toolchain and cache dependencies
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # 3. Install Bencher CLI
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@main
+
+      # 4. Run benchmarks and track with Bencher
+      # This command runs benchmarks and sends results to Bencher for tracking
+      - name: Track base branch benchmarks with Bencher
+        run: |
+          bencher run \
+          --project df-derive \
+          --token '${{ secrets.BENCHER_API_TOKEN }}' \
+          --branch "${{ github.ref_name }}" \
+          --testbed ubuntu-latest \
+          --threshold-measure latency \
+          --threshold-test t_test \
+          --threshold-max-sample-size 64 \
+          --threshold-upper-boundary 0.99 \
+          --thresholds-reset \
+          --err \
+          --adapter rust_criterion \
+          --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+          "cargo bench"
+
+      # 5. Upload the HTML report as an artifact (only on `main` branch)
+      # This prepares the report for deployment to GitHub Pages.
+      - name: Upload Pages artifact
+        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # The folder where the HTML report is generated.
+          path: ./target/criterion/
+
+      # 6. Deploy the report to GitHub Pages (only on `main` branch)
+      - name: Deploy to GitHub Pages
+        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main'
+        id: deployment
+        uses: actions/deploy-pages@v4

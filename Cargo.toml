@@ -1,0 +1,60 @@
+[package]
+name = "df-derive"
+version = "0.1.0"
+edition = "2024"
+authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
+description = "Procedural derive macro for efficiently converting Rust structs into Polars DataFrames."
+license = "MIT"
+repository = "https://github.com/paft-rs/df-derive"
+homepage = "https://github.com/paft-rs/df-derive"
+documentation = "https://docs.rs/df-derive"
+keywords = ["polars", "dataframe", "proc-macro", "finance"]
+categories = ["procedural-macro", "data-structures", "finance"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["derive"] }
+proc-macro-crate = "3.1"
+
+[dev-dependencies]
+trybuild = "1.0"
+polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.36", features = ["serde"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "01_top_level_vec"
+harness = false
+
+[[bench]]
+name = "02_empty_nested_vec"
+harness = false
+
+[[bench]]
+name = "03_nested_option"
+harness = false
+
+[[bench]]
+name = "04_vec_custom_struct"
+harness = false
+
+[[bench]]
+name = "05_wide_top_level_options"
+harness = false
+
+[[bench]]
+name = "06_optional_vec_custom_struct"
+harness = false
+
+[[bench]]
+name = "07_deep_nesting_vec"
+harness = false
+
+[[bench]]
+name = "08_complex_wrappers"
+harness = false

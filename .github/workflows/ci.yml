@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - '**'
+    tags: # Run on tags so that bencher can track performance across versions
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
     paths-ignore:
       - '**/*.md'
       - '*.md'

@@ -228,7 +228,7 @@ impl RowWiseGenerator for PrimitiveStrategy {
             },
         );
         super::wrapped_codegen::generate_primitive_for_anyvalue(
-            format_ident!("values"),
+            &format_ident!("values"),
             &access,
             &p.base_type,
             p.transform.as_ref(),
@@ -374,7 +374,7 @@ impl RowWiseGenerator for NestedStructStrategy {
         );
         super::wrapped_codegen::generate_nested_for_anyvalue(
             &self.n.type_ident,
-            format_ident!("values"),
+            &format_ident!("values"),
             &access,
             &self.wrappers,
         )

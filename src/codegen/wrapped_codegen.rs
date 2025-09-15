@@ -39,7 +39,7 @@ fn gen_primitive_vec_inner_series(
         // Ensure we work with an owned primitive value regardless of reference
         let elem_owned_access = quote! { (*#elem_ident).clone() };
         super::wrapped_codegen::generate_primitive_for_anyvalue(
-            per_item_vals_ident.clone(),
+            &per_item_vals_ident,
             &elem_owned_access,
             base_type,
             transform,
@@ -146,7 +146,7 @@ fn gen_nested_vec_to_list_anyvalues(
             let elem_access = quote! { #elem_ident };
             super::wrapped_codegen::generate_nested_for_anyvalue(
                 ty,
-                per_item_vals_ident.clone(),
+                &per_item_vals_ident,
                 &elem_access,
                 tail,
             )
@@ -284,7 +284,7 @@ pub fn generate_primitive_for_columnar_push(
 }
 
 pub fn generate_primitive_for_anyvalue(
-    values_vec_ident: Ident,
+    values_vec_ident: &Ident,
     access: &TokenStream,
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -421,7 +421,7 @@ pub fn generate_nested_for_columnar_push(
 
 pub fn generate_nested_for_anyvalue(
     type_ident: &Ident,
-    values_vec_ident: Ident,
+    values_vec_ident: &Ident,
     access: &TokenStream,
     wrappers: &[Wrapper],
 ) -> TokenStream {

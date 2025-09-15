@@ -10,6 +10,8 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    environment:
+      name: crates-io
     permissions:
       contents: read 
 
@@ -21,15 +23,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       - name: Install just
         uses: extra-actions/setup-just@v2

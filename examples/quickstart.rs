@@ -40,14 +40,26 @@ struct Trade {
 }
 
 fn main() -> polars::prelude::PolarsResult<()> {
-    let t = Trade { symbol: "AAPL".into(), price: 187.23, size: 100 };
+    let t = Trade {
+        symbol: "AAPL".into(),
+        price: 187.23,
+        size: 100,
+    };
     let df_single = <Trade as crate::dataframe::ToDataFrame>::to_dataframe(&t)?;
     println!("Single trade DataFrame:");
     println!("{}", df_single);
 
     let trades = vec![
-        Trade { symbol: "AAPL".into(), price: 187.23, size: 100 },
-        Trade { symbol: "MSFT".into(), price: 411.61, size: 200 },
+        Trade {
+            symbol: "AAPL".into(),
+            price: 187.23,
+            size: 100,
+        },
+        Trade {
+            symbol: "MSFT".into(),
+            price: 411.61,
+            size: 200,
+        },
     ];
     use crate::dataframe::ToDataFrameVec;
     let df_batch = trades.as_slice().to_dataframe()?;

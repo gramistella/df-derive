@@ -33,18 +33,18 @@ mod dataframe {
 
 #[derive(ToDataFrame)]
 #[df_derive(trait = "crate::dataframe::ToDataFrame")]
-struct Address { 
-    street: String, 
-    city: String, 
-    zip: u32 
+struct Address {
+    street: String,
+    city: String,
+    zip: u32,
 }
 
 #[derive(ToDataFrame)]
 #[df_derive(trait = "crate::dataframe::ToDataFrame")]
-struct Person { 
-    name: String, 
-    age: u32, 
-    address: Address 
+struct Person {
+    name: String,
+    age: u32,
+    address: Address,
 }
 
 // Import the trait to make it available for nested structs
@@ -64,7 +64,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     let df = <Person as crate::dataframe::ToDataFrame>::to_dataframe(&person)?;
     println!("Nested struct DataFrame:");
     println!("{}", df);
-    
+
     // Show schema to demonstrate column naming
     let schema = <Person as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: name, age, address.street, address.city, address.zip):");

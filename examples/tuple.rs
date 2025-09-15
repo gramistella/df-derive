@@ -38,11 +38,11 @@ struct SimpleTuple(i32, String, f64);
 #[allow(clippy::approx_constant)]
 fn main() -> polars::prelude::PolarsResult<()> {
     let tuple = SimpleTuple(42, "Hello".to_string(), 3.14);
-    
+
     let df = <SimpleTuple as crate::dataframe::ToDataFrame>::to_dataframe(&tuple)?;
     println!("Tuple struct DataFrame:");
     println!("{}", df);
-    
+
     // Show schema to demonstrate column naming
     let schema = <SimpleTuple as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: field_0 (Int32), field_1 (String), field_2 (Float64)):");

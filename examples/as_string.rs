@@ -32,7 +32,10 @@ mod dataframe {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Status { Active, Inactive }
+enum Status {
+    Active,
+    Inactive,
+}
 
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -60,11 +63,11 @@ fn main() -> polars::prelude::PolarsResult<()> {
         opt_status: Some(Status::Inactive),
         statuses: vec![Status::Active, Status::Inactive, Status::Active],
     };
-    
+
     let df = <WithEnums as crate::dataframe::ToDataFrame>::to_dataframe(&data)?;
     println!("As string attribute DataFrame:");
     println!("{}", df);
-    
+
     // Show schema to demonstrate string data types
     let schema = <WithEnums as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns use DataType::String or List<String>):");

@@ -1,5 +1,5 @@
-use df_derive::ToDataFrame;
 use chrono::{DateTime, Utc};
+use df_derive::ToDataFrame;
 use rust_decimal::Decimal;
 
 #[allow(dead_code)]
@@ -35,21 +35,21 @@ mod dataframe {
 
 #[derive(ToDataFrame)]
 #[df_derive(trait = "crate::dataframe::ToDataFrame")]
-struct TxRecord { 
-    amount: Decimal, 
-    ts: DateTime<Utc> 
+struct TxRecord {
+    amount: Decimal,
+    ts: DateTime<Utc>,
 }
 
 fn main() -> polars::prelude::PolarsResult<()> {
-    let tx = TxRecord { 
+    let tx = TxRecord {
         amount: Decimal::new(12345, 2), // 123.45
-        ts: Utc::now()
+        ts: Utc::now(),
     };
-    
+
     let df = <TxRecord as crate::dataframe::ToDataFrame>::to_dataframe(&tx)?;
     println!("DateTime and Decimal DataFrame:");
     println!("{}", df);
-    
+
     // Show schema to demonstrate data types
     let schema = <TxRecord as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, None)):");

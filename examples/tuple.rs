@@ -35,6 +35,7 @@ mod dataframe {
 #[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct SimpleTuple(i32, String, f64);
 
+#[allow(clippy::approx_constant)]
 fn main() -> polars::prelude::PolarsResult<()> {
     let tuple = SimpleTuple(42, "Hello".to_string(), 3.14);
     

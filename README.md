@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/df-derive.svg)](https://crates.io/crates/df-derive)
 [![Docs.rs](https://docs.rs/df-derive/badge.svg)](https://docs.rs/df-derive)
+[![CI](https://github.com/gramistella/df-derive/actions/workflows/ci.yml/badge.svg)](https://github.com/gramistella/df-derive/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/crates/d/df-derive)](https://crates.io/crates/df-derive)
 [![License](https://img.shields.io/crates/l/df-derive)](LICENSE)
 

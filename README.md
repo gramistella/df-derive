@@ -14,7 +14,7 @@ It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`,
 
 ## Installation
 
-Add the macro crate and Polars. You will also need a trait defining the `to_dataframe` behavior (you can use your own runtime crate/traits; see the override section below).
+Add the macro crate and Polars. You will also need a trait defining the `to_dataframe` behavior (you can use your own runtime crate/traits; see the override section below). For a minimal inline trait you can copy, see the Quick start example.
 
 ```toml
 [dependencies]
@@ -28,14 +28,58 @@ rust_decimal = { version = "1.36", features = ["serde"] }
 
 ## Quick start
 
-```rust
-use df_derive::ToDataFrame; // derive macro
+Copy-paste runnable example without any external runtime traits. This is a complete working example that you can run with `cargo run --example quickstart`.
 
-// Assume you have a trait `my_runtime::dataframe::ToDataFrame` in your project/runtime.
-// If not, see the section below on overriding trait paths.
+Cargo.toml:
+
+```toml
+[package]
+name = "quickstart"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+df-derive = "0.1"
+polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
+```
+
+src/main.rs:
+
+```rust
+use df_derive::ToDataFrame;
+
+mod dataframe {
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+    pub trait ToDataFrame {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame>;
+        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+    }
+
+    pub trait Columnar: Sized {
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+    }
+
+    pub trait ToDataFrameVec {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+    }
+
+    impl<T> ToDataFrameVec for [T]
+    where
+        T: Columnar + ToDataFrame,
+    {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            if self.is_empty() {
+                return <T as ToDataFrame>::empty_dataframe();
+            }
+            <T as Columnar>::columnar_to_dataframe(self)
+        }
+    }
+}
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "my_runtime::dataframe::ToDataFrame")] // tell the macro which trait to implement
+#[df_derive(trait = "crate::dataframe::ToDataFrame")] // Columnar path auto-infers to crate::dataframe::Columnar
 struct Trade {
     symbol: String,
     price: f64,
@@ -44,35 +88,25 @@ struct Trade {
 
 fn main() -> polars::prelude::PolarsResult<()> {
     let t = Trade { symbol: "AAPL".into(), price: 187.23, size: 100 };
-    let df = <Trade as my_runtime::dataframe::ToDataFrame>::to_dataframe(&t)?;
-    println!("{}", df);
+    let df_single = <Trade as crate::dataframe::ToDataFrame>::to_dataframe(&t)?;
+    println!("{}", df_single);
+
+    let trades = vec![
+        Trade { symbol: "AAPL".into(), price: 187.23, size: 100 },
+        Trade { symbol: "MSFT".into(), price: 411.61, size: 200 },
+    ];
+    use crate::dataframe::ToDataFrameVec;
+    let df_batch = trades.as_slice().to_dataframe()?;
+    println!("{}", df_batch);
+
     Ok(())
 }
 ```
 
-Convert collections efficiently via the columnar path:
+Run it:
 
-```rust
-// If your runtime provides an extension trait for slices/Vec, you can use it here.
-// Example with a custom extension trait:
-trait ToDataFrameVec {
-    fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame>;
-}
-
-impl<T> ToDataFrameVec for [T]
-where
-    T: my_runtime::dataframe::Columnar + my_runtime::dataframe::ToDataFrame,
-{
-    fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-        if self.is_empty() {
-            return <T as my_runtime::dataframe::ToDataFrame>::empty_dataframe();
-        }
-        <T as my_runtime::dataframe::Columnar>::columnar_to_dataframe(self)
-    }
-}
-
-let trades: Vec<Trade> = vec![ /* ... */ ];
-let df = (&trades[..]).to_dataframe()?;
+```bash
+cargo run
 ```
 
 ## Features
@@ -93,7 +127,18 @@ Use `#[df_derive(as_string)]` to stringify values during conversion. This is par
 #[derive(Clone, Debug, PartialEq)]
 enum Status { Active, Inactive }
 
+// Required: implement Display for the enum
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Active => write!(f, "Active"),
+            Status::Inactive => write!(f, "Inactive"),
+        }
+    }
+}
+
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct WithEnums {
     #[df_derive(as_string)]
     status: Status,
@@ -104,7 +149,7 @@ struct WithEnums {
 }
 ```
 
-Columns will use `DataType::String` (or `List<String>` for `Vec<_>`), and values are produced via `ToString`.
+Columns will use `DataType::String` (or `List<String>` for `Vec<_>`), and values are produced via `ToString`. See the complete working example with `cargo run --example as_string`.
 
 ## Supported types
 
@@ -135,45 +180,113 @@ For every `#[derive(ToDataFrame)]` type `T` the macro generates implementations 
 
 ## Examples
 
-### Nested structs
+This crate includes several runnable examples in the `examples/` directory. You can run any example with:
+
+```bash
+cargo run --example <example_name>
+```
+
+Or run all examples to see the full feature set:
+
+```bash
+cargo run --example quickstart && \
+cargo run --example nested && \
+cargo run --example vec_custom && \
+cargo run --example tuple && \
+cargo run --example datetime_decimal && \
+cargo run --example as_string
+```
+
+### Available Examples
+
+- **`quickstart`** - Basic usage with single and batch DataFrame conversion
+- **`nested`** - Nested structs with dot notation column naming  
+- **`vec_custom`** - Vec of custom structs creating List columns
+- **`tuple`** - Tuple structs with field_0, field_1 naming
+- **`datetime_decimal`** - DateTime and Decimal type support
+- **`as_string`** - `#[df_derive(as_string)]` attribute for enum conversion
+
+### Example Code Snippets
+
+#### Nested structs
 
 ```rust
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct Address { street: String, city: String, zip: u32 }
 
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct Person { name: String, age: u32, address: Address }
 
 // Columns: name, age, address.street, address.city, address.zip
 ```
 
-### Vec of custom structs
+> Note: the runnable examples define a small `dataframe` module with the traits used by the macro. Some helper trait items are not used in every snippet (for example `empty_dataframe` or `Columnar`). To avoid noise during `cargo run --example …`, the examples annotate that module with `#[allow(dead_code)]`.
+
+#### Vec of custom structs
 
 ```rust
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct Quote { ts: i64, open: f64, high: f64, low: f64, close: f64, volume: u64 }
 
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct MarketData { symbol: String, quotes: Vec<Quote> }
 
 // Columns include: symbol, quotes.ts, quotes.open, quotes.high, ... (each a List)
 ```
 
-### Tuple structs
+#### Tuple structs
 
 ```rust
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct SimpleTuple(i32, String, f64);
 // Columns: field_0 (Int32), field_1 (String), field_2 (Float64)
 ```
 
-### `DateTime<Utc>` and Decimal
+#### `DateTime<Utc>` and Decimal
 
 ```rust
 #[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
 struct TxRecord { amount: rust_decimal::Decimal, ts: chrono::DateTime<chrono::Utc> }
 // Schema dtypes: amount = Decimal(38, 10), ts = Datetime(Milliseconds, None)
 ```
+
+> Why `#[allow(dead_code)]` in examples? The examples include a minimal `dataframe` module to provide the traits that the macro implements. Not every example calls every method (e.g., `empty_dataframe`, `schema`), and compile-time warnings would otherwise distract from the output. Adding `#[allow(dead_code)]` to that module keeps the examples clean while remaining fully correct.
+
+#### As string attribute
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+enum Status { Active, Inactive }
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Active => write!(f, "Active"),
+            Status::Inactive => write!(f, "Inactive"),
+        }
+    }
+}
+
+#[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+struct WithEnums {
+    #[df_derive(as_string)]
+    status: Status,
+    #[df_derive(as_string)]
+    opt_status: Option<Status>,
+    #[df_derive(as_string)]
+    statuses: Vec<Status>,
+}
+// Columns use DataType::String or List<String>
+```
+
+> **Note**: All examples require the trait definitions shown in the Quick start section. See the complete working examples in the `examples/` directory.
 
 ## Limitations and guidance
 

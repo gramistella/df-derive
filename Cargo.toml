@@ -9,7 +9,7 @@ repository = "https://github.com/gramistella/df-derive"
 homepage = "https://github.com/gramistella/df-derive"
 documentation = "https://docs.rs/df-derive"
 keywords = ["polars", "dataframe", "proc-macro", "finance"]
-categories = ["procedural-macro", "data-structures", "finance"]
+categories = ["data-structures", "finance"]
 
 [lib]
 proc-macro = true

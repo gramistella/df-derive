@@ -90,5 +90,3 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
         fields: fields_ir,
     })
 }
-
-// Old field-based flattening and custom-struct codegen helpers removed

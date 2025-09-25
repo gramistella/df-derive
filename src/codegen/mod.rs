@@ -29,7 +29,7 @@ pub fn resolve_paft_crate_path() -> TokenStream {
         Ok(FoundCrate::Itself) => {
             quote! { crate::dataframe }
         }
-        _ => match crate_name("paft-core") {
+        _ => match crate_name("paft-utils") {
             Ok(FoundCrate::Name(name)) => {
                 let ident = format_ident!("{}", name);
                 quote! { ::#ident::dataframe }

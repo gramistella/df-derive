@@ -7,6 +7,9 @@ lint :
 test:
 	cargo test --workspace --all-features
 
+fmt:
+	cargo fmt --all
+
 bench:
 	cargo bench
 	@just bench-results

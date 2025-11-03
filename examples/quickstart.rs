@@ -1,5 +1,5 @@
-use df_derive::ToDataFrame;
 use crate::dataframe::ToDataFrameVec;
+use df_derive::ToDataFrame;
 
 #[allow(dead_code)]
 mod dataframe {

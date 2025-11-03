@@ -44,7 +44,9 @@ fn generate_containers() -> Vec<Container> {
                         None
                     } else {
                         Some(Item {
-                            id: 1000 + (u32::try_from(i).unwrap() * 10) + (u32::try_from(k).unwrap()),
+                            id: 1000
+                                + (u32::try_from(i).unwrap() * 10)
+                                + (u32::try_from(k).unwrap()),
                             name: format!("item-{i}-{k}"),
                         })
                     }

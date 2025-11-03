@@ -63,13 +63,13 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let df = <Person as crate::dataframe::ToDataFrame>::to_dataframe(&person)?;
     println!("Nested struct DataFrame:");
-    println!("{}", df);
+    println!("{df}");
 
     // Show schema to demonstrate column naming
     let schema = <Person as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: name, age, address.street, address.city, address.zip):");
     for (name, dtype) in schema {
-        println!("  {}: {:?}", name, dtype);
+        println!("  {name}: {dtype:?}");
     }
 
     Ok(())

@@ -1,4 +1,5 @@
 use df_derive::ToDataFrame;
+use crate::dataframe::ToDataFrameVec;
 
 #[allow(dead_code)]
 mod dataframe {
@@ -47,7 +48,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     };
     let df_single = <Trade as crate::dataframe::ToDataFrame>::to_dataframe(&t)?;
     println!("Single trade DataFrame:");
-    println!("{}", df_single);
+    println!("{df_single}");
 
     let trades = vec![
         Trade {
@@ -61,10 +62,9 @@ fn main() -> polars::prelude::PolarsResult<()> {
             size: 200,
         },
     ];
-    use crate::dataframe::ToDataFrameVec;
     let df_batch = trades.as_slice().to_dataframe()?;
     println!("\nBatch trades DataFrame:");
-    println!("{}", df_batch);
+    println!("{df_batch}");
 
     Ok(())
 }

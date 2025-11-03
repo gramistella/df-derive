@@ -40,8 +40,8 @@ enum Status {
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Status::Active => write!(f, "Active"),
-            Status::Inactive => write!(f, "Inactive"),
+            Self::Active => write!(f, "Active"),
+            Self::Inactive => write!(f, "Inactive"),
         }
     }
 }
@@ -66,13 +66,13 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let df = <WithEnums as crate::dataframe::ToDataFrame>::to_dataframe(&data)?;
     println!("As string attribute DataFrame:");
-    println!("{}", df);
+    println!("{df}");
 
     // Show schema to demonstrate string data types
     let schema = <WithEnums as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns use DataType::String or List<String>):");
     for (name, dtype) in schema {
-        println!("  {}: {:?}", name, dtype);
+        println!("  {name}: {dtype:?}");
     }
 
     Ok(())

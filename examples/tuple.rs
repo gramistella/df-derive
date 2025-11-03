@@ -41,13 +41,13 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let df = <SimpleTuple as crate::dataframe::ToDataFrame>::to_dataframe(&tuple)?;
     println!("Tuple struct DataFrame:");
-    println!("{}", df);
+    println!("{df}");
 
     // Show schema to demonstrate column naming
     let schema = <SimpleTuple as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: field_0 (Int32), field_1 (String), field_2 (Float64)):");
     for (name, dtype) in schema {
-        println!("  {}: {:?}", name, dtype);
+        println!("  {name}: {dtype:?}");
     }
 
     Ok(())

@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -35,9 +35,9 @@ fn benchmark_empty_nested_vec(c: &mut Criterion) {
 
     c.bench_function("empty_nested_vec_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&hosts).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&hosts).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

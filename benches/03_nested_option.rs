@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -38,13 +38,13 @@ fn generate_users() -> Vec<User> {
                 None
             } else {
                 Some(Profile {
-                    age: (18 + (i % 60) as i32),
+                    age: 18 + (i32::try_from(i).unwrap() % 60),
                     email: format!("user{i}@example.com"),
                     address: if i % 5 == 0 {
                         None
                     } else {
                         Some(Address {
-                            street: format!("{} Main St", i),
+                            street: format!("{i} Main St"),
                             city: "Metropolis".to_string(),
                             zip: format!("{:05}", i % 100_000),
                         })
@@ -60,9 +60,9 @@ fn benchmark_nested_option(c: &mut Criterion) {
 
     c.bench_function("nested_option_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&users).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&users).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

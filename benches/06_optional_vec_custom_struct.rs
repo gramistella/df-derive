@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -34,11 +34,11 @@ fn generate_investors() -> Vec<Investor> {
                 None
             } else {
                 Some(
-                    (0..(i % 5 + 1))
+                    (0..=(i % 5))
                         .map(|k| Holding {
                             symbol: format!("SYM{}{}", i % 50, k),
-                            shares: 10.0 + (k as f64) * 2.5,
-                            avg_cost: 100.0 + (k as f64) * 1.25,
+                            shares: f64::from(u32::try_from(k).unwrap()).mul_add(2.5, 10.0),
+                            avg_cost: f64::from(u32::try_from(k).unwrap()).mul_add(1.25, 100.0),
                         })
                         .collect(),
                 )
@@ -59,9 +59,9 @@ fn benchmark_optional_vec_custom_struct(c: &mut Criterion) {
 
     c.bench_function("optional_vec_custom_struct_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&data).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

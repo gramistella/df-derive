@@ -1,7 +1,7 @@
 set shell := ["bash", "-c"]
 
 lint :
-	cargo clippy --all-features -- \
+	cargo clippy --all-features --all-targets -- \
 		-W clippy::all -W clippy::cargo -W clippy::pedantic -W clippy::nursery -D warnings
 
 test:

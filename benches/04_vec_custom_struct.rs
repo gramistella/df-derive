@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -26,13 +26,13 @@ struct MarketData {
 fn generate_market_data() -> MarketData {
     let quotes: Vec<Quote> = (0..NUM_QUOTES)
         .map(|i| {
-            let i_f64 = i as f64;
+            let i_f64 = f64::from(u32::try_from(i).unwrap());
             Quote {
-                timestamp: 1700000000 + i as i64,
-                open: 100.0 + i_f64 * 0.1,
-                high: 102.0 + i_f64 * 0.1,
-                low: 99.5 + i_f64 * 0.1,
-                close: 101.0 + i_f64 * 0.1,
+                timestamp: 1_700_000_000 + i64::try_from(i).unwrap(),
+                open: i_f64.mul_add(0.1, 100.0),
+                high: i_f64.mul_add(0.1, 102.0),
+                low: i_f64.mul_add(0.1, 99.5),
+                close: i_f64.mul_add(0.1, 101.0),
                 volume: 1000 + i as u64,
             }
         })
@@ -49,9 +49,9 @@ fn benchmark_vec_custom_struct(c: &mut Criterion) {
 
     c.bench_function("vec_custom_struct_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&market_data).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&market_data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

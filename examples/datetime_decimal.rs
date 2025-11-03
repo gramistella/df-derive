@@ -48,13 +48,13 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let df = <TxRecord as crate::dataframe::ToDataFrame>::to_dataframe(&tx)?;
     println!("DateTime and Decimal DataFrame:");
-    println!("{}", df);
+    println!("{df}");
 
     // Show schema to demonstrate data types
     let schema = <TxRecord as crate::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, None)):");
     for (name, dtype) in schema {
-        println!("  {}: {:?}", name, dtype);
+        println!("  {name}: {dtype:?}");
     }
 
     Ok(())

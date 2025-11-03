@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -33,7 +33,7 @@ fn generate_containers() -> Vec<Container> {
                     if (k + i) % 3 == 0 {
                         None
                     } else {
-                        Some((k as i32) + 1)
+                        Some(i32::try_from(k).unwrap() + 1)
                     }
                 })
                 .collect();
@@ -44,8 +44,8 @@ fn generate_containers() -> Vec<Container> {
                         None
                     } else {
                         Some(Item {
-                            id: (1000 + (i as u32) * 10 + (k as u32)),
-                            name: format!("item-{}-{}", i, k),
+                            id: 1000 + (u32::try_from(i).unwrap() * 10) + (u32::try_from(k).unwrap()),
+                            name: format!("item-{i}-{k}"),
                         })
                     }
                 })
@@ -53,12 +53,12 @@ fn generate_containers() -> Vec<Container> {
 
             let opt_vec_opt_primitive = if i % 2 == 0 {
                 Some(
-                    (0..(i % 6 + 1))
+                    (0..=(i % 6))
                         .map(|k| {
                             if k % 2 == 1 {
                                 None
                             } else {
-                                Some((k as i32) * 2)
+                                Some(i32::try_from(k).unwrap() * 2)
                             }
                         })
                         .collect(),
@@ -68,7 +68,7 @@ fn generate_containers() -> Vec<Container> {
             };
 
             Container {
-                id: i as i32,
+                id: i32::try_from(i).unwrap(),
                 primitive_items,
                 custom_items,
                 opt_vec_opt_primitive,
@@ -82,9 +82,9 @@ fn benchmark_complex_wrappers(c: &mut Criterion) {
 
     c.bench_function("complex_wrappers_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&data).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

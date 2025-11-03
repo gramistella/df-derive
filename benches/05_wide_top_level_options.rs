@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -25,11 +25,11 @@ struct WideTick {
 fn generate_wide_ticks() -> Vec<WideTick> {
     (0..N_ROWS)
         .map(|i| WideTick {
-            ts: 1_700_000_000 + i as i64,
+            ts: 1_700_000_000 + i64::try_from(i).unwrap(),
             price: if i % 10 == 0 {
                 None
             } else {
-                Some(100.0 + i as f64 * 0.01)
+                Some(f64::from(u32::try_from(i).unwrap()).mul_add(0.01, 100.0))
             },
             volume: if i % 13 == 0 {
                 None
@@ -39,22 +39,22 @@ fn generate_wide_ticks() -> Vec<WideTick> {
             bid: if i % 7 == 0 {
                 None
             } else {
-                Some(99.5 + i as f64 * 0.01)
+                Some(f64::from(u32::try_from(i).unwrap()).mul_add(0.01, 99.5))
             },
             ask: if i % 11 == 0 {
                 None
             } else {
-                Some(100.5 + i as f64 * 0.01)
+                Some(f64::from(u32::try_from(i).unwrap()).mul_add(0.01, 100.5))
             },
             bid_size: if i % 9 == 0 {
                 None
             } else {
-                Some(10 + (i as u32 % 100))
+                Some(10 + (u32::try_from(i).unwrap() % 100))
             },
             ask_size: if i % 8 == 0 {
                 None
             } else {
-                Some(10 + (i as u32 % 100))
+                Some(10 + (u32::try_from(i).unwrap() % 100))
             },
             trade_id: if i % 6 == 0 {
                 None
@@ -77,9 +77,9 @@ fn benchmark_wide_top_level_options(c: &mut Criterion) {
 
     c.bench_function("wide_top_level_options_conversion", |b| {
         b.iter(|| {
-            let df = black_box(&data).to_dataframe().unwrap();
-            black_box(df)
-        })
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
     });
 }
 

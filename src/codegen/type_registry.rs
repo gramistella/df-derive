@@ -71,7 +71,7 @@ fn base_and_transform_to_rust_and_dtype(
         BaseType::Decimal => (
             // we materialize as String then cast to Decimal dtype later
             quote! { ::std::string::String },
-            quote! { polars::prelude::DataType::Decimal(Some(38), Some(10)) },
+            quote! { polars::prelude::DataType::Decimal(38, 10) },
         ),
         BaseType::Struct(_ident) => (quote! { () }, quote! { polars::prelude::DataType::Null }),
     }

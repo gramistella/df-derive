@@ -14,7 +14,7 @@ help: add missing generic argument
 8 | struct GenericStruct<T><T> {
   |                     +++
 
-error[E0599]: no function or associated item named `schema` found for struct `PhantomData` in the current scope
+error[E0599]: no function or associated item named `schema` found for struct `PhantomData<T>` in the current scope
  --> tests/fail/97-fail-generics.rs:7:10
   |
 7 | #[derive(ToDataFrame)]

@@ -1,6 +1,6 @@
 [package]
 name = "df-derive"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
 description = "Procedural derive macro for efficiently converting Rust structs into Polars DataFrames."
@@ -15,17 +15,17 @@ categories = ["data-structures", "finance"]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0"
-quote = "1.0"
-syn = { version = "2.0", features = ["derive"] }
-proc-macro-crate = "3.1"
+proc-macro2 = "1.0.103"
+quote = "1.0.41"
+syn = { version = "2.0.108", features = ["derive"] }
+proc-macro-crate = "3.4.0"
 
 [dev-dependencies]
-trybuild = "1.0"
-polars = { version = "0.51", features = ["timezones", "dtype-decimal"] }
-chrono = { version = "0.4", features = ["serde"] }
-rust_decimal = { version = "1.36", features = ["serde"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+trybuild = "1.0.113"
+polars = { version = "0.52.0", features = ["timezones", "dtype-decimal"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+rust_decimal = { version = "1.39.0", features = ["serde"] }
+criterion = { version = "0.7.0", features = ["html_reports"] }
 
 [[bench]]
 name = "01_top_level_vec"

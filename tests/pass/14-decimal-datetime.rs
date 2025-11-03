@@ -39,7 +39,7 @@ fn main() {
     println!("📋 Schema dtypes:");
     println!("  - amount: {:?}", amount_dtype);
     println!("  - ts: {:?}", ts_dtype);
-    assert_eq!(amount_dtype, DataType::Decimal(Some(38), Some(10)));
+    assert_eq!(amount_dtype, DataType::Decimal(38, 10));
     assert_eq!(ts_dtype, DataType::Datetime(TimeUnit::Milliseconds, None));
 
     // Convert to DataFrame and validate columns
@@ -60,7 +60,7 @@ fn main() {
     // Decimal should materialize as Decimal; verify dtype
     let amount_runtime_dtype = df.column("amount").unwrap().dtype().clone();
     println!("  - amount runtime dtype: {:?}", amount_runtime_dtype);
-    assert_eq!(amount_runtime_dtype, DataType::Decimal(Some(38), Some(10)));
+    assert_eq!(amount_runtime_dtype, DataType::Decimal(38, 10));
 
     println!("\n✅ Decimal and DateTime<Utc> test completed successfully!");
 }

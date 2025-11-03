@@ -2,7 +2,6 @@ use df_derive::ToDataFrame;
 use std::collections::HashMap;
 #[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::ToDataFrame;
 
 #[derive(ToDataFrame)]
 struct Unsupported {

@@ -1,4 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use std::time::Duration;
 use df_derive::ToDataFrame;
 
 #[path = "../tests/common.rs"]
@@ -65,6 +66,19 @@ fn benchmark_nested_option(c: &mut Criterion) {
         });
     });
 }
+fn configure_criterion() -> Criterion {
+    Criterion::default()
+        .sample_size(150)
+        .warm_up_time(Duration::from_secs(8))
+        .measurement_time(Duration::from_secs(20))
+        .nresamples(200_000)
+        .noise_threshold(0.02)
+        .confidence_level(0.99)
+}
 
-criterion_group!(benches, benchmark_nested_option);
+criterion_group! {
+    name = benches;
+    config = configure_criterion();
+    targets = benchmark_nested_option
+}
 criterion_main!(benches);

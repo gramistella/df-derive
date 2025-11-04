@@ -27,6 +27,13 @@ chrono = { version = "0.4.42", features = ["serde"] }
 rust_decimal = { version = "1.39.0", features = ["serde"] }
 criterion = { version = "0.7.0", features = ["html_reports"] }
 
+[profile.bench]
+opt-level = 3
+codegen-units = 1
+incremental = false
+debug = false
+lto = false
+
 [[bench]]
 name = "01_top_level_vec"
 harness = false

@@ -27,7 +27,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
       # Force consistent, optimized builds on CI
-      RUSTFLAGS: "-C target-cpu=native -C codegen-units=1 -C opt-level=3 -C lto=thin"
+      RUSTFLAGS: "-C target-cpu=native -C codegen-units=1 -C opt-level=3"
       # Pin parallelism for determinism
       RAYON_NUM_THREADS: '1'
       POLARS_MAX_THREADS: '1'

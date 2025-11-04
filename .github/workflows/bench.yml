@@ -13,11 +13,25 @@ on:
         required: true
         type: string
 
+# Avoid overlapping benchmark runs on the same ref.
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   benchmark:
     name: Run and Compare Benchmarks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
+    env:
+      CARGO_INCREMENTAL: '0'
+      # Force consistent, optimized builds on CI
+      RUSTFLAGS: "-C target-cpu=native -C codegen-units=1 -C opt-level=3 -C lto=thin"
+      # Pin parallelism for determinism
+      RAYON_NUM_THREADS: '1'
+      POLARS_MAX_THREADS: '1'
+      CARGO_TERM_COLOR: always
 
     # Set permissions for GitHub token.
     # Required for deploying to GitHub Pages and for bencher/gha-adapter to comment on PRs.
@@ -52,11 +66,12 @@ jobs:
       # This command runs benchmarks and sends results to Bencher for tracking
       - name: Track base branch benchmarks with Bencher
         run: |
+          CRITERION_FLAGS="--sample-size 150 --warm-up-time 8 --measurement-time 20 --nresamples 200000 --noise-threshold 0.02 --confidence-level 0.99"
           bencher run \
           --project df-derive \
           --token '${{ secrets.BENCHER_API_TOKEN }}' \
           --branch "${{ github.ref_name }}" \
-          --testbed ubuntu-latest \
+          --testbed ubuntu-22.04 \
           --threshold-measure latency \
           --threshold-test t_test \
           --threshold-max-sample-size 64 \
@@ -65,7 +80,7 @@ jobs:
           --err \
           --adapter rust_criterion \
           --github-actions '${{ secrets.GITHUB_TOKEN }}' \
-          "cargo bench"
+          "taskset -c 0 cargo bench -- ${CRITERION_FLAGS}"
 
       # 5. Upload the HTML report as an artifact (only on `main` branch)
       # This prepares the report for deployment to GitHub Pages.

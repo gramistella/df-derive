@@ -25,7 +25,7 @@ Add the macro crate and Polars. You will also need a trait defining the `to_data
 ```toml
 [dependencies]
 df-derive = "0.1"
-polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.52", features = ["timezones", "dtype-decimal"] }
 
 # If you use these types in your models
 chrono = { version = "0.4", features = ["serde"] }

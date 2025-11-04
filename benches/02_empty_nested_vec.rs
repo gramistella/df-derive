@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::time::Duration;
 use df_derive::ToDataFrame;
+use std::time::Duration;
 
 #[path = "../tests/common.rs"]
 mod core;

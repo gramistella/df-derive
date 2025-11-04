@@ -46,7 +46,7 @@ edition = "2024"
 
 [dependencies]
 df-derive = "0.1"
-polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.52", features = ["timezones", "dtype-decimal"] }
 ```
 
 src/main.rs:
@@ -315,7 +315,7 @@ Performance is continuously monitored and tracked using [Bencher](https://benche
 ## Compatibility
 
 - **Rust edition**: 2024
-- **Polars**: 0.50 (tested)
+- **Polars**: 0.52 (tested)
 - Enable Polars features `timezones` and `dtype-decimal` if you use `DateTime<Utc>` or `Decimal`.
 
 ## License

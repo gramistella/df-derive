@@ -20,7 +20,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.1"
+//! df-derive = "0.2.0"
 //! polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
 //!
 //! # If you use these types in your models

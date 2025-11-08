@@ -659,7 +659,7 @@ checksum = "85d3cef41d236720ed453e102153a53e4cc3d2fde848c0078a50cf249e8e3e5b"
 
 [[package]]
 name = "df-derive"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "criterion",

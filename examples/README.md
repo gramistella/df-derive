@@ -54,6 +54,13 @@ Shows the `#[df_derive(as_string)]` attribute for converting enums and other typ
 cargo run --example as_string
 ```
 
+### `generics.rs`
+Demonstrates generic struct support added in v0.3.0: type-parametric structs, default type parameters, multiple generics, the unit type `()` as a zero-column payload, and depth-1 wrappers (`Option<T>` / `Vec<T>`) over a generic parameter.
+
+```bash
+cargo run --example generics
+```
+
 ## What Each Example Shows
 
 - **DataFrame output**: The actual Polars DataFrame structure

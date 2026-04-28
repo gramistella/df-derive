@@ -43,6 +43,72 @@ where
     name: String,
 }
 
+// Generic field wrapped in Option
+#[derive(ToDataFrame, Clone)]
+struct OptWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Option<T>,
+}
+
+// Generic field wrapped in Vec
+#[derive(ToDataFrame, Clone)]
+struct VecWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Vec<T>,
+}
+
+// Doubly-wrapped Option (depth-2). This exercises the per-row trait-only
+// fallback in `generate_nested_for_columnar_push`'s `on_leaf` is_generic
+// branch — the depth-1 bulk overrides don't fire here, so we must verify the
+// recursive Some/Some path still produces correct output.
+#[derive(ToDataFrame, Clone)]
+struct OptOptWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Option<Option<T>>,
+}
+
+// Option<Vec<T>>: depth-2 with the inner being a Vec. Goes through the
+// generic on_vec branch with tail=[] inside an Option Some-recursion.
+#[derive(ToDataFrame, Clone)]
+struct OptVecWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Option<Vec<T>>,
+}
+
+// Vec<Option<T>>: depth-2 where the outer Vec layer dispatches into the
+// generic-vec helper with tail=[Option].
+#[derive(ToDataFrame, Clone)]
+struct VecOptWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Vec<Option<T>>,
+}
+
+// Vec<Vec<T>>: depth-2 with both layers being Vec. Recurses through the
+// generic-vec helper with tail=[Vec].
+#[derive(ToDataFrame, Clone)]
+struct VecVecWrapper<T>
+where
+    T: Clone,
+{
+    id: u32,
+    payload: Vec<Vec<T>>,
+}
+
 // Local impls of ToDataFrame/Columnar for f64 so generic instantiation with a
 // primitive can flatten via a single column. Implementing on a foreign primitive
 // is allowed because the trait is defined in this test crate.
@@ -70,6 +136,10 @@ fn main() {
     test_unit_instantiation();
     test_default_type_parameter();
     test_multiple_generics();
+    test_option_wrapped_generic();
+    test_vec_wrapped_generic();
+    test_doubly_wrapped_generic();
+    test_depth2_combos();
     println!("All generics tests passed!");
 }
 
@@ -362,4 +432,391 @@ fn test_multiple_generics() {
         pair_df.column("b.note").unwrap().get(0).unwrap(),
         AnyValue::String("rhs")
     );
+}
+
+fn test_option_wrapped_generic() {
+    println!("Testing Option<T> for generic T...");
+
+    // Option<f64>: scalar primitive payload, optional.
+    let schema = OptWrapper::<f64>::schema().unwrap();
+    assert_eq!(
+        schema,
+        vec![("id", DataType::UInt32), ("payload.value", DataType::Float64)]
+    );
+
+    let some_w = OptWrapper {
+        id: 1,
+        payload: Some(3.5_f64),
+    };
+    let none_w: OptWrapper<f64> = OptWrapper { id: 2, payload: None };
+
+    let df_some = some_w.to_dataframe().unwrap();
+    assert_eq!(df_some.shape(), (1, 2));
+    assert_eq!(
+        df_some.column("payload.value").unwrap().get(0).unwrap(),
+        AnyValue::Float64(3.5)
+    );
+
+    let df_none = none_w.to_dataframe().unwrap();
+    assert_eq!(df_none.shape(), (1, 2));
+    assert!(matches!(
+        df_none.column("payload.value").unwrap().get(0).unwrap(),
+        AnyValue::Null
+    ));
+
+    // Batch: Some, None, Some
+    let items = vec![
+        OptWrapper {
+            id: 10,
+            payload: Some(1.0_f64),
+        },
+        OptWrapper {
+            id: 11,
+            payload: None,
+        },
+        OptWrapper {
+            id: 12,
+            payload: Some(2.0_f64),
+        },
+    ];
+    let batch = items.as_slice().to_dataframe().unwrap();
+    assert_eq!(batch.shape(), (3, 2));
+    assert_eq!(
+        batch.column("payload.value").unwrap().get(0).unwrap(),
+        AnyValue::Float64(1.0)
+    );
+    assert!(matches!(
+        batch.column("payload.value").unwrap().get(1).unwrap(),
+        AnyValue::Null
+    ));
+    assert_eq!(
+        batch.column("payload.value").unwrap().get(2).unwrap(),
+        AnyValue::Float64(2.0)
+    );
+
+    // Option<MetaStruct>: nested struct payload, optional.
+    let schema_meta = OptWrapper::<MetaStruct>::schema().unwrap();
+    assert_eq!(
+        schema_meta,
+        vec![
+            ("id", DataType::UInt32),
+            ("payload.timestamp", DataType::Int64),
+            ("payload.note", DataType::String),
+        ]
+    );
+
+    let items_meta = vec![
+        OptWrapper {
+            id: 1,
+            payload: Some(MetaStruct {
+                timestamp: 100,
+                note: "a".to_string(),
+            }),
+        },
+        OptWrapper {
+            id: 2,
+            payload: None,
+        },
+        OptWrapper {
+            id: 3,
+            payload: Some(MetaStruct {
+                timestamp: 300,
+                note: "c".to_string(),
+            }),
+        },
+    ];
+    let batch_meta = items_meta.as_slice().to_dataframe().unwrap();
+    assert_eq!(batch_meta.shape(), (3, 3));
+    assert_eq!(
+        batch_meta
+            .column("payload.timestamp")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Int64(100)
+    );
+    assert!(matches!(
+        batch_meta
+            .column("payload.timestamp")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null
+    ));
+    assert_eq!(
+        batch_meta.column("payload.note").unwrap().get(2).unwrap(),
+        AnyValue::String("c")
+    );
+
+    let empty = OptWrapper::<MetaStruct>::empty_dataframe().unwrap();
+    assert_eq!(empty.shape(), (0, 3));
+}
+
+fn test_vec_wrapped_generic() {
+    println!("Testing Vec<T> for generic T...");
+
+    // Vec<f64>: list of primitive payload.
+    let schema = VecWrapper::<f64>::schema().unwrap();
+    assert_eq!(
+        schema,
+        vec![
+            ("id", DataType::UInt32),
+            (
+                "payload.value",
+                DataType::List(Box::new(DataType::Float64)),
+            ),
+        ]
+    );
+
+    let items = vec![
+        VecWrapper {
+            id: 1,
+            payload: vec![1.0_f64, 2.0],
+        },
+        VecWrapper {
+            id: 2,
+            payload: vec![],
+        },
+        VecWrapper {
+            id: 3,
+            payload: vec![3.0],
+        },
+    ];
+    let df = items.as_slice().to_dataframe().unwrap();
+    assert_eq!(df.shape(), (3, 2));
+    assert_eq!(
+        df.column("payload.value").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::Float64))
+    );
+
+    // Each row's "payload.value" is itself a list. Materialize and check.
+    let row0 = df.column("payload.value").unwrap().get(0).unwrap();
+    let row1 = df.column("payload.value").unwrap().get(1).unwrap();
+    let row2 = df.column("payload.value").unwrap().get(2).unwrap();
+    assert!(matches!(row0, AnyValue::List(_)));
+    assert!(matches!(row1, AnyValue::List(_)));
+    assert!(matches!(row2, AnyValue::List(_)));
+    if let AnyValue::List(s) = row0 {
+        assert_eq!(s.len(), 2);
+    }
+    if let AnyValue::List(s) = row1 {
+        assert_eq!(s.len(), 0);
+    }
+    if let AnyValue::List(s) = row2 {
+        assert_eq!(s.len(), 1);
+    }
+
+    // Vec<MetaStruct>: list of nested struct.
+    let schema_meta = VecWrapper::<MetaStruct>::schema().unwrap();
+    assert_eq!(
+        schema_meta,
+        vec![
+            ("id", DataType::UInt32),
+            (
+                "payload.timestamp",
+                DataType::List(Box::new(DataType::Int64)),
+            ),
+            (
+                "payload.note",
+                DataType::List(Box::new(DataType::String)),
+            ),
+        ]
+    );
+
+    let items_meta = vec![
+        VecWrapper {
+            id: 1,
+            payload: vec![
+                MetaStruct {
+                    timestamp: 1,
+                    note: "a".to_string(),
+                },
+                MetaStruct {
+                    timestamp: 2,
+                    note: "b".to_string(),
+                },
+            ],
+        },
+        VecWrapper {
+            id: 2,
+            payload: vec![],
+        },
+    ];
+    let df_meta = items_meta.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_meta.shape(), (2, 3));
+    let ts_row0 = df_meta.column("payload.timestamp").unwrap().get(0).unwrap();
+    assert!(matches!(ts_row0, AnyValue::List(_)));
+    if let AnyValue::List(s) = ts_row0 {
+        assert_eq!(s.len(), 2);
+    }
+    let ts_row1 = df_meta.column("payload.timestamp").unwrap().get(1).unwrap();
+    if let AnyValue::List(s) = ts_row1 {
+        assert_eq!(s.len(), 0);
+    }
+
+    // Single-instance to_dataframe.
+    let single = VecWrapper {
+        id: 99,
+        payload: vec![42.0_f64, 43.0, 44.0],
+    };
+    let single_df = single.to_dataframe().unwrap();
+    assert_eq!(single_df.shape(), (1, 2));
+    if let AnyValue::List(s) = single_df.column("payload.value").unwrap().get(0).unwrap() {
+        assert_eq!(s.len(), 3);
+    } else {
+        panic!("expected List AnyValue");
+    }
+
+    let empty = VecWrapper::<f64>::empty_dataframe().unwrap();
+    assert_eq!(empty.shape(), (0, 2));
+}
+
+fn test_doubly_wrapped_generic() {
+    println!("Testing Option<Option<T>> for generic T...");
+
+    // Option<Option<T>> is the depth-2 case that the bulk overrides don't
+    // cover. The macro falls back to the per-row trait-only path. Both Some
+    // and None should produce the right schema and null behavior — Some(None)
+    // and None are indistinguishable in the resulting DataFrame (both yield a
+    // single null AnyValue), which is the documented contract.
+    let schema = OptOptWrapper::<f64>::schema().unwrap();
+    assert_eq!(
+        schema,
+        vec![("id", DataType::UInt32), ("payload.value", DataType::Float64)]
+    );
+
+    let items = vec![
+        OptOptWrapper {
+            id: 1,
+            payload: Some(Some(7.5_f64)),
+        },
+        OptOptWrapper {
+            id: 2,
+            payload: Some(None),
+        },
+        OptOptWrapper {
+            id: 3,
+            payload: None,
+        },
+    ];
+    let batch = items.as_slice().to_dataframe().unwrap();
+    assert_eq!(batch.shape(), (3, 2));
+    assert_eq!(
+        batch.column("payload.value").unwrap().get(0).unwrap(),
+        AnyValue::Float64(7.5)
+    );
+    assert!(matches!(
+        batch.column("payload.value").unwrap().get(1).unwrap(),
+        AnyValue::Null
+    ));
+    assert!(matches!(
+        batch.column("payload.value").unwrap().get(2).unwrap(),
+        AnyValue::Null
+    ));
+}
+
+fn test_depth2_combos() {
+    println!("Testing Option<Vec<T>> / Vec<Option<T>> / Vec<Vec<T>> for generic T...");
+
+    // Option<Vec<T>> with T = f64.
+    let schema_ov = OptVecWrapper::<f64>::schema().unwrap();
+    assert_eq!(
+        schema_ov,
+        vec![
+            ("id", DataType::UInt32),
+            (
+                "payload.value",
+                DataType::List(Box::new(DataType::Float64)),
+            ),
+        ]
+    );
+    let items_ov = vec![
+        OptVecWrapper {
+            id: 1,
+            payload: Some(vec![1.0_f64, 2.0]),
+        },
+        OptVecWrapper { id: 2, payload: None },
+        OptVecWrapper {
+            id: 3,
+            payload: Some(vec![]),
+        },
+    ];
+    let df_ov = items_ov.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_ov.shape(), (3, 2));
+    let row0 = df_ov.column("payload.value").unwrap().get(0).unwrap();
+    let row1 = df_ov.column("payload.value").unwrap().get(1).unwrap();
+    let row2 = df_ov.column("payload.value").unwrap().get(2).unwrap();
+    if let AnyValue::List(s) = row0 {
+        assert_eq!(s.len(), 2);
+    } else {
+        panic!("expected List for Some(non-empty)");
+    }
+    assert!(matches!(row1, AnyValue::Null | AnyValue::List(_)));
+    if let AnyValue::List(s) = row2 {
+        assert_eq!(s.len(), 0);
+    } else {
+        panic!("expected List for Some(empty)");
+    }
+
+    // Vec<Option<T>> with T = f64.
+    let schema_vo = VecOptWrapper::<f64>::schema().unwrap();
+    assert_eq!(
+        schema_vo,
+        vec![
+            ("id", DataType::UInt32),
+            (
+                "payload.value",
+                DataType::List(Box::new(DataType::Float64)),
+            ),
+        ]
+    );
+    let items_vo = vec![
+        VecOptWrapper {
+            id: 1,
+            payload: vec![Some(1.0_f64), None, Some(3.0)],
+        },
+        VecOptWrapper {
+            id: 2,
+            payload: vec![],
+        },
+    ];
+    let df_vo = items_vo.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_vo.shape(), (2, 2));
+    let row0 = df_vo.column("payload.value").unwrap().get(0).unwrap();
+    if let AnyValue::List(s) = row0 {
+        assert_eq!(s.len(), 3);
+        // Middle element of the inner list should be null.
+        assert!(matches!(s.get(1).unwrap(), AnyValue::Null));
+    } else {
+        panic!("expected List for Vec<Option<T>>");
+    }
+
+    // Vec<Vec<T>> with T = f64. The macro's schema reporting only wraps one
+    // List layer regardless of Vec depth (a pre-existing limitation of
+    // generate_schema_entries_for_struct), so we check the column count and
+    // the per-row AnyValue::List shape rather than asserting the full
+    // multi-layer dtype.
+    let schema_vv = VecVecWrapper::<f64>::schema().unwrap();
+    assert_eq!(schema_vv.len(), 2);
+    assert_eq!(schema_vv[0], ("id", DataType::UInt32));
+    assert_eq!(schema_vv[1].0, "payload.value");
+    let items_vv = vec![
+        VecVecWrapper {
+            id: 1,
+            payload: vec![vec![1.0_f64, 2.0], vec![3.0]],
+        },
+        VecVecWrapper {
+            id: 2,
+            payload: vec![],
+        },
+    ];
+    let df_vv = items_vv.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_vv.shape(), (2, 2));
+    let row0 = df_vv.column("payload.value").unwrap().get(0).unwrap();
+    if let AnyValue::List(s) = row0 {
+        // Outer list has 2 inner lists.
+        assert_eq!(s.len(), 2);
+    } else {
+        panic!("expected outer List for Vec<Vec<T>>");
+    }
 }

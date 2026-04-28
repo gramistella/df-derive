@@ -38,6 +38,22 @@ pub trait ColumnarBuilderFinisher {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream>;
 }
 
+/// Optional override that lets a strategy bypass the per-row decls/push/builders
+/// triple in the columnar path and emit a single bulk builder instead. Used by
+/// generic-leaf fields where calling `T::columnar_to_dataframe` once on a
+/// collected slice is dramatically faster than building one tiny `DataFrame` per
+/// item.
+pub trait ColumnarBulkEmitter {
+    fn gen_bulk_columnar_emit(&self, idx: usize) -> Option<Vec<TokenStream>>;
+}
+
+/// Mirror of `ColumnarBulkEmitter` for the `__df_derive_vec_to_inner_list_values`
+/// helper path: when a strategy can produce its `AnyValue::List` entries in bulk
+/// (without a per-row push), it returns Some.
+pub trait VecAnyvaluesBulkEmitter {
+    fn gen_bulk_vec_anyvalues_emit(&self, idx: usize) -> Option<Vec<TokenStream>>;
+}
+
 pub enum Strategy {
     Primitive(PrimitiveStrategy),
     Nested(NestedStructStrategy),
@@ -99,6 +115,24 @@ impl ColumnarBuilderFinisher for Strategy {
         match self {
             Self::Primitive(s) => s.gen_columnar_builders(idx),
             Self::Nested(s) => s.gen_columnar_builders(idx),
+        }
+    }
+}
+
+impl ColumnarBulkEmitter for Strategy {
+    fn gen_bulk_columnar_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
+        match self {
+            Self::Primitive(_) => None,
+            Self::Nested(s) => s.gen_bulk_columnar_emit(idx),
+        }
+    }
+}
+
+impl VecAnyvaluesBulkEmitter for Strategy {
+    fn gen_bulk_vec_anyvalues_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
+        match self {
+            Self::Primitive(_) => None,
+            Self::Nested(s) => s.gen_bulk_vec_anyvalues_emit(idx),
         }
     }
 }
@@ -421,6 +455,66 @@ impl VecAnyvaluesFinisher for NestedStructStrategy {
 impl ColumnarBuilderFinisher for NestedStructStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         super::wrapped_codegen::nested_columnar_builders(&self.wrappers, idx, &self.field_name)
+    }
+}
+
+impl NestedStructStrategy {
+    /// Field-access expression rooted at the columnar-loop iterator
+    /// (`__df_derive_it`). Hand-built here rather than reused from the per-row
+    /// generator because the bulk path emits its own loop closures.
+    fn it_access(&self) -> TokenStream {
+        self.field_index.map_or_else(
+            || {
+                let id = &self.field_ident;
+                quote! { __df_derive_it.#id }
+            },
+            |i| {
+                let li = syn::Index::from(i);
+                quote! { __df_derive_it.#li }
+            },
+        )
+    }
+
+    /// Returns `Some(emit)` when this strategy has a bulk implementation for
+    /// the given context; `None` falls back to the per-row pipeline. Eligible
+    /// only when the field's base type is a generic parameter and the wrapper
+    /// shape is one of the depth-1 cases the bulk helpers support: bare leaf,
+    /// `Option<T>`, or `Vec<T>`.
+    fn try_bulk_emit(
+        &self,
+        idx: usize,
+        ctx: super::wrapped_codegen::BulkContext<'_>,
+    ) -> Option<Vec<TokenStream>> {
+        if !self.n.is_generic {
+            return None;
+        }
+        let ty = &self.n.type_ident;
+        let access = self.it_access();
+        let emit = match self.wrappers.as_slice() {
+            [] => super::wrapped_codegen::gen_bulk_generic_leaf(ty, idx, &access, ctx),
+            [Wrapper::Option] => {
+                super::wrapped_codegen::gen_bulk_generic_option(ty, idx, &access, ctx)
+            }
+            [Wrapper::Vec] => super::wrapped_codegen::gen_bulk_generic_vec(ty, idx, &access, ctx),
+            _ => return None,
+        };
+        Some(vec![emit])
+    }
+}
+
+impl ColumnarBulkEmitter for NestedStructStrategy {
+    fn gen_bulk_columnar_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
+        let parent_name = self.field_name.as_str();
+        self.try_bulk_emit(
+            idx,
+            super::wrapped_codegen::BulkContext::Columnar { parent_name },
+        )
+    }
+}
+
+impl VecAnyvaluesBulkEmitter for NestedStructStrategy {
+    fn gen_bulk_vec_anyvalues_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
+        self.try_bulk_emit(idx, super::wrapped_codegen::BulkContext::VecAnyvalues)
     }
 }
 

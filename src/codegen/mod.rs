@@ -71,9 +71,17 @@ pub fn impl_parts_with_bounds(
         syn::parse2(quote! { #to_df_trait }).expect("trait path should parse as bound");
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
+    // Clone is required because the bulk emitters for generic-typed fields
+    // collect a contiguous `Vec<T>` from `&[Self]` before calling
+    // `T::columnar_to_dataframe`. Injecting it here turns a cryptic
+    // "T: Clone is not satisfied" error inside macro-expanded source into a
+    // bound-mismatch error at the user's struct definition.
+    let clone_bound: syn::TypeParamBound = syn::parse2(quote! { ::core::clone::Clone })
+        .expect("Clone path should parse as bound");
     for tp in generics.type_params_mut() {
         tp.bounds.push(to_df_bound.clone());
         tp.bounds.push(columnar_bound.clone());
+        tp.bounds.push(clone_bound.clone());
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     (

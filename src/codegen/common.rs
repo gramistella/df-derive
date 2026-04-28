@@ -1,4 +1,7 @@
-use super::strategy::{self, VecAnyvaluesFinisher as _};
+use super::strategy::{
+    self, ColumnarBuilderFinisher as _, ColumnarBulkEmitter as _, VecAnyvaluesBulkEmitter as _,
+    VecAnyvaluesFinisher as _,
+};
 use crate::ir::{BaseType, PrimitiveTransform, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -15,61 +18,52 @@ pub fn generate_primitive_access_expr(
 
 // Unified collection iteration preparation helpers
 
-fn orchestrate_parts<FD, FP, FB>(
-    ir: &StructIR,
-    it_ident: &syn::Ident,
-    f_decls: FD,
-    f_per_item: FP,
-    f_builders: FB,
-) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>)
-where
-    FD: Fn(&strategy::Strategy, usize) -> Vec<TokenStream>,
-    FP: Fn(&strategy::Strategy, &syn::Ident, usize) -> TokenStream,
-    FB: Fn(&strategy::Strategy, usize) -> Vec<TokenStream>,
-{
-    let strategies = strategy::build_strategies(ir);
-    let decls: Vec<TokenStream> = strategies
-        .iter()
-        .enumerate()
-        .flat_map(|(idx, s)| f_decls(s, idx))
-        .collect();
-    let per_item: Vec<TokenStream> = strategies
-        .iter()
-        .enumerate()
-        .map(|(idx, s)| f_per_item(s, it_ident, idx))
-        .collect();
-    let builders: Vec<TokenStream> = strategies
-        .iter()
-        .enumerate()
-        .flat_map(|(idx, s)| f_builders(s, idx))
-        .collect();
-    (decls, per_item, builders)
-}
-
 pub fn prepare_vec_anyvalues_parts(
     ir: &StructIR,
     it_ident: &syn::Ident,
 ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    orchestrate_parts(
-        ir,
-        it_ident,
-        super::strategy::ColumnPopulator::gen_populator_inits,
-        super::strategy::ColumnPopulator::gen_populator_push,
-        |s, idx| vec![s.gen_vec_values_finishers(idx)],
-    )
+    let strategies = strategy::build_strategies(ir);
+    let mut decls: Vec<TokenStream> = Vec::new();
+    let mut pushes: Vec<TokenStream> = Vec::new();
+    let mut finishers: Vec<TokenStream> = Vec::new();
+    for (idx, s) in strategies.iter().enumerate() {
+        if let Some(bulk) = s.gen_bulk_vec_anyvalues_emit(idx) {
+            finishers.extend(bulk);
+        } else {
+            decls.extend(super::strategy::ColumnPopulator::gen_populator_inits(
+                s, idx,
+            ));
+            pushes.push(super::strategy::ColumnPopulator::gen_populator_push(
+                s, it_ident, idx,
+            ));
+            finishers.push(s.gen_vec_values_finishers(idx));
+        }
+    }
+    (decls, pushes, finishers)
 }
 
 pub fn prepare_columnar_parts(
     ir: &StructIR,
     it_ident: &syn::Ident,
 ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    orchestrate_parts(
-        ir,
-        it_ident,
-        super::strategy::ColumnPopulator::gen_populator_inits,
-        super::strategy::ColumnPopulator::gen_populator_push,
-        super::strategy::ColumnarBuilderFinisher::gen_columnar_builders,
-    )
+    let strategies = strategy::build_strategies(ir);
+    let mut decls: Vec<TokenStream> = Vec::new();
+    let mut pushes: Vec<TokenStream> = Vec::new();
+    let mut builders: Vec<TokenStream> = Vec::new();
+    for (idx, s) in strategies.iter().enumerate() {
+        if let Some(bulk) = s.gen_bulk_columnar_emit(idx) {
+            builders.extend(bulk);
+        } else {
+            decls.extend(super::strategy::ColumnPopulator::gen_populator_inits(
+                s, idx,
+            ));
+            pushes.push(super::strategy::ColumnPopulator::gen_populator_push(
+                s, it_ident, idx,
+            ));
+            builders.extend(s.gen_columnar_builders(idx));
+        }
+    }
+    (decls, pushes, builders)
 }
 
 // --- Shared helpers and wrapper-aware builders ---

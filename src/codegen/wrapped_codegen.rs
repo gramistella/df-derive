@@ -77,11 +77,7 @@ fn gen_nested_vec_to_list_anyvalues(
     ty: &Ident,
     acc: &TokenStream,
     tail: &[Wrapper],
-    is_generic: bool,
 ) -> TokenStream {
-    if is_generic {
-        return gen_generic_vec_to_list_anyvalues(ty, acc, tail);
-    }
     if tail.is_empty() {
         // Fast path: Vec<Struct>
         quote! { #ty::__df_derive_vec_to_inner_list_values(&(#acc))? }
@@ -255,6 +251,248 @@ fn generate_generic_for_anyvalue(
     };
 
     super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
+}
+
+// --- Generic-field bulk emitters ---
+//
+// These produce the entire builder/finisher token stream for a generic-typed
+// field (i.e., the field's base type is a type parameter of the enclosing
+// struct). They sidestep the per-row push pipeline entirely by collecting
+// values into a contiguous slice once and calling
+// `<T as Columnar>::columnar_to_dataframe(slice)` exactly once. From there
+// each schema column of `T` is sliced/scattered into the parent's columns or
+// `AnyValue::List` entries.
+//
+// Three wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
+// `Option<T>`, and `Vec<T>`. Deeper nestings (`Option<Vec<T>>`, etc.) keep
+// using the per-row trait-only paths defined elsewhere in this module — those
+// are rare and the bulk variants would need offset+position bookkeeping that
+// isn't worth the added complexity.
+
+/// Codegen context for the bulk emitters. Each variant carries exactly the
+/// data its consumer needs: the columnar arm prefixes inner Series names with
+/// the parent field name and pushes them onto the `columns` Vec; the
+/// vec-anyvalues arm wraps each inner Series in `AnyValue::List` and pushes
+/// onto `out_values`. Keeping `parent_name` inside `Columnar` (rather than as
+/// a separate parameter on `bulk_consume_inner_series`) prevents the vec
+/// path from accidentally depending on a value it can't use.
+#[derive(Clone, Copy)]
+pub enum BulkContext<'a> {
+    /// Builder-position emit inside `columnar_to_dataframe`. Pushes prefixed
+    /// columns onto the in-scope `columns` Vec.
+    Columnar { parent_name: &'a str },
+    /// Finisher-position emit inside `__df_derive_vec_to_inner_list_values`.
+    /// Pushes `AnyValue::List(inner)` onto the in-scope `out_values` Vec.
+    VecAnyvalues,
+}
+
+/// Build the per-column emit body that adapts an inner `Series` to the given
+/// context. `series_expr` must evaluate to an owned `polars::prelude::Series`.
+///
+/// Note: this helper assumes `<T as Columnar>::columnar_to_dataframe` returns a
+/// `DataFrame` whose columns appear in the same order as `T::schema()` —
+/// every call iterates `T::schema()` and looks up by column name, so a
+/// mismatch wouldn't crash but would produce a parent `DataFrame` whose column
+/// order silently diverges from the declared schema. The derive enforces this
+/// for its own generated impls; user-written `Columnar` impls must do the
+/// same to be compatible with derives that use the type as a generic
+/// parameter.
+fn bulk_consume_inner_series(
+    ctx: BulkContext<'_>,
+    col_name_var: &TokenStream,
+    series_expr: &TokenStream,
+) -> TokenStream {
+    match ctx {
+        BulkContext::Columnar { parent_name } => quote! {{
+            let __df_derive_prefixed = format!("{}.{}", #parent_name, #col_name_var);
+            let __df_derive_inner = #series_expr;
+            let __df_derive_named = __df_derive_inner.with_name(__df_derive_prefixed.as_str().into());
+            columns.push(__df_derive_named.into());
+        }},
+        BulkContext::VecAnyvalues => quote! {{
+            let __df_derive_inner = #series_expr;
+            out_values.push(polars::prelude::AnyValue::List(__df_derive_inner));
+        }},
+    }
+}
+
+/// Bulk emit for a leaf generic field (`payload: T`). Collects `Vec<T>` once,
+/// calls `T::columnar_to_dataframe`, then ships each schema column to `ctx`.
+pub fn gen_bulk_generic_leaf(
+    ty: &Ident,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let slice_ident = format_ident!("__df_derive_gen_slice_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let consume = bulk_consume_inner_series(
+        ctx,
+        &quote! { __df_derive_col_name },
+        &quote! {
+            #df_ident
+                .column(__df_derive_col_name)?
+                .as_materialized_series()
+                .clone()
+        },
+    );
+    quote! {{
+        let #slice_ident: ::std::vec::Vec<#ty> = items
+            .iter()
+            .map(|__df_derive_it| (#access).clone())
+            .collect();
+        let #df_ident = #ty::columnar_to_dataframe(&#slice_ident)?;
+        for (__df_derive_col_name, _) in #ty::schema()? {
+            #consume
+        }
+    }}
+}
+
+/// Bulk emit for `payload: Option<T>`. Builds the gather (`nn`) plus position
+/// (`pos`) vectors, calls `T::columnar_to_dataframe(&nn)` once (skipping when
+/// every item is `None`), then scatters each `T` column back over the
+/// original positions, emitting `AnyValue::Null` where the source was `None`.
+pub fn gen_bulk_generic_option(
+    ty: &Ident,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let nn_ident = format_ident!("__df_derive_gen_nn_{}", idx);
+    let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+
+    let consume_filled = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let __df_derive_inner_col = #df_ident.column(#col_name_var)?;
+            let mut __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> =
+                ::std::vec::Vec::with_capacity(items.len());
+            for __df_derive_ix in #pos_ident.iter() {
+                match __df_derive_ix {
+                    ::std::option::Option::Some(k) => {
+                        __df_derive_vals.push(__df_derive_inner_col.get(*k)?.into_static());
+                    }
+                    ::std::option::Option::None => {
+                        __df_derive_vals.push(polars::prelude::AnyValue::Null);
+                    }
+                }
+            }
+            polars::prelude::Series::new("".into(), &__df_derive_vals)
+        }},
+    );
+    let consume_empty = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {
+            polars::prelude::Series::new_empty("".into(), &#dtype_var)
+                .extend_constant(polars::prelude::AnyValue::Null, items.len())?
+        },
+    );
+
+    quote! {{
+        let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<usize>> =
+            ::std::vec::Vec::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_v) => {
+                    #pos_ident.push(::std::option::Option::Some(#nn_ident.len()));
+                    #nn_ident.push(__df_derive_v.clone());
+                }
+                ::std::option::Option::None => {
+                    #pos_ident.push(::std::option::Option::None);
+                }
+            }
+        }
+        if #nn_ident.is_empty() {
+            for (#col_name_var, #dtype_var) in #ty::schema()? {
+                #consume_empty
+            }
+        } else {
+            let #df_ident = #ty::columnar_to_dataframe(&#nn_ident)?;
+            for (#col_name_var, _) in #ty::schema()? {
+                #consume_filled
+            }
+        }
+    }}
+}
+
+/// Bulk emit for `payload: Vec<T>`. Flattens every parent row's `Vec<T>` into
+/// a single contiguous slice plus a `lengths`-style offsets array, calls
+/// `T::columnar_to_dataframe(&flat)` once, then slices each `T` column per
+/// parent row to build a list-of-lists series (or list-of-list `AnyValue` for
+/// the vec-anyvalues path).
+pub fn gen_bulk_generic_vec(
+    ty: &Ident,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+
+    let consume_filled = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let __df_derive_inner_col = #df_ident
+                .column(#col_name_var)?
+                .as_materialized_series()
+                .clone();
+            let mut __df_derive_rows: ::std::vec::Vec<polars::prelude::AnyValue> =
+                ::std::vec::Vec::with_capacity(items.len());
+            for __df_derive_i in 0..items.len() {
+                let __df_derive_start = #offsets_ident[__df_derive_i];
+                let __df_derive_end = #offsets_ident[__df_derive_i + 1];
+                let __df_derive_slice = __df_derive_inner_col
+                    .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
+                __df_derive_rows.push(polars::prelude::AnyValue::List(__df_derive_slice));
+            }
+            polars::prelude::Series::new("".into(), &__df_derive_rows)
+        }},
+    );
+    let consume_empty = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let mut __df_derive_rows: ::std::vec::Vec<polars::prelude::AnyValue> =
+                ::std::vec::Vec::with_capacity(items.len());
+            for _ in 0..items.len() {
+                let __df_derive_empty = polars::prelude::Series::new_empty("".into(), &#dtype_var);
+                __df_derive_rows.push(polars::prelude::AnyValue::List(__df_derive_empty));
+            }
+            polars::prelude::Series::new("".into(), &__df_derive_rows)
+        }},
+    );
+
+    quote! {{
+        let mut #flat_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
+        let mut #offsets_ident: ::std::vec::Vec<usize> = ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets_ident.push(0);
+        for __df_derive_it in items {
+            for __df_derive_v in (&(#access)).iter() {
+                #flat_ident.push((*__df_derive_v).clone());
+            }
+            #offsets_ident.push(#flat_ident.len());
+        }
+        if #flat_ident.is_empty() {
+            for (#col_name_var, #dtype_var) in #ty::schema()? {
+                #consume_empty
+            }
+        } else {
+            let #df_ident = #ty::columnar_to_dataframe(&#flat_ident)?;
+            for (#col_name_var, _) in #ty::schema()? {
+                #consume_filled
+            }
+        }
+    }}
 }
 
 // --- Primitive: context-specific generators ---
@@ -444,7 +682,7 @@ pub fn generate_nested_for_series(
             let list_vals_ts = if is_generic {
                 gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
             } else {
-                gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
+                gen_nested_vec_to_list_anyvalues(&ty, acc, tail)
             };
             quote! {{
                 let #schema_ident = #ty::schema()?;
@@ -516,7 +754,7 @@ pub fn generate_nested_for_columnar_push(
         let list_vals_ts = if is_generic {
             gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
         } else {
-            gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
+            gen_nested_vec_to_list_anyvalues(&ty, acc, tail)
         };
         quote! {{
             let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
@@ -557,7 +795,7 @@ pub fn generate_nested_for_anyvalue(
         let list_vals_ts = if is_generic {
             gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
         } else {
-            gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
+            gen_nested_vec_to_list_anyvalues(&ty, acc, tail)
         };
         quote! {{
             let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };

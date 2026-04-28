@@ -14,7 +14,8 @@ All notable changes to this project will be documented in this file.
   columns to the schema and DataFrame; reference impls of `ToDataFrame` and
   `Columnar` for `()` are provided in `tests/common.rs`.
 - New benchmark `09_generics` covering unit, primitive, and nested-struct
-  generic instantiations.
+  generic instantiations, plus an A/B comparison between the per-row and
+  bulk columnar paths for generic fields.
 
 ### Changed
 
@@ -24,6 +25,27 @@ All notable changes to this project will be documented in this file.
   paths (no crate-private inherent `__df_derive_*` calls) so that any concrete
   instantiation that satisfies `ToDataFrame + Columnar` works. Concrete nested
   structs still use the original inherent fast paths.
+
+### Performance
+
+- The columnar path now flattens generic-leaf fields by collecting a
+  `Vec<T>` once and calling `<T as Columnar>::columnar_to_dataframe` exactly
+  once, then prefix-renaming the resulting columns. Compared to the per-row
+  fallback that built one tiny `DataFrame` per item, this is roughly 17× to
+  140× faster at 100k rows depending on `T` (see `benches/09_generics`).
+- The same bulk strategy now applies to the helpers' vec-anyvalues path
+  (`__df_derive_vec_to_inner_list_values`), which is invoked when an outer
+  struct contains `Vec<Wrapper<T>>`. At 100k rows this gives ~120× speedup
+  for primitive `T` and ~20× for nested-struct `T`.
+- The bulk path now also covers `Option<T>` and `Vec<T>` directly (depth-1
+  wrappers around a generic parameter): `Option<T>` calls
+  `T::columnar_to_dataframe` once over the gathered `Some` values and
+  scatters columns back with `AnyValue::Null` at `None` positions; `Vec<T>`
+  flattens all parent rows' inner vectors into a single contiguous slice
+  with offsets, calls `T::columnar_to_dataframe` once, and slices each
+  column per parent row. Bench at 100k rows: ~16× faster for
+  `OptWrap<Meta>`, ~9× faster for `VecWrap<Meta>`. Deeper compositions like
+  `Option<Option<T>>` or `Vec<Vec<T>>` keep the per-row trait-only fallback.
 
 ## [0.2.0] - 2025-11-8
 

@@ -95,7 +95,11 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<BaseType> {
                 {
                     BaseType::Generic(type_ident.clone())
                 } else {
-                    BaseType::Struct(type_ident.clone())
+                    let args = match &segment.arguments {
+                        PathArguments::AngleBracketed(ab) => Some(ab.clone()),
+                        _ => None,
+                    };
+                    BaseType::Struct(type_ident.clone(), args)
                 }
             }
         };

@@ -32,7 +32,7 @@ fn gen_primitive_vec_inner_series(
     let elem_dtype = mapping.element_dtype;
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
     let fast_inner_ts = super::common::generate_inner_series_from_vec(acc, base_type, transform);
-    let base_is_struct = matches!(base_type, BaseType::Struct(_));
+    let base_is_struct = matches!(base_type, BaseType::Struct(..));
 
     // Recursively process a single vector element as a primitive and push one AnyValue
     let recur_elem_tokens = || {
@@ -74,7 +74,7 @@ fn gen_primitive_vec_inner_series(
 /// Build tokens that evaluate to `Vec<polars::prelude::AnyValue>`, where each element
 /// is a `AnyValue::List(inner_series)` for one nested struct field across the vector.
 fn gen_nested_vec_to_list_anyvalues(
-    ty: &Ident,
+    ty: &TokenStream,
     acc: &TokenStream,
     tail: &[Wrapper],
 ) -> TokenStream {
@@ -176,7 +176,7 @@ fn gen_nested_vec_to_list_anyvalues(
 /// base type is a generic type parameter. Avoids any inherent helpers and uses
 /// only `ToDataFrame` / `Columnar` trait methods.
 fn gen_generic_vec_to_list_anyvalues(
-    ty: &Ident,
+    ty: &TokenStream,
     acc: &TokenStream,
     tail: &[Wrapper],
 ) -> TokenStream {
@@ -226,12 +226,12 @@ fn generic_leaf_to_anyvalues(values_vec_ident: &Ident, acc: &TokenStream) -> Tok
 
 /// Trait-only equivalent of `generate_nested_for_anyvalue` for generic params.
 fn generate_generic_for_anyvalue(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     values_vec_ident: &Ident,
     access: &TokenStream,
     wrappers: &[Wrapper],
 ) -> TokenStream {
-    let ty = type_ident.clone();
+    let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| generic_leaf_to_anyvalues(values_vec_ident, acc);
 
@@ -319,7 +319,7 @@ fn bulk_consume_inner_series(
 /// Bulk emit for a leaf generic field (`payload: T`). Collects `Vec<T>` once,
 /// calls `T::columnar_to_dataframe`, then ships each schema column to `ctx`.
 pub fn gen_bulk_generic_leaf(
-    ty: &Ident,
+    ty: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
@@ -353,7 +353,7 @@ pub fn gen_bulk_generic_leaf(
 /// every item is `None`), then scatters each `T` column back over the
 /// original positions, emitting `AnyValue::Null` where the source was `None`.
 pub fn gen_bulk_generic_option(
-    ty: &Ident,
+    ty: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
@@ -427,7 +427,7 @@ pub fn gen_bulk_generic_option(
 /// parent row to build a list-of-lists series (or list-of-list `AnyValue` for
 /// the vec-anyvalues path).
 pub fn gen_bulk_generic_vec(
-    ty: &Ident,
+    ty: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
@@ -651,14 +651,14 @@ pub fn generate_primitive_for_anyvalue(
 // --- Nested: context-specific generators ---
 
 pub fn generate_nested_for_series(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     series_name: &str,
     access: &TokenStream,
     wrappers: &[Wrapper],
     is_generic: bool,
 ) -> TokenStream {
     #![allow(clippy::too_many_lines)]
-    let ty = type_ident.clone();
+    let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| {
         let main_logic = generate_scalar_struct_logic(series_name, acc);
@@ -702,13 +702,13 @@ pub fn generate_nested_for_series(
 }
 
 pub fn generate_nested_for_columnar_push(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     access: &TokenStream,
     wrappers: &[Wrapper],
     idx: usize,
     is_generic: bool,
 ) -> TokenStream {
-    let ty = type_ident.clone();
+    let ty = type_path.clone();
 
     let cols_ident = if is_vec(wrappers) {
         format_ident!("__df_derive_nv_cols_{}", idx)
@@ -766,13 +766,13 @@ pub fn generate_nested_for_columnar_push(
 }
 
 pub fn generate_nested_for_anyvalue(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     values_vec_ident: &Ident,
     access: &TokenStream,
     wrappers: &[Wrapper],
     is_generic: bool,
 ) -> TokenStream {
-    let ty = type_ident.clone();
+    let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| {
         quote! {
@@ -865,14 +865,14 @@ pub fn primitive_finishers_for_vec_anyvalues(
 // --- Nested Structs: Row-wise and Columnar (centralized) ---
 
 pub fn nested_empty_series_row(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     name: &str,
     wrappers: &[Wrapper],
 ) -> TokenStream {
-    generate_empty_series_for_struct(type_ident, name, is_vec(wrappers))
+    generate_empty_series_for_struct(type_path, name, is_vec(wrappers))
 }
 
-pub fn nested_decls(wrappers: &[Wrapper], type_ident: &Ident, idx: usize) -> Vec<TokenStream> {
+pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -> Vec<TokenStream> {
     let mut decls: Vec<TokenStream> = Vec::new();
     let vec = is_vec(wrappers);
     let schema_ident = if vec {
@@ -885,7 +885,7 @@ pub fn nested_decls(wrappers: &[Wrapper], type_ident: &Ident, idx: usize) -> Vec
     } else {
         format_ident!("__df_derive_ns_cols_{}", idx)
     };
-    decls.push(quote! { let #schema_ident = #type_ident::schema()?; });
+    decls.push(quote! { let #schema_ident = #type_path::schema()?; });
     decls.push(quote! { let mut #cols_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> = #schema_ident.iter().map(|_| ::std::vec::Vec::with_capacity(items.len())).collect(); });
     decls
 }
@@ -937,14 +937,14 @@ pub fn nested_columnar_builders(
 }
 
 pub fn generate_schema_entries_for_struct(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     column_name: &str,
     as_list: bool,
 ) -> TokenStream {
     quote! {
         {
             let mut nested_fields: Vec<(&'static str, polars::prelude::DataType)> = Vec::new();
-            for (inner_name, inner_dtype) in #type_ident::schema()? {
+            for (inner_name, inner_dtype) in #type_path::schema()? {
                 let leaked_name: &'static str = {
                     let s = format!("{}.{}", #column_name, inner_name);
                     Box::leak(s.into_boxed_str())
@@ -962,14 +962,14 @@ pub fn generate_schema_entries_for_struct(
 }
 
 fn generate_empty_series_for_struct(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     column_name: &str,
     as_list: bool,
 ) -> TokenStream {
     quote! {
         {
             let mut nested_series = Vec::new();
-            for (inner_name, inner_dtype) in #type_ident::schema()? {
+            for (inner_name, inner_dtype) in #type_path::schema()? {
                 let prefixed_name = format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
                     polars::prelude::DataType::List(Box::new(inner_dtype))
@@ -985,14 +985,14 @@ fn generate_empty_series_for_struct(
 }
 
 fn generate_null_series_for_struct(
-    type_ident: &Ident,
+    type_path: &TokenStream,
     column_name: &str,
     as_list: bool,
 ) -> TokenStream {
     quote! {
         {
             let mut nested_series = Vec::new();
-            for (inner_name, inner_dtype) in #type_ident::schema()? {
+            for (inner_name, inner_dtype) in #type_path::schema()? {
                 let prefixed_name = format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
                     polars::prelude::DataType::List(Box::new(inner_dtype))

@@ -109,6 +109,27 @@ where
     payload: Vec<Vec<T>>,
 }
 
+#[derive(ToDataFrame, Clone)]
+struct InnerGeneric<M>
+where
+    M: Clone,
+{
+    label: String,
+    payload: M,
+}
+
+// Outer struct that propagates its own `M` into nested generic fields.
+#[derive(ToDataFrame, Clone)]
+struct OuterPropagating<M = ()>
+where
+    M: Clone,
+{
+    id: u32,
+    direct: InnerGeneric<M>,
+    optional: Option<InnerGeneric<M>>,
+    listed: Vec<InnerGeneric<M>>,
+}
+
 // Local impls of ToDataFrame/Columnar for f64 so generic instantiation with a
 // primitive can flatten via a single column. Implementing on a foreign primitive
 // is allowed because the trait is defined in this test crate.
@@ -140,6 +161,7 @@ fn main() {
     test_vec_wrapped_generic();
     test_doubly_wrapped_generic();
     test_depth2_combos();
+    test_propagated_type_parameter();
     println!("All generics tests passed!");
 }
 
@@ -819,4 +841,69 @@ fn test_depth2_combos() {
     } else {
         panic!("expected outer List for Vec<Vec<T>>");
     }
+}
+
+fn test_propagated_type_parameter() {
+    println!("Testing outer struct propagating its type param into nested generics...");
+
+    let item_f64 = OuterPropagating::<f64> {
+        id: 7,
+        direct: InnerGeneric {
+            label: "d".into(),
+            payload: 1.5,
+        },
+        optional: Some(InnerGeneric {
+            label: "o".into(),
+            payload: 2.5,
+        }),
+        listed: vec![
+            InnerGeneric {
+                label: "a".into(),
+                payload: 3.5,
+            },
+            InnerGeneric {
+                label: "b".into(),
+                payload: 4.5,
+            },
+        ],
+    };
+
+    let schema = OuterPropagating::<f64>::schema().unwrap();
+    let names: Vec<&str> = schema.iter().map(|(n, _)| *n).collect();
+    assert!(names.contains(&"id"));
+    assert!(names.contains(&"direct.label"));
+    assert!(names.contains(&"direct.payload.value"));
+    assert!(names.contains(&"optional.label"));
+    assert!(names.contains(&"optional.payload.value"));
+    assert!(names.contains(&"listed.label"));
+    assert!(names.contains(&"listed.payload.value"));
+
+    let df = item_f64.to_dataframe().unwrap();
+    assert_eq!(df.shape().0, 1);
+
+    let items = vec![
+        item_f64,
+        OuterPropagating::<f64> {
+            id: 8,
+            direct: InnerGeneric {
+                label: "d2".into(),
+                payload: 11.0,
+            },
+            optional: None,
+            listed: vec![],
+        },
+    ];
+    let df_batch = items.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_batch.shape().0, 2);
+
+    let item_unit: OuterPropagating = OuterPropagating {
+        id: 1,
+        direct: InnerGeneric {
+            label: "u".into(),
+            payload: (),
+        },
+        optional: None,
+        listed: vec![],
+    };
+    let _df_unit = item_unit.to_dataframe().unwrap();
 }

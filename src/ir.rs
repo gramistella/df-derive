@@ -56,8 +56,11 @@ pub enum BaseType {
     USize,
     DateTimeUtc,
     Decimal,
-    /// A concrete user-defined struct type referenced by ident
-    Struct(Ident),
+    /// A concrete user-defined struct type. The first element is the bare
+    /// ident (last path segment); the second carries any angle-bracketed
+    /// generic arguments declared at the field's use site, e.g. `<M>` in
+    /// `Vec<Foo<M>>`. `None` means the type was used without arguments.
+    Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
     /// A generic type parameter declared on the enclosing struct
     Generic(Ident),
 }

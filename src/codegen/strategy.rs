@@ -11,7 +11,14 @@ pub(super) struct PrimitiveIR {
 }
 #[derive(Clone)]
 pub(super) struct NestedIR {
-    type_ident: Ident,
+    /// Fully-qualified call path for the field's base type, prebuilt to be
+    /// spliced into either expression position (`#type_path::method()`) or
+    /// type position (`Vec<#type_path>`). For a non-generic struct this is
+    /// just the bare ident; for a generic struct used at this field it
+    /// includes turbofish args, e.g. `Foo::<M>`. Generic type parameters
+    /// also use this form (just the param ident) since the macro injects
+    /// the trait bounds that make `T::method()` resolve.
+    type_path: TokenStream,
     is_generic: bool,
 }
 
@@ -141,9 +148,7 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
     ir.fields
         .iter()
         .map(|f| match &f.base_type {
-            BaseType::Struct(type_ident) | BaseType::Generic(type_ident) => {
-                let is_generic = matches!(f.base_type, BaseType::Generic(_));
-                // If transform indicates stringification, treat as primitive
+            BaseType::Struct(type_ident, type_args) => {
                 if matches!(f.transform, Some(PrimitiveTransform::ToString)) {
                     Strategy::Primitive(PrimitiveStrategy::new(
                         f.name.clone(),
@@ -160,8 +165,31 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
                         f.field_index,
                         f.wrappers.clone(),
                         NestedIR {
-                            type_ident: type_ident.clone(),
-                            is_generic,
+                            type_path: build_type_path(type_ident, type_args.as_ref()),
+                            is_generic: false,
+                        },
+                    ))
+                }
+            }
+            BaseType::Generic(type_ident) => {
+                if matches!(f.transform, Some(PrimitiveTransform::ToString)) {
+                    Strategy::Primitive(PrimitiveStrategy::new(
+                        f.name.clone(),
+                        f.field_index,
+                        f.wrappers.clone(),
+                        PrimitiveIR {
+                            base_type: f.base_type.clone(),
+                            transform: f.transform.clone(),
+                        },
+                    ))
+                } else {
+                    Strategy::Nested(NestedStructStrategy::new(
+                        f.name.clone(),
+                        f.field_index,
+                        f.wrappers.clone(),
+                        NestedIR {
+                            type_path: quote! { #type_ident },
+                            is_generic: true,
                         },
                     ))
                 }
@@ -177,6 +205,25 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
             )),
         })
         .collect()
+}
+
+/// Build the type-as-path token stream used by `NestedIR`. For a struct
+/// referenced without args (e.g. `Address`) this is just the bare ident; for
+/// a generic struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
+/// the turbofish form `Foo::<M, N>`, which is valid in both expression and
+/// type position in modern Rust. The turbofish is necessary in expression
+/// position (`Foo::<M>::schema()`) and accepted everywhere else.
+fn build_type_path(
+    ident: &Ident,
+    args: Option<&syn::AngleBracketedGenericArguments>,
+) -> TokenStream {
+    args.map_or_else(
+        || quote! { #ident },
+        |ab| {
+            let inner = &ab.args;
+            quote! { #ident::<#inner> }
+        },
+    )
 }
 
 pub struct PrimitiveStrategy {
@@ -365,7 +412,7 @@ impl SchemaProvider for NestedStructStrategy {
     fn gen_schema_entries(&self) -> TokenStream {
         let name = &self.field_name;
         super::wrapped_codegen::generate_schema_entries_for_struct(
-            &self.n.type_ident,
+            &self.n.type_path,
             name,
             self.wrappers.iter().any(|w| matches!(w, Wrapper::Vec)),
         )
@@ -386,7 +433,7 @@ impl RowWiseGenerator for NestedStructStrategy {
             },
         );
         super::wrapped_codegen::generate_nested_for_series(
-            &self.n.type_ident,
+            &self.n.type_path,
             name,
             &access,
             &self.wrappers,
@@ -396,7 +443,7 @@ impl RowWiseGenerator for NestedStructStrategy {
 
     fn gen_empty_series_creation(&self) -> TokenStream {
         let name = &self.field_name;
-        super::wrapped_codegen::nested_empty_series_row(&self.n.type_ident, name, &self.wrappers)
+        super::wrapped_codegen::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
     }
 
     fn gen_anyvalue_conversion(&self) -> TokenStream {
@@ -411,7 +458,7 @@ impl RowWiseGenerator for NestedStructStrategy {
             },
         );
         super::wrapped_codegen::generate_nested_for_anyvalue(
-            &self.n.type_ident,
+            &self.n.type_path,
             &format_ident!("values"),
             &access,
             &self.wrappers,
@@ -422,7 +469,7 @@ impl RowWiseGenerator for NestedStructStrategy {
 
 impl ColumnPopulator for NestedStructStrategy {
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        super::wrapped_codegen::nested_decls(&self.wrappers, &self.n.type_ident, idx)
+        super::wrapped_codegen::nested_decls(&self.wrappers, &self.n.type_path, idx)
     }
 
     fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
@@ -437,7 +484,7 @@ impl ColumnPopulator for NestedStructStrategy {
             },
         );
         super::wrapped_codegen::generate_nested_for_columnar_push(
-            &self.n.type_ident,
+            &self.n.type_path,
             &access,
             &self.wrappers,
             idx,
@@ -488,7 +535,7 @@ impl NestedStructStrategy {
         if !self.n.is_generic {
             return None;
         }
-        let ty = &self.n.type_ident;
+        let ty = &self.n.type_path;
         let access = self.it_access();
         let emit = match self.wrappers.as_slice() {
             [] => super::wrapped_codegen::gen_bulk_generic_leaf(ty, idx, &access, ctx),

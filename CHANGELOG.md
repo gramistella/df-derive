@@ -34,6 +34,18 @@ All notable changes to this project will be documented in this file.
   instantiation that satisfies `ToDataFrame + Columnar` works. Concrete nested
   structs still use the original inherent fast paths.
 
+### Fixed
+
+- Codegen now propagates generic arguments declared on a nested struct field
+  type into the emitted call paths. Previously, a struct like
+  `struct Outer<M> { inner: Vec<Inner<M>> }` would emit `Inner::schema()`,
+  which the compiler couldn't resolve (`E0283: cannot satisfy '_: ToDataFrame'`)
+  because `M` was unbound at the call site. The macro now emits
+  `Inner::<M>::schema()` (turbofish form) and the equivalent forms for
+  `columnar_to_dataframe`, `__df_derive_vec_to_inner_list_values`, and other
+  inherent helpers, so any generic-parameter propagation through nested
+  fields type-checks correctly.
+
 ### Performance
 
 - The columnar path now flattens generic-leaf fields by collecting a

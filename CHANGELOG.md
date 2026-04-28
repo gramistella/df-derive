@@ -7,8 +7,13 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Generic structs are now supported by `#[derive(ToDataFrame)]`. The macro
-  injects `ToDataFrame + Columnar` bounds on every type parameter using
-  `split_for_impl`, so any concrete instantiation must satisfy those traits.
+  injects `ToDataFrame + Columnar + Clone` bounds on every type parameter
+  using `split_for_impl`, so any concrete instantiation must satisfy those
+  traits. `Clone` is required because the bulk emitters collect a
+  contiguous `Vec<T>` from `&[Self]` before delegating to
+  `T::columnar_to_dataframe`; injecting it at the macro level surfaces a
+  missing bound at the user's struct definition rather than deep inside
+  macro-expanded source.
 - Default type parameters and multiple generic parameters are supported.
 - The unit type `()` can now be used as a generic payload to contribute zero
   columns to the schema and DataFrame; reference impls of `ToDataFrame` and

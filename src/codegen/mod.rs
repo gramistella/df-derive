@@ -76,8 +76,8 @@ pub fn impl_parts_with_bounds(
     // `T::columnar_to_dataframe`. Injecting it here turns a cryptic
     // "T: Clone is not satisfied" error inside macro-expanded source into a
     // bound-mismatch error at the user's struct definition.
-    let clone_bound: syn::TypeParamBound = syn::parse2(quote! { ::core::clone::Clone })
-        .expect("Clone path should parse as bound");
+    let clone_bound: syn::TypeParamBound =
+        syn::parse2(quote! { ::core::clone::Clone }).expect("Clone path should parse as bound");
     for tp in generics.type_params_mut() {
         tp.bounds.push(to_df_bound.clone());
         tp.bounds.push(columnar_bound.clone());

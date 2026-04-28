@@ -25,7 +25,7 @@ Add the macro crate and Polars. You will also need a trait defining the `to_data
 ```toml
 [dependencies]
 df-derive = "0.3.0"
-polars = { version = "0.52", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
 
 # If you use these types in your models
 chrono = { version = "0.4", features = ["serde"] }
@@ -45,8 +45,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-df-derive = "0.2"
-polars = { version = "0.52", features = ["timezones", "dtype-decimal"] }
+df-derive = "0.3"
+polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
 ```
 
 src/main.rs:
@@ -315,7 +315,7 @@ Performance is continuously monitored and tracked using [Bencher](https://benche
 ## Compatibility
 
 - **Rust edition**: 2024
-- **Polars**: 0.52 (tested)
+- **Polars**: 0.53 (tested)
 - Enable Polars features `timezones` and `dtype-decimal` if you use `DateTime<Utc>` or `Decimal`.
 
 ## License

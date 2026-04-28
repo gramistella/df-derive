@@ -114,10 +114,10 @@ where
 // is allowed because the trait is defined in this test crate.
 impl ToDataFrame for f64 {
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![Series::new("value".into(), &[*self]).into()])
+        DataFrame::new_infer_height(vec![Series::new("value".into(), &[*self]).into()])
     }
     fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![Series::new_empty("value".into(), &DataType::Float64).into()])
+        DataFrame::new_infer_height(vec![Series::new_empty("value".into(), &DataType::Float64).into()])
     }
     fn schema() -> PolarsResult<Vec<(&'static str, DataType)>> {
         Ok(vec![("value", DataType::Float64)])
@@ -126,7 +126,7 @@ impl ToDataFrame for f64 {
 
 impl Columnar for f64 {
     fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![Series::new("value".into(), items).into()])
+        DataFrame::new_infer_height(vec![Series::new("value".into(), items).into()])
     }
 }
 

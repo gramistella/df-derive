@@ -39,10 +39,10 @@ where
 // Local trait impls so Wrapper<f64> can flatten via a single column.
 impl ToDataFrame for f64 {
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![Series::new("value".into(), &[*self]).into()])
+        DataFrame::new_infer_height(vec![Series::new("value".into(), &[*self]).into()])
     }
     fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![
+        DataFrame::new_infer_height(vec![
             Series::new_empty("value".into(), &DataType::Float64).into(),
         ])
     }
@@ -53,7 +53,7 @@ impl ToDataFrame for f64 {
 
 impl Columnar for f64 {
     fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-        DataFrame::new(vec![Series::new("value".into(), items).into()])
+        DataFrame::new_infer_height(vec![Series::new("value".into(), items).into()])
     }
 }
 
@@ -152,7 +152,7 @@ where
         columns.push(s.into());
     }
 
-    DataFrame::new(columns)
+    DataFrame::new_infer_height(columns)
 }
 
 // Wrappers used to A/B benchmark the new Option<T> and Vec<T> bulk overrides.
@@ -217,7 +217,7 @@ where
         let prefixed = format!("payload.{col_name}");
         columns.push(Series::new(prefixed.as_str().into(), &payload_cols[j]).into());
     }
-    DataFrame::new(columns)
+    DataFrame::new_infer_height(columns)
 }
 
 // Hand-rolled per-row equivalent of `VecWrap<T>::columnar_to_dataframe` —
@@ -265,7 +265,7 @@ where
         let prefixed = format!("payload.{col_name}");
         columns.push(Series::new(prefixed.as_str().into(), &payload_rows[j]).into());
     }
-    DataFrame::new(columns)
+    DataFrame::new_infer_height(columns)
 }
 
 fn generate_with_unit() -> Vec<Wrapper<()>> {

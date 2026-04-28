@@ -46,13 +46,13 @@ pub mod dataframe {
     impl ToDataFrame for () {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
             let dummy = Series::new("_dummy".into(), &[0i32]);
-            let mut df = DataFrame::new(vec![dummy.into()])?;
+            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
             df.drop_in_place("_dummy")?;
             Ok(df)
         }
 
         fn empty_dataframe() -> PolarsResult<DataFrame> {
-            DataFrame::new(vec![])
+            DataFrame::new_infer_height(vec![])
         }
 
         fn schema() -> PolarsResult<Vec<(&'static str, DataType)>> {
@@ -65,7 +65,7 @@ pub mod dataframe {
             let n = items.len();
             let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
                 .extend_constant(AnyValue::Null, n)?;
-            let mut df = DataFrame::new(vec![dummy.into()])?;
+            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
             df.drop_in_place("_dummy")?;
             Ok(df)
         }

@@ -15,13 +15,13 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
                     use polars::prelude::{NamedFrom, DataFrame, Series};
                     let dummy_series = Series::new("_dummy".into(), &[0i32]);
-                    let mut df_with_row = DataFrame::new(vec![dummy_series.into()])?;
+                    let mut df_with_row = DataFrame::new_infer_height(vec![dummy_series.into()])?;
                     df_with_row.drop_in_place("_dummy")?;
                     Ok(df_with_row)
                 }
 
                 fn empty_dataframe() -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-                    polars::prelude::DataFrame::new(vec![])
+                    polars::prelude::DataFrame::new_infer_height(vec![])
                 }
 
                 fn schema() -> polars::prelude::PolarsResult<Vec<(&'static str, polars::prelude::DataType)>> {
@@ -53,7 +53,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 #(
                     all_series.extend(#series_creations);
                 )*
-                polars::prelude::DataFrame::new(all_series)
+                polars::prelude::DataFrame::new_infer_height(all_series)
             }
 
             fn empty_dataframe() -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
@@ -61,7 +61,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 #(
                     all_series.extend(#empty_series_creations);
                 )*
-                polars::prelude::DataFrame::new(all_series)
+                polars::prelude::DataFrame::new_infer_height(all_series)
             }
 
             fn schema() -> polars::prelude::PolarsResult<Vec<(&'static str, polars::prelude::DataType)>> {

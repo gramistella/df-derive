@@ -24,6 +24,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Updated crate to support `polars` v0.53. Generated code now calls
+  `DataFrame::new_infer_height` instead of the removed `DataFrame::new(columns)`
+  overload, so downstream crates must bump `polars` to `0.53`.
 - Codegen now uses `Self` (instead of the bare struct ident) inside emitted
   `impl` bodies so that generated code remains valid for generic structs.
 - For fields whose base type is a generic parameter, codegen emits trait-only

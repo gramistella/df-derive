@@ -28,11 +28,11 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
                     let num_rows = items.len();
                     let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
                         .extend_constant(AnyValue::Null, num_rows)?;
-                    let mut df = DataFrame::new(vec![dummy.into()])?;
+                    let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
                     df.drop_in_place("_dummy")?;
                     return Ok(df);
                 }
-                DataFrame::new(columns)
+                DataFrame::new_infer_height(columns)
             }
         }
     }

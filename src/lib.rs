@@ -21,7 +21,7 @@
 //! ```toml
 //! [dependencies]
 //! df-derive = "0.3.0"
-//! polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
+//! polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
 //!
 //! # If you use these types in your models
 //! chrono = { version = "0.4", features = ["serde"] }
@@ -190,7 +190,7 @@
 //! ## Compatibility
 //!
 //! - **Rust edition**: 2024
-//! - **Polars**: 0.50 (tested). Enable Polars features `timezones` and `dtype-decimal` if you use
+//! - **Polars**: 0.53 (tested). Enable Polars features `timezones` and `dtype-decimal` if you use
 //!   `DateTime<Utc>` or `Decimal`.
 //!
 //! ## License

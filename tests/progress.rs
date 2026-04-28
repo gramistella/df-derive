@@ -22,8 +22,8 @@ fn tests() {
     t.pass("tests/pass/17-nested-tuple-structs.rs");
     t.pass("tests/pass/18-custom-trait.rs");
     t.pass("tests/pass/19-complex-wrappers.rs");
+    t.pass("tests/pass/20-generics.rs");
 
     // This file should fail to compile.
-    t.compile_fail("tests/fail/97-fail-generics.rs");
     t.compile_fail("tests/fail/98-fail-unsupported-type.rs");
 }

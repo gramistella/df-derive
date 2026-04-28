@@ -73,7 +73,9 @@ fn base_and_transform_to_rust_and_dtype(
             quote! { ::std::string::String },
             quote! { polars::prelude::DataType::Decimal(38, 10) },
         ),
-        BaseType::Struct(_ident) => (quote! { () }, quote! { polars::prelude::DataType::Null }),
+        BaseType::Struct(_ident) | BaseType::Generic(_ident) => {
+            (quote! { () }, quote! { polars::prelude::DataType::Null })
+        }
     }
 }
 

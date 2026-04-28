@@ -7,15 +7,17 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
     let it_ident = format_ident!("__df_derive_it");
+    let (impl_generics, ty_generics, where_clause) =
+        super::impl_parts_with_bounds(&ir.generics, config);
 
     let collect_vec_impl = quote! {
             #[doc(hidden)]
-            pub fn __df_derive_collect_vec_as_prefixed_list_series(items: &[#struct_name], column_name: &str) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::Column>> {
+            pub fn __df_derive_collect_vec_as_prefixed_list_series(items: &[Self], column_name: &str) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::Column>> {
                 use polars::prelude::*;
                 use polars::prelude::NamedFrom;
                 if items.is_empty() {
                     let mut columns: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
-                    for (inner_name, inner_dtype) in <#struct_name as #to_df_trait>::schema()? {
+                    for (inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
                         let prefixed = format!("{}.{}", column_name, inner_name);
                         let inner_empty = Series::new_empty("".into(), &inner_dtype);
                         let list_val = AnyValue::List(inner_empty);
@@ -25,8 +27,8 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
                     return Ok(columns);
                 }
 
-                let values: ::std::vec::Vec<AnyValue> = #struct_name::__df_derive_vec_to_inner_list_values(items)?;
-                let schema = <#struct_name as #to_df_trait>::schema()?;
+                let values: ::std::vec::Vec<AnyValue> = Self::__df_derive_vec_to_inner_list_values(items)?;
+                let schema = <Self as #to_df_trait>::schema()?;
                 let mut nested_series: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::with_capacity(schema.len());
                 let mut iter = values.into_iter();
                 for (col_name, _dtype) in schema.into_iter() {
@@ -48,14 +50,14 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
         .collect();
 
     quote! {
-        impl #struct_name {
+        impl #impl_generics #struct_name #ty_generics #where_clause {
             #collect_vec_impl
             #[doc(hidden)]
-            pub fn __df_derive_vec_to_inner_list_values(items: &[#struct_name]) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::AnyValue>> {
+            pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::AnyValue>> {
                 use polars::prelude::*;
                 if items.is_empty() {
                     let mut out_values: ::std::vec::Vec<AnyValue> = ::std::vec::Vec::new();
-                    for (_inner_name, inner_dtype) in <#struct_name as #to_df_trait>::schema()? {
+                    for (_inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
                         let inner_empty = Series::new_empty("".into(), &inner_dtype);
                         out_values.push(AnyValue::List(inner_empty));
                     }

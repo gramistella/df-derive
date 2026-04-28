@@ -6,10 +6,12 @@ use quote::quote; // for trait methods on Strategy
 pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
+    let (impl_generics, ty_generics, where_clause) =
+        super::impl_parts_with_bounds(&ir.generics, config);
 
     if ir.fields.is_empty() {
         return quote! {
-            impl #to_df_trait for #struct_name {
+            impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
                 fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
                     use polars::prelude::{NamedFrom, DataFrame, Series};
                     let dummy_series = Series::new("_dummy".into(), &[0i32]);
@@ -44,7 +46,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         .collect();
 
     quote! {
-        impl #to_df_trait for #struct_name {
+        impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
                 use polars::prelude::NamedFrom;
                 let mut all_series: Vec<polars::prelude::Column> = Vec::new();

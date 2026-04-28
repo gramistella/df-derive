@@ -12,6 +12,7 @@ pub(super) struct PrimitiveIR {
 #[derive(Clone)]
 pub(super) struct NestedIR {
     type_ident: Ident,
+    is_generic: bool,
 }
 
 // Granular traits per concern
@@ -106,7 +107,8 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
     ir.fields
         .iter()
         .map(|f| match &f.base_type {
-            BaseType::Struct(type_ident) => {
+            BaseType::Struct(type_ident) | BaseType::Generic(type_ident) => {
+                let is_generic = matches!(f.base_type, BaseType::Generic(_));
                 // If transform indicates stringification, treat as primitive
                 if matches!(f.transform, Some(PrimitiveTransform::ToString)) {
                     Strategy::Primitive(PrimitiveStrategy::new(
@@ -125,6 +127,7 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
                         f.wrappers.clone(),
                         NestedIR {
                             type_ident: type_ident.clone(),
+                            is_generic,
                         },
                     ))
                 }
@@ -353,6 +356,7 @@ impl RowWiseGenerator for NestedStructStrategy {
             name,
             &access,
             &self.wrappers,
+            self.n.is_generic,
         )
     }
 
@@ -377,6 +381,7 @@ impl RowWiseGenerator for NestedStructStrategy {
             &format_ident!("values"),
             &access,
             &self.wrappers,
+            self.n.is_generic,
         )
     }
 }
@@ -402,6 +407,7 @@ impl ColumnPopulator for NestedStructStrategy {
             &access,
             &self.wrappers,
             idx,
+            self.n.is_generic,
         )
     }
 }

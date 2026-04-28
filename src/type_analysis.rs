@@ -1,5 +1,5 @@
 use crate::ir::{BaseType, PrimitiveTransform, Wrapper};
-use syn::{GenericArgument, PathArguments, Type};
+use syn::{GenericArgument, Ident, PathArguments, Type};
 
 #[derive(Clone)]
 pub struct AnalyzedType {
@@ -8,7 +8,11 @@ pub struct AnalyzedType {
     pub transform: Option<PrimitiveTransform>,
 }
 
-pub fn analyze_type(ty: &Type, as_string: bool) -> Result<AnalyzedType, syn::Error> {
+pub fn analyze_type(
+    ty: &Type,
+    as_string: bool,
+    generic_params: &[Ident],
+) -> Result<AnalyzedType, syn::Error> {
     let mut wrappers: Vec<Wrapper> = Vec::new();
     let mut current_type = ty;
 
@@ -39,7 +43,7 @@ pub fn analyze_type(ty: &Type, as_string: bool) -> Result<AnalyzedType, syn::Err
         ));
     }
 
-    let base = analyze_base_type(current_type)
+    let base = analyze_base_type(current_type, generic_params)
         .ok_or_else(|| syn::Error::new_spanned(current_type, "Unsupported field type"))?;
 
     // Determine abstract transform; attribute stringification overrides
@@ -60,7 +64,7 @@ pub fn analyze_type(ty: &Type, as_string: bool) -> Result<AnalyzedType, syn::Err
     })
 }
 
-fn analyze_base_type(ty: &Type) -> Option<BaseType> {
+fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<BaseType> {
     if is_datetime_utc(ty) {
         return Some(BaseType::DateTimeUtc);
     }
@@ -68,6 +72,8 @@ fn analyze_base_type(ty: &Type) -> Option<BaseType> {
         && let Some(segment) = type_path.path.segments.last()
     {
         let type_ident = &segment.ident;
+        let has_args = !matches!(segment.arguments, PathArguments::None);
+        let is_single_segment = type_path.qself.is_none() && type_path.path.segments.len() == 1;
         let base_type = match type_ident.to_string().as_str() {
             "String" => BaseType::String,
             "f64" => BaseType::F64,
@@ -84,7 +90,14 @@ fn analyze_base_type(ty: &Type) -> Option<BaseType> {
             "i32" => BaseType::I32,
             "bool" => BaseType::Bool,
             "Decimal" => BaseType::Decimal,
-            _ => BaseType::Struct(type_ident.clone()),
+            _ => {
+                if is_single_segment && !has_args && generic_params.iter().any(|p| p == type_ident)
+                {
+                    BaseType::Generic(type_ident.clone())
+                } else {
+                    BaseType::Struct(type_ident.clone())
+                }
+            }
         };
         return Some(base_type);
     }

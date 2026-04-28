@@ -24,7 +24,7 @@ Add the macro crate and Polars. You will also need a trait defining the `to_data
 
 ```toml
 [dependencies]
-df-derive = "0.2.0"
+df-derive = "0.3.0"
 polars = { version = "0.52", features = ["timezones", "dtype-decimal"] }
 
 # If you use these types in your models
@@ -298,7 +298,7 @@ struct WithEnums {
 
 - **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported.
 - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields.
-- **Generics**: generic structs are not supported by the derive (see tests/fail for examples).
+- **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar` bounds on every type parameter, so any concrete instantiation must satisfy those traits. The unit type `()` can be used as a payload to contribute zero columns.
 - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`.
 
 ## Performance notes

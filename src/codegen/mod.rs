@@ -55,3 +55,30 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         #helpers_impl
     }
 }
+
+/// Build `impl_generics`, `ty_generics`, and `where_clause` token streams suitable
+/// for splicing into an `impl` header. When the struct has type parameters, each
+/// one is augmented with the configured `ToDataFrame` and `Columnar` trait
+/// bounds so the generated method bodies can call those traits on the params.
+pub fn impl_parts_with_bounds(
+    generics: &syn::Generics,
+    config: &MacroConfig,
+) -> (TokenStream, TokenStream, TokenStream) {
+    let mut generics = generics.clone();
+    let to_df_trait = &config.to_dataframe_trait_path;
+    let columnar_trait = &config.columnar_trait_path;
+    let to_df_bound: syn::TypeParamBound =
+        syn::parse2(quote! { #to_df_trait }).expect("trait path should parse as bound");
+    let columnar_bound: syn::TypeParamBound =
+        syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
+    for tp in generics.type_params_mut() {
+        tp.bounds.push(to_df_bound.clone());
+        tp.bounds.push(columnar_bound.clone());
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    (
+        quote! { #impl_generics },
+        quote! { #ty_generics },
+        quote! { #where_clause },
+    )
+}

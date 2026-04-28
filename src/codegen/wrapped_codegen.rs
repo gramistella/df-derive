@@ -77,7 +77,11 @@ fn gen_nested_vec_to_list_anyvalues(
     ty: &Ident,
     acc: &TokenStream,
     tail: &[Wrapper],
+    is_generic: bool,
 ) -> TokenStream {
+    if is_generic {
+        return gen_generic_vec_to_list_anyvalues(ty, acc, tail);
+    }
     if tail.is_empty() {
         // Fast path: Vec<Struct>
         quote! { #ty::__df_derive_vec_to_inner_list_values(&(#acc))? }
@@ -149,6 +153,7 @@ fn gen_nested_vec_to_list_anyvalues(
                 &per_item_vals_ident,
                 &elem_access,
                 tail,
+                false,
             )
         };
         let recur_elem_ts = recur_elem();
@@ -169,6 +174,87 @@ fn gen_nested_vec_to_list_anyvalues(
             __df_derive_out
         }}
     }
+}
+
+/// Trait-only equivalent of `gen_nested_vec_to_list_anyvalues` for fields whose
+/// base type is a generic type parameter. Avoids any inherent helpers and uses
+/// only `ToDataFrame` / `Columnar` trait methods.
+fn gen_generic_vec_to_list_anyvalues(
+    ty: &Ident,
+    acc: &TokenStream,
+    tail: &[Wrapper],
+) -> TokenStream {
+    let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
+    let cols_buf_ident = syn::Ident::new("__df_derive_cols_buf", proc_macro2::Span::call_site());
+    let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
+    let per_item_vals_ident =
+        syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
+
+    let recur_elem_ts =
+        generate_generic_for_anyvalue(ty, &per_item_vals_ident, &quote! { #elem_ident }, tail);
+
+    quote! {{
+        let #schema_ident = #ty::schema()?;
+        let mut #cols_buf_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> =
+            #schema_ident.iter().map(|_| ::std::vec::Vec::with_capacity((#acc).len())).collect();
+        for #elem_ident in (#acc).iter() {
+            let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+            { #recur_elem_ts }
+            for (j, v) in #per_item_vals_ident.into_iter().enumerate() { #cols_buf_ident[j].push(v); }
+        }
+        let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
+        for j in 0..#schema_ident.len() {
+            let inner = polars::prelude::Series::new("".into(), &#cols_buf_ident[j]);
+            __df_derive_out.push(polars::prelude::AnyValue::List(inner));
+        }
+        __df_derive_out
+    }}
+}
+
+/// Trait-only on-leaf body for converting a single nested value into `AnyValues`
+/// pushed onto `values_vec_ident` via `to_dataframe()`.
+fn generic_leaf_to_anyvalues(values_vec_ident: &Ident, acc: &TokenStream) -> TokenStream {
+    quote! {
+        let __df_derive_tmp_df = (#acc).to_dataframe()?;
+        let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
+            .get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for __df_derive_name in __df_derive_names.iter() {
+            let __df_derive_v = __df_derive_tmp_df.column(__df_derive_name.as_str())?.get(0)?;
+            #values_vec_ident.push(__df_derive_v.into_static());
+        }
+    }
+}
+
+/// Trait-only equivalent of `generate_nested_for_anyvalue` for generic params.
+fn generate_generic_for_anyvalue(
+    type_ident: &Ident,
+    values_vec_ident: &Ident,
+    access: &TokenStream,
+    wrappers: &[Wrapper],
+) -> TokenStream {
+    let ty = type_ident.clone();
+
+    let on_leaf = |acc: &TokenStream| generic_leaf_to_anyvalues(values_vec_ident, acc);
+
+    let on_option_none = |_tail: &[Wrapper]| {
+        quote! {
+            let schema = #ty::schema()?;
+            for _ in 0..schema.len() { #values_vec_ident.push(polars::prelude::AnyValue::Null); }
+        }
+    };
+
+    let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
+        let list_vals_ts = gen_generic_vec_to_list_anyvalues(&ty, acc, tail);
+        quote! {{
+            let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
+            for v in __df_derive_vals.into_iter() { #values_vec_ident.push(v); }
+        }}
+    };
+
+    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
 }
 
 // --- Primitive: context-specific generators ---
@@ -331,6 +417,7 @@ pub fn generate_nested_for_series(
     series_name: &str,
     access: &TokenStream,
     wrappers: &[Wrapper],
+    is_generic: bool,
 ) -> TokenStream {
     #![allow(clippy::too_many_lines)]
     let ty = type_ident.clone();
@@ -346,7 +433,7 @@ pub fn generate_nested_for_series(
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        if tail.is_empty() {
+        if tail.is_empty() && !is_generic {
             quote! {{
                 #ty::__df_derive_collect_vec_as_prefixed_list_series(&(#acc), #series_name)?
             }}
@@ -354,7 +441,11 @@ pub fn generate_nested_for_series(
             let schema_ident =
                 syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
             let vals_ident = syn::Ident::new("__df_derive_vals", proc_macro2::Span::call_site());
-            let list_vals_ts = gen_nested_vec_to_list_anyvalues(&ty, acc, tail);
+            let list_vals_ts = if is_generic {
+                gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
+            } else {
+                gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
+            };
             quote! {{
                 let #schema_ident = #ty::schema()?;
                 let #vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
@@ -377,39 +468,56 @@ pub fn generate_nested_for_columnar_push(
     access: &TokenStream,
     wrappers: &[Wrapper],
     idx: usize,
+    is_generic: bool,
 ) -> TokenStream {
     let ty = type_ident.clone();
 
+    let cols_ident = if is_vec(wrappers) {
+        format_ident!("__df_derive_nv_cols_{}", idx)
+    } else {
+        format_ident!("__df_derive_ns_cols_{}", idx)
+    };
+
     let on_leaf = |acc: &TokenStream| {
-        let cols_ident = if is_vec(wrappers) {
-            format_ident!("__df_derive_nv_cols_{}", idx)
+        let cols_ident = cols_ident.clone();
+        if is_generic {
+            quote! {
+                let __df_derive_tmp_df = (#acc).to_dataframe()?;
+                let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
+                    .get_column_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
+                    let __df_derive_v = __df_derive_tmp_df
+                        .column(__df_derive_name.as_str())?
+                        .get(0)?
+                        .into_static();
+                    #cols_ident[j].push(__df_derive_v);
+                }
+            }
         } else {
-            format_ident!("__df_derive_ns_cols_{}", idx)
-        };
-        quote! {
-            let nested_values = (#acc).__df_derive_to_anyvalues()?;
-            for (j, value) in nested_values.into_iter().enumerate() {
-                #cols_ident[j].push(value);
+            quote! {
+                let nested_values = (#acc).__df_derive_to_anyvalues()?;
+                for (j, value) in nested_values.into_iter().enumerate() {
+                    #cols_ident[j].push(value);
+                }
             }
         }
     };
 
     let on_option_none = |_tail: &[Wrapper]| {
-        let cols_ident = if is_vec(wrappers) {
-            format_ident!("__df_derive_nv_cols_{}", idx)
-        } else {
-            format_ident!("__df_derive_ns_cols_{}", idx)
-        };
+        let cols_ident = cols_ident.clone();
         quote! { for j in 0..#cols_ident.len() { #cols_ident[j].push(polars::prelude::AnyValue::Null); } }
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let cols_ident = if is_vec(wrappers) {
-            format_ident!("__df_derive_nv_cols_{}", idx)
+        let cols_ident = cols_ident.clone();
+        let list_vals_ts = if is_generic {
+            gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
         } else {
-            format_ident!("__df_derive_ns_cols_{}", idx)
+            gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
         };
-        let list_vals_ts = gen_nested_vec_to_list_anyvalues(&ty, acc, tail);
         quote! {{
             let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
             for (j, v) in __df_derive_vals.into_iter().enumerate() { #cols_ident[j].push(v); }
@@ -424,6 +532,7 @@ pub fn generate_nested_for_anyvalue(
     values_vec_ident: &Ident,
     access: &TokenStream,
     wrappers: &[Wrapper],
+    is_generic: bool,
 ) -> TokenStream {
     let ty = type_ident.clone();
 
@@ -445,7 +554,11 @@ pub fn generate_nested_for_anyvalue(
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let list_vals_ts = gen_nested_vec_to_list_anyvalues(&ty, acc, tail);
+        let list_vals_ts = if is_generic {
+            gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
+        } else {
+            gen_nested_vec_to_list_anyvalues(&ty, acc, tail, false)
+        };
         quote! {{
             let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
             for v in __df_derive_vals.into_iter() { #values_vec_ident.push(v); }

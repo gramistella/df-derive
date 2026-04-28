@@ -8,14 +8,16 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
     let it_ident = format_ident!("__df_derive_it");
+    let (impl_generics, ty_generics, where_clause) =
+        super::impl_parts_with_bounds(&ir.generics, config);
 
     let (decls, pushes, builders) = super::common::prepare_columnar_parts(ir, &it_ident);
 
     quote! {
-        impl #columnar_trait for #struct_name {
+        impl #impl_generics #columnar_trait for #struct_name #ty_generics #where_clause {
             fn columnar_to_dataframe(items: &[Self]) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
                 if items.is_empty() {
-                    return <#struct_name as #to_df_trait>::empty_dataframe();
+                    return <Self as #to_df_trait>::empty_dataframe();
                 }
                 use polars::prelude::*;
                 #(#decls)*

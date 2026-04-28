@@ -20,7 +20,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.2.0"
+//! df-derive = "0.3.0"
 //! polars = { version = "0.50", features = ["timezones", "dtype-decimal"] }
 //!
 //! # If you use these types in your models
@@ -176,7 +176,9 @@
 //!
 //! - **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported
 //! - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields
-//! - **Generics**: generic structs are not supported by the derive (see `tests/fail`)
+//! - **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar`
+//!   bounds on every type parameter, so any concrete instantiation must satisfy those traits.
+//!   Use `()` as a payload type to contribute zero columns.
 //! - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`
 //!
 //! ## Performance notes
@@ -295,7 +297,10 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// Notes:
 ///
-/// - Enums and generic structs are not supported for derive.
+/// - Enums are not supported for derive.
+/// - Generic structs are supported; the macro injects `ToDataFrame + Columnar`
+///   bounds on every type parameter, so any concrete instantiation must satisfy
+///   those traits. The unit type `()` is a valid payload (zero columns).
 /// - All nested custom structs must also derive `ToDataFrame`.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.

@@ -5,6 +5,8 @@ use syn::Ident;
 pub struct StructIR {
     /// The identifier of the struct being derived
     pub name: Ident,
+    /// The generics declared on the struct (empty when no generics are used)
+    pub generics: syn::Generics,
     /// The fields of the struct in declaration order
     pub fields: Vec<FieldIR>,
 }
@@ -54,7 +56,10 @@ pub enum BaseType {
     USize,
     DateTimeUtc,
     Decimal,
+    /// A concrete user-defined struct type referenced by ident
     Struct(Ident),
+    /// A generic type parameter declared on the enclosing struct
+    Generic(Ident),
 }
 
 /// Wrapper layers applied around the base type

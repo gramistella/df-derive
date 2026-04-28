@@ -1,7 +1,7 @@
 use crate::ir::{FieldIR, PrimitiveTransform, StructIR};
 use crate::type_analysis::analyze_type;
 use quote::format_ident;
-use syn::{Data, DeriveInput, Fields};
+use syn::{Data, DeriveInput, Fields, Ident};
 
 #[derive(Default, Clone, Copy)]
 struct FieldAttributes {
@@ -30,6 +30,8 @@ fn parse_attributes(field: &syn::Field) -> FieldAttributes {
 /// cases it produces an empty `StructIR` that is currently unused by codegen.
 pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     let name = input.ident.clone();
+    let generics = input.generics.clone();
+    let generic_params: Vec<Ident> = generics.type_params().map(|tp| tp.ident.clone()).collect();
     let mut fields_ir: Vec<FieldIR> = Vec::new();
 
     if let Data::Struct(data_struct) = &input.data {
@@ -43,7 +45,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                         .clone();
 
                     let attrs = parse_attributes(field);
-                    let analyzed = analyze_type(&field.ty, attrs.as_string)?;
+                    let analyzed = analyze_type(&field.ty, attrs.as_string, &generic_params)?;
 
                     let base_type = analyzed.base.clone();
                     let transform = analyzed.transform.clone();
@@ -67,7 +69,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                     let field_name_ident = format_ident!("field_{}", index);
 
                     let attrs = parse_attributes(field);
-                    let analyzed = analyze_type(&field.ty, attrs.as_string)?;
+                    let analyzed = analyze_type(&field.ty, attrs.as_string, &generic_params)?;
 
                     let base_type = analyzed.base.clone();
                     let transform = analyzed.transform.clone();
@@ -87,6 +89,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
 
     Ok(StructIR {
         name,
+        generics,
         fields: fields_ir,
     })
 }

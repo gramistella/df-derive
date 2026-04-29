@@ -77,10 +77,15 @@ All notable changes to this project will be documented in this file.
   bench (2 of 11 columns are `Option<String>`) is ~1.95× faster
   (4.09 ms → 2.13 ms). Vec-wrapped strings (`Vec<String>`,
   `Option<Vec<String>>`) and any string field with a transform
-  (`as_string`, `Decimal`) keep the existing path; the row-wise
-  `to_dataframe(&self)` and `AnyValue`-per-row paths used for
-  `Option<NestedStruct>` are also unchanged and remain a follow-up
-  opportunity.
+  (`as_string`, `Decimal`) keep the existing path.
+- The `AnyValue`-per-row path (`__df_derive_to_anyvalues`, used by
+  `Option<NestedStruct>` parents) and the row-wise `to_dataframe(&self)`
+  path now also build their 1-element `Series` from `&[&str]` for
+  `String` leaves with no transform, skipping the user-side clone before
+  Polars copies bytes into the `Utf8ViewArray`. `03_nested_option`
+  (`Vec<Owner>` where `Owner` contains `Vec<User>` and each `User` holds
+  `Option<Address>` with three `String` fields) drops from 50.78 ms to
+  43.72 ms (-13.9%) on top of the columnar fast path.
 
 ## [0.2.0] - 2025-11-8
 

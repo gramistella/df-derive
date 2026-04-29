@@ -527,6 +527,20 @@ pub fn generate_primitive_for_series(
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {
+        // Borrowing fast path for `String` leaves with no transform: build the
+        // 1-row Series from `&[&str]` so the per-row `to_dataframe(&self)` API
+        // doesn't clone the field's `String` before handing it to Polars.
+        if matches!(base_type, BaseType::String) && transform.is_none() {
+            return quote! {
+                vec![{
+                    let s = polars::prelude::Series::new(
+                        #series_name.into(),
+                        &[(#acc).as_str()],
+                    );
+                    s.into()
+                }]
+            };
+        }
         let mapped = super::common::generate_primitive_access_expr(acc, transform);
         let cast_ts = if do_cast {
             quote! { s = s.cast(&#dtype)?; }
@@ -650,6 +664,19 @@ pub fn generate_primitive_for_anyvalue(
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {
+        // Borrowing fast path for `String` leaves with no transform: skip the
+        // user-side clone by building the 1-element Series from `&[&str]`.
+        // The Series owns its own Arrow buffer once `from_slice` returns, so
+        // `s.get(0)?.into_static()` is safe to call after the borrow's scope.
+        if matches!(base_type, BaseType::String) && transform.is_none() {
+            return quote! {
+                let s = polars::prelude::Series::new(
+                    "".into(),
+                    &[(#acc).as_str()],
+                );
+                #values_vec_ident.push(s.get(0)?.into_static());
+            };
+        }
         let mapped = super::common::generate_primitive_access_expr(acc, transform);
         let cast_ts = if do_cast {
             quote! { s = s.cast(&#dtype)?; }

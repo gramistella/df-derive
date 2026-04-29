@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "09_generics"
 harness = false
+
+[[bench]]
+name = "10_string_columns"
+harness = false

@@ -66,6 +66,21 @@ All notable changes to this project will be documented in this file.
   column per parent row. Bench at 100k rows: ~16× faster for
   `OptWrap<Meta>`, ~9× faster for `VecWrap<Meta>`. Deeper compositions like
   `Option<Option<T>>` or `Vec<Vec<T>>` keep the per-row trait-only fallback.
+- The columnar populator buffer for `String` and `Option<String>` leaf
+  fields is now `Vec<&str>` / `Vec<Option<&str>>` borrowing from `items`
+  instead of `Vec<String>` / `Vec<Option<String>>` cloned per row.
+  `Series::new` dispatches to `StringChunked::from_slice` /
+  `from_slice_options` for both shapes, producing the same
+  `Utf8ViewArray`-backed column. New bench `10_string_columns` at 100k
+  rows shows ~4.3× speedup for both shapes (16.1 ms → 3.70 ms required;
+  15.1 ms → 3.49 ms optional). The wider `05_wide_top_level_options`
+  bench (2 of 11 columns are `Option<String>`) is ~1.95× faster
+  (4.09 ms → 2.13 ms). Vec-wrapped strings (`Vec<String>`,
+  `Option<Vec<String>>`) and any string field with a transform
+  (`as_string`, `Decimal`) keep the existing path; the row-wise
+  `to_dataframe(&self)` and `AnyValue`-per-row paths used for
+  `Option<NestedStruct>` are also unchanged and remain a follow-up
+  opportunity.
 
 ## [0.2.0] - 2025-11-8
 

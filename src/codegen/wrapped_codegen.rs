@@ -11,6 +11,22 @@ fn is_option(wrappers: &[Wrapper]) -> bool {
     wrappers.iter().any(|w| matches!(w, Wrapper::Option))
 }
 
+/// True for `String` and `Option<String>` leaves with no transform — the cases
+/// where the columnar populator buffer can borrow `&str` from `items` instead
+/// of cloning each row's `String`. `Vec<_>` wrappers, transforms
+/// (`ToString`, `DecimalToString`, …), and deeper nestings keep the existing
+/// owning-buffer path.
+fn is_borrowable_string_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    if !matches!(base, BaseType::String) || transform.is_some() {
+        return false;
+    }
+    matches!(wrappers, [] | [Wrapper::Option])
+}
+
 // --- Context-specific generation APIs ---
 
 // --- Helpers to unify Vec processing across targets ---
@@ -568,6 +584,20 @@ pub fn generate_primitive_for_columnar_push(
     wrappers: &[Wrapper],
     idx: usize,
 ) -> TokenStream {
+    // Borrowing fast path for `String` / `Option<String>`: the buffer is
+    // declared as `Vec<&str>` / `Vec<Option<&str>>` by `primitive_decls`, so we
+    // push borrows of the field instead of cloning each row's `String` into an
+    // owned buffer. The borrows live as long as `items`, which outlives the
+    // buffer.
+    if is_borrowable_string_leaf(base_type, transform, wrappers) {
+        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        return if is_option(wrappers) {
+            quote! { #vec_ident.push((#access).as_deref()); }
+        } else {
+            quote! { #vec_ident.push(&(#access)); }
+        };
+    }
+
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let _dtype = mapping.full_dtype.clone();
     let _elem_rust_ty = mapping.rust_element_type;
@@ -816,6 +846,28 @@ pub fn primitive_decls(
     let mut decls: Vec<TokenStream> = Vec::new();
     let opt = is_option(wrappers);
     let vec = is_vec(wrappers);
+
+    // Borrowing fast path for `String` / `Option<String>`: a `Vec<&str>` (or
+    // `Vec<Option<&str>>`) buffer borrows from `items` instead of cloning each
+    // row's `String`. `Series::new(name, &Vec<&str>)` dispatches to
+    // `StringChunked::from_slice` and produces the same `Utf8ViewArray`-backed
+    // column the owning path produces.
+    if is_borrowable_string_leaf(base_type, transform, wrappers) {
+        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        if opt {
+            decls.push(quote! {
+                let mut #vec_ident: ::std::vec::Vec<::std::option::Option<&str>> =
+                    ::std::vec::Vec::with_capacity(items.len());
+            });
+        } else {
+            decls.push(quote! {
+                let mut #vec_ident: ::std::vec::Vec<&str> =
+                    ::std::vec::Vec::with_capacity(items.len());
+            });
+        }
+        return decls;
+    }
+
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let elem_rust_ty = mapping.rust_element_type;
     if vec {

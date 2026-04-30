@@ -102,7 +102,7 @@ pub fn generate_inner_series_from_vec(
                 .iter()
                 .map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
                 .collect();
-            let inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+            let inner_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
             inner_series
         }};
     }
@@ -130,21 +130,21 @@ pub fn generate_inner_series_from_vec(
                     .iter()
                     .map(|#elem_ident| -> polars::prelude::PolarsResult<_> { Ok({ #mapped }) })
                     .collect::<polars::prelude::PolarsResult<::std::vec::Vec<_>>>()?;
-                let mut inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+                let mut inner_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
                 if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
                 inner_series
             }}
         } else {
             quote! {{
                 let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access).iter().map(|#elem_ident| { #mapped }).collect();
-                let mut inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+                let mut inner_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
                 if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
                 inner_series
             }}
         }
     } else {
         quote! {{
-            let mut inner_series = polars::prelude::Series::new("".into(), &(#vec_access));
+            let mut inner_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &(#vec_access));
             if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
             inner_series
         }}

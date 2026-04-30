@@ -398,9 +398,10 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
             // the schema-declared dtype — no cast needed here.
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             vec![quote! {{
-                let s = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
-                    .into_series()
-                    .with_name(#name.into());
+                let s = polars::prelude::IntoSeries::into_series(
+                    polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident),
+                )
+                .with_name(#name.into());
                 columns.push(s.into());
             }}]
         } else {
@@ -423,7 +424,7 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
             let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
             let vec_ident = PopulatorIdents::primitive_buf(idx);
             vec![quote! {{
-                let mut s = polars::prelude::Series::new(#name.into(), &#vec_ident);
+                let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
                 if #do_cast { s = s.cast(&#dtype)?; }
                 columns.push(s.into());
             }}]

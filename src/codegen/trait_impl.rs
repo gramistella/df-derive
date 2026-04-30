@@ -13,9 +13,13 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         return quote! {
             impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
                 fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-                    use polars::prelude::{NamedFrom, DataFrame, Series};
-                    let dummy_series = Series::new("_dummy".into(), &[0i32]);
-                    let mut df_with_row = DataFrame::new_infer_height(vec![dummy_series.into()])?;
+                    let dummy_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                        "_dummy".into(),
+                        &[0i32],
+                    );
+                    let mut df_with_row = polars::prelude::DataFrame::new_infer_height(
+                        vec![dummy_series.into()],
+                    )?;
                     df_with_row.drop_in_place("_dummy")?;
                     Ok(df_with_row)
                 }
@@ -48,13 +52,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     quote! {
         impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-                // Pull traits from polars' prelude into scope (incl. `NamedFrom`,
-                // `IntoSeries`, `NewChunkedArray`, `ListBuilderTrait`) so the
-                // bulk-emit and list-builder helpers spliced in by
-                // `series_creations` can resolve `T::method(...)` paths
-                // without having to UFCS-qualify every trait method.
-                use polars::prelude::*;
-                let mut all_series: Vec<polars::prelude::Column> = Vec::new();
+                let mut all_series: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
                 #(
                     all_series.extend(#series_creations);
                 )*
@@ -62,7 +60,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
             }
 
             fn empty_dataframe() -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-                let mut all_series: Vec<polars::prelude::Column> = Vec::new();
+                let mut all_series: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
                 #(
                     all_series.extend(#empty_series_creations);
                 )*

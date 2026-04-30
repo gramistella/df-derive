@@ -147,7 +147,12 @@ fn gen_primitive_vec_inner_series(
         && matches!(tail[0], Wrapper::Option)
         && transform.is_none()
     {
-        return quote! {{ polars::prelude::Series::new("".into(), &(#acc)) }};
+        return quote! {{
+            <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                "".into(),
+                &(#acc),
+            )
+        }};
     }
 
     // Fallback recursive per-element path (rare wrapper depths and any
@@ -203,7 +208,7 @@ fn gen_primitive_vec_inner_series(
         let __df_derive_inner = if #list_vals_ident.is_empty() {
             polars::prelude::Series::new_empty("".into(), &#empty_dtype)
         } else {
-            let mut __df_derive_s = polars::prelude::Series::new("".into(), &#list_vals_ident);
+            let mut __df_derive_s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#list_vals_ident);
             if #do_cast { __df_derive_s = __df_derive_s.cast(&#elem_dtype)?; }
             __df_derive_s
         };
@@ -267,7 +272,7 @@ fn gen_nested_vec_to_list_anyvalues(
             } else {
                 let #vals_ident = #ty::__df_derive_vec_to_inner_list_values(&#nn_ident)?;
                 let #take_ident: polars::prelude::IdxCa =
-                    polars::prelude::IdxCa::from_iter_options(
+                    <polars::prelude::IdxCa as polars::prelude::NewChunkedArray<_, _>>::from_iter_options(
                         "".into(),
                         #pos_ident.iter().copied(),
                     );
@@ -345,7 +350,7 @@ fn gen_nested_vec_to_list_anyvalues(
                     #wrap_extra_for_empty
                     polars::prelude::Series::new_empty("".into(), &__df_derive_wrapped)
                 } else {
-                    polars::prelude::Series::new("".into(), &#cols_buf_ident[j])
+                    <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#cols_buf_ident[j])
                 };
                 __df_derive_out.push(polars::prelude::AnyValue::List(inner));
             }
@@ -410,7 +415,7 @@ fn gen_generic_vec_to_list_anyvalues(
                 #wrap_extra_for_empty
                 polars::prelude::Series::new_empty("".into(), &__df_derive_wrapped)
             } else {
-                polars::prelude::Series::new("".into(), &#cols_buf_ident[j])
+                <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#cols_buf_ident[j])
             };
             __df_derive_out.push(polars::prelude::AnyValue::List(inner));
         }
@@ -628,10 +633,11 @@ pub fn gen_bulk_generic_option(
             }
         } else {
             let #df_ident = <#ty as #columnar_trait>::columnar_to_dataframe(&#nn_ident)?;
-            let #take_ident: polars::prelude::IdxCa = polars::prelude::IdxCa::from_iter_options(
-                "".into(),
-                #pos_ident.iter().copied(),
-            );
+            let #take_ident: polars::prelude::IdxCa =
+                <polars::prelude::IdxCa as polars::prelude::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #pos_ident.iter().copied(),
+                );
             for (#col_name_var, _) in <#ty as #to_df_trait>::schema()? {
                 let #col_name_var: &str = #col_name_var.as_str();
                 #consume_filled
@@ -680,9 +686,14 @@ fn bulk_vec_consume_inner_columns(
                 let __df_derive_end = #offsets_ident[__df_derive_i + 1];
                 let __df_derive_slice = __df_derive_inner_col
                     .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
-                __df_derive_lb.append_series(&__df_derive_slice)?;
+                polars::prelude::ListBuilderTrait::append_series(
+                    &mut *__df_derive_lb,
+                    &__df_derive_slice,
+                )?;
             }
-            polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb).into_series()
+            polars::prelude::IntoSeries::into_series(
+                polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb),
+            )
         }},
     );
     quote! {
@@ -716,9 +727,14 @@ fn bulk_vec_consume_empty_columns(
                 "".into(),
             );
             for _ in 0..items.len() {
-                __df_derive_lb.append_series(&__df_derive_empty)?;
+                polars::prelude::ListBuilderTrait::append_series(
+                    &mut *__df_derive_lb,
+                    &__df_derive_empty,
+                )?;
             }
-            polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb).into_series()
+            polars::prelude::IntoSeries::into_series(
+                polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb),
+            )
         }},
     );
     quote! {
@@ -832,7 +848,7 @@ pub fn generate_primitive_for_series(
         match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => quote! {
                 vec![{
-                    let s = polars::prelude::Series::new(
+                    let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[(#acc).as_str()],
                     );
@@ -841,7 +857,7 @@ pub fn generate_primitive_for_series(
             },
             Some(BorrowKind::AsStr(ty_path)) => quote! {
                 vec![{
-                    let s = polars::prelude::Series::new(
+                    let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
                     );
@@ -857,7 +873,7 @@ pub fn generate_primitive_for_series(
                 };
                 quote! {
                     vec![{
-                        let mut s = polars::prelude::Series::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
+                        let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
                         #cast_ts
                         s.into()
                     }]
@@ -872,14 +888,14 @@ pub fn generate_primitive_for_series(
             quote! {
                 vec![{
                     let list_any_value = polars::prelude::AnyValue::Null;
-                    polars::prelude::Series::new(#series_name.into(), &[list_any_value]).into()
+                    <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
                 }]
             }
         } else {
             quote! {
                 vec![{
                     let __df_derive_tmp_opt: ::std::option::Option<#elem_rust_ty> = ::std::option::Option::None;
-                    let mut s = polars::prelude::Series::new(#series_name.into(), std::slice::from_ref(&__df_derive_tmp_opt));
+                    let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), std::slice::from_ref(&__df_derive_tmp_opt));
                     if #do_cast { s = s.cast(&#dtype)?; }
                     s.into()
                 }]
@@ -893,7 +909,7 @@ pub fn generate_primitive_for_series(
             let inner_series = { #inner_series_ts };
             vec![{
                 let list_any_value = polars::prelude::AnyValue::List(inner_series);
-                polars::prelude::Series::new(#series_name.into(), &[list_any_value]).into()
+                <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
             }]
         }}
     };
@@ -959,7 +975,7 @@ pub fn generate_primitive_for_columnar_push(
         let tail_has_vec = tail.iter().any(|w| matches!(w, Wrapper::Vec));
         if tail_has_vec {
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-            quote! { #lb_ident.append_null(); }
+            quote! { polars::prelude::ListBuilderTrait::append_null(&mut *#lb_ident); }
         } else {
             let vec_ident = PopulatorIdents::primitive_buf(idx);
             quote! { #vec_ident.push(::std::option::Option::None); }
@@ -971,7 +987,7 @@ pub fn generate_primitive_for_columnar_push(
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         quote! {{
             let inner_series = { #inner_series_ts };
-            #lb_ident.append_series(&inner_series)?;
+            polars::prelude::ListBuilderTrait::append_series(&mut *#lb_ident, &inner_series)?;
         }}
     };
 
@@ -997,14 +1013,14 @@ pub fn generate_primitive_for_anyvalue(
         // safe to call after the borrow's scope.
         match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => quote! {
-                let s = polars::prelude::Series::new(
+                let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
                     "".into(),
                     &[(#acc).as_str()],
                 );
                 #values_vec_ident.push(s.get(0)?.into_static());
             },
             Some(BorrowKind::AsStr(ty_path)) => quote! {
-                let s = polars::prelude::Series::new(
+                let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
                     "".into(),
                     &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
                 );
@@ -1018,7 +1034,7 @@ pub fn generate_primitive_for_anyvalue(
                     quote! {}
                 };
                 quote! {
-                    let mut s = polars::prelude::Series::new("".into(), std::slice::from_ref(&{ #mapped }));
+                    let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), std::slice::from_ref(&{ #mapped }));
                     #cast_ts
                     #values_vec_ident.push(s.get(0)?.into_static());
                 }
@@ -1083,7 +1099,7 @@ pub fn generate_nested_for_series(
                 let mut nested_series: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::with_capacity(#schema_ident.len());
                 for (j, (inner_name, _dtype)) in #schema_ident.iter().enumerate() {
                     let prefixed_name = format!("{}.{}", #series_name, inner_name);
-                    let s = polars::prelude::Series::new(prefixed_name.as_str().into(), &[#vals_ident[j].clone()]);
+                    let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(prefixed_name.as_str().into(), &[#vals_ident[j].clone()]);
                     nested_series.push(s.into());
                 }
                 nested_series
@@ -1146,7 +1162,9 @@ pub fn generate_nested_for_columnar_push(
         if vec {
             let lbs_ident = lbs_ident.clone();
             quote! {
-                for j in 0..#lbs_ident.len() { #lbs_ident[j].append_null(); }
+                for j in 0..#lbs_ident.len() {
+                    polars::prelude::ListBuilderTrait::append_null(&mut *#lbs_ident[j]);
+                }
             }
         } else {
             let cols_ident = cols_ident.clone();
@@ -1170,10 +1188,13 @@ pub fn generate_nested_for_columnar_push(
             for (j, __df_derive_v) in __df_derive_vals.into_iter().enumerate() {
                 match __df_derive_v {
                     polars::prelude::AnyValue::List(__df_derive_inner) => {
-                        #lbs_ident[j].append_series(&__df_derive_inner)?;
+                        polars::prelude::ListBuilderTrait::append_series(
+                            &mut *#lbs_ident[j],
+                            &__df_derive_inner,
+                        )?;
                     }
                     polars::prelude::AnyValue::Null => {
-                        #lbs_ident[j].append_null();
+                        polars::prelude::ListBuilderTrait::append_null(&mut *#lbs_ident[j]);
                     }
                     _ => {
                         return ::std::result::Result::Err(polars::prelude::polars_err!(
@@ -1315,15 +1336,16 @@ pub fn primitive_finishers_for_vec_anyvalues(
     if vec {
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         quote! {
-            let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
-                .into_series();
+            let inner = polars::prelude::IntoSeries::into_series(
+                polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident),
+            );
             out_values.push(polars::prelude::AnyValue::List(inner));
         }
     } else {
         let dtype = mapping.full_dtype;
         let vec_ident = PopulatorIdents::primitive_buf(idx);
         quote! {
-            let mut inner = polars::prelude::Series::new("".into(), &#vec_ident);
+            let mut inner = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#vec_ident);
             if #needs_cast { inner = inner.cast(&#dtype)?; }
             out_values.push(polars::prelude::AnyValue::List(inner));
         }
@@ -1427,8 +1449,9 @@ pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> T
         let lbs_ident = PopulatorIdents::nested_list_builders(idx);
         quote! {
             for j in 0..#schema_ident.len() {
-                let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j])
-                    .into_series();
+                let inner = polars::prelude::IntoSeries::into_series(
+                    polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j]),
+                );
                 out_values.push(polars::prelude::AnyValue::List(inner));
             }
         }
@@ -1436,7 +1459,7 @@ pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> T
         let cols_ident = PopulatorIdents::nested_struct_cols(idx);
         quote! {
             for j in 0..#schema_ident.len() {
-                let inner = polars::prelude::Series::new("".into(), &#cols_ident[j]);
+                let inner = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#cols_ident[j]);
                 out_values.push(polars::prelude::AnyValue::List(inner));
             }
         }
@@ -1460,9 +1483,10 @@ pub fn nested_columnar_builders(
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
                 let full_name = format!("{}.{}", #name, col_name);
-                let s = polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j])
-                    .into_series()
-                    .with_name(full_name.as_str().into());
+                let s = polars::prelude::IntoSeries::into_series(
+                    polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j]),
+                )
+                .with_name(full_name.as_str().into());
                 columns.push(s.into());
             }
         }}]
@@ -1471,7 +1495,7 @@ pub fn nested_columnar_builders(
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
                 let full_name = format!("{}.{}", #name, col_name);
-                let s = polars::prelude::Series::new(full_name.as_str().into(), &#cols_ident[j]);
+                let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(full_name.as_str().into(), &#cols_ident[j]);
                 columns.push(s.into());
             }
         }}]

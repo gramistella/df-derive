@@ -84,6 +84,20 @@ impl Strategy {
         }
     }
 
+    /// Per-field codegen that pushes one `AnyValue` per inner schema column
+    /// onto `values_vec_ident` for a single instance bound to `it_ident`.
+    /// Used by the inherent `__df_derive_to_inner_values(&self)` helper to
+    /// bypass the `to_dataframe()` round-trip for nested concrete fields:
+    /// the outer struct's helper invokes this per field, and the nested
+    /// `on_leaf` recursively calls the inner type's inherent helper instead
+    /// of constructing a one-row `DataFrame`.
+    pub fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
+        match self {
+            Self::Primitive(s) => s.gen_for_anyvalue(it_ident, values_vec_ident),
+            Self::Nested(s) => s.gen_for_anyvalue(it_ident, values_vec_ident),
+        }
+    }
+
     /// Returns `Some` when this field can bypass the per-row decls/push/builders
     /// triple in the columnar path and emit a single bulk builder. Used by
     /// generic-leaf fields where calling `T::columnar_to_dataframe` once on a
@@ -288,6 +302,26 @@ impl PrimitiveStrategy {
         )
     }
 
+    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
+        let access = self.field_index.map_or_else(
+            || {
+                let field_ident = &self.field_ident;
+                quote! { #it_ident.#field_ident }
+            },
+            |index| {
+                let index_lit = syn::Index::from(index);
+                quote! { #it_ident.#index_lit }
+            },
+        );
+        super::primitive::generate_primitive_for_anyvalue(
+            values_vec_ident,
+            &access,
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+        )
+    }
+
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
         let pp = super::polars_paths::prelude();
@@ -390,6 +424,26 @@ impl NestedStructStrategy {
             &access,
             &self.wrappers,
             idx,
+            self.n.is_generic,
+        )
+    }
+
+    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
+        let access = self.field_index.map_or_else(
+            || {
+                let field_ident = &self.field_ident;
+                quote! { #it_ident.#field_ident }
+            },
+            |index| {
+                let index_lit = syn::Index::from(index);
+                quote! { #it_ident.#index_lit }
+            },
+        );
+        super::nested::generate_nested_for_anyvalue(
+            &self.n.type_path,
+            values_vec_ident,
+            &access,
+            &self.wrappers,
             self.n.is_generic,
         )
     }

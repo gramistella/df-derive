@@ -69,6 +69,14 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
     let (vec_values_decls, vec_values_per_item, vec_values_finishers) =
         super::common::prepare_vec_anyvalues_parts(ir, config, &it_ident);
 
+    let strategies = super::strategy::build_strategies(ir, config);
+    let single_it_ident = format_ident!("__df_derive_self_it");
+    let out_values_ident = format_ident!("__df_derive_out");
+    let single_pushes: Vec<TokenStream> = strategies
+        .iter()
+        .map(|s| s.gen_for_anyvalue(&single_it_ident, &out_values_ident))
+        .collect();
+
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #(#as_ref_str_asserts)*
@@ -87,6 +95,27 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
                 let mut out_values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
                 #(#vec_values_finishers)*
                 ::std::result::Result::Ok(out_values)
+            }
+
+            /// Sibling to `__df_derive_vec_to_inner_list_values` for a single
+            /// instance. Returns one `AnyValue` per inner schema column for
+            /// `self` — same shape as the per-row slice from
+            /// `to_dataframe()`, but constructs the values directly without
+            /// allocating a one-row `DataFrame` and looking up columns by
+            /// name. Used by nested-on-leaf paths to skip the
+            /// `to_dataframe()` round-trip when the inner type is concrete.
+            #[doc(hidden)]
+            pub fn __df_derive_to_inner_values(&self) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue>> {
+                // Per-field codegen below may emit bare `Inner::schema()`
+                // calls (e.g. on a nested `Option<Inner>`'s `None` arm).
+                // Bring the trait into scope so trait-method dispatch works
+                // even when the user's call site hasn't imported it.
+                #[allow(unused_imports)]
+                use #to_df_trait as _;
+                let #single_it_ident = self;
+                let mut #out_values_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
+                #(#single_pushes)*
+                ::std::result::Result::Ok(#out_values_ident)
             }
         }
     }

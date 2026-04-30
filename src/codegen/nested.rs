@@ -282,29 +282,45 @@ pub fn generate_nested_for_columnar_push(
     //
     // After unification, this on-leaf is only reached for the rare
     // `Option<Option<T>>`-style shape (since `[]`, `[Option]`, and `[Vec]`
-    // are now all bulk-emitted). Both generic and concrete cases route
-    // through the `ToDataFrame::to_dataframe(&self)` trait method here —
-    // for concrete structs that's a thin wrapper around
-    // `Columnar::columnar_from_refs(&[self])`, so the cost is minimal and we
-    // avoid maintaining a separate inherent helper just for this corner.
+    // are now all bulk-emitted). The concrete branch calls the inherent
+    // `__df_derive_to_inner_values(&self)` sibling to produce the inner
+    // schema's `AnyValue`s without allocating a one-row `DataFrame`; the
+    // generic branch keeps using `to_dataframe()` because the helper isn't
+    // reachable through a trait bound.
     let cols_ident = PopulatorIdents::nested_struct_cols(idx);
     let lbs_ident = PopulatorIdents::nested_list_builders(idx);
 
     let on_leaf = |acc: &TokenStream| {
         let cols_ident = cols_ident.clone();
-        quote! {
-            let __df_derive_tmp_df = (#acc).to_dataframe()?;
-            let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
-                .get_column_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
-                let __df_derive_v = __df_derive_tmp_df
-                    .column(__df_derive_name.as_str())?
-                    .get(0)?
-                    .into_static();
-                #cols_ident[j].push(__df_derive_v);
+        if is_generic {
+            // Generic-parameter path: the inherent helper isn't reachable
+            // through a trait bound, so fall back to the trait-only
+            // `to_dataframe()` round-trip.
+            quote! {
+                let __df_derive_tmp_df = (#acc).to_dataframe()?;
+                let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
+                    .get_column_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
+                    let __df_derive_v = __df_derive_tmp_df
+                        .column(__df_derive_name.as_str())?
+                        .get(0)?
+                        .into_static();
+                    #cols_ident[j].push(__df_derive_v);
+                }
+            }
+        } else {
+            // Concrete struct: bypass the per-element `DataFrame`
+            // round-trip via the inherent sibling of
+            // `__df_derive_vec_to_inner_list_values`. No name lookup, no
+            // `into_static` on every column at the call site.
+            quote! {
+                let __df_derive_vs = (#acc).__df_derive_to_inner_values()?;
+                for (j, __df_derive_v) in __df_derive_vs.into_iter().enumerate() {
+                    #cols_ident[j].push(__df_derive_v);
+                }
             }
         }
     };
@@ -371,11 +387,23 @@ pub fn generate_nested_for_anyvalue(
     let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| {
-        quote! {
-            let tmp_df = (#acc).to_dataframe()?;
-            for col_name in tmp_df.get_column_names() {
-                let v = tmp_df.column(col_name)?.get(0)?;
-                #values_vec_ident.push(v.into_static());
+        if is_generic {
+            // Generic-parameter path: the inherent helper isn't reachable
+            // through a trait bound, so fall back to the trait-only
+            // `to_dataframe()` round-trip.
+            quote! {
+                let tmp_df = (#acc).to_dataframe()?;
+                for col_name in tmp_df.get_column_names() {
+                    let v = tmp_df.column(col_name)?.get(0)?;
+                    #values_vec_ident.push(v.into_static());
+                }
+            }
+        } else {
+            // Concrete struct: pull the per-column AnyValues directly from
+            // the inherent helper, bypassing the one-row DataFrame round-trip.
+            quote! {
+                let __df_derive_vs = (#acc).__df_derive_to_inner_values()?;
+                #values_vec_ident.extend(__df_derive_vs);
             }
         }
     };

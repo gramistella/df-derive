@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use polars::prelude::{DataFrame, DataType, PolarsResult};
+use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 
 // == SETUP 1: Use the shared `common` module for default traits ==
 #[path = "../common.rs"]
@@ -15,6 +15,11 @@ mod my_traits {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
         fn empty_dataframe() -> PolarsResult<DataFrame>;
         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+        fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+            let df = self.to_dataframe()?;
+            let row = df.get(0).unwrap_or_default();
+            Ok(row.into_iter().map(AnyValue::into_static).collect())
+        }
     }
 
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.

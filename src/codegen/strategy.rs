@@ -86,11 +86,11 @@ impl Strategy {
 
     /// Per-field codegen that pushes one `AnyValue` per inner schema column
     /// onto `values_vec_ident` for a single instance bound to `it_ident`.
-    /// Used by the inherent `__df_derive_to_inner_values(&self)` helper to
-    /// bypass the `to_dataframe()` round-trip for nested concrete fields:
-    /// the outer struct's helper invokes this per field, and the nested
-    /// `on_leaf` recursively calls the inner type's inherent helper instead
-    /// of constructing a one-row `DataFrame`.
+    /// Used by the `to_inner_values(&self)` trait override to bypass the
+    /// `to_dataframe()` round-trip: the outer struct's override invokes this
+    /// per field, and the nested `on_leaf` recursively calls the inner
+    /// type's `to_inner_values()` instead of constructing a one-row
+    /// `DataFrame`.
     pub fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
         match self {
             Self::Primitive(s) => s.gen_for_anyvalue(it_ident, values_vec_ident),

@@ -208,55 +208,8 @@ fn gen_generic_vec_to_list_anyvalues(
     tail: &[Wrapper],
 ) -> TokenStream {
     gen_recursive_per_element_to_list_anyvalues(ty, acc, tail, |elem, vals| {
-        generate_generic_for_anyvalue(ty, vals, &quote! { #elem }, tail)
+        generate_nested_for_anyvalue(ty, vals, &quote! { #elem }, tail, true)
     })
-}
-
-/// Trait-only on-leaf body for converting a single nested value into `AnyValues`
-/// pushed onto `values_vec_ident` via `to_dataframe()`.
-fn generic_leaf_to_anyvalues(values_vec_ident: &Ident, acc: &TokenStream) -> TokenStream {
-    quote! {
-        let __df_derive_tmp_df = (#acc).to_dataframe()?;
-        let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
-            .get_column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        for __df_derive_name in __df_derive_names.iter() {
-            let __df_derive_v = __df_derive_tmp_df.column(__df_derive_name.as_str())?.get(0)?;
-            #values_vec_ident.push(__df_derive_v.into_static());
-        }
-    }
-}
-
-/// Trait-only equivalent of `generate_nested_for_anyvalue` for generic params.
-fn generate_generic_for_anyvalue(
-    type_path: &TokenStream,
-    values_vec_ident: &Ident,
-    access: &TokenStream,
-    wrappers: &[Wrapper],
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let ty = type_path.clone();
-
-    let on_leaf = |acc: &TokenStream| generic_leaf_to_anyvalues(values_vec_ident, acc);
-
-    let on_option_none = |_tail: &[Wrapper]| {
-        quote! {
-            let schema = #ty::schema()?;
-            for _ in 0..schema.len() { #values_vec_ident.push(#pp::AnyValue::Null); }
-        }
-    };
-
-    let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let list_vals_ts = gen_generic_vec_to_list_anyvalues(&ty, acc, tail);
-        quote! {{
-            let __df_derive_vals: ::std::vec::Vec<#pp::AnyValue> = { #list_vals_ts };
-            for v in __df_derive_vals.into_iter() { #values_vec_ident.push(v); }
-        }}
-    };
-
-    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
 }
 
 // --- Context-specific generators ---
@@ -282,45 +235,20 @@ pub fn generate_nested_for_columnar_push(
     //
     // After unification, this on-leaf is only reached for the rare
     // `Option<Option<T>>`-style shape (since `[]`, `[Option]`, and `[Vec]`
-    // are now all bulk-emitted). The concrete branch calls the inherent
-    // `__df_derive_to_inner_values(&self)` sibling to produce the inner
-    // schema's `AnyValue`s without allocating a one-row `DataFrame`; the
-    // generic branch keeps using `to_dataframe()` because the helper isn't
-    // reachable through a trait bound.
+    // are now all bulk-emitted). Both concrete and generic branches call
+    // `to_inner_values(&self)` on the `ToDataFrame` trait — for the derive's
+    // own impls, that's the optimized override that pushes column values
+    // directly; for foreign impls, it's the trait's default that round-trips
+    // through `to_dataframe()`.
     let cols_ident = PopulatorIdents::nested_struct_cols(idx);
     let lbs_ident = PopulatorIdents::nested_list_builders(idx);
 
     let on_leaf = |acc: &TokenStream| {
         let cols_ident = cols_ident.clone();
-        if is_generic {
-            // Generic-parameter path: the inherent helper isn't reachable
-            // through a trait bound, so fall back to the trait-only
-            // `to_dataframe()` round-trip.
-            quote! {
-                let __df_derive_tmp_df = (#acc).to_dataframe()?;
-                let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
-                    .get_column_names()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
-                    let __df_derive_v = __df_derive_tmp_df
-                        .column(__df_derive_name.as_str())?
-                        .get(0)?
-                        .into_static();
-                    #cols_ident[j].push(__df_derive_v);
-                }
-            }
-        } else {
-            // Concrete struct: bypass the per-element `DataFrame`
-            // round-trip via the inherent sibling of
-            // `__df_derive_vec_to_inner_list_values`. No name lookup, no
-            // `into_static` on every column at the call site.
-            quote! {
-                let __df_derive_vs = (#acc).__df_derive_to_inner_values()?;
-                for (j, __df_derive_v) in __df_derive_vs.into_iter().enumerate() {
-                    #cols_ident[j].push(__df_derive_v);
-                }
+        quote! {
+            let __df_derive_vs = (#acc).to_inner_values()?;
+            for (j, __df_derive_v) in __df_derive_vs.into_iter().enumerate() {
+                #cols_ident[j].push(__df_derive_v);
             }
         }
     };
@@ -387,24 +315,13 @@ pub fn generate_nested_for_anyvalue(
     let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| {
-        if is_generic {
-            // Generic-parameter path: the inherent helper isn't reachable
-            // through a trait bound, so fall back to the trait-only
-            // `to_dataframe()` round-trip.
-            quote! {
-                let tmp_df = (#acc).to_dataframe()?;
-                for col_name in tmp_df.get_column_names() {
-                    let v = tmp_df.column(col_name)?.get(0)?;
-                    #values_vec_ident.push(v.into_static());
-                }
-            }
-        } else {
-            // Concrete struct: pull the per-column AnyValues directly from
-            // the inherent helper, bypassing the one-row DataFrame round-trip.
-            quote! {
-                let __df_derive_vs = (#acc).__df_derive_to_inner_values()?;
-                #values_vec_ident.extend(__df_derive_vs);
-            }
+        // Both concrete and generic branches call `to_inner_values(&self)` on
+        // the `ToDataFrame` trait. The derive's optimized override avoids the
+        // one-row `DataFrame` round-trip; foreign impls still get the trait's
+        // default that goes through `to_dataframe()`.
+        quote! {
+            let __df_derive_vs = (#acc).to_inner_values()?;
+            #values_vec_ident.extend(__df_derive_vs);
         }
     };
 

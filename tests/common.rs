@@ -11,6 +11,18 @@ pub mod dataframe {
         /// # Errors
         /// Returns an error if schema generation fails.
         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+        /// Returns one `AnyValue` per inner schema column for `self` —
+        /// the per-row slice of `to_dataframe()`. The default impl round-trips
+        /// through `to_dataframe()`; the derive overrides it to skip the
+        /// one-row `DataFrame` allocation.
+        ///
+        /// # Errors
+        /// Returns an error if value extraction fails.
+        fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+            let df = self.to_dataframe()?;
+            let row = df.get(0).unwrap_or_default();
+            Ok(row.into_iter().map(AnyValue::into_static).collect())
+        }
     }
 
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.

@@ -39,12 +39,17 @@
 //! use df_derive::ToDataFrame;
 //!
 //! mod dataframe {
-//!     use polars::prelude::{DataFrame, DataType, PolarsResult};
+//!     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 //!
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+//!         fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+//!             let df = self.to_dataframe()?;
+//!             let row = df.get(0).unwrap_or_default();
+//!             Ok(row.into_iter().map(AnyValue::into_static).collect())
+//!         }
 //!     }
 //!
 //!     pub trait Columnar: Sized {
@@ -89,11 +94,16 @@
 //!
 //! // Minimal runtime traits used by the derive macro
 //! mod dataframe {
-//!     use polars::prelude::{DataFrame, DataType, PolarsResult};
+//!     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+//!         fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+//!             let df = self.to_dataframe()?;
+//!             let row = df.get(0).unwrap_or_default();
+//!             Ok(row.into_iter().map(AnyValue::into_static).collect())
+//!         }
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
@@ -162,6 +172,9 @@
 //!   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
 //!   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
 //!   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
+//!   - `fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>>` — overrides the
+//!     trait's `to_dataframe()`-based default to skip the one-row `DataFrame` allocation; used by
+//!     parent nested-leaf paths to avoid a per-element round-trip.
 //! - `Columnar` for `T`:
 //!   - `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>` — borrowed entry point
 //!     used by parent bulk emitters to avoid per-row clones; `columnar_to_dataframe` is provided
@@ -221,11 +234,16 @@
 //!
 //! // Define a local runtime with the expected traits
 //! mod my_runtime { pub mod dataframe {
-//!     use polars::prelude::{DataFrame, DataType, PolarsResult};
+//!     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+//!         fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+//!             let df = self.to_dataframe()?;
+//!             let row = df.get(0).unwrap_or_default();
+//!             Ok(row.into_iter().map(AnyValue::into_static).collect())
+//!         }
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
@@ -250,11 +268,16 @@
 //!
 //! // Define a local runtime with the expected traits
 //! mod my_runtime { pub mod dataframe {
-//!     use polars::prelude::{DataFrame, DataType, PolarsResult};
+//!     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+//!         fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
+//!             let df = self.to_dataframe()?;
+//!             let row = df.get(0).unwrap_or_default();
+//!             Ok(row.into_iter().map(AnyValue::into_static).collect())
+//!         }
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
@@ -293,6 +316,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
 ///   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
 ///   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
+///   - `fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>>` (override of the
+///     trait default, which round-trips through `to_dataframe()`)
 /// - An implementation of `Columnar` for `T` providing
 ///   `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`
 ///   (`columnar_to_dataframe` uses the trait default and delegates to this method)

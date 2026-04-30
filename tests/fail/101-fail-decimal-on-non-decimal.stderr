@@ -1,0 +1,6 @@
+error: field `not_a_decimal` has `decimal(...)` but its base type is not `rust_decimal::Decimal`; remove the attribute or change the field type
+ --> tests/fail/101-fail-decimal-on-non-decimal.rs:7:5
+  |
+7 | /     #[df_derive(decimal(precision = 38, scale = 18))]
+8 | |     not_a_decimal: f64,
+  | |______________________^

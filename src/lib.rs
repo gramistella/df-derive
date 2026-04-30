@@ -129,8 +129,10 @@
 //!
 //! - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`),
 //!   `f32`, `f64`
-//! - **Time**: `chrono::DateTime<Utc>` → materialized as `Datetime(Milliseconds, None)`
-//! - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)`
+//! - **Time**: `chrono::DateTime<Utc>` → materialized as `Datetime(Milliseconds, None)` by default;
+//!   override per-field with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
+//! - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)` by default; override per-field with
+//!   `#[df_derive(decimal(precision = N, scale = N))]`
 //! - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
 //! - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`,
 //!   yielding prefixed list columns)
@@ -283,8 +285,10 @@ use syn::{DeriveInput, parse_macro_input};
 /// - Wrappers `Option<T>` and `Vec<T>` in any nesting order, with `Vec<Struct>` producing multiple
 ///   list columns with a `vec_field.subfield` prefix
 /// - Primitive types: `String`, `bool`, integer types, `f32`, `f64`
-/// - `chrono::DateTime<Utc>` (materialized as `Datetime(Milliseconds, None)`)
-/// - `rust_decimal::Decimal` (materialized as `Decimal(38, 10)`)
+/// - `chrono::DateTime<Utc>` (default: `Datetime(Milliseconds, None)`; override with
+///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`)
+/// - `rust_decimal::Decimal` (default: `Decimal(38, 10)`; override with
+///   `#[df_derive(decimal(precision = N, scale = N))]`)
 ///
 /// Attributes:
 ///
@@ -297,6 +301,18 @@ use syn::{DeriveInput, parse_macro_input};
 /// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
 ///   conversion. Same column type as `as_string` but avoids the per-row allocation. The two
 ///   attributes are mutually exclusive on a given field.
+/// - Field-level: `#[df_derive(decimal(precision = N, scale = N))]` to choose the
+///   `Decimal(precision, scale)` dtype produced for a `rust_decimal::Decimal` field. Polars
+///   requires `1 <= precision <= 38`; `scale` may not exceed `precision`.
+/// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
+///   `Datetime(unit, None)` dtype produced for a `chrono::DateTime<Utc>` field. The chrono call
+///   used to derive the i64 (`timestamp_millis` / `timestamp_micros` / `timestamp_nanos_opt`)
+///   matches the chosen unit, so values are not silently truncated. `time_unit = "ns"` is
+///   fallible on dates outside chrono's supported nanosecond range (~1677–2262); the conversion
+///   surfaces a `PolarsError` rather than silently corrupting data.
+/// - The `decimal(...)` and `time_unit = "..."` attributes can only be applied to their matching
+///   base types (`Decimal` and `DateTime<Utc>`, respectively) and cannot be combined with
+///   `as_str`/`as_string` on the same field.
 ///
 /// Notes:
 ///

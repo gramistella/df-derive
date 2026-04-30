@@ -1,6 +1,39 @@
-use crate::ir::{BaseType, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
+use crate::type_analysis::{
+    DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
+};
 use proc_macro2::TokenStream;
 use quote::quote;
+
+/// Pull the chosen `Datetime` time unit out of a `DateTimeToInt(_)` transform.
+/// Falls back to the crate default for unrelated transforms — relevant code
+/// paths only consult this when the base type is `DateTime<Utc>`, so the
+/// fallback is just defensive.
+const fn datetime_unit(transform: Option<&PrimitiveTransform>) -> DateTimeUnit {
+    match transform {
+        Some(PrimitiveTransform::DateTimeToInt(unit)) => *unit,
+        _ => DEFAULT_DATETIME_UNIT,
+    }
+}
+
+/// Tokens for `polars::prelude::TimeUnit::<variant>`.
+fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
+    match unit {
+        DateTimeUnit::Milliseconds => quote! { polars::prelude::TimeUnit::Milliseconds },
+        DateTimeUnit::Microseconds => quote! { polars::prelude::TimeUnit::Microseconds },
+        DateTimeUnit::Nanoseconds => quote! { polars::prelude::TimeUnit::Nanoseconds },
+    }
+}
+
+/// Pull the chosen `Decimal(precision, scale)` out of a `DecimalToString {..}`
+/// transform. Falls back to the crate defaults for unrelated transforms — same
+/// defensive rationale as `datetime_unit`.
+const fn decimal_precision_scale(transform: Option<&PrimitiveTransform>) -> (u8, u8) {
+    match transform {
+        Some(PrimitiveTransform::DecimalToString { precision, scale }) => (*precision, *scale),
+        _ => (DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE),
+    }
+}
 
 pub struct TypeMapping {
     pub rust_element_type: TokenStream,
@@ -69,16 +102,24 @@ fn base_and_transform_to_rust_and_dtype(
             quote! { bool },
             quote! { polars::prelude::DataType::Boolean },
         ),
-        BaseType::DateTimeUtc => (
+        BaseType::DateTimeUtc => {
             // we materialize as i64 then cast to Datetime dtype later
-            quote! { i64 },
-            quote! { polars::prelude::DataType::Datetime(polars::prelude::TimeUnit::Milliseconds, None) },
-        ),
-        BaseType::Decimal => (
+            let unit = time_unit_tokens(datetime_unit(transform));
+            (
+                quote! { i64 },
+                quote! { polars::prelude::DataType::Datetime(#unit, None) },
+            )
+        }
+        BaseType::Decimal => {
             // we materialize as String then cast to Decimal dtype later
-            quote! { ::std::string::String },
-            quote! { polars::prelude::DataType::Decimal(38, 10) },
-        ),
+            let (precision, scale) = decimal_precision_scale(transform);
+            let p = precision as usize;
+            let s = scale as usize;
+            (
+                quote! { ::std::string::String },
+                quote! { polars::prelude::DataType::Decimal(#p, #s) },
+            )
+        }
         BaseType::Struct(..) | BaseType::Generic(_) => {
             (quote! { () }, quote! { polars::prelude::DataType::Null })
         }
@@ -128,9 +169,23 @@ pub fn outer_list_inner_dtype(
 
 pub fn needs_cast(transform: Option<&PrimitiveTransform>) -> bool {
     transform.is_some_and(|t| match t {
-        PrimitiveTransform::DateTimeToMillis | PrimitiveTransform::DecimalToString => true,
+        PrimitiveTransform::DateTimeToInt(_) | PrimitiveTransform::DecimalToString { .. } => true,
         PrimitiveTransform::ToString | PrimitiveTransform::AsStr => false,
     })
+}
+
+/// True for transforms whose value-mapping expression returns via `?` (i.e.
+/// the expression has type `PolarsResult<_>` and short-circuits on error).
+/// Currently only `DateTime<Utc> → i64` at nanosecond precision is fallible:
+/// `chrono::DateTime::timestamp_nanos_opt` returns `None` for dates outside
+/// approximately [1677, 2262]. Callers that splice the mapped expression into
+/// a closure (e.g. `.map(|e| { #mapped }).collect()`) need to switch to a
+/// `try_collect`-style pattern when this returns true.
+pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> bool {
+    matches!(
+        transform,
+        Some(PrimitiveTransform::DateTimeToInt(DateTimeUnit::Nanoseconds))
+    )
 }
 
 pub fn map_primitive_expr(
@@ -139,9 +194,17 @@ pub fn map_primitive_expr(
 ) -> TokenStream {
     transform.map_or_else(
         || quote! { (#var).clone() },
-        |t| match *t {
-            PrimitiveTransform::DateTimeToMillis => quote! { (#var).timestamp_millis() },
-            PrimitiveTransform::ToString | PrimitiveTransform::DecimalToString => {
+        |t| match t {
+            PrimitiveTransform::DateTimeToInt(unit) => match unit {
+                DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
+                DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
+                DateTimeUnit::Nanoseconds => quote! {
+                    (#var).timestamp_nanos_opt().ok_or_else(|| polars::prelude::polars_err!(
+                        ComputeError: "df-derive: DateTime<Utc> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
+                    ))?
+                },
+            },
+            PrimitiveTransform::ToString | PrimitiveTransform::DecimalToString { .. } => {
                 quote! { (#var).to_string() }
             }
             PrimitiveTransform::AsStr => {

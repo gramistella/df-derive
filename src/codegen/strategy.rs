@@ -391,6 +391,9 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
         if self.wrappers.iter().any(|w| matches!(w, Wrapper::Vec)) {
+            // The list builder was constructed with the correct inner dtype
+            // (`outer_list_inner_dtype`), so the finished series already has
+            // the schema-declared dtype — no cast needed here.
             let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
             vec![quote! {{
                 let s = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
@@ -399,9 +402,27 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
                 columns.push(s.into());
             }}]
         } else {
+            // Non-Vec primitive: the buffer holds the raw element type chosen
+            // by `compute_mapping` (e.g. `Vec<i64>` for `DateTime<Utc>`,
+            // `Vec<String>` for `Decimal`). For transforms whose schema dtype
+            // differs from the buffer's natural Series dtype (`Datetime(...)`
+            // and `Decimal(p, s)`), `needs_cast` returns true and we cast the
+            // built Series to the schema dtype — matching what the row-wise
+            // path does in `generate_primitive_for_series`. Without this cast,
+            // the columnar/batch DataFrame's runtime dtype diverges from
+            // `T::schema()`.
+            let p = &self.p;
+            let mapping = crate::codegen::type_registry::compute_mapping(
+                &p.base_type,
+                p.transform.as_ref(),
+                &self.wrappers,
+            );
+            let dtype = mapping.full_dtype;
+            let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
             let vec_ident = format_ident!("__df_derive_buf_{}", idx);
             vec![quote! {{
-                let s = polars::prelude::Series::new(#name.into(), &#vec_ident);
+                let mut s = polars::prelude::Series::new(#name.into(), &#vec_ident);
+                if #do_cast { s = s.cast(&#dtype)?; }
                 columns.push(s.into());
             }}]
         }

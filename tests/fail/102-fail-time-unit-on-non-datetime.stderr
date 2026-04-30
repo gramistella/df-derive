@@ -1,0 +1,6 @@
+error: field `not_a_datetime` has `time_unit = "..."` but its base type is not `chrono::DateTime<Utc>`; remove the attribute or change the field type
+ --> tests/fail/102-fail-time-unit-on-non-datetime.rs:7:5
+  |
+7 | /     #[df_derive(time_unit = "ns")]
+8 | |     not_a_datetime: i64,
+  | |_______________________^

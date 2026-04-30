@@ -1,0 +1,5 @@
+error: invalid `time_unit` value `seconds`; expected one of "ms", "us", "ns"
+ --> tests/fail/103-fail-time-unit-invalid-value.rs:9:29
+  |
+9 |     #[df_derive(time_unit = "seconds")]
+  |                             ^^^^^^^^^

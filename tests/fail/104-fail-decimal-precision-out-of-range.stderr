@@ -1,0 +1,5 @@
+error: decimal precision must satisfy 1 <= precision <= 38 (got 39)
+ --> tests/fail/104-fail-decimal-precision-out-of-range.rs:9:25
+  |
+9 |     #[df_derive(decimal(precision = 39, scale = 10))]
+  |                         ^^^^^^^^^^^^^^

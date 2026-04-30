@@ -115,12 +115,33 @@ pub fn generate_inner_series_from_vec(
         let elem_ident = syn::Ident::new("__df_derive_e", proc_macro2::Span::call_site());
         let var_ts = quote! { #elem_ident };
         let mapped = generate_primitive_access_expr(&var_ts, transform);
-        quote! {{
-            let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access).iter().map(|#elem_ident| { #mapped }).collect();
-            let mut inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
-            if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
-            inner_series
-        }}
+        // Fallible conversions (currently only `DateTime<Utc>` →
+        // `timestamp_nanos_opt`) embed a `?` in the mapped expression. A bare
+        // `.map(|e| { #mapped }).collect::<Vec<_>>()` would treat the closure
+        // body as the iter item, but `?` short-circuits the *closure* (because
+        // its return type is inferred from the body) — so the closure ends up
+        // returning `Result<i64, _>`, the collect target needs to match, and a
+        // final `?` propagates to the outer fn. Pin the closure return type
+        // with an explicit annotation so type inference doesn't surprise us
+        // when callers add new fallible transforms.
+        if crate::codegen::type_registry::is_fallible_conversion(transform) {
+            quote! {{
+                let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access)
+                    .iter()
+                    .map(|#elem_ident| -> polars::prelude::PolarsResult<_> { Ok({ #mapped }) })
+                    .collect::<polars::prelude::PolarsResult<::std::vec::Vec<_>>>()?;
+                let mut inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+                if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
+                inner_series
+            }}
+        } else {
+            quote! {{
+                let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access).iter().map(|#elem_ident| { #mapped }).collect();
+                let mut inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+                if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
+                inner_series
+            }}
+        }
     } else {
         quote! {{
             let mut inner_series = polars::prelude::Series::new("".into(), &(#vec_access));

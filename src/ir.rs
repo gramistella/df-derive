@@ -34,15 +34,28 @@ pub struct FieldIR {
 /// Optional transformation applied to primitive values during codegen
 #[derive(Clone)]
 pub enum PrimitiveTransform {
-    /// Convert `chrono::DateTime<Utc>` to epoch milliseconds (i64)
-    DateTimeToMillis,
-    /// Convert `rust_decimal::Decimal` to `String`
-    DecimalToString,
+    /// Convert `chrono::DateTime<Utc>` to an epoch integer (i64) at the chosen
+    /// `Datetime` precision. The chosen unit determines both the chrono call
+    /// used to produce the i64 (`timestamp_millis` / `timestamp_micros` /
+    /// `timestamp_nanos_opt`) and the `DataType::Datetime(...)` cast target.
+    DateTimeToInt(DateTimeUnit),
+    /// Convert `rust_decimal::Decimal` to `String` and cast to a
+    /// `Decimal(precision, scale)` column. `precision` is bounded by the
+    /// Polars invariant `1 <= precision <= 38`.
+    DecimalToString { precision: u8, scale: u8 },
     /// Convert any value to `String` using `ToString`
     ToString,
     /// Borrow `&str` via `<T as AsRef<str>>::as_ref` for the duration of the
     /// columnar populator pass. Zero-allocation per row.
     AsStr,
+}
+
+/// Datetime time unit chosen via `#[df_derive(time_unit = "ms"|"us"|"ns")]`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DateTimeUnit {
+    Milliseconds,
+    Microseconds,
+    Nanoseconds,
 }
 
 /// The base Rust type (primitive or user-defined struct)

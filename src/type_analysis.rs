@@ -1,5 +1,15 @@
-use crate::ir::{BaseType, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
 use syn::{GenericArgument, Ident, PathArguments, Type};
+
+/// Default `Datetime` precision for `chrono::DateTime<Utc>` fields without an
+/// explicit `time_unit` override. Matches the historical default this crate
+/// shipped with.
+pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
+/// Default `Decimal(precision, scale)` for `rust_decimal::Decimal` fields
+/// without an explicit `decimal(...)` override.
+pub const DEFAULT_DECIMAL_PRECISION: u8 = 38;
+/// Default scale paired with `DEFAULT_DECIMAL_PRECISION`.
+pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 
 #[derive(Clone)]
 pub struct AnalyzedType {
@@ -56,8 +66,11 @@ pub fn analyze_type(
         Some(PrimitiveTransform::ToString)
     } else {
         match &base {
-            BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToMillis),
-            BaseType::Decimal => Some(PrimitiveTransform::DecimalToString),
+            BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToInt(DEFAULT_DATETIME_UNIT)),
+            BaseType::Decimal => Some(PrimitiveTransform::DecimalToString {
+                precision: DEFAULT_DECIMAL_PRECISION,
+                scale: DEFAULT_DECIMAL_SCALE,
+            }),
             _ => None,
         }
     };

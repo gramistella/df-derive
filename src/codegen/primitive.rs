@@ -179,7 +179,7 @@ pub fn generate_primitive_for_series(
         // bytes to Polars.
         match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => quote! {
-                vec![{
+                ::std::vec![{
                     let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[(#acc).as_str()],
@@ -188,7 +188,7 @@ pub fn generate_primitive_for_series(
                 }]
             },
             Some(BorrowKind::AsStr(ty_path)) => quote! {
-                vec![{
+                ::std::vec![{
                     let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
@@ -204,8 +204,8 @@ pub fn generate_primitive_for_series(
                     quote! {}
                 };
                 quote! {
-                    vec![{
-                        let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
+                    ::std::vec![{
+                        let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), ::core::slice::from_ref(&{ #mapped }));
                         #cast_ts
                         s.into()
                     }]
@@ -218,16 +218,16 @@ pub fn generate_primitive_for_series(
         let tail_has_vec = has_vec(tail);
         if tail_has_vec {
             quote! {
-                vec![{
+                ::std::vec![{
                     let list_any_value = #pp::AnyValue::Null;
                     <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
                 }]
             }
         } else {
             quote! {
-                vec![{
+                ::std::vec![{
                     let __df_derive_tmp_opt: ::std::option::Option<#elem_rust_ty> = ::std::option::Option::None;
-                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), std::slice::from_ref(&__df_derive_tmp_opt));
+                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), ::core::slice::from_ref(&__df_derive_tmp_opt));
                     if #do_cast { s = s.cast(&#dtype)?; }
                     s.into()
                 }]
@@ -239,7 +239,7 @@ pub fn generate_primitive_for_series(
         let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
         quote! {{
             let inner_series = { #inner_series_ts };
-            vec![{
+            ::std::vec![{
                 let list_any_value = #pp::AnyValue::List(inner_series);
                 <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
             }]
@@ -369,7 +369,7 @@ pub fn generate_primitive_for_anyvalue(
                     quote! {}
                 };
                 quote! {
-                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), std::slice::from_ref(&{ #mapped }));
+                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), ::core::slice::from_ref(&{ #mapped }));
                     #cast_ts
                     #values_vec_ident.push(s.get(0)?.into_static());
                 }

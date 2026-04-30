@@ -296,7 +296,7 @@ pub fn generate_nested_for_series(
                 let #vals_ident: ::std::vec::Vec<#pp::AnyValue> = { #list_vals_ts };
                 let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::with_capacity(#schema_ident.len());
                 for (j, (inner_name, _dtype)) in #schema_ident.iter().enumerate() {
-                    let prefixed_name = format!("{}.{}", #series_name, inner_name);
+                    let prefixed_name = ::std::format!("{}.{}", #series_name, inner_name);
                     let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(prefixed_name.as_str().into(), &[#vals_ident[j].clone()]);
                     nested_series.push(s.into());
                 }
@@ -565,7 +565,7 @@ pub fn nested_columnar_builders(
         let lbs_ident = PopulatorIdents::nested_list_builders(idx);
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
-                let full_name = format!("{}.{}", #name, col_name);
+                let full_name = ::std::format!("{}.{}", #name, col_name);
                 let s = #pp::IntoSeries::into_series(
                     #pp::ListBuilderTrait::finish(&mut *#lbs_ident[j]),
                 )
@@ -577,7 +577,7 @@ pub fn nested_columnar_builders(
         let cols_ident = PopulatorIdents::nested_struct_cols(idx);
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
-                let full_name = format!("{}.{}", #name, col_name);
+                let full_name = ::std::format!("{}.{}", #name, col_name);
                 let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(full_name.as_str().into(), &#cols_ident[j]);
                 columns.push(s.into());
             }
@@ -597,9 +597,9 @@ pub fn generate_schema_entries_for_struct(
         {
             let mut nested_fields: ::std::vec::Vec<(::std::string::String, #pp::DataType)> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
-                let prefixed_name = format!("{}.{}", #column_name, inner_name);
+                let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
-                    #pp::DataType::List(Box::new(inner_dtype))
+                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
                 } else {
                     inner_dtype
                 };
@@ -618,11 +618,11 @@ fn generate_empty_series_for_struct(
     let pp = super::polars_paths::prelude();
     quote! {
         {
-            let mut nested_series = Vec::new();
+            let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
-                let prefixed_name = format!("{}.{}", #column_name, inner_name);
+                let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
-                    #pp::DataType::List(Box::new(inner_dtype))
+                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
                 } else {
                     inner_dtype
                 };
@@ -642,11 +642,11 @@ fn generate_null_series_for_struct(
     let pp = super::polars_paths::prelude();
     quote! {
         {
-            let mut nested_series = Vec::new();
+            let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
-                let prefixed_name = format!("{}.{}", #column_name, inner_name);
+                let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
-                    #pp::DataType::List(Box::new(inner_dtype))
+                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
                 } else {
                     inner_dtype
                 };
@@ -660,13 +660,14 @@ fn generate_null_series_for_struct(
 }
 
 fn generate_scalar_struct_logic(column_name: &str, access_path: &TokenStream) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     quote! {
         {
             let nested_df = (#access_path).to_dataframe()?;
-            let mut nested_series = Vec::new();
+            let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
 
             for col_name in nested_df.get_column_names() {
-                let prefixed_name = format!("{}.{}", #column_name, col_name);
+                let prefixed_name = ::std::format!("{}.{}", #column_name, col_name);
                 let series = nested_df.column(col_name)?.clone().with_name(prefixed_name.as_str().into());
                 nested_series.push(series.into());
             }

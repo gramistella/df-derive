@@ -46,8 +46,8 @@ where
                     let none_branch = on_option_none(tail);
                     quote! {
                         match &(#access) {
-                            Some(#inner_ident) => { #some_branch }
-                            None => { #none_branch }
+                            ::std::option::Option::Some(#inner_ident) => { #some_branch }
+                            ::std::option::Option::None => { #none_branch }
                         }
                     }
                 }

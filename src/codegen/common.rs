@@ -119,7 +119,7 @@ pub fn generate_inner_series_from_vec(
             quote! {{
                 let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access)
                     .iter()
-                    .map(|#elem_ident| -> #pp::PolarsResult<_> { Ok({ #mapped }) })
+                    .map(|#elem_ident| -> #pp::PolarsResult<_> { ::std::result::Result::Ok({ #mapped }) })
                     .collect::<#pp::PolarsResult<::std::vec::Vec<_>>>()?;
                 let mut inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
                 if #do_cast { inner_series = inner_series.cast(&#dtype)?; }

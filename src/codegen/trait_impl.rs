@@ -18,18 +18,18 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                         &[0i32],
                     );
                     let mut df_with_row = #pp::DataFrame::new_infer_height(
-                        vec![dummy_series.into()],
+                        ::std::vec![dummy_series.into()],
                     )?;
                     df_with_row.drop_in_place("_dummy")?;
-                    Ok(df_with_row)
+                    ::std::result::Result::Ok(df_with_row)
                 }
 
                 fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {
-                    #pp::DataFrame::new_infer_height(vec![])
+                    #pp::DataFrame::new_infer_height(::std::vec![])
                 }
 
                 fn schema() -> #pp::PolarsResult<::std::vec::Vec<(::std::string::String, #pp::DataType)>> {
-                    Ok(::std::vec::Vec::new())
+                    ::std::result::Result::Ok(::std::vec::Vec::new())
                 }
             }
         };
@@ -72,7 +72,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 #(
                     fields.extend(#schema_entries);
                 )*
-                Ok(fields)
+                ::std::result::Result::Ok(fields)
             }
         }
     }

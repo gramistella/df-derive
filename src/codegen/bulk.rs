@@ -53,7 +53,7 @@ fn bulk_consume_inner_series(
 ) -> TokenStream {
     match ctx {
         BulkContext::Columnar { parent_name } => quote! {{
-            let __df_derive_prefixed = format!("{}.{}", #parent_name, #col_name_var);
+            let __df_derive_prefixed = ::std::format!("{}.{}", #parent_name, #col_name_var);
             let __df_derive_inner = #series_expr;
             let __df_derive_named = __df_derive_inner.with_name(__df_derive_prefixed.as_str().into());
             columns.push(__df_derive_named.into());

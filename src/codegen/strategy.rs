@@ -249,7 +249,7 @@ impl PrimitiveStrategy {
         );
         let dtype = mapping.full_dtype;
         let name = &self.field_name;
-        quote! { vec![(::std::string::String::from(#name), #dtype)] }
+        quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
     }
 
     fn gen_series_creation(&self) -> TokenStream {
@@ -283,7 +283,7 @@ impl PrimitiveStrategy {
         let dtype = mapping.full_dtype;
         let name = &self.field_name;
         let pp = super::polars_paths::prelude();
-        quote! { vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
+        quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
     }
 
     fn gen_anyvalue_conversion(&self) -> TokenStream {

@@ -90,7 +90,10 @@ fn base_and_transform_to_rust_and_dtype(
         BaseType::DateTimeUtc => {
             // we materialize as i64 then cast to Datetime dtype later
             let unit = time_unit_tokens(datetime_unit(transform));
-            (quote! { i64 }, quote! { #dt::Datetime(#unit, None) })
+            (
+                quote! { i64 },
+                quote! { #dt::Datetime(#unit, ::std::option::Option::None) },
+            )
         }
         BaseType::Decimal => {
             // we materialize as String then cast to Decimal dtype later
@@ -109,7 +112,7 @@ fn base_and_transform_to_rust_and_dtype(
 fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream {
     if has_vec(wrappers) {
         let pp = super::polars_paths::prelude();
-        quote! { #pp::DataType::List(Box::new(#element_dtype)) }
+        quote! { #pp::DataType::List(::std::boxed::Box::new(#element_dtype)) }
     } else {
         quote! { #element_dtype }
     }
@@ -142,7 +145,7 @@ pub fn outer_list_inner_dtype(
     if extra_layers > 0 {
         let pp = super::polars_paths::prelude();
         for _ in 0..extra_layers {
-            dt = quote! { #pp::DataType::List(Box::new(#dt)) };
+            dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
         }
     }
     dt

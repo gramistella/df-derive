@@ -18,10 +18,11 @@ const fn datetime_unit(transform: Option<&PrimitiveTransform>) -> DateTimeUnit {
 
 /// Tokens for `polars::prelude::TimeUnit::<variant>`.
 fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     match unit {
-        DateTimeUnit::Milliseconds => quote! { polars::prelude::TimeUnit::Milliseconds },
-        DateTimeUnit::Microseconds => quote! { polars::prelude::TimeUnit::Microseconds },
-        DateTimeUnit::Nanoseconds => quote! { polars::prelude::TimeUnit::Nanoseconds },
+        DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
+        DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
+        DateTimeUnit::Nanoseconds => quote! { #pp::TimeUnit::Nanoseconds },
     }
 }
 
@@ -59,6 +60,9 @@ fn base_and_transform_to_rust_and_dtype(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
 ) -> (TokenStream, TokenStream) {
+    let pp = super::polars_paths::prelude();
+    let dt = quote! { #pp::DataType };
+
     // Attribute stringification (`as_string`) and borrowing (`as_str`) both
     // materialize as a String dtype. The borrowing path emits `Vec<&str>`
     // buffers directly and bypasses this fallback element type, but keeping
@@ -67,48 +71,26 @@ fn base_and_transform_to_rust_and_dtype(
     if transform
         .is_some_and(|t| matches!(*t, PrimitiveTransform::ToString | PrimitiveTransform::AsStr))
     {
-        return (
-            quote! { ::std::string::String },
-            quote! { polars::prelude::DataType::String },
-        );
+        return (quote! { ::std::string::String }, quote! { #dt::String });
     }
 
     match base {
-        BaseType::String => (
-            quote! { ::std::string::String },
-            quote! { polars::prelude::DataType::String },
-        ),
-        BaseType::F64 => (
-            quote! { f64 },
-            quote! { polars::prelude::DataType::Float64 },
-        ),
-        BaseType::F32 => (
-            quote! { f32 },
-            quote! { polars::prelude::DataType::Float32 },
-        ),
-        BaseType::I8 => (quote! { i8 }, quote! { polars::prelude::DataType::Int8 }),
-        BaseType::U8 => (quote! { u8 }, quote! { polars::prelude::DataType::UInt8 }),
-        BaseType::I16 => (quote! { i16 }, quote! { polars::prelude::DataType::Int16 }),
-        BaseType::U16 => (quote! { u16 }, quote! { polars::prelude::DataType::UInt16 }),
-        BaseType::I64 | BaseType::ISize => {
-            (quote! { i64 }, quote! { polars::prelude::DataType::Int64 })
-        }
-        BaseType::U64 | BaseType::USize => {
-            (quote! { u64 }, quote! { polars::prelude::DataType::UInt64 })
-        }
-        BaseType::U32 => (quote! { u32 }, quote! { polars::prelude::DataType::UInt32 }),
-        BaseType::I32 => (quote! { i32 }, quote! { polars::prelude::DataType::Int32 }),
-        BaseType::Bool => (
-            quote! { bool },
-            quote! { polars::prelude::DataType::Boolean },
-        ),
+        BaseType::String => (quote! { ::std::string::String }, quote! { #dt::String }),
+        BaseType::F64 => (quote! { f64 }, quote! { #dt::Float64 }),
+        BaseType::F32 => (quote! { f32 }, quote! { #dt::Float32 }),
+        BaseType::I8 => (quote! { i8 }, quote! { #dt::Int8 }),
+        BaseType::U8 => (quote! { u8 }, quote! { #dt::UInt8 }),
+        BaseType::I16 => (quote! { i16 }, quote! { #dt::Int16 }),
+        BaseType::U16 => (quote! { u16 }, quote! { #dt::UInt16 }),
+        BaseType::I64 | BaseType::ISize => (quote! { i64 }, quote! { #dt::Int64 }),
+        BaseType::U64 | BaseType::USize => (quote! { u64 }, quote! { #dt::UInt64 }),
+        BaseType::U32 => (quote! { u32 }, quote! { #dt::UInt32 }),
+        BaseType::I32 => (quote! { i32 }, quote! { #dt::Int32 }),
+        BaseType::Bool => (quote! { bool }, quote! { #dt::Boolean }),
         BaseType::DateTimeUtc => {
             // we materialize as i64 then cast to Datetime dtype later
             let unit = time_unit_tokens(datetime_unit(transform));
-            (
-                quote! { i64 },
-                quote! { polars::prelude::DataType::Datetime(#unit, None) },
-            )
+            (quote! { i64 }, quote! { #dt::Datetime(#unit, None) })
         }
         BaseType::Decimal => {
             // we materialize as String then cast to Decimal dtype later
@@ -117,18 +99,17 @@ fn base_and_transform_to_rust_and_dtype(
             let s = scale as usize;
             (
                 quote! { ::std::string::String },
-                quote! { polars::prelude::DataType::Decimal(#p, #s) },
+                quote! { #dt::Decimal(#p, #s) },
             )
         }
-        BaseType::Struct(..) | BaseType::Generic(_) => {
-            (quote! { () }, quote! { polars::prelude::DataType::Null })
-        }
+        BaseType::Struct(..) | BaseType::Generic(_) => (quote! { () }, quote! { #dt::Null }),
     }
 }
 
 fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream {
     if has_vec(wrappers) {
-        quote! { polars::prelude::DataType::List(Box::new(#element_dtype)) }
+        let pp = super::polars_paths::prelude();
+        quote! { #pp::DataType::List(Box::new(#element_dtype)) }
     } else {
         quote! { #element_dtype }
     }
@@ -158,8 +139,11 @@ pub fn outer_list_inner_dtype(
     let (_, element_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
     let extra_layers = vec_count(wrappers).saturating_sub(1);
     let mut dt = element_dtype;
-    for _ in 0..extra_layers {
-        dt = quote! { polars::prelude::DataType::List(Box::new(#dt)) };
+    if extra_layers > 0 {
+        let pp = super::polars_paths::prelude();
+        for _ in 0..extra_layers {
+            dt = quote! { #pp::DataType::List(Box::new(#dt)) };
+        }
     }
     dt
 }
@@ -195,11 +179,14 @@ pub fn map_primitive_expr(
             PrimitiveTransform::DateTimeToInt(unit) => match unit {
                 DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
                 DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
-                DateTimeUnit::Nanoseconds => quote! {
-                    (#var).timestamp_nanos_opt().ok_or_else(|| polars::prelude::polars_err!(
-                        ComputeError: "df-derive: DateTime<Utc> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
-                    ))?
-                },
+                DateTimeUnit::Nanoseconds => {
+                    let pp = super::polars_paths::prelude();
+                    quote! {
+                        (#var).timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
+                            ComputeError: "df-derive: DateTime<Utc> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
+                        ))?
+                    }
+                }
             },
             PrimitiveTransform::ToString | PrimitiveTransform::DecimalToString { .. } => {
                 quote! { (#var).to_string() }

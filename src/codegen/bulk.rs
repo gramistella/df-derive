@@ -58,10 +58,13 @@ fn bulk_consume_inner_series(
             let __df_derive_named = __df_derive_inner.with_name(__df_derive_prefixed.as_str().into());
             columns.push(__df_derive_named.into());
         }},
-        BulkContext::VecAnyvalues => quote! {{
-            let __df_derive_inner = #series_expr;
-            out_values.push(polars::prelude::AnyValue::List(__df_derive_inner));
-        }},
+        BulkContext::VecAnyvalues => {
+            let pp = super::polars_paths::prelude();
+            quote! {{
+                let __df_derive_inner = #series_expr;
+                out_values.push(#pp::AnyValue::List(__df_derive_inner));
+            }}
+        }
     }
 }
 
@@ -115,6 +118,7 @@ pub fn gen_bulk_generic_option(
     access: &TokenStream,
     ctx: BulkContext<'_>,
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     let nn_ident = format_ident!("__df_derive_gen_nn_{}", idx);
     let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
     let take_ident = format_ident!("__df_derive_gen_take_{}", idx);
@@ -136,20 +140,20 @@ pub fn gen_bulk_generic_option(
         ctx,
         &col_name_var,
         &quote! {
-            polars::prelude::Series::new_empty("".into(), &#dtype_var)
-                .extend_constant(polars::prelude::AnyValue::Null, items.len())?
+            #pp::Series::new_empty("".into(), &#dtype_var)
+                .extend_constant(#pp::AnyValue::Null, items.len())?
         },
     );
 
     quote! {{
         let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
-        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<polars::prelude::IdxSize>> =
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
             ::std::vec::Vec::with_capacity(items.len());
         for __df_derive_it in items {
             match &(#access) {
                 ::std::option::Option::Some(__df_derive_v) => {
                     #pos_ident.push(::std::option::Option::Some(
-                        #nn_ident.len() as polars::prelude::IdxSize,
+                        #nn_ident.len() as #pp::IdxSize,
                     ));
                     #nn_ident.push(__df_derive_v.clone());
                 }
@@ -166,8 +170,8 @@ pub fn gen_bulk_generic_option(
             }
         } else {
             let #df_ident = <#ty as #columnar_trait>::columnar_to_dataframe(&#nn_ident)?;
-            let #take_ident: polars::prelude::IdxCa =
-                <polars::prelude::IdxCa as polars::prelude::NewChunkedArray<_, _>>::from_iter_options(
+            let #take_ident: #pp::IdxCa =
+                <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
                     "".into(),
                     #pos_ident.iter().copied(),
                 );
@@ -199,6 +203,8 @@ fn bulk_vec_consume_inner_columns(
     offsets_ident: &Ident,
     schema_iter_ts: &TokenStream,
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let cab = super::polars_paths::chunked_array_builder();
     let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
     let consume_filled = bulk_consume_inner_series(
@@ -208,7 +214,7 @@ fn bulk_vec_consume_inner_columns(
             let __df_derive_inner_col = #df_ident
                 .column(#col_name_var)?
                 .as_materialized_series();
-            let mut __df_derive_lb = polars::chunked_array::builder::get_list_builder(
+            let mut __df_derive_lb = #cab::get_list_builder(
                 #dtype_var,
                 __df_derive_inner_col.len(),
                 items.len(),
@@ -219,20 +225,20 @@ fn bulk_vec_consume_inner_columns(
                 let __df_derive_end = #offsets_ident[__df_derive_i + 1];
                 let __df_derive_slice = __df_derive_inner_col
                     .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
-                polars::prelude::ListBuilderTrait::append_series(
+                #pp::ListBuilderTrait::append_series(
                     &mut *__df_derive_lb,
                     &__df_derive_slice,
                 )?;
             }
-            polars::prelude::IntoSeries::into_series(
-                polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb),
+            #pp::IntoSeries::into_series(
+                #pp::ListBuilderTrait::finish(&mut *__df_derive_lb),
             )
         }},
     );
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
             let #col_name_var: &str = #col_name_var.as_str();
-            let #dtype_var: &polars::prelude::DataType = &#dtype_var;
+            let #dtype_var: &#pp::DataType = &#dtype_var;
             #consume_filled
         }
     }
@@ -246,34 +252,36 @@ fn bulk_vec_consume_empty_columns(
     ctx: BulkContext<'_>,
     schema_iter_ts: &TokenStream,
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let cab = super::polars_paths::chunked_array_builder();
     let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
     let consume_empty = bulk_consume_inner_series(
         ctx,
         &col_name_var,
         &quote! {{
-            let __df_derive_empty = polars::prelude::Series::new_empty("".into(), #dtype_var);
-            let mut __df_derive_lb = polars::chunked_array::builder::get_list_builder(
+            let __df_derive_empty = #pp::Series::new_empty("".into(), #dtype_var);
+            let mut __df_derive_lb = #cab::get_list_builder(
                 #dtype_var,
                 0,
                 items.len(),
                 "".into(),
             );
             for _ in 0..items.len() {
-                polars::prelude::ListBuilderTrait::append_series(
+                #pp::ListBuilderTrait::append_series(
                     &mut *__df_derive_lb,
                     &__df_derive_empty,
                 )?;
             }
-            polars::prelude::IntoSeries::into_series(
-                polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb),
+            #pp::IntoSeries::into_series(
+                #pp::ListBuilderTrait::finish(&mut *__df_derive_lb),
             )
         }},
     );
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
             let #col_name_var: &str = #col_name_var.as_str();
-            let #dtype_var: &polars::prelude::DataType = &#dtype_var;
+            let #dtype_var: &#pp::DataType = &#dtype_var;
             #consume_empty
         }
     }

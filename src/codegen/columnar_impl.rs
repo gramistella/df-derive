@@ -16,12 +16,13 @@ use quote::quote;
 pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let columnar_trait = &config.columnar_trait_path;
+    let pp = super::polars_paths::prelude();
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
 
     quote! {
         impl #impl_generics #columnar_trait for #struct_name #ty_generics #where_clause {
-            fn columnar_to_dataframe(items: &[Self]) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+            fn columnar_to_dataframe(items: &[Self]) -> #pp::PolarsResult<#pp::DataFrame> {
                 let __df_derive_refs: ::std::vec::Vec<&Self> = items.iter().collect();
                 Self::__df_derive_columnar_from_refs(&__df_derive_refs)
             }

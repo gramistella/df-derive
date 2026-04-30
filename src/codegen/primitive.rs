@@ -67,6 +67,7 @@ fn gen_primitive_vec_inner_series(
     transform: Option<&PrimitiveTransform>,
     tail: &[Wrapper],
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
     let per_item_vals_ident =
         syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
@@ -90,7 +91,7 @@ fn gen_primitive_vec_inner_series(
         && transform.is_none()
     {
         return quote! {{
-            <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+            <#pp::Series as #pp::NamedFrom<_, _>>::new(
                 "".into(),
                 &(#acc),
             )
@@ -117,8 +118,7 @@ fn gen_primitive_vec_inner_series(
     let tail_vec_count = vec_count(tail);
     let mut empty_dtype = elem_dtype.clone();
     for _ in 0..tail_vec_count {
-        empty_dtype =
-            quote! { polars::prelude::DataType::List(::std::boxed::Box::new(#empty_dtype)) };
+        empty_dtype = quote! { #pp::DataType::List(::std::boxed::Box::new(#empty_dtype)) };
     }
     // Bind the cloned element to a named local so the inner recursion sees
     // a place expression rather than the `(*elem).clone()` temporary. The
@@ -137,20 +137,20 @@ fn gen_primitive_vec_inner_series(
         tail,
     );
     quote! {{
-        let mut #list_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
+        let mut #list_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
         for #elem_ident in (#acc).iter() {
             let #elem_owned_ident = (*#elem_ident).clone();
-            let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+            let mut #per_item_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
             { #recur_elem_tokens_ts }
-            let __df_derive_elem_av = #per_item_vals_ident.pop().ok_or_else(|| polars::prelude::polars_err!(
+            let __df_derive_elem_av = #per_item_vals_ident.pop().ok_or_else(|| #pp::polars_err!(
                 ComputeError: "df-derive: expected single AnyValue for primitive vec element (codegen invariant violation)"
             ))?;
             #list_vals_ident.push(__df_derive_elem_av);
         }
         let __df_derive_inner = if #list_vals_ident.is_empty() {
-            polars::prelude::Series::new_empty("".into(), &#empty_dtype)
+            #pp::Series::new_empty("".into(), &#empty_dtype)
         } else {
-            let mut __df_derive_s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#list_vals_ident);
+            let mut __df_derive_s = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &#list_vals_ident);
             if #do_cast { __df_derive_s = __df_derive_s.cast(&#elem_dtype)?; }
             __df_derive_s
         };
@@ -167,6 +167,7 @@ pub fn generate_primitive_for_series(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let dtype = mapping.full_dtype.clone();
     let elem_rust_ty = mapping.rust_element_type;
@@ -179,7 +180,7 @@ pub fn generate_primitive_for_series(
         match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => quote! {
                 vec![{
-                    let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                    let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[(#acc).as_str()],
                     );
@@ -188,7 +189,7 @@ pub fn generate_primitive_for_series(
             },
             Some(BorrowKind::AsStr(ty_path)) => quote! {
                 vec![{
-                    let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                    let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                         #series_name.into(),
                         &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
                     );
@@ -204,7 +205,7 @@ pub fn generate_primitive_for_series(
                 };
                 quote! {
                     vec![{
-                        let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
+                        let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
                         #cast_ts
                         s.into()
                     }]
@@ -218,15 +219,15 @@ pub fn generate_primitive_for_series(
         if tail_has_vec {
             quote! {
                 vec![{
-                    let list_any_value = polars::prelude::AnyValue::Null;
-                    <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
+                    let list_any_value = #pp::AnyValue::Null;
+                    <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
                 }]
             }
         } else {
             quote! {
                 vec![{
                     let __df_derive_tmp_opt: ::std::option::Option<#elem_rust_ty> = ::std::option::Option::None;
-                    let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), std::slice::from_ref(&__df_derive_tmp_opt));
+                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), std::slice::from_ref(&__df_derive_tmp_opt));
                     if #do_cast { s = s.cast(&#dtype)?; }
                     s.into()
                 }]
@@ -239,8 +240,8 @@ pub fn generate_primitive_for_series(
         quote! {{
             let inner_series = { #inner_series_ts };
             vec![{
-                let list_any_value = polars::prelude::AnyValue::List(inner_series);
-                <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
+                let list_any_value = #pp::AnyValue::List(inner_series);
+                <#pp::Series as #pp::NamedFrom<_, _>>::new(#series_name.into(), &[list_any_value]).into()
             }]
         }}
     };
@@ -306,7 +307,8 @@ pub fn generate_primitive_for_columnar_push(
         let tail_has_vec = has_vec(tail);
         if tail_has_vec {
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-            quote! { polars::prelude::ListBuilderTrait::append_null(&mut *#lb_ident); }
+            let pp = super::polars_paths::prelude();
+            quote! { #pp::ListBuilderTrait::append_null(&mut *#lb_ident); }
         } else {
             let vec_ident = PopulatorIdents::primitive_buf(idx);
             quote! { #vec_ident.push(::std::option::Option::None); }
@@ -316,9 +318,10 @@ pub fn generate_primitive_for_columnar_push(
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
         let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+        let pp = super::polars_paths::prelude();
         quote! {{
             let inner_series = { #inner_series_ts };
-            polars::prelude::ListBuilderTrait::append_series(&mut *#lb_ident, &inner_series)?;
+            #pp::ListBuilderTrait::append_series(&mut *#lb_ident, &inner_series)?;
         }}
     };
 
@@ -332,6 +335,7 @@ pub fn generate_primitive_for_anyvalue(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let dtype = mapping.full_dtype.clone();
     let _elem_rust_ty = mapping.rust_element_type;
@@ -344,14 +348,14 @@ pub fn generate_primitive_for_anyvalue(
         // safe to call after the borrow's scope.
         match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => quote! {
-                let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                     "".into(),
                     &[(#acc).as_str()],
                 );
                 #values_vec_ident.push(s.get(0)?.into_static());
             },
             Some(BorrowKind::AsStr(ty_path)) => quote! {
-                let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                     "".into(),
                     &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
                 );
@@ -365,7 +369,7 @@ pub fn generate_primitive_for_anyvalue(
                     quote! {}
                 };
                 quote! {
-                    let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), std::slice::from_ref(&{ #mapped }));
+                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), std::slice::from_ref(&{ #mapped }));
                     #cast_ts
                     #values_vec_ident.push(s.get(0)?.into_static());
                 }
@@ -374,14 +378,14 @@ pub fn generate_primitive_for_anyvalue(
     };
 
     let on_option_none = |_tail: &[Wrapper]| {
-        quote! { #values_vec_ident.push(polars::prelude::AnyValue::Null); }
+        quote! { #values_vec_ident.push(#pp::AnyValue::Null); }
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
         let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
         quote! {{
             let inner_series = { #inner_series_ts };
-            #values_vec_ident.push(polars::prelude::AnyValue::List(inner_series));
+            #values_vec_ident.push(#pp::AnyValue::List(inner_series));
         }}
     };
 
@@ -443,9 +447,11 @@ pub fn primitive_decls(
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         let inner_dtype =
             crate::codegen::type_registry::outer_list_inner_dtype(base_type, transform, wrappers);
+        let pp = super::polars_paths::prelude();
+        let cab = super::polars_paths::chunked_array_builder();
         decls.push(quote! {
-            let mut #lb_ident: ::std::boxed::Box<dyn polars::prelude::ListBuilderTrait> =
-                polars::chunked_array::builder::get_list_builder(
+            let mut #lb_ident: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
+                #cab::get_list_builder(
                     &#inner_dtype,
                     items.len() * 4,
                     items.len(),
@@ -469,24 +475,25 @@ pub fn primitive_finishers_for_vec_anyvalues(
     transform: Option<&PrimitiveTransform>,
     idx: usize,
 ) -> TokenStream {
+    let pp = super::polars_paths::prelude();
     let vec = has_vec(wrappers);
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let needs_cast = crate::codegen::type_registry::needs_cast(transform);
     if vec {
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         quote! {
-            let inner = polars::prelude::IntoSeries::into_series(
-                polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident),
+            let inner = #pp::IntoSeries::into_series(
+                #pp::ListBuilderTrait::finish(&mut *#lb_ident),
             );
-            out_values.push(polars::prelude::AnyValue::List(inner));
+            out_values.push(#pp::AnyValue::List(inner));
         }
     } else {
         let dtype = mapping.full_dtype;
         let vec_ident = PopulatorIdents::primitive_buf(idx);
         quote! {
-            let mut inner = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#vec_ident);
+            let mut inner = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &#vec_ident);
             if #needs_cast { inner = inner.cast(&#dtype)?; }
-            out_values.push(polars::prelude::AnyValue::List(inner));
+            out_values.push(#pp::AnyValue::List(inner));
         }
     }
 }

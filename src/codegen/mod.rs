@@ -3,6 +3,7 @@ mod columnar_impl;
 mod common;
 mod helpers;
 mod nested;
+mod polars_paths;
 mod populator_idents;
 mod primitive;
 mod strategy;

@@ -38,6 +38,7 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
 pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
+    let pp = super::polars_paths::prelude();
     let it_ident = format_ident!("__df_derive_it");
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
@@ -69,14 +70,14 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
 
     let collect_vec_impl = quote! {
             #[doc(hidden)]
-            pub fn __df_derive_collect_vec_as_prefixed_list_series(items: &[Self], column_name: &str) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::Column>> {
+            pub fn __df_derive_collect_vec_as_prefixed_list_series(items: &[Self], column_name: &str) -> #pp::PolarsResult<::std::vec::Vec<#pp::Column>> {
                 if items.is_empty() {
-                    let mut columns: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
+                    let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
                     for (inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
                         let prefixed = format!("{}.{}", column_name, inner_name);
-                        let inner_empty = polars::prelude::Series::new_empty("".into(), &inner_dtype);
-                        let list_val = polars::prelude::AnyValue::List(inner_empty);
-                        let s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                        let inner_empty = #pp::Series::new_empty("".into(), &inner_dtype);
+                        let list_val = #pp::AnyValue::List(inner_empty);
+                        let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                             prefixed.as_str().into(),
                             &[list_val],
                         );
@@ -85,17 +86,17 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
                     return Ok(columns);
                 }
 
-                let values: ::std::vec::Vec<polars::prelude::AnyValue> =
+                let values: ::std::vec::Vec<#pp::AnyValue> =
                     Self::__df_derive_vec_to_inner_list_values(items)?;
                 let schema = <Self as #to_df_trait>::schema()?;
-                let mut nested_series: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::with_capacity(schema.len());
+                let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::with_capacity(schema.len());
                 let mut iter = values.into_iter();
                 for (col_name, _dtype) in schema.into_iter() {
                     let prefixed_name = format!("{}.{}", column_name, col_name);
-                    let list_val = iter.next().ok_or_else(|| polars::prelude::polars_err!(
+                    let list_val = iter.next().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: __df_derive_vec_to_inner_list_values produced fewer values than schema columns (codegen invariant violation)"
                     ))?;
-                    let list_series = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(
+                    let list_series = <#pp::Series as #pp::NamedFrom<_, _>>::new(
                         prefixed_name.as_str().into(),
                         &[list_val],
                     );
@@ -127,46 +128,46 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
             /// (which flattens a parent's inner Vecs into a `Vec<&Self>`
             /// without requiring `Self: Clone`).
             #[doc(hidden)]
-            pub fn __df_derive_columnar_from_refs(items: &[&Self]) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+            pub fn __df_derive_columnar_from_refs(items: &[&Self]) -> #pp::PolarsResult<#pp::DataFrame> {
                 if items.is_empty() {
                     return <Self as #to_df_trait>::empty_dataframe();
                 }
                 #(#cf_decls)*
                 for #it_ident in items { #(#cf_pushes)* }
-                let mut columns: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
+                let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
                 #(#cf_builders)*
                 if columns.is_empty() {
                     let num_rows = items.len();
-                    let dummy = polars::prelude::Series::new_empty(
+                    let dummy = #pp::Series::new_empty(
                         "_dummy".into(),
-                        &polars::prelude::DataType::Null,
+                        &#pp::DataType::Null,
                     )
-                    .extend_constant(polars::prelude::AnyValue::Null, num_rows)?;
-                    let mut df = polars::prelude::DataFrame::new_infer_height(vec![dummy.into()])?;
+                    .extend_constant(#pp::AnyValue::Null, num_rows)?;
+                    let mut df = #pp::DataFrame::new_infer_height(vec![dummy.into()])?;
                     df.drop_in_place("_dummy")?;
                     return Ok(df);
                 }
-                polars::prelude::DataFrame::new_infer_height(columns)
+                #pp::DataFrame::new_infer_height(columns)
             }
             #[doc(hidden)]
-            pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::AnyValue>> {
+            pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue>> {
                 if items.is_empty() {
-                    let mut out_values: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+                    let mut out_values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
                     for (_inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
-                        let inner_empty = polars::prelude::Series::new_empty("".into(), &inner_dtype);
-                        out_values.push(polars::prelude::AnyValue::List(inner_empty));
+                        let inner_empty = #pp::Series::new_empty("".into(), &inner_dtype);
+                        out_values.push(#pp::AnyValue::List(inner_empty));
                     }
                     return Ok(out_values);
                 }
                 #(#vec_values_decls)*
                 for #it_ident in items { #(#vec_values_per_item)* }
-                let mut out_values: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+                let mut out_values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
                 #(#vec_values_finishers)*
                 Ok(out_values)
             }
             #[doc(hidden)]
-            pub fn __df_derive_to_anyvalues(&self) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::AnyValue>> {
-                let mut values: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+            pub fn __df_derive_to_anyvalues(&self) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue>> {
+                let mut values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
                 #(#to_anyvalues_pieces)*
                 Ok(values)
             }

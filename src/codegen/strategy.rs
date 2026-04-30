@@ -322,7 +322,8 @@ impl RowWiseGenerator for PrimitiveStrategy {
         );
         let dtype = mapping.full_dtype;
         let name = &self.field_name;
-        quote! { vec![polars::prelude::Series::new_empty(#name.into(), &#dtype).into()] }
+        let pp = super::polars_paths::prelude();
+        quote! { vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
     }
 
     fn gen_anyvalue_conversion(&self) -> TokenStream {
@@ -392,14 +393,15 @@ impl ColumnPopulator for PrimitiveStrategy {
 impl ColumnarBuilderFinisher for PrimitiveStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
+        let pp = super::polars_paths::prelude();
         if has_vec(&self.wrappers) {
             // The list builder was constructed with the correct inner dtype
             // (`outer_list_inner_dtype`), so the finished series already has
             // the schema-declared dtype — no cast needed here.
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             vec![quote! {{
-                let s = polars::prelude::IntoSeries::into_series(
-                    polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident),
+                let s = #pp::IntoSeries::into_series(
+                    #pp::ListBuilderTrait::finish(&mut *#lb_ident),
                 )
                 .with_name(#name.into());
                 columns.push(s.into());
@@ -424,7 +426,7 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
             let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
             let vec_ident = PopulatorIdents::primitive_buf(idx);
             vec![quote! {{
-                let mut s = <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
+                let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
                 if #do_cast { s = s.cast(&#dtype)?; }
                 columns.push(s.into());
             }}]

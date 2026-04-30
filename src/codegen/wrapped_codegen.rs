@@ -11,6 +11,61 @@ fn is_option(wrappers: &[Wrapper]) -> bool {
     wrappers.iter().any(|w| matches!(w, Wrapper::Option))
 }
 
+/// Per-strategy identifier convention for the columnar / vec-anyvalues
+/// populator pipeline.
+///
+/// Names declared here in `primitive_decls` / `nested_decls` are referenced
+/// by name in the per-row push helpers (`generate_primitive_for_columnar_push`,
+/// `generate_nested_for_columnar_push`) and in the finishers
+/// (`primitive_finishers_for_vec_anyvalues`, `nested_finishers_for_vec_anyvalues`,
+/// `nested_columnar_builders`, plus `gen_columnar_builders` over in `strategy`).
+/// Splitting the convention across `format_ident!` calls in each helper
+/// silently breaks generated code on rename — the compiler can't see the
+/// link, only a downstream "use of undeclared name" surfaces it. Funneling
+/// every site through this struct turns rename mistakes into a compile error
+/// at the helper itself.
+pub(super) struct PopulatorIdents;
+
+impl PopulatorIdents {
+    /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar
+    /// field. Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast
+    /// path (see `classify_borrow`).
+    pub(super) fn primitive_buf(idx: usize) -> Ident {
+        format_ident!("__df_derive_buf_{}", idx)
+    }
+
+    /// `Box<dyn ListBuilderTrait>` for `Vec<primitive>` shapes — the typed
+    /// list builder that keeps the inner buffer typed end-to-end.
+    pub(super) fn primitive_list_builder(idx: usize) -> Ident {
+        format_ident!("__df_derive_pv_lb_{}", idx)
+    }
+
+    /// `Vec<Box<dyn ListBuilderTrait>>` — one inner-column builder per inner
+    /// schema entry — for `Vec<Struct>` shapes that didn't take the
+    /// bulk-concrete fast path.
+    pub(super) fn nested_list_builders(idx: usize) -> Ident {
+        format_ident!("__df_derive_nv_lbs_{}", idx)
+    }
+
+    /// `Vec<Vec<AnyValue>>` — one inner-column accumulator per inner schema
+    /// entry — for non-vec nested-struct shapes.
+    pub(super) fn nested_struct_cols(idx: usize) -> Ident {
+        format_ident!("__df_derive_ns_cols_{}", idx)
+    }
+
+    /// Cached `<Inner>::schema()?` for `Vec<Struct>` shapes; paired with
+    /// `nested_list_builders`.
+    pub(super) fn nested_vec_schema(idx: usize) -> Ident {
+        format_ident!("__df_derive_nv_schema_{}", idx)
+    }
+
+    /// Cached `<Inner>::schema()?` for non-vec nested-struct shapes; paired
+    /// with `nested_struct_cols`.
+    pub(super) fn nested_struct_schema(idx: usize) -> Ident {
+        format_ident!("__df_derive_ns_schema_{}", idx)
+    }
+}
+
 /// Borrow strategy for a leaf that can populate the `Vec<&str>` /
 /// `Vec<Option<&str>>` columnar buffer instead of an owning `Vec<String>`.
 /// Only the bare leaf and bare `Option<…>` shapes flatten into one of these
@@ -858,7 +913,7 @@ pub fn generate_primitive_for_columnar_push(
     // field instead of cloning each row's `String` into an owned buffer.
     // The borrows live as long as `items`, which outlives the buffer.
     if let Some(kind) = classify_borrow(base_type, transform, wrappers) {
-        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
         let opt = is_option(wrappers);
         return match kind {
             BorrowKind::StringLeaf => {
@@ -891,7 +946,7 @@ pub fn generate_primitive_for_columnar_push(
     let opt_scalar = is_option(wrappers) && !is_vec(wrappers);
 
     let on_leaf = |acc: &TokenStream| {
-        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
         let mapped = super::common::generate_primitive_access_expr(acc, transform);
         if opt_scalar {
             quote! { #vec_ident.push(::std::option::Option::Some({ #mapped })); }
@@ -903,17 +958,17 @@ pub fn generate_primitive_for_columnar_push(
     let on_option_none = |tail: &[Wrapper]| {
         let tail_has_vec = tail.iter().any(|w| matches!(w, Wrapper::Vec));
         if tail_has_vec {
-            let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+            let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             quote! { #lb_ident.append_null(); }
         } else {
-            let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+            let vec_ident = PopulatorIdents::primitive_buf(idx);
             quote! { #vec_ident.push(::std::option::Option::None); }
         }
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
         let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
-        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         quote! {{
             let inner_series = { #inner_series_ts };
             #lb_ident.append_series(&inner_series)?;
@@ -1056,8 +1111,8 @@ pub fn generate_nested_for_columnar_push(
     // entry per outer row). The on-leaf branch only runs for non-vec
     // shapes — `process_wrappers` reaches the leaf only when no `Vec`
     // wrapper is present.
-    let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
-    let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+    let cols_ident = PopulatorIdents::nested_struct_cols(idx);
+    let lbs_ident = PopulatorIdents::nested_list_builders(idx);
 
     let on_leaf = |acc: &TokenStream| {
         let cols_ident = cols_ident.clone();
@@ -1192,7 +1247,7 @@ pub fn primitive_decls(
     // `StringChunked::from_slice` and produces the same `Utf8ViewArray`-backed
     // column the owning path produces.
     if classify_borrow(base_type, transform, wrappers).is_some() {
-        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
         if opt {
             decls.push(quote! {
                 let mut #vec_ident: ::std::vec::Vec<::std::option::Option<&str>> =
@@ -1225,7 +1280,7 @@ pub fn primitive_decls(
         // `outer_list_inner_dtype`. Using `element_dtype` here would
         // wrong-foot the strict-typed builder (`ListPrimitiveChunkedBuilder`
         // unpacks via the inner Native type and rejects a `list[…]` slice).
-        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         let inner_dtype =
             crate::codegen::type_registry::outer_list_inner_dtype(base_type, transform, wrappers);
         decls.push(quote! {
@@ -1238,7 +1293,7 @@ pub fn primitive_decls(
                 );
         });
     } else {
-        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
         if opt {
             decls.push(quote! { let mut #vec_ident: ::std::vec::Vec<::std::option::Option<#elem_rust_ty>> = ::std::vec::Vec::with_capacity(items.len()); });
         } else {
@@ -1258,7 +1313,7 @@ pub fn primitive_finishers_for_vec_anyvalues(
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let needs_cast = crate::codegen::type_registry::needs_cast(transform);
     if vec {
-        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         quote! {
             let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
                 .into_series();
@@ -1266,7 +1321,7 @@ pub fn primitive_finishers_for_vec_anyvalues(
         }
     } else {
         let dtype = mapping.full_dtype;
-        let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
         quote! {
             let mut inner = polars::prelude::Series::new("".into(), &#vec_ident);
             if #needs_cast { inner = inner.cast(&#dtype)?; }
@@ -1306,8 +1361,8 @@ pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -
         // analogous wrap in `outer_list_inner_dtype` for primitives. Without
         // this, `ListPrimitiveChunkedBuilder` rejects the deeper `list[…]`
         // slice with a `SchemaMismatch`.
-        let schema_ident = format_ident!("__df_derive_nv_schema_{}", idx);
-        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        let schema_ident = PopulatorIdents::nested_vec_schema(idx);
+        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
         let extra_list_layers = wrappers
             .iter()
             .filter(|w| matches!(w, Wrapper::Vec))
@@ -1347,8 +1402,8 @@ pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -
                 .collect();
         });
     } else {
-        let schema_ident = format_ident!("__df_derive_ns_schema_{}", idx);
-        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        let schema_ident = PopulatorIdents::nested_struct_schema(idx);
+        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
         decls.push(quote! { let #schema_ident = #type_path::schema()?; });
         decls.push(quote! {
             let mut #cols_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> =
@@ -1364,12 +1419,12 @@ pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -
 pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> TokenStream {
     let vec = is_vec(wrappers);
     let schema_ident = if vec {
-        format_ident!("__df_derive_nv_schema_{}", idx)
+        PopulatorIdents::nested_vec_schema(idx)
     } else {
-        format_ident!("__df_derive_ns_schema_{}", idx)
+        PopulatorIdents::nested_struct_schema(idx)
     };
     if vec {
-        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
         quote! {
             for j in 0..#schema_ident.len() {
                 let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j])
@@ -1378,7 +1433,7 @@ pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> T
             }
         }
     } else {
-        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
         quote! {
             for j in 0..#schema_ident.len() {
                 let inner = polars::prelude::Series::new("".into(), &#cols_ident[j]);
@@ -1395,13 +1450,13 @@ pub fn nested_columnar_builders(
 ) -> Vec<TokenStream> {
     let vec = is_vec(wrappers);
     let schema_ident = if vec {
-        format_ident!("__df_derive_nv_schema_{}", idx)
+        PopulatorIdents::nested_vec_schema(idx)
     } else {
-        format_ident!("__df_derive_ns_schema_{}", idx)
+        PopulatorIdents::nested_struct_schema(idx)
     };
     let name = field_name;
     if vec {
-        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
                 let full_name = format!("{}.{}", #name, col_name);
@@ -1412,7 +1467,7 @@ pub fn nested_columnar_builders(
             }
         }}]
     } else {
-        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
         vec![quote! {{
             for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
                 let full_name = format!("{}.{}", #name, col_name);

@@ -3,6 +3,8 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
+use super::wrapped_codegen::PopulatorIdents;
+
 // Recreate light-weight IR mirrors for internal use to avoid coupling to old FieldKind
 #[derive(Clone)]
 pub(super) struct PrimitiveIR {
@@ -394,7 +396,7 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
             // The list builder was constructed with the correct inner dtype
             // (`outer_list_inner_dtype`), so the finished series already has
             // the schema-declared dtype — no cast needed here.
-            let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+            let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             vec![quote! {{
                 let s = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
                     .into_series()
@@ -419,7 +421,7 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
             );
             let dtype = mapping.full_dtype;
             let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
-            let vec_ident = format_ident!("__df_derive_buf_{}", idx);
+            let vec_ident = PopulatorIdents::primitive_buf(idx);
             vec![quote! {{
                 let mut s = polars::prelude::Series::new(#name.into(), &#vec_ident);
                 if #do_cast { s = s.cast(&#dtype)?; }

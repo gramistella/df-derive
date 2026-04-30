@@ -1,7 +1,6 @@
-// SchemaProvider and RowWiseGenerator are referenced via fully-qualified paths
 use crate::ir::StructIR;
 use proc_macro2::TokenStream;
-use quote::quote; // for trait methods on Strategy
+use quote::quote;
 
 pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
@@ -39,15 +38,15 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     let strategies = super::strategy::build_strategies(ir, config);
     let series_creations: Vec<TokenStream> = strategies
         .iter()
-        .map(super::strategy::RowWiseGenerator::gen_series_creation)
+        .map(super::strategy::Strategy::gen_series_creation)
         .collect();
     let empty_series_creations: Vec<TokenStream> = strategies
         .iter()
-        .map(super::strategy::RowWiseGenerator::gen_empty_series_creation)
+        .map(super::strategy::Strategy::gen_empty_series_creation)
         .collect();
     let schema_entries: Vec<TokenStream> = strategies
         .iter()
-        .map(super::strategy::SchemaProvider::gen_schema_entries)
+        .map(super::strategy::Strategy::gen_schema_entries)
         .collect();
 
     quote! {

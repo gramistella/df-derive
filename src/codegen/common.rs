@@ -1,7 +1,4 @@
-use super::strategy::{
-    self, ColumnarBuilderFinisher as _, ColumnarBulkEmitter as _, VecAnyvaluesBulkEmitter as _,
-    VecAnyvaluesFinisher as _,
-};
+use super::strategy;
 use crate::ir::{BaseType, PrimitiveTransform, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -31,12 +28,8 @@ pub fn prepare_vec_anyvalues_parts(
         if let Some(bulk) = s.gen_bulk_vec_anyvalues_emit(idx) {
             finishers.extend(bulk);
         } else {
-            decls.extend(super::strategy::ColumnPopulator::gen_populator_inits(
-                s, idx,
-            ));
-            pushes.push(super::strategy::ColumnPopulator::gen_populator_push(
-                s, it_ident, idx,
-            ));
+            decls.extend(s.gen_populator_inits(idx));
+            pushes.push(s.gen_populator_push(it_ident, idx));
             finishers.push(s.gen_vec_values_finishers(idx));
         }
     }
@@ -56,12 +49,8 @@ pub fn prepare_columnar_parts(
         if let Some(bulk) = s.gen_bulk_columnar_emit(idx) {
             builders.extend(bulk);
         } else {
-            decls.extend(super::strategy::ColumnPopulator::gen_populator_inits(
-                s, idx,
-            ));
-            pushes.push(super::strategy::ColumnPopulator::gen_populator_push(
-                s, it_ident, idx,
-            ));
+            decls.extend(s.gen_populator_inits(idx));
+            pushes.push(s.gen_populator_push(it_ident, idx));
             builders.extend(s.gen_columnar_builders(idx));
         }
     }

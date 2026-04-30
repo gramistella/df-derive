@@ -1,4 +1,3 @@
-// RowWiseGenerator used via fully-qualified path in method references
 use crate::ir::{PrimitiveTransform, StructIR};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -111,7 +110,7 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
 
     let to_anyvalues_pieces: Vec<TokenStream> = super::strategy::build_strategies(ir, config)
         .iter()
-        .map(super::strategy::RowWiseGenerator::gen_anyvalue_conversion)
+        .map(super::strategy::Strategy::gen_anyvalue_conversion)
         .collect();
 
     let (cf_decls, cf_pushes, cf_builders) =

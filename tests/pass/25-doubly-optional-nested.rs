@@ -89,7 +89,7 @@ fn main() {
     }
 
     // Single-row API exercises the same on-leaf path through
-    // `to_dataframe(&self) -> __df_derive_columnar_from_refs(&[self])`.
+    // `to_dataframe(&self) -> Columnar::columnar_from_refs(&[self])`.
     let single = OptOptInner {
         id: 42,
         payload: Some(Some(Inner {

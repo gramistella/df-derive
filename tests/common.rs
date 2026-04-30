@@ -17,7 +17,13 @@ pub mod dataframe {
     pub trait Columnar: Sized {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+        /// # Errors
+        /// Returns an error if `DataFrame` construction fails.
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
     }
 
     /// Extension trait enabling `.to_dataframe()` on slices (and `Vec` via auto-deref)
@@ -61,7 +67,7 @@ pub mod dataframe {
     }
 
     impl Columnar for () {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
             let n = items.len();
             let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
                 .extend_constant(AnyValue::Null, n)?;

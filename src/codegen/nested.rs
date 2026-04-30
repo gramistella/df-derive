@@ -283,10 +283,10 @@ pub fn generate_nested_for_columnar_push(
     // After unification, this on-leaf is only reached for the rare
     // `Option<Option<T>>`-style shape (since `[]`, `[Option]`, and `[Vec]`
     // are now all bulk-emitted). Both generic and concrete cases route
-    // through the `ToDataFrame` trait method here — for concrete structs
-    // that's a thin wrapper around `__df_derive_columnar_from_refs(&[self])`,
-    // so the cost is minimal and we avoid maintaining a separate inherent
-    // helper just for this corner.
+    // through the `ToDataFrame::to_dataframe(&self)` trait method here —
+    // for concrete structs that's a thin wrapper around
+    // `Columnar::columnar_from_refs(&[self])`, so the cost is minimal and we
+    // avoid maintaining a separate inherent helper just for this corner.
     let cols_ident = PopulatorIdents::nested_struct_cols(idx);
     let lbs_ident = PopulatorIdents::nested_list_builders(idx);
 

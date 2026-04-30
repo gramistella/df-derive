@@ -5,6 +5,7 @@ use quote::quote;
 pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
+    let columnar_trait = &config.columnar_trait_path;
     let pp = super::polars_paths::prelude();
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
@@ -13,7 +14,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         return quote! {
             impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
                 fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
-                    Self::__df_derive_columnar_from_refs(&[self])
+                    <Self as #columnar_trait>::columnar_from_refs(&[self])
                 }
 
                 fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {
@@ -37,25 +38,21 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         .map(super::strategy::Strategy::gen_schema_entries)
         .collect();
 
-    // `to_dataframe(&self)` delegates to the inherent columnar helper with a
-    // single-element ref slice. This is the one source of truth for the
-    // row-shape logic — there is no parallel per-row codegen path. The
-    // bulk-emit branches for nested-leaf, `Option<Inner>`, and `Vec<Inner>`
-    // shapes inside `__df_derive_columnar_from_refs` keep the N=1 cost
-    // within ~10% of the previous specialized per-row path while removing a
-    // whole second family of strategy methods (`gen_series_creation`,
-    // `gen_anyvalue_conversion`, the `__df_derive_to_anyvalues` and
-    // `__df_derive_collect_vec_as_prefixed_list_series` inherent helpers).
+    // `to_dataframe(&self)` delegates to the `Columnar::columnar_from_refs`
+    // trait method with a single-element ref slice. There is no parallel
+    // per-row codegen path — the trait method is the one source of truth
+    // for row-shape logic (with bulk-emit branches for nested-leaf,
+    // `Option<Inner>`, and `Vec<Inner>` shapes that keep the N=1 cost
+    // within ~10% of the previous specialized per-row path).
     //
     // `empty_dataframe` and `schema` keep their own codegen because they
     // never take a `&self` — they're shape-only operations. Routing
-    // `empty_dataframe` through `__df_derive_columnar_from_refs(&[])` would
-    // recurse, since that helper delegates to `empty_dataframe` on empty
-    // input.
+    // `empty_dataframe` through `columnar_from_refs(&[])` would recurse,
+    // since that helper delegates to `empty_dataframe` on empty input.
     quote! {
         impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
-                Self::__df_derive_columnar_from_refs(&[self])
+                <Self as #columnar_trait>::columnar_from_refs(&[self])
             }
 
             fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {

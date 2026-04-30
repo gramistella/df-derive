@@ -22,16 +22,16 @@ pub(super) struct NestedIR {
     /// the trait bounds that make `T::method()` resolve.
     type_path: TokenStream,
     /// Fully-qualified path to the `Columnar` trait, prebuilt for UFCS calls
-    /// (`<#type_path as #columnar_trait>::columnar_to_dataframe(&flat)`). The
+    /// (`<#type_path as #columnar_trait>::columnar_from_refs(&refs)`). The
     /// bulk emitters use this so they work for both generic-parameter base
     /// types (where the trait is bound on the parameter) and concrete struct
     /// base types (where the trait isn't necessarily in scope at the call
-    /// site, e.g. inside the inherent `__df_derive_columnar_from_refs` body).
+    /// site).
     columnar_trait: TokenStream,
     /// Fully-qualified path to the `ToDataFrame` trait, prebuilt for UFCS
     /// calls to `schema()` from inside bulk-emit token streams. Same scope
     /// problem as `columnar_trait`: bulk-emit tokens are inlined into bodies
-    /// (e.g. inherent helpers) where `ToDataFrame` may not be in scope.
+    /// where `ToDataFrame` may not be in scope.
     to_df_trait: TokenStream,
     is_generic: bool,
 }
@@ -423,11 +423,9 @@ impl NestedStructStrategy {
     /// for the depth-1 wrapper shapes the bulk helpers support: bare leaf,
     /// `Option<T>`, or `Vec<T>`.
     ///
-    /// Dispatch — every shape has both generic and concrete bulk emitters.
-    /// Generic uses the `T: Clone` and `<T as Columnar>` bounds the macro
-    /// injects on the type parameter; concrete uses `Vec<&Inner>` plus the
-    /// inherent `Inner::__df_derive_columnar_from_refs` helper, avoiding any
-    /// `Inner: Clone` requirement on user struct types.
+    /// All bulk emitters route through the `Columnar::columnar_from_refs`
+    /// trait method, which works uniformly for both generic-parameter and
+    /// concrete-struct base types — no per-element clone required.
     ///
     /// Deeper nestings (`Option<Vec<T>>`, `Vec<Vec<T>>`, etc.) fall through
     /// to the per-row pipeline; those paths already drive `Vec<AnyValue>`
@@ -443,36 +441,12 @@ impl NestedStructStrategy {
         let to_df_trait = &self.n.to_df_trait;
         let access = self.it_access();
         let emit = match self.wrappers.as_slice() {
-            [] if self.n.is_generic => super::bulk::gen_bulk_generic_leaf(
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
-            [] => super::bulk::gen_bulk_concrete_leaf(ty, to_df_trait, idx, &access, ctx),
-            [Wrapper::Option] if self.n.is_generic => super::bulk::gen_bulk_generic_option(
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
+            [] => super::bulk::gen_bulk_leaf(ty, columnar_trait, to_df_trait, idx, &access, ctx),
             [Wrapper::Option] => {
-                super::bulk::gen_bulk_concrete_option(ty, to_df_trait, idx, &access, ctx)
+                super::bulk::gen_bulk_option(ty, columnar_trait, to_df_trait, idx, &access, ctx)
             }
-            [Wrapper::Vec] if self.n.is_generic => super::bulk::gen_bulk_generic_vec(
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
             [Wrapper::Vec] => {
-                super::bulk::gen_bulk_concrete_vec(ty, to_df_trait, idx, &access, ctx)
+                super::bulk::gen_bulk_vec(ty, columnar_trait, to_df_trait, idx, &access, ctx)
             }
             _ => return None,
         };

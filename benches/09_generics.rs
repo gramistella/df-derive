@@ -52,8 +52,9 @@ impl ToDataFrame for f64 {
 }
 
 impl Columnar for f64 {
-    fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), items).into()])
+    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
+        let owned: Vec<Self> = items.iter().map(|&&x| x).collect();
+        DataFrame::new_infer_height(vec![Series::new("value".into(), &owned).into()])
     }
 }
 

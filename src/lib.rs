@@ -48,7 +48,11 @@
 //!     }
 //!
 //!     pub trait Columnar: Sized {
-//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+//!             let refs: Vec<&Self> = items.iter().collect();
+//!             Self::columnar_from_refs(&refs)
+//!         }
+//!         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
 //!     }
 //! }
 //!
@@ -92,7 +96,11 @@
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
-//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+//!             let refs: Vec<&Self> = items.iter().collect();
+//!             Self::columnar_from_refs(&refs)
+//!         }
+//!         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
 //!     }
 //! }
 //!
@@ -155,7 +163,9 @@
 //!   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
 //!   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 //! - `Columnar` for `T`:
-//!   - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
+//!   - `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>` — borrowed entry point
+//!     used by parent bulk emitters to avoid per-row clones; `columnar_to_dataframe` is provided
+//!     by the trait's default and delegates to this method.
 //!
 //! Empty-struct behavior:
 //!
@@ -218,7 +228,11 @@
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
-//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+//!             let refs: Vec<&Self> = items.iter().collect();
+//!             Self::columnar_from_refs(&refs)
+//!         }
+//!         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
 //!     }
 //! }}
 //!
@@ -243,7 +257,11 @@
 //!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
-//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+//!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+//!             let refs: Vec<&Self> = items.iter().collect();
+//!             Self::columnar_from_refs(&refs)
+//!         }
+//!         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
 //!     }
 //! }}
 //!
@@ -276,7 +294,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
 ///   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 /// - An implementation of `Columnar` for `T` providing
-///   `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
+///   `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`
+///   (`columnar_to_dataframe` uses the trait default and delegates to this method)
 ///
 /// Supported shapes and types:
 ///

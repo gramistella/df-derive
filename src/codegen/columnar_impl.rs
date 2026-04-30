@@ -1,30 +1,53 @@
 use crate::ir::StructIR;
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 
-/// Generates the `Columnar` trait impl as a thin shim that delegates to
-/// `__df_derive_columnar_from_refs` (an inherent helper emitted by
-/// `helpers::generate_helpers_impl`).
+/// Generates the `Columnar` trait impl. The derive overrides
+/// `columnar_from_refs` (the borrowed entry point on the trait), which is
+/// where the actual columnar-build logic lives. The trait's default
+/// `columnar_to_dataframe` collects refs and delegates here, so we don't
+/// emit it.
 ///
-/// The split exists so that the bulk-vec emitter for non-generic
-/// `Vec<Struct>` fields can flatten into a `Vec<&Inner>` (no `Inner: Clone`
-/// required) and call the inherent helper directly. The trait method handles
-/// the slightly-more-common `&[Self]` shape by collecting references on the
-/// fly. The Vec-of-pointers allocation costs N usize per call — negligible
-/// next to the actual columnar work, and well worth the avoided
-/// per-element clone in the bulk-vec path.
+/// Routing every entry point through `columnar_from_refs` lets parent bulk
+/// emitters call `<T as Columnar>::columnar_from_refs(&refs)` for both
+/// generic-parameter and concrete-struct nested fields without needing
+/// `T: Clone`. The `Vec<&Self>` allocation paid by `columnar_to_dataframe`'s
+/// default delegation costs N usize per call — negligible next to the
+/// columnar work it does.
 pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let columnar_trait = &config.columnar_trait_path;
+    let to_df_trait = &config.to_dataframe_trait_path;
     let pp = super::polars_paths::prelude();
+    let it_ident = format_ident!("__df_derive_it");
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
 
+    let (cf_decls, cf_pushes, cf_builders) =
+        super::common::prepare_columnar_parts(ir, config, &it_ident);
+
     quote! {
         impl #impl_generics #columnar_trait for #struct_name #ty_generics #where_clause {
-            fn columnar_to_dataframe(items: &[Self]) -> #pp::PolarsResult<#pp::DataFrame> {
-                let __df_derive_refs: ::std::vec::Vec<&Self> = items.iter().collect();
-                Self::__df_derive_columnar_from_refs(&__df_derive_refs)
+            fn columnar_from_refs(items: &[&Self]) -> #pp::PolarsResult<#pp::DataFrame> {
+                if items.is_empty() {
+                    return <Self as #to_df_trait>::empty_dataframe();
+                }
+                #(#cf_decls)*
+                for #it_ident in items { #(#cf_pushes)* }
+                let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
+                #(#cf_builders)*
+                if columns.is_empty() {
+                    let num_rows = items.len();
+                    let dummy = #pp::Series::new_empty(
+                        "_dummy".into(),
+                        &#pp::DataType::Null,
+                    )
+                    .extend_constant(#pp::AnyValue::Null, num_rows)?;
+                    let mut df = #pp::DataFrame::new_infer_height(::std::vec![dummy.into()])?;
+                    df.drop_in_place("_dummy")?;
+                    return ::std::result::Result::Ok(df);
+                }
+                #pp::DataFrame::new_infer_height(columns)
             }
         }
     }

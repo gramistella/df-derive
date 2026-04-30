@@ -21,7 +21,13 @@ mod my_traits {
     pub trait Columnar: Sized {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+        /// # Errors
+        /// Returns an error if `DataFrame` construction fails.
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
     }
 
     // Extension trait for slices of types implementing our custom traits.

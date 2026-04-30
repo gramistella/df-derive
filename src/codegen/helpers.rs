@@ -33,7 +33,6 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
     cur
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
@@ -70,40 +69,9 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
     let (vec_values_decls, vec_values_per_item, vec_values_finishers) =
         super::common::prepare_vec_anyvalues_parts(ir, config, &it_ident);
 
-    let (cf_decls, cf_pushes, cf_builders) =
-        super::common::prepare_columnar_parts(ir, config, &it_ident);
-
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #(#as_ref_str_asserts)*
-            /// Builds the columnar `DataFrame` for a slice of references to
-            /// `Self`. The trait `to_dataframe(&self)` and `columnar_to_dataframe`
-            /// methods both delegate here (a one-element ref slice and a
-            /// gather-from-`&[Self]` respectively); bulk emitters on parent
-            /// structs that hold a `Vec<Self>` field call this directly with
-            /// a `Vec<&Self>` to avoid requiring `Self: Clone`.
-            #[doc(hidden)]
-            pub fn __df_derive_columnar_from_refs(items: &[&Self]) -> #pp::PolarsResult<#pp::DataFrame> {
-                if items.is_empty() {
-                    return <Self as #to_df_trait>::empty_dataframe();
-                }
-                #(#cf_decls)*
-                for #it_ident in items { #(#cf_pushes)* }
-                let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-                #(#cf_builders)*
-                if columns.is_empty() {
-                    let num_rows = items.len();
-                    let dummy = #pp::Series::new_empty(
-                        "_dummy".into(),
-                        &#pp::DataType::Null,
-                    )
-                    .extend_constant(#pp::AnyValue::Null, num_rows)?;
-                    let mut df = #pp::DataFrame::new_infer_height(::std::vec![dummy.into()])?;
-                    df.drop_in_place("_dummy")?;
-                    return ::std::result::Result::Ok(df);
-                }
-                #pp::DataFrame::new_infer_height(columns)
-            }
             #[doc(hidden)]
             pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue>> {
                 if items.is_empty() {

@@ -9,7 +9,7 @@ mod dataframe {
     pub trait ToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
         fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
     }
 
     pub trait Columnar: Sized {

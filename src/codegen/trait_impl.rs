@@ -24,8 +24,8 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                     polars::prelude::DataFrame::new_infer_height(vec![])
                 }
 
-                fn schema() -> polars::prelude::PolarsResult<Vec<(&'static str, polars::prelude::DataType)>> {
-                    Ok(Vec::new())
+                fn schema() -> polars::prelude::PolarsResult<::std::vec::Vec<(::std::string::String, polars::prelude::DataType)>> {
+                    Ok(::std::vec::Vec::new())
                 }
             }
         };
@@ -64,8 +64,8 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 polars::prelude::DataFrame::new_infer_height(all_series)
             }
 
-            fn schema() -> polars::prelude::PolarsResult<Vec<(&'static str, polars::prelude::DataType)>> {
-                let mut fields: Vec<(&'static str, polars::prelude::DataType)> = Vec::new();
+            fn schema() -> polars::prelude::PolarsResult<::std::vec::Vec<(::std::string::String, polars::prelude::DataType)>> {
+                let mut fields: ::std::vec::Vec<(::std::string::String, polars::prelude::DataType)> = ::std::vec::Vec::new();
                 #(
                     fields.extend(#schema_entries);
                 )*

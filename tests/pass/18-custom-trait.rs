@@ -14,7 +14,7 @@ mod my_traits {
     pub trait MyToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
         fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
     }
 
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.

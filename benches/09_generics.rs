@@ -46,8 +46,8 @@ impl ToDataFrame for f64 {
             Series::new_empty("value".into(), &DataType::Float64).into(),
         ])
     }
-    fn schema() -> PolarsResult<Vec<(&'static str, DataType)>> {
-        Ok(vec![("value", DataType::Float64)])
+    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
+        Ok(vec![("value".to_string(), DataType::Float64)])
     }
 }
 

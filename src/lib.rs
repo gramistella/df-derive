@@ -44,7 +44,7 @@
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
-//!         fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+//!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!
 //!     pub trait Columnar: Sized {
@@ -72,7 +72,7 @@
 //! - **`Option<T>`**: null-aware materialization for both scalars and lists
 //! - **Tuple structs**: supported; columns are named `field_0`, `field_1`, ...
 //! - **Empty structs**: produce `(1, 0)` for instances and `(0, 0)` for empty frames
-//! - **Schema discovery**: `T::schema() -> Vec<(&'static str, DataType)>`
+//! - **Schema discovery**: `T::schema() -> Vec<(String, DataType)>`
 //! - **Columnar batch conversion**: `[T]` via a generated `Columnar` implementation
 //!
 //! ### Attribute helpers
@@ -89,7 +89,7 @@
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
-//!         fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+//!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
@@ -151,7 +151,7 @@
 //! - `ToDataFrame` for `T`:
 //!   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
 //!   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-//!   - `fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>`
+//!   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 //! - `Columnar` for `T`:
 //!   - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
 //!
@@ -213,7 +213,7 @@
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
-//!         fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+//!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
@@ -238,7 +238,7 @@
 //!     pub trait ToDataFrame {
 //!         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
 //!         fn empty_dataframe() -> PolarsResult<DataFrame>;
-//!         fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+//!         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
 //!     }
 //!     pub trait Columnar: Sized {
 //!         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
@@ -272,7 +272,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// - An implementation of `ToDataFrame` for the annotated type `T` providing:
 ///   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
 ///   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-///   - `fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>`
+///   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 /// - An implementation of `Columnar` for `T` providing
 ///   `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
 ///

@@ -267,7 +267,7 @@ impl SchemaProvider for PrimitiveStrategy {
         );
         let dtype = mapping.full_dtype;
         let name = &self.field_name;
-        quote! { vec![(#name, #dtype)] }
+        quote! { vec![(::std::string::String::from(#name), #dtype)] }
     }
 }
 

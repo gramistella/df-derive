@@ -60,7 +60,7 @@ mod dataframe {
     pub trait ToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
         fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
     }
 
     pub trait Columnar: Sized {
@@ -122,7 +122,7 @@ cargo run
 - **`Option<T>`**: null-aware materialization for both scalars and lists
 - **Tuple structs**: supported; columns are named `field_0`, `field_1`, ...
 - **Empty structs**: produce `(1, 0)` for instances and `(0, 0)` for empty frames
-- **Schema discovery**: `T::schema() -> Vec<(&'static str, DataType)>`
+- **Schema discovery**: `T::schema() -> Vec<(String, DataType)>`
 - **Columnar batch conversion**: `[T]::to_dataframe()` via the `Columnar` implementation
 
 ### Attribute helpers
@@ -211,7 +211,7 @@ For every `#[derive(ToDataFrame)]` type `T` the macro generates implementations 
 - `ToDataFrame` for `T`:
   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-  - `fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>`
+  - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 - `Columnar` for `T`:
   - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
 

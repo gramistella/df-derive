@@ -57,6 +57,15 @@ All notable changes to this project will be documented in this file.
   paths (no crate-private inherent `__df_derive_*` calls) so that any concrete
   instantiation that satisfies `ToDataFrame + Columnar` works. Concrete nested
   structs still use the original inherent fast paths.
+- **Breaking**: `ToDataFrame::schema()` now returns
+  `Vec<(String, DataType)>` instead of `Vec<(&'static str, DataType)>`.
+  The previous signature forced the codegen to `Box::leak` a freshly
+  formatted `String` for every nested-struct column on every call, leaking
+  memory each time `schema()` ran. Owning the names in a `String` removes
+  the leak. Downstream trait declarations and any hand-written impls
+  (e.g. for `()` or other types) must update the return type accordingly;
+  `assert_eq!`-style schema literals can use `("name".into(), dtype)` to
+  keep their shape.
 
 ### Fixed
 

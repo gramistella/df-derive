@@ -10,7 +10,7 @@ pub mod dataframe {
         fn empty_dataframe() -> PolarsResult<DataFrame>;
         /// # Errors
         /// Returns an error if schema generation fails.
-        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
     }
 
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.
@@ -55,7 +55,7 @@ pub mod dataframe {
             DataFrame::new_infer_height(vec![])
         }
 
-        fn schema() -> PolarsResult<Vec<(&'static str, DataType)>> {
+        fn schema() -> PolarsResult<Vec<(String, DataType)>> {
             Ok(Vec::new())
         }
     }

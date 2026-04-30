@@ -404,6 +404,7 @@ pub fn gen_bulk_generic_leaf(
             .collect();
         let #df_ident = #ty::columnar_to_dataframe(&#slice_ident)?;
         for (__df_derive_col_name, _) in #ty::schema()? {
+            let __df_derive_col_name: &str = __df_derive_col_name.as_str();
             #consume
         }
     }}
@@ -471,11 +472,13 @@ pub fn gen_bulk_generic_option(
         }
         if #nn_ident.is_empty() {
             for (#col_name_var, #dtype_var) in #ty::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
                 #consume_empty
             }
         } else {
             let #df_ident = #ty::columnar_to_dataframe(&#nn_ident)?;
             for (#col_name_var, _) in #ty::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
                 #consume_filled
             }
         }
@@ -545,11 +548,13 @@ pub fn gen_bulk_generic_vec(
         }
         if #flat_ident.is_empty() {
             for (#col_name_var, #dtype_var) in #ty::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
                 #consume_empty
             }
         } else {
             let #df_ident = #ty::columnar_to_dataframe(&#flat_ident)?;
             for (#col_name_var, _) in #ty::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
                 #consume_filled
             }
         }
@@ -1105,18 +1110,15 @@ pub fn generate_schema_entries_for_struct(
 ) -> TokenStream {
     quote! {
         {
-            let mut nested_fields: Vec<(&'static str, polars::prelude::DataType)> = Vec::new();
+            let mut nested_fields: ::std::vec::Vec<(::std::string::String, polars::prelude::DataType)> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
-                let leaked_name: &'static str = {
-                    let s = format!("{}.{}", #column_name, inner_name);
-                    Box::leak(s.into_boxed_str())
-                };
+                let prefixed_name = format!("{}.{}", #column_name, inner_name);
                 let dtype = if #as_list {
                     polars::prelude::DataType::List(Box::new(inner_dtype))
                 } else {
                     inner_dtype
                 };
-                nested_fields.push((leaked_name, dtype));
+                nested_fields.push((prefixed_name, dtype));
             }
             nested_fields
         }

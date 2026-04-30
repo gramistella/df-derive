@@ -140,8 +140,8 @@ impl ToDataFrame for f64 {
     fn empty_dataframe() -> PolarsResult<DataFrame> {
         DataFrame::new_infer_height(vec![Series::new_empty("value".into(), &DataType::Float64).into()])
     }
-    fn schema() -> PolarsResult<Vec<(&'static str, DataType)>> {
-        Ok(vec![("value", DataType::Float64)])
+    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
+        Ok(vec![("value".to_string(), DataType::Float64)])
     }
 }
 
@@ -174,7 +174,10 @@ fn test_primitive_instantiation() {
     let schema = Wrapper::<f64>::schema().unwrap();
     assert_eq!(
         schema,
-        vec![("id", DataType::UInt32), ("payload.value", DataType::Float64)]
+        vec![
+            ("id".into(), DataType::UInt32),
+            ("payload.value".into(), DataType::Float64),
+        ]
     );
 
     let df = w.to_dataframe().unwrap();
@@ -228,9 +231,9 @@ fn test_nested_struct_instantiation() {
     assert_eq!(
         schema,
         vec![
-            ("id", DataType::UInt32),
-            ("payload.timestamp", DataType::Int64),
-            ("payload.note", DataType::String),
+            ("id".into(), DataType::UInt32),
+            ("payload.timestamp".into(), DataType::Int64),
+            ("payload.note".into(), DataType::String),
         ]
     );
 
@@ -282,7 +285,7 @@ fn test_unit_instantiation() {
     let w: Wrapper<()> = Wrapper { id: 7, payload: () };
 
     let schema = Wrapper::<()>::schema().unwrap();
-    assert_eq!(schema, vec![("id", DataType::UInt32)]);
+    assert_eq!(schema, vec![("id".into(), DataType::UInt32)]);
 
     let df = w.to_dataframe().unwrap();
     // Unit payload contributes zero columns; id remains.
@@ -313,7 +316,7 @@ fn test_default_type_parameter() {
     let dm = DefaultMeta { val: 99, meta: () };
 
     let schema = DefaultMeta::<()>::schema().unwrap();
-    assert_eq!(schema, vec![("val", DataType::Int32)]);
+    assert_eq!(schema, vec![("val".into(), DataType::Int32)]);
 
     let df = dm.to_dataframe().unwrap();
     assert_eq!(df.shape(), (1, 1));
@@ -370,9 +373,9 @@ fn test_multiple_generics() {
     assert_eq!(
         schema,
         vec![
-            ("a.timestamp", DataType::Int64),
-            ("a.note", DataType::String),
-            ("name", DataType::String),
+            ("a.timestamp".into(), DataType::Int64),
+            ("a.note".into(), DataType::String),
+            ("name".into(), DataType::String),
         ]
     );
 
@@ -440,11 +443,11 @@ fn test_multiple_generics() {
     assert_eq!(
         schema_pair,
         vec![
-            ("a.timestamp", DataType::Int64),
-            ("a.note", DataType::String),
-            ("b.timestamp", DataType::Int64),
-            ("b.note", DataType::String),
-            ("name", DataType::String),
+            ("a.timestamp".into(), DataType::Int64),
+            ("a.note".into(), DataType::String),
+            ("b.timestamp".into(), DataType::Int64),
+            ("b.note".into(), DataType::String),
+            ("name".into(), DataType::String),
         ]
     );
 
@@ -463,7 +466,10 @@ fn test_option_wrapped_generic() {
     let schema = OptWrapper::<f64>::schema().unwrap();
     assert_eq!(
         schema,
-        vec![("id", DataType::UInt32), ("payload.value", DataType::Float64)]
+        vec![
+            ("id".into(), DataType::UInt32),
+            ("payload.value".into(), DataType::Float64),
+        ]
     );
 
     let some_w = OptWrapper {
@@ -521,9 +527,9 @@ fn test_option_wrapped_generic() {
     assert_eq!(
         schema_meta,
         vec![
-            ("id", DataType::UInt32),
-            ("payload.timestamp", DataType::Int64),
-            ("payload.note", DataType::String),
+            ("id".into(), DataType::UInt32),
+            ("payload.timestamp".into(), DataType::Int64),
+            ("payload.note".into(), DataType::String),
         ]
     );
 
@@ -582,9 +588,9 @@ fn test_vec_wrapped_generic() {
     assert_eq!(
         schema,
         vec![
-            ("id", DataType::UInt32),
+            ("id".into(), DataType::UInt32),
             (
-                "payload.value",
+                "payload.value".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -633,13 +639,13 @@ fn test_vec_wrapped_generic() {
     assert_eq!(
         schema_meta,
         vec![
-            ("id", DataType::UInt32),
+            ("id".into(), DataType::UInt32),
             (
-                "payload.timestamp",
+                "payload.timestamp".into(),
                 DataType::List(Box::new(DataType::Int64)),
             ),
             (
-                "payload.note",
+                "payload.note".into(),
                 DataType::List(Box::new(DataType::String)),
             ),
         ]
@@ -704,7 +710,10 @@ fn test_doubly_wrapped_generic() {
     let schema = OptOptWrapper::<f64>::schema().unwrap();
     assert_eq!(
         schema,
-        vec![("id", DataType::UInt32), ("payload.value", DataType::Float64)]
+        vec![
+            ("id".into(), DataType::UInt32),
+            ("payload.value".into(), DataType::Float64),
+        ]
     );
 
     let items = vec![
@@ -745,9 +754,9 @@ fn test_depth2_combos() {
     assert_eq!(
         schema_ov,
         vec![
-            ("id", DataType::UInt32),
+            ("id".into(), DataType::UInt32),
             (
-                "payload.value",
+                "payload.value".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -785,9 +794,9 @@ fn test_depth2_combos() {
     assert_eq!(
         schema_vo,
         vec![
-            ("id", DataType::UInt32),
+            ("id".into(), DataType::UInt32),
             (
-                "payload.value",
+                "payload.value".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -820,7 +829,7 @@ fn test_depth2_combos() {
     // multi-layer dtype.
     let schema_vv = VecVecWrapper::<f64>::schema().unwrap();
     assert_eq!(schema_vv.len(), 2);
-    assert_eq!(schema_vv[0], ("id", DataType::UInt32));
+    assert_eq!(schema_vv[0], ("id".into(), DataType::UInt32));
     assert_eq!(schema_vv[1].0, "payload.value");
     let items_vv = vec![
         VecVecWrapper {
@@ -869,7 +878,7 @@ fn test_propagated_type_parameter() {
     };
 
     let schema = OuterPropagating::<f64>::schema().unwrap();
-    let names: Vec<&str> = schema.iter().map(|(n, _)| *n).collect();
+    let names: Vec<&str> = schema.iter().map(|(n, _)| n.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"direct.label"));
     assert!(names.contains(&"direct.payload.value"));

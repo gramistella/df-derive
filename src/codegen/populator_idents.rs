@@ -1,0 +1,57 @@
+use quote::format_ident;
+use syn::Ident;
+
+/// Per-strategy identifier convention for the columnar / vec-anyvalues
+/// populator pipeline.
+///
+/// Names declared here in `primitive_decls` / `nested_decls` are referenced
+/// by name in the per-row push helpers (`generate_primitive_for_columnar_push`,
+/// `generate_nested_for_columnar_push`) and in the finishers
+/// (`primitive_finishers_for_vec_anyvalues`, `nested_finishers_for_vec_anyvalues`,
+/// `nested_columnar_builders`, plus `gen_columnar_builders` over in `strategy`).
+/// Splitting the convention across `format_ident!` calls in each helper
+/// silently breaks generated code on rename — the compiler can't see the
+/// link, only a downstream "use of undeclared name" surfaces it. Funneling
+/// every site through this struct turns rename mistakes into a compile error
+/// at the helper itself.
+pub(super) struct PopulatorIdents;
+
+impl PopulatorIdents {
+    /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar
+    /// field. Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast
+    /// path (see `classify_borrow`).
+    pub(super) fn primitive_buf(idx: usize) -> Ident {
+        format_ident!("__df_derive_buf_{}", idx)
+    }
+
+    /// `Box<dyn ListBuilderTrait>` for `Vec<primitive>` shapes — the typed
+    /// list builder that keeps the inner buffer typed end-to-end.
+    pub(super) fn primitive_list_builder(idx: usize) -> Ident {
+        format_ident!("__df_derive_pv_lb_{}", idx)
+    }
+
+    /// `Vec<Box<dyn ListBuilderTrait>>` — one inner-column builder per inner
+    /// schema entry — for `Vec<Struct>` shapes that didn't take the
+    /// bulk-concrete fast path.
+    pub(super) fn nested_list_builders(idx: usize) -> Ident {
+        format_ident!("__df_derive_nv_lbs_{}", idx)
+    }
+
+    /// `Vec<Vec<AnyValue>>` — one inner-column accumulator per inner schema
+    /// entry — for non-vec nested-struct shapes.
+    pub(super) fn nested_struct_cols(idx: usize) -> Ident {
+        format_ident!("__df_derive_ns_cols_{}", idx)
+    }
+
+    /// Cached `<Inner>::schema()?` for `Vec<Struct>` shapes; paired with
+    /// `nested_list_builders`.
+    pub(super) fn nested_vec_schema(idx: usize) -> Ident {
+        format_ident!("__df_derive_nv_schema_{}", idx)
+    }
+
+    /// Cached `<Inner>::schema()?` for non-vec nested-struct shapes; paired
+    /// with `nested_struct_cols`.
+    pub(super) fn nested_struct_schema(idx: usize) -> Ident {
+        format_ident!("__df_derive_ns_schema_{}", idx)
+    }
+}

@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use super::wrapped_codegen::PopulatorIdents;
+use super::populator_idents::PopulatorIdents;
 
 // Recreate light-weight IR mirrors for internal use to avoid coupling to old FieldKind
 #[derive(Clone)]
@@ -305,7 +305,7 @@ impl RowWiseGenerator for PrimitiveStrategy {
             },
         );
         let p = &self.p;
-        super::wrapped_codegen::generate_primitive_for_series(
+        super::primitive::generate_primitive_for_series(
             name,
             &access,
             &p.base_type,
@@ -337,7 +337,7 @@ impl RowWiseGenerator for PrimitiveStrategy {
                 quote! { self.#index_lit }
             },
         );
-        super::wrapped_codegen::generate_primitive_for_anyvalue(
+        super::primitive::generate_primitive_for_anyvalue(
             &format_ident!("values"),
             &access,
             &p.base_type,
@@ -349,7 +349,7 @@ impl RowWiseGenerator for PrimitiveStrategy {
 
 impl VecAnyvaluesFinisher for PrimitiveStrategy {
     fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        super::wrapped_codegen::primitive_finishers_for_vec_anyvalues(
+        super::primitive::primitive_finishers_for_vec_anyvalues(
             &self.wrappers,
             &self.p.base_type,
             self.p.transform.as_ref(),
@@ -360,7 +360,7 @@ impl VecAnyvaluesFinisher for PrimitiveStrategy {
 
 impl ColumnPopulator for PrimitiveStrategy {
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        super::wrapped_codegen::primitive_decls(
+        super::primitive::primitive_decls(
             &self.wrappers,
             &self.p.base_type,
             self.p.transform.as_ref(),
@@ -379,7 +379,7 @@ impl ColumnPopulator for PrimitiveStrategy {
                 quote! { #it_ident.#index_lit }
             },
         );
-        super::wrapped_codegen::generate_primitive_for_columnar_push(
+        super::primitive::generate_primitive_for_columnar_push(
             &access,
             &self.p.base_type,
             self.p.transform.as_ref(),
@@ -461,7 +461,7 @@ impl NestedStructStrategy {
 impl SchemaProvider for NestedStructStrategy {
     fn gen_schema_entries(&self) -> TokenStream {
         let name = &self.field_name;
-        super::wrapped_codegen::generate_schema_entries_for_struct(
+        super::nested::generate_schema_entries_for_struct(
             &self.n.type_path,
             name,
             has_vec(&self.wrappers),
@@ -482,7 +482,7 @@ impl RowWiseGenerator for NestedStructStrategy {
                 quote! { self.#index_lit }
             },
         );
-        super::wrapped_codegen::generate_nested_for_series(
+        super::nested::generate_nested_for_series(
             &self.n.type_path,
             name,
             &access,
@@ -493,7 +493,7 @@ impl RowWiseGenerator for NestedStructStrategy {
 
     fn gen_empty_series_creation(&self) -> TokenStream {
         let name = &self.field_name;
-        super::wrapped_codegen::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
+        super::nested::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
     }
 
     fn gen_anyvalue_conversion(&self) -> TokenStream {
@@ -507,7 +507,7 @@ impl RowWiseGenerator for NestedStructStrategy {
                 quote! { self.#index_lit }
             },
         );
-        super::wrapped_codegen::generate_nested_for_anyvalue(
+        super::nested::generate_nested_for_anyvalue(
             &self.n.type_path,
             &format_ident!("values"),
             &access,
@@ -519,7 +519,7 @@ impl RowWiseGenerator for NestedStructStrategy {
 
 impl ColumnPopulator for NestedStructStrategy {
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        super::wrapped_codegen::nested_decls(&self.wrappers, &self.n.type_path, idx)
+        super::nested::nested_decls(&self.wrappers, &self.n.type_path, idx)
     }
 
     fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
@@ -533,7 +533,7 @@ impl ColumnPopulator for NestedStructStrategy {
                 quote! { #it_ident.#index_lit }
             },
         );
-        super::wrapped_codegen::generate_nested_for_columnar_push(
+        super::nested::generate_nested_for_columnar_push(
             &self.n.type_path,
             &access,
             &self.wrappers,
@@ -545,13 +545,13 @@ impl ColumnPopulator for NestedStructStrategy {
 
 impl VecAnyvaluesFinisher for NestedStructStrategy {
     fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        super::wrapped_codegen::nested_finishers_for_vec_anyvalues(&self.wrappers, idx)
+        super::nested::nested_finishers_for_vec_anyvalues(&self.wrappers, idx)
     }
 }
 
 impl ColumnarBuilderFinisher for NestedStructStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
-        super::wrapped_codegen::nested_columnar_builders(&self.wrappers, idx, &self.field_name)
+        super::nested::nested_columnar_builders(&self.wrappers, idx, &self.field_name)
     }
 }
 
@@ -591,14 +591,14 @@ impl NestedStructStrategy {
     fn try_bulk_emit(
         &self,
         idx: usize,
-        ctx: super::wrapped_codegen::BulkContext<'_>,
+        ctx: super::bulk::BulkContext<'_>,
     ) -> Option<Vec<TokenStream>> {
         let ty = &self.n.type_path;
         let columnar_trait = &self.n.columnar_trait;
         let to_df_trait = &self.n.to_df_trait;
         let access = self.it_access();
         let emit = match self.wrappers.as_slice() {
-            [] if self.n.is_generic => super::wrapped_codegen::gen_bulk_generic_leaf(
+            [] if self.n.is_generic => super::bulk::gen_bulk_generic_leaf(
                 ty,
                 columnar_trait,
                 to_df_trait,
@@ -606,17 +606,15 @@ impl NestedStructStrategy {
                 &access,
                 ctx,
             ),
-            [Wrapper::Option] if self.n.is_generic => {
-                super::wrapped_codegen::gen_bulk_generic_option(
-                    ty,
-                    columnar_trait,
-                    to_df_trait,
-                    idx,
-                    &access,
-                    ctx,
-                )
-            }
-            [Wrapper::Vec] if self.n.is_generic => super::wrapped_codegen::gen_bulk_generic_vec(
+            [Wrapper::Option] if self.n.is_generic => super::bulk::gen_bulk_generic_option(
+                ty,
+                columnar_trait,
+                to_df_trait,
+                idx,
+                &access,
+                ctx,
+            ),
+            [Wrapper::Vec] if self.n.is_generic => super::bulk::gen_bulk_generic_vec(
                 ty,
                 columnar_trait,
                 to_df_trait,
@@ -625,7 +623,7 @@ impl NestedStructStrategy {
                 ctx,
             ),
             [Wrapper::Vec] => {
-                super::wrapped_codegen::gen_bulk_concrete_vec(ty, to_df_trait, idx, &access, ctx)
+                super::bulk::gen_bulk_concrete_vec(ty, to_df_trait, idx, &access, ctx)
             }
             _ => return None,
         };
@@ -636,16 +634,13 @@ impl NestedStructStrategy {
 impl ColumnarBulkEmitter for NestedStructStrategy {
     fn gen_bulk_columnar_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
         let parent_name = self.field_name.as_str();
-        self.try_bulk_emit(
-            idx,
-            super::wrapped_codegen::BulkContext::Columnar { parent_name },
-        )
+        self.try_bulk_emit(idx, super::bulk::BulkContext::Columnar { parent_name })
     }
 }
 
 impl VecAnyvaluesBulkEmitter for NestedStructStrategy {
     fn gen_bulk_vec_anyvalues_emit(&self, idx: usize) -> Option<Vec<TokenStream>> {
-        self.try_bulk_emit(idx, super::wrapped_codegen::BulkContext::VecAnyvalues)
+        self.try_bulk_emit(idx, super::bulk::BulkContext::VecAnyvalues)
     }
 }
 

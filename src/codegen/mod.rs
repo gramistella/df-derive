@@ -1,10 +1,13 @@
+mod bulk;
 mod columnar_impl;
 mod common;
 mod helpers;
+mod nested;
+mod populator_idents;
+mod primitive;
 mod strategy;
 mod trait_impl;
 mod type_registry;
-mod wrapped_codegen;
 mod wrapper_processor;
 
 use crate::ir::StructIR;

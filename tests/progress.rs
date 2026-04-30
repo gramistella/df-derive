@@ -28,6 +28,8 @@ fn tests() {
     t.pass("tests/pass/23-as-str-redundant-on-string.rs");
 
     // These files should fail to compile.
+    t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
+    t.compile_fail("tests/fail/97-fail-derive-on-enum.rs");
     t.compile_fail("tests/fail/98-fail-unsupported-type.rs");
     t.compile_fail("tests/fail/99-fail-as-str-and-as-string-conflict.rs");
     t.compile_fail("tests/fail/100-fail-unknown-field-attribute.rs");

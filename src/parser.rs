@@ -47,72 +47,81 @@ fn parse_attributes(
     Ok(attrs)
 }
 
-/// Parse a `syn::DeriveInput` into the new IR used by the next-gen codegen.
+/// Parse a `syn::DeriveInput` into the IR consumed by codegen.
 ///
-/// This function is intentionally infallible for unsupported inputs (e.g., enums
-/// or tuple structs) to avoid breaking existing error reporting flow. In such
-/// cases it produces an empty `StructIR` that is currently unused by codegen.
+/// Returns a `syn::Error` for non-struct inputs (enums, unions). Tuple structs
+/// and unit structs are supported.
 pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     let name = input.ident.clone();
     let generics = input.generics.clone();
     let generic_params: Vec<Ident> = generics.type_params().map(|tp| tp.ident.clone()).collect();
     let mut fields_ir: Vec<FieldIR> = Vec::new();
 
-    if let Data::Struct(data_struct) = &input.data {
-        match &data_struct.fields {
-            Fields::Named(named) => {
-                for field in &named.named {
-                    let field_name_ident = field
-                        .ident
-                        .as_ref()
-                        .expect("named fields must have ident")
-                        .clone();
+    let data_struct = match &input.data {
+        Data::Struct(data_struct) => data_struct,
+        Data::Enum(data_enum) => {
+            return Err(syn::Error::new(
+                data_enum.enum_token.span,
+                "df-derive cannot be derived on enums; derive `ToDataFrame` on a struct \
+                 and use `#[df_derive(as_string)]` on enum fields",
+            ));
+        }
+        Data::Union(data_union) => {
+            return Err(syn::Error::new(
+                data_union.union_token.span,
+                "df-derive cannot be derived on unions; derive `ToDataFrame` on a struct",
+            ));
+        }
+    };
 
-                    let display_name = field_name_ident.to_string();
-                    let attrs = parse_attributes(field, &display_name)?;
-                    let analyzed =
-                        analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
+    match &data_struct.fields {
+        Fields::Named(named) => {
+            for field in &named.named {
+                let field_name_ident = field
+                    .ident
+                    .as_ref()
+                    .expect("named fields must have ident")
+                    .clone();
 
-                    let base_type = analyzed.base.clone();
-                    let transform = analyzed.transform.clone();
-                    fields_ir.push(FieldIR {
-                        name: field_name_ident,
-                        field_index: None,
-                        wrappers: analyzed.wrappers.clone(),
-                        base_type,
-                        transform,
-                        field_ty: field.ty.clone(),
-                    });
-                }
-            }
-            Fields::Unit => {
-                // Unit structs have no fields, so no fields IR needed.
-            }
-            Fields::Unnamed(unnamed) => {
-                // Handle tuple structs by creating field IR for each unnamed field
-                for (index, field) in unnamed.unnamed.iter().enumerate() {
-                    let field_name_ident = format_ident!("field_{}", index);
+                let display_name = field_name_ident.to_string();
+                let attrs = parse_attributes(field, &display_name)?;
+                let analyzed =
+                    analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
 
-                    let display_name = field_name_ident.to_string();
-                    let attrs = parse_attributes(field, &display_name)?;
-                    let analyzed =
-                        analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
-
-                    let base_type = analyzed.base.clone();
-                    let transform = analyzed.transform.clone();
-                    fields_ir.push(FieldIR {
-                        name: field_name_ident,
-                        field_index: Some(index),
-                        wrappers: analyzed.wrappers.clone(),
-                        base_type,
-                        transform,
-                        field_ty: field.ty.clone(),
-                    });
-                }
+                let base_type = analyzed.base.clone();
+                let transform = analyzed.transform.clone();
+                fields_ir.push(FieldIR {
+                    name: field_name_ident,
+                    field_index: None,
+                    wrappers: analyzed.wrappers.clone(),
+                    base_type,
+                    transform,
+                    field_ty: field.ty.clone(),
+                });
             }
         }
-    } else {
-        // Non-struct inputs produce an empty IR for now.
+        Fields::Unit => {}
+        Fields::Unnamed(unnamed) => {
+            for (index, field) in unnamed.unnamed.iter().enumerate() {
+                let field_name_ident = format_ident!("field_{}", index);
+
+                let display_name = field_name_ident.to_string();
+                let attrs = parse_attributes(field, &display_name)?;
+                let analyzed =
+                    analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
+
+                let base_type = analyzed.base.clone();
+                let transform = analyzed.transform.clone();
+                fields_ir.push(FieldIR {
+                    name: field_name_ident,
+                    field_index: Some(index),
+                    wrappers: analyzed.wrappers.clone(),
+                    base_type,
+                    transform,
+                    field_ty: field.ty.clone(),
+                });
+            }
+        }
     }
 
     Ok(StructIR {

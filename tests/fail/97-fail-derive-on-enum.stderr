@@ -1,0 +1,5 @@
+error: df-derive cannot be derived on enums; derive `ToDataFrame` on a struct and use `#[df_derive(as_string)]` on enum fields
+ --> tests/fail/97-fail-derive-on-enum.rs:6:1
+  |
+6 | enum Status {
+  | ^^^^

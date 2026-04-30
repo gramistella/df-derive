@@ -1,4 +1,4 @@
-use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_vec, vec_count};
 use crate::type_analysis::{
     DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
 };
@@ -127,7 +127,7 @@ fn base_and_transform_to_rust_and_dtype(
 }
 
 fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream {
-    if wrappers.iter().any(|w| matches!(w, Wrapper::Vec)) {
+    if has_vec(wrappers) {
         quote! { polars::prelude::DataType::List(Box::new(#element_dtype)) }
     } else {
         quote! { #element_dtype }
@@ -156,12 +156,9 @@ pub fn outer_list_inner_dtype(
     wrappers: &[Wrapper],
 ) -> TokenStream {
     let (_, element_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
-    let vec_count = wrappers
-        .iter()
-        .filter(|w| matches!(w, Wrapper::Vec))
-        .count();
+    let extra_layers = vec_count(wrappers).saturating_sub(1);
     let mut dt = element_dtype;
-    for _ in 0..vec_count.saturating_sub(1) {
+    for _ in 0..extra_layers {
         dt = quote! { polars::prelude::DataType::List(Box::new(#dt)) };
     }
     dt

@@ -1,4 +1,4 @@
-use crate::ir::{BaseType, PrimitiveTransform, StructIR, Wrapper};
+use crate::ir::{BaseType, PrimitiveTransform, StructIR, Wrapper, has_vec};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
@@ -392,7 +392,7 @@ impl ColumnPopulator for PrimitiveStrategy {
 impl ColumnarBuilderFinisher for PrimitiveStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
-        if self.wrappers.iter().any(|w| matches!(w, Wrapper::Vec)) {
+        if has_vec(&self.wrappers) {
             // The list builder was constructed with the correct inner dtype
             // (`outer_list_inner_dtype`), so the finished series already has
             // the schema-declared dtype — no cast needed here.
@@ -464,7 +464,7 @@ impl SchemaProvider for NestedStructStrategy {
         super::wrapped_codegen::generate_schema_entries_for_struct(
             &self.n.type_path,
             name,
-            self.wrappers.iter().any(|w| matches!(w, Wrapper::Vec)),
+            has_vec(&self.wrappers),
         )
     }
 }

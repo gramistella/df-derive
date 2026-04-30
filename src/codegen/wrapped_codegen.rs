@@ -1,14 +1,24 @@
-use crate::ir::{BaseType, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-fn is_vec(wrappers: &[Wrapper]) -> bool {
-    wrappers.iter().any(|w| matches!(w, Wrapper::Vec))
-}
-
-fn is_option(wrappers: &[Wrapper]) -> bool {
-    wrappers.iter().any(|w| matches!(w, Wrapper::Option))
+/// Emit a runtime loop that wraps `__df_derive_wrapped: DataType` in `layers`
+/// `List<>` envelopes. Returns an empty token stream when `layers == 0` so the
+/// caller does not emit `for _ in 0..0`, which trips
+/// `clippy::reversed_empty_ranges` inside the user's expanded code.
+fn gen_wrap_dtype_layers(layers: usize) -> TokenStream {
+    if layers == 0 {
+        TokenStream::new()
+    } else {
+        quote! {
+            for _ in 0..#layers {
+                __df_derive_wrapped = polars::prelude::DataType::List(
+                    ::std::boxed::Box::new(__df_derive_wrapped),
+                );
+            }
+        }
+    }
 }
 
 /// Per-strategy identifier convention for the columnar / vec-anyvalues
@@ -172,7 +182,7 @@ fn gen_primitive_vec_inner_series(
     // Resolved at codegen time, so emit the wrap layers as nested tokens
     // rather than a runtime `for _ in 0..tail_vec_count` (which would fire
     // `clippy::reversed_empty_ranges` for `tail_vec_count == 0`).
-    let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
+    let tail_vec_count = vec_count(tail);
     let mut empty_dtype = elem_dtype.clone();
     for _ in 0..tail_vec_count {
         empty_dtype =
@@ -216,188 +226,133 @@ fn gen_primitive_vec_inner_series(
     }}
 }
 
-/// Build tokens that evaluate to `Vec<polars::prelude::AnyValue>`, where each element
-/// is a `AnyValue::List(inner_series)` for one nested struct field across the vector.
-#[allow(clippy::too_many_lines)]
+/// Build tokens that evaluate to `Vec<polars::prelude::AnyValue>`, where each
+/// element is `AnyValue::List(inner_series)` for one inner schema column of
+/// `ty` aggregated across the outer `Vec`. Dispatches to one of three
+/// implementations based on the wrapper shape inside the outer Vec:
+///
+/// - `Vec<Struct>` (tail empty): inherent fast path on the inner type.
+/// - `Vec<Option<Struct>>` (tail = `[Option]`): typed `Series::take` scatter,
+///   no per-row `AnyValue` round-trip.
+/// - Deeper nestings (`Vec<Vec<Struct>>` etc.): per-element `AnyValue`
+///   round-trip aggregated into typed inner Series.
 fn gen_nested_vec_to_list_anyvalues(
     ty: &TokenStream,
     acc: &TokenStream,
     tail: &[Wrapper],
 ) -> TokenStream {
-    if tail.is_empty() {
-        // Fast path: Vec<Struct>
-        quote! { #ty::__df_derive_vec_to_inner_list_values(&(#acc))? }
-    } else if tail.len() == 1 && matches!(tail[0], Wrapper::Option) {
-        // Semi-optimized: Vec<Option<Struct>>. Build the inner DataFrame
-        // once over the non-null subset, then per inner column scatter back
-        // over the original `Vec<Option<Struct>>` positions via
-        // `Series::take(&IdxCa)` — typed Series in, typed Series out, no
-        // `Vec<AnyValue>` round-trip (which previously paid for an
-        // AnyValue dispatch per outer position plus an inferring scan when
-        // the outer Series was rebuilt).
-        let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
-        let pos_ident = syn::Ident::new("__df_derive_pos", proc_macro2::Span::call_site());
-        let nn_ident = syn::Ident::new("__df_derive_nn", proc_macro2::Span::call_site());
-        let vals_ident = syn::Ident::new("__df_derive_vals", proc_macro2::Span::call_site());
-        let take_ident = syn::Ident::new("__df_derive_take", proc_macro2::Span::call_site());
-        quote! {{
-            let #schema_ident = #ty::schema()?;
-            let mut #pos_ident: ::std::vec::Vec<::std::option::Option<polars::prelude::IdxSize>> =
-                ::std::vec::Vec::with_capacity((#acc).len());
-            let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
-            for __df_derive_maybe in (#acc).iter() {
-                match __df_derive_maybe {
-                    ::std::option::Option::Some(v) => {
-                        #pos_ident.push(::std::option::Option::Some(
-                            #nn_ident.len() as polars::prelude::IdxSize,
-                        ));
-                        #nn_ident.push((*v).clone());
-                    }
-                    ::std::option::Option::None => #pos_ident.push(::std::option::Option::None),
-                }
-            }
-            if #nn_ident.is_empty() {
-                // All-None path: produce one outer-list cell per inner schema
-                // column, each a typed-null Series of length `(#acc).len()`.
-                // Pre-typing avoids feeding `dtype Null` into a list builder
-                // that expects e.g. `list[Float64]` (which `ListPrimitiveChunkedBuilder::append_series` rejects).
-                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
-                    ::std::vec::Vec::with_capacity(#schema_ident.len());
-                for (_inner_name, __df_derive_inner_dtype) in #schema_ident.iter() {
-                    let inner = polars::prelude::Series::new_empty("".into(), __df_derive_inner_dtype)
-                        .extend_constant(polars::prelude::AnyValue::Null, (#acc).len())?;
-                    __df_derive_out.push(polars::prelude::AnyValue::List(inner));
-                }
-                __df_derive_out
-            } else {
-                let #vals_ident = #ty::__df_derive_vec_to_inner_list_values(&#nn_ident)?;
-                let #take_ident: polars::prelude::IdxCa =
-                    <polars::prelude::IdxCa as polars::prelude::NewChunkedArray<_, _>>::from_iter_options(
-                        "".into(),
-                        #pos_ident.iter().copied(),
-                    );
-                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
-                    ::std::vec::Vec::with_capacity(#schema_ident.len());
-                for j in 0..#schema_ident.len() {
-                    let inner = match &#vals_ident[j] {
-                        polars::prelude::AnyValue::List(__df_derive_inner_full) => {
-                            __df_derive_inner_full.take(&#take_ident)?
-                        }
-                        _ => return ::std::result::Result::Err(polars::prelude::polars_err!(
-                            ComputeError: "df-derive: expected list AnyValue from __df_derive_vec_to_inner_list_values (codegen invariant violation)"
-                        )),
-                    };
-                    __df_derive_out.push(polars::prelude::AnyValue::List(inner));
-                }
-                __df_derive_out
-            }
-        }}
-    } else {
-        // Fallback: recursive per-element. Used for rarer nestings
-        // (e.g. `Vec<Vec<Struct>>`). We accept a per-element AnyValue
-        // round-trip here — the outer aggregation still uses typed Series,
-        // and we explicitly type the empty case so list builders that demand
-        // a specific inner dtype don't reject an inferred-Null Series.
-        let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
-        let cols_buf_ident =
-            syn::Ident::new("__df_derive_cols_buf", proc_macro2::Span::call_site());
-        let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
-        let per_item_vals_ident =
-            syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
+    match tail {
+        [] => gen_nested_vec_anyvalues_flat(ty, acc),
+        [Wrapper::Option] => gen_nested_vec_anyvalues_option(ty, acc),
+        _ => gen_recursive_per_element_to_list_anyvalues(ty, acc, tail, |elem, vals| {
+            generate_nested_for_anyvalue(ty, vals, &quote! { #elem }, tail, false)
+        }),
+    }
+}
 
-        let recur_elem = || {
-            let elem_access = quote! { #elem_ident };
-            super::wrapped_codegen::generate_nested_for_anyvalue(
-                ty,
-                &per_item_vals_ident,
-                &elem_access,
-                tail,
-                false,
-            )
-        };
-        let recur_elem_ts = recur_elem();
+/// Fast path for `Vec<Struct>`: defer to the inherent helper on the inner
+/// type, which already produces the typed `AnyValue::List` cells without any
+/// per-row round-trip.
+fn gen_nested_vec_anyvalues_flat(ty: &TokenStream, acc: &TokenStream) -> TokenStream {
+    quote! { #ty::__df_derive_vec_to_inner_list_values(&(#acc))? }
+}
 
-        // Each `Vec` in `tail` adds one extra `List<>` layer to the
-        // inferred dtype of the inner Series rebuilt below. Skip the wrap
-        // loop in generated tokens when `tail_vec_count == 0` so we don't
-        // emit a `for _ in 0..0` that trips `clippy::reversed_empty_ranges`.
-        let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
-        let wrap_extra_for_empty = if tail_vec_count == 0 {
-            quote! {}
+/// Semi-optimized path for `Vec<Option<Struct>>`. Builds the inner `DataFrame`
+/// once over the non-null subset, then per inner column scatters back over the
+/// original positions via `Series::take(&IdxCa)`. Typed Series in, typed
+/// Series out — no `Vec<AnyValue>` round-trip (which previously paid for an
+/// `AnyValue` dispatch per outer position plus an inferring scan when the outer
+/// Series was rebuilt).
+fn gen_nested_vec_anyvalues_option(ty: &TokenStream, acc: &TokenStream) -> TokenStream {
+    let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
+    let pos_ident = syn::Ident::new("__df_derive_pos", proc_macro2::Span::call_site());
+    let nn_ident = syn::Ident::new("__df_derive_nn", proc_macro2::Span::call_site());
+    let vals_ident = syn::Ident::new("__df_derive_vals", proc_macro2::Span::call_site());
+    let take_ident = syn::Ident::new("__df_derive_take", proc_macro2::Span::call_site());
+    quote! {{
+        let #schema_ident = #ty::schema()?;
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<polars::prelude::IdxSize>> =
+            ::std::vec::Vec::with_capacity((#acc).len());
+        let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
+        for __df_derive_maybe in (#acc).iter() {
+            match __df_derive_maybe {
+                ::std::option::Option::Some(v) => {
+                    #pos_ident.push(::std::option::Option::Some(
+                        #nn_ident.len() as polars::prelude::IdxSize,
+                    ));
+                    #nn_ident.push((*v).clone());
+                }
+                ::std::option::Option::None => #pos_ident.push(::std::option::Option::None),
+            }
+        }
+        if #nn_ident.is_empty() {
+            // All-None path: produce one outer-list cell per inner schema
+            // column, each a typed-null Series of length `(#acc).len()`.
+            // Pre-typing avoids feeding `dtype Null` into a list builder
+            // that expects e.g. `list[Float64]` (which
+            // `ListPrimitiveChunkedBuilder::append_series` rejects).
+            let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
+                ::std::vec::Vec::with_capacity(#schema_ident.len());
+            for (_inner_name, __df_derive_inner_dtype) in #schema_ident.iter() {
+                let inner = polars::prelude::Series::new_empty("".into(), __df_derive_inner_dtype)
+                    .extend_constant(polars::prelude::AnyValue::Null, (#acc).len())?;
+                __df_derive_out.push(polars::prelude::AnyValue::List(inner));
+            }
+            __df_derive_out
         } else {
-            let count_lit = tail_vec_count;
-            quote! {
-                for _ in 0..#count_lit {
-                    __df_derive_wrapped = polars::prelude::DataType::List(
-                        ::std::boxed::Box::new(__df_derive_wrapped),
-                    );
-                }
-            }
-        };
-
-        quote! {{
-            let #schema_ident = #ty::schema()?;
-            let mut #cols_buf_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> = #schema_ident.iter().map(|_| ::std::vec::Vec::with_capacity((#acc).len())).collect();
-            for #elem_ident in (#acc).iter() {
-                let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
-                { #recur_elem_ts }
-                for (j, v) in #per_item_vals_ident.into_iter().enumerate() { #cols_buf_ident[j].push(v); }
-            }
-            let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
-            for (j, (_inner_name, __df_derive_inner_dtype)) in #schema_ident.iter().enumerate() {
-                let inner = if #cols_buf_ident[j].is_empty() {
-                    let mut __df_derive_wrapped = __df_derive_inner_dtype.clone();
-                    #wrap_extra_for_empty
-                    polars::prelude::Series::new_empty("".into(), &__df_derive_wrapped)
-                } else {
-                    <polars::prelude::Series as polars::prelude::NamedFrom<_, _>>::new("".into(), &#cols_buf_ident[j])
+            let #vals_ident = #ty::__df_derive_vec_to_inner_list_values(&#nn_ident)?;
+            let #take_ident: polars::prelude::IdxCa =
+                <polars::prelude::IdxCa as polars::prelude::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #pos_ident.iter().copied(),
+                );
+            let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
+                ::std::vec::Vec::with_capacity(#schema_ident.len());
+            for j in 0..#schema_ident.len() {
+                let inner = match &#vals_ident[j] {
+                    polars::prelude::AnyValue::List(__df_derive_inner_full) => {
+                        __df_derive_inner_full.take(&#take_ident)?
+                    }
+                    _ => return ::std::result::Result::Err(polars::prelude::polars_err!(
+                        ComputeError: "df-derive: expected list AnyValue from __df_derive_vec_to_inner_list_values (codegen invariant violation)"
+                    )),
                 };
                 __df_derive_out.push(polars::prelude::AnyValue::List(inner));
             }
             __df_derive_out
-        }}
-    }
+        }
+    }}
 }
 
-/// Trait-only equivalent of `gen_nested_vec_to_list_anyvalues` for fields whose
-/// base type is a generic type parameter. Avoids any inherent helpers and uses
-/// only `ToDataFrame` / `Columnar` trait methods.
-fn gen_generic_vec_to_list_anyvalues(
+/// Recursive per-element machinery shared by the deeper nested-vec shapes and
+/// the trait-only generic-vec path.
+///
+/// Per outer element, `build_recur_elem(elem, vals)` is invoked once to
+/// produce the token stream that pushes one `AnyValue` per inner schema column
+/// onto the runtime `vals` accumulator. Those values are scattered into a
+/// per-column buffer that becomes the typed inner Series wrapped in
+/// `AnyValue::List`.
+///
+/// Each `Vec` in `tail` adds one `List<>` layer to the inferred dtype of the
+/// inner Series rebuilt below; the empty-input branch wraps the schema-declared
+/// inner dtype the same number of times so a downstream typed list builder
+/// doesn't reject the empty Series with `SchemaMismatch`.
+fn gen_recursive_per_element_to_list_anyvalues<F>(
     ty: &TokenStream,
     acc: &TokenStream,
     tail: &[Wrapper],
-) -> TokenStream {
+    build_recur_elem: F,
+) -> TokenStream
+where
+    F: FnOnce(&Ident, &Ident) -> TokenStream,
+{
     let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
     let cols_buf_ident = syn::Ident::new("__df_derive_cols_buf", proc_macro2::Span::call_site());
     let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
     let per_item_vals_ident =
         syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
-
-    let recur_elem_ts =
-        generate_generic_for_anyvalue(ty, &per_item_vals_ident, &quote! { #elem_ident }, tail);
-
-    // Each `Vec` in `tail` adds one `List<>` layer to the inferred dtype of
-    // the inner Series rebuilt below (each per-element recursion pushes an
-    // `AnyValue::List(...)` into `cols_buf`). The empty-input branch has to
-    // produce that same wrapped dtype explicitly so a downstream typed list
-    // builder doesn't reject the empty Series with `SchemaMismatch`.
-    //
-    // The wrap loop runs at macro time (not in generated tokens) so we don't
-    // emit a `for _ in 0..0` for a zero-Vec tail — that would trip
-    // `clippy::reversed_empty_ranges` inside the user's expanded code.
-    let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
-    let wrap_extra_for_empty = if tail_vec_count == 0 {
-        quote! {}
-    } else {
-        let count_lit = tail_vec_count;
-        quote! {
-            for _ in 0..#count_lit {
-                __df_derive_wrapped = polars::prelude::DataType::List(
-                    ::std::boxed::Box::new(__df_derive_wrapped),
-                );
-            }
-        }
-    };
+    let recur_elem_ts = build_recur_elem(&elem_ident, &per_item_vals_ident);
+    let wrap_extra_for_empty = gen_wrap_dtype_layers(vec_count(tail));
 
     quote! {{
         let #schema_ident = #ty::schema()?;
@@ -421,6 +376,20 @@ fn gen_generic_vec_to_list_anyvalues(
         }
         __df_derive_out
     }}
+}
+
+/// Trait-only equivalent of `gen_nested_vec_to_list_anyvalues` for fields whose
+/// base type is a generic type parameter. Avoids any inherent helpers and uses
+/// only `ToDataFrame` / `Columnar` trait methods. Always recursive — there's
+/// no inherent fast path available behind a trait bound.
+fn gen_generic_vec_to_list_anyvalues(
+    ty: &TokenStream,
+    acc: &TokenStream,
+    tail: &[Wrapper],
+) -> TokenStream {
+    gen_recursive_per_element_to_list_anyvalues(ty, acc, tail, |elem, vals| {
+        generate_generic_for_anyvalue(ty, vals, &quote! { #elem }, tail)
+    })
 }
 
 /// Trait-only on-leaf body for converting a single nested value into `AnyValues`
@@ -828,7 +797,6 @@ pub fn gen_bulk_concrete_vec(
 
 // --- Primitive: context-specific generators ---
 
-#[allow(clippy::too_many_lines)]
 pub fn generate_primitive_for_series(
     series_name: &str,
     access: &TokenStream,
@@ -883,7 +851,7 @@ pub fn generate_primitive_for_series(
     };
 
     let on_option_none = |tail: &[Wrapper]| {
-        let tail_has_vec = tail.iter().any(|w| matches!(w, Wrapper::Vec));
+        let tail_has_vec = has_vec(tail);
         if tail_has_vec {
             quote! {
                 vec![{
@@ -930,7 +898,7 @@ pub fn generate_primitive_for_columnar_push(
     // The borrows live as long as `items`, which outlives the buffer.
     if let Some(kind) = classify_borrow(base_type, transform, wrappers) {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
-        let opt = is_option(wrappers);
+        let opt = has_option(wrappers);
         return match kind {
             BorrowKind::StringLeaf => {
                 if opt {
@@ -959,7 +927,7 @@ pub fn generate_primitive_for_columnar_push(
     let _dtype = mapping.full_dtype.clone();
     let _elem_rust_ty = mapping.rust_element_type;
     let _do_cast = crate::codegen::type_registry::needs_cast(transform);
-    let opt_scalar = is_option(wrappers) && !is_vec(wrappers);
+    let opt_scalar = has_option(wrappers) && !has_vec(wrappers);
 
     let on_leaf = |acc: &TokenStream| {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
@@ -972,7 +940,7 @@ pub fn generate_primitive_for_columnar_push(
     };
 
     let on_option_none = |tail: &[Wrapper]| {
-        let tail_has_vec = tail.iter().any(|w| matches!(w, Wrapper::Vec));
+        let tail_has_vec = has_vec(tail);
         if tail_has_vec {
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             quote! { polars::prelude::ListBuilderTrait::append_null(&mut *#lb_ident); }
@@ -1066,7 +1034,6 @@ pub fn generate_nested_for_series(
     wrappers: &[Wrapper],
     is_generic: bool,
 ) -> TokenStream {
-    #![allow(clippy::too_many_lines)]
     let ty = type_path.clone();
 
     let on_leaf = |acc: &TokenStream| {
@@ -1075,7 +1042,7 @@ pub fn generate_nested_for_series(
     };
 
     let on_option_none = |tail: &[Wrapper]| {
-        let as_list_none = tail.iter().any(|w| matches!(w, Wrapper::Vec));
+        let as_list_none = has_vec(tail);
         generate_null_series_for_struct(&ty, series_name, as_list_none)
     };
 
@@ -1118,7 +1085,7 @@ pub fn generate_nested_for_columnar_push(
     is_generic: bool,
 ) -> TokenStream {
     let ty = type_path.clone();
-    let vec = is_vec(wrappers);
+    let vec = has_vec(wrappers);
 
     // For non-vec shapes the populator is `Vec<Vec<AnyValue>>` (one inner
     // Vec per inner schema column, accumulating one AnyValue per outer row).
@@ -1258,8 +1225,8 @@ pub fn primitive_decls(
     idx: usize,
 ) -> Vec<TokenStream> {
     let mut decls: Vec<TokenStream> = Vec::new();
-    let opt = is_option(wrappers);
-    let vec = is_vec(wrappers);
+    let opt = has_option(wrappers);
+    let vec = has_vec(wrappers);
 
     // Borrowing fast path for `String` / `Option<String>` and any base type
     // with `as_str` (`AsRef<str>` impl): a `Vec<&str>` (or
@@ -1330,7 +1297,7 @@ pub fn primitive_finishers_for_vec_anyvalues(
     transform: Option<&PrimitiveTransform>,
     idx: usize,
 ) -> TokenStream {
-    let vec = is_vec(wrappers);
+    let vec = has_vec(wrappers);
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let needs_cast = crate::codegen::type_registry::needs_cast(transform);
     if vec {
@@ -1359,12 +1326,12 @@ pub fn nested_empty_series_row(
     name: &str,
     wrappers: &[Wrapper],
 ) -> TokenStream {
-    generate_empty_series_for_struct(type_path, name, is_vec(wrappers))
+    generate_empty_series_for_struct(type_path, name, has_vec(wrappers))
 }
 
 pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -> Vec<TokenStream> {
     let mut decls: Vec<TokenStream> = Vec::new();
-    let vec = is_vec(wrappers);
+    let vec = has_vec(wrappers);
     if vec {
         // Vec<Struct> shapes that didn't take the bulk-concrete fast path
         // (i.e. `Vec<Option<Struct>>`, `Vec<Vec<Struct>>`, etc.). Per parent
@@ -1385,26 +1352,7 @@ pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -
         // slice with a `SchemaMismatch`.
         let schema_ident = PopulatorIdents::nested_vec_schema(idx);
         let lbs_ident = PopulatorIdents::nested_list_builders(idx);
-        let extra_list_layers = wrappers
-            .iter()
-            .filter(|w| matches!(w, Wrapper::Vec))
-            .count()
-            .saturating_sub(1);
-        // Emit the wrap loop only when there's something to wrap. `for _ in
-        // 0..0` is technically fine but trips `clippy::reversed_empty_ranges`
-        // inside the user's monomorphized code, which we can't easily silence
-        // from a macro without leaking attribute annotations into user types.
-        let wrap_extra = if extra_list_layers == 0 {
-            quote! {}
-        } else {
-            quote! {
-                for _ in 0..#extra_list_layers {
-                    __df_derive_wrapped = polars::prelude::DataType::List(
-                        ::std::boxed::Box::new(__df_derive_wrapped),
-                    );
-                }
-            }
-        };
+        let wrap_extra = gen_wrap_dtype_layers(vec_count(wrappers).saturating_sub(1));
         decls.push(quote! { let #schema_ident = #type_path::schema()?; });
         decls.push(quote! {
             let mut #lbs_ident: ::std::vec::Vec<
@@ -1439,7 +1387,7 @@ pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -
 }
 
 pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> TokenStream {
-    let vec = is_vec(wrappers);
+    let vec = has_vec(wrappers);
     let schema_ident = if vec {
         PopulatorIdents::nested_vec_schema(idx)
     } else {
@@ -1471,7 +1419,7 @@ pub fn nested_columnar_builders(
     idx: usize,
     field_name: &str,
 ) -> Vec<TokenStream> {
-    let vec = is_vec(wrappers);
+    let vec = has_vec(wrappers);
     let schema_ident = if vec {
         PopulatorIdents::nested_vec_schema(idx)
     } else {

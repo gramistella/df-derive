@@ -13,15 +13,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         return quote! {
             impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
                 fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
-                    let dummy_series = <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                        "_dummy".into(),
-                        &[0i32],
-                    );
-                    let mut df_with_row = #pp::DataFrame::new_infer_height(
-                        ::std::vec![dummy_series.into()],
-                    )?;
-                    df_with_row.drop_in_place("_dummy")?;
-                    ::std::result::Result::Ok(df_with_row)
+                    Self::__df_derive_columnar_from_refs(&[self])
                 }
 
                 fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {
@@ -36,10 +28,6 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     }
 
     let strategies = super::strategy::build_strategies(ir, config);
-    let series_creations: Vec<TokenStream> = strategies
-        .iter()
-        .map(super::strategy::Strategy::gen_series_creation)
-        .collect();
     let empty_series_creations: Vec<TokenStream> = strategies
         .iter()
         .map(super::strategy::Strategy::gen_empty_series_creation)
@@ -49,14 +37,25 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         .map(super::strategy::Strategy::gen_schema_entries)
         .collect();
 
+    // `to_dataframe(&self)` delegates to the inherent columnar helper with a
+    // single-element ref slice. This is the one source of truth for the
+    // row-shape logic — there is no parallel per-row codegen path. The
+    // bulk-emit branches for nested-leaf, `Option<Inner>`, and `Vec<Inner>`
+    // shapes inside `__df_derive_columnar_from_refs` keep the N=1 cost
+    // within ~10% of the previous specialized per-row path while removing a
+    // whole second family of strategy methods (`gen_series_creation`,
+    // `gen_anyvalue_conversion`, the `__df_derive_to_anyvalues` and
+    // `__df_derive_collect_vec_as_prefixed_list_series` inherent helpers).
+    //
+    // `empty_dataframe` and `schema` keep their own codegen because they
+    // never take a `&self` — they're shape-only operations. Routing
+    // `empty_dataframe` through `__df_derive_columnar_from_refs(&[])` would
+    // recurse, since that helper delegates to `empty_dataframe` on empty
+    // input.
     quote! {
         impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
-                let mut all_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-                #(
-                    all_series.extend(#series_creations);
-                )*
-                #pp::DataFrame::new_infer_height(all_series)
+                Self::__df_derive_columnar_from_refs(&[self])
             }
 
             fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {

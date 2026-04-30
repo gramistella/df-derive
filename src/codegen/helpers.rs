@@ -67,51 +67,8 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
         })
         .collect();
 
-    let collect_vec_impl = quote! {
-            #[doc(hidden)]
-            pub fn __df_derive_collect_vec_as_prefixed_list_series(items: &[Self], column_name: &str) -> #pp::PolarsResult<::std::vec::Vec<#pp::Column>> {
-                if items.is_empty() {
-                    let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-                    for (inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
-                        let prefixed = ::std::format!("{}.{}", column_name, inner_name);
-                        let inner_empty = #pp::Series::new_empty("".into(), &inner_dtype);
-                        let list_val = #pp::AnyValue::List(inner_empty);
-                        let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                            prefixed.as_str().into(),
-                            &[list_val],
-                        );
-                        columns.push(s.into());
-                    }
-                    return ::std::result::Result::Ok(columns);
-                }
-
-                let values: ::std::vec::Vec<#pp::AnyValue> =
-                    Self::__df_derive_vec_to_inner_list_values(items)?;
-                let schema = <Self as #to_df_trait>::schema()?;
-                let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::with_capacity(schema.len());
-                let mut iter = values.into_iter();
-                for (col_name, _dtype) in schema.into_iter() {
-                    let prefixed_name = ::std::format!("{}.{}", column_name, col_name);
-                    let list_val = iter.next().ok_or_else(|| #pp::polars_err!(
-                        ComputeError: "df-derive: __df_derive_vec_to_inner_list_values produced fewer values than schema columns (codegen invariant violation)"
-                    ))?;
-                    let list_series = <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                        prefixed_name.as_str().into(),
-                        &[list_val],
-                    );
-                    nested_series.push(list_series.into());
-                }
-                ::std::result::Result::Ok(nested_series)
-        }
-    };
-
     let (vec_values_decls, vec_values_per_item, vec_values_finishers) =
         super::common::prepare_vec_anyvalues_parts(ir, config, &it_ident);
-
-    let to_anyvalues_pieces: Vec<TokenStream> = super::strategy::build_strategies(ir, config)
-        .iter()
-        .map(super::strategy::Strategy::gen_anyvalue_conversion)
-        .collect();
 
     let (cf_decls, cf_pushes, cf_builders) =
         super::common::prepare_columnar_parts(ir, config, &it_ident);
@@ -119,13 +76,12 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #(#as_ref_str_asserts)*
-            #collect_vec_impl
             /// Builds the columnar `DataFrame` for a slice of references to
-            /// `Self`. Used both by the trait `columnar_to_dataframe` shim
-            /// (which collects refs from `&[Self]`) and by the bulk-vec
-            /// emitter on parent structs that hold a `Vec<Self>` field
-            /// (which flattens a parent's inner Vecs into a `Vec<&Self>`
-            /// without requiring `Self: Clone`).
+            /// `Self`. The trait `to_dataframe(&self)` and `columnar_to_dataframe`
+            /// methods both delegate here (a one-element ref slice and a
+            /// gather-from-`&[Self]` respectively); bulk emitters on parent
+            /// structs that hold a `Vec<Self>` field call this directly with
+            /// a `Vec<&Self>` to avoid requiring `Self: Clone`.
             #[doc(hidden)]
             pub fn __df_derive_columnar_from_refs(items: &[&Self]) -> #pp::PolarsResult<#pp::DataFrame> {
                 if items.is_empty() {
@@ -163,12 +119,6 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
                 let mut out_values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
                 #(#vec_values_finishers)*
                 ::std::result::Result::Ok(out_values)
-            }
-            #[doc(hidden)]
-            pub fn __df_derive_to_anyvalues(&self) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue>> {
-                let mut values: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
-                #(#to_anyvalues_pieces)*
-                ::std::result::Result::Ok(values)
             }
         }
     }

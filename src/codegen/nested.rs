@@ -1,16 +1,20 @@
 // Codegen for fields whose base type is a derived struct or a generic type
-// parameter routed through `ToDataFrame` / `Columnar`. Two parallel families
-// of generators live here:
+// parameter routed through `ToDataFrame` / `Columnar`. Two flavors live here:
 //
-//   - The concrete-struct path (`is_generic == false`) calls inherent helpers
-//     emitted on the user's struct (`__df_derive_vec_to_inner_list_values`,
-//     `__df_derive_to_anyvalues`, `__df_derive_collect_vec_as_prefixed_list_series`).
-//   - The generic-parameter path (`is_generic == true`) uses only the
-//     `ToDataFrame` and `Columnar` traits — nothing inherent — because the
-//     parameter type isn't known at macro-expansion time.
+//   - Concrete-struct (`is_generic == false`) calls the inherent
+//     `__df_derive_vec_to_inner_list_values` helper for nested-Vec
+//     aggregation.
+//   - Generic-parameter (`is_generic == true`) uses only the `ToDataFrame`
+//     and `Columnar` traits — nothing inherent — because the parameter type
+//     isn't known at macro-expansion time.
 //
-// The two paths share `gen_recursive_per_element_to_list_anyvalues` for the
+// The two flavors share `gen_recursive_per_element_to_list_anyvalues` for
 // deeper-nested vec shapes that fall outside the typed fast paths.
+//
+// Bare leaf, `Option<Inner>`, and `Vec<Inner>` shapes never reach this
+// module's per-row push code — they're served by bulk emitters in
+// `bulk.rs`. The on-leaf branch in `generate_nested_for_columnar_push`
+// only fires for the rare `Option<Option<Inner>>`-style shape.
 
 use crate::ir::{Wrapper, has_vec, vec_count};
 use proc_macro2::TokenStream;
@@ -257,57 +261,6 @@ fn generate_generic_for_anyvalue(
 
 // --- Context-specific generators ---
 
-pub fn generate_nested_for_series(
-    type_path: &TokenStream,
-    series_name: &str,
-    access: &TokenStream,
-    wrappers: &[Wrapper],
-    is_generic: bool,
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let ty = type_path.clone();
-
-    let on_leaf = |acc: &TokenStream| {
-        let main_logic = generate_scalar_struct_logic(series_name, acc);
-        quote! { #main_logic }
-    };
-
-    let on_option_none = |tail: &[Wrapper]| {
-        let as_list_none = has_vec(tail);
-        generate_null_series_for_struct(&ty, series_name, as_list_none)
-    };
-
-    let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        if tail.is_empty() && !is_generic {
-            quote! {{
-                #ty::__df_derive_collect_vec_as_prefixed_list_series(&(#acc), #series_name)?
-            }}
-        } else {
-            let schema_ident =
-                syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
-            let vals_ident = syn::Ident::new("__df_derive_vals", proc_macro2::Span::call_site());
-            let list_vals_ts = if is_generic {
-                gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
-            } else {
-                gen_nested_vec_to_list_anyvalues(&ty, acc, tail)
-            };
-            quote! {{
-                let #schema_ident = #ty::schema()?;
-                let #vals_ident: ::std::vec::Vec<#pp::AnyValue> = { #list_vals_ts };
-                let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::with_capacity(#schema_ident.len());
-                for (j, (inner_name, _dtype)) in #schema_ident.iter().enumerate() {
-                    let prefixed_name = ::std::format!("{}.{}", #series_name, inner_name);
-                    let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(prefixed_name.as_str().into(), &[#vals_ident[j].clone()]);
-                    nested_series.push(s.into());
-                }
-                nested_series
-            }}
-        }
-    };
-
-    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
-}
-
 pub fn generate_nested_for_columnar_push(
     type_path: &TokenStream,
     access: &TokenStream,
@@ -326,33 +279,32 @@ pub fn generate_nested_for_columnar_push(
     // entry per outer row). The on-leaf branch only runs for non-vec
     // shapes — `process_wrappers` reaches the leaf only when no `Vec`
     // wrapper is present.
+    //
+    // After unification, this on-leaf is only reached for the rare
+    // `Option<Option<T>>`-style shape (since `[]`, `[Option]`, and `[Vec]`
+    // are now all bulk-emitted). Both generic and concrete cases route
+    // through the `ToDataFrame` trait method here — for concrete structs
+    // that's a thin wrapper around `__df_derive_columnar_from_refs(&[self])`,
+    // so the cost is minimal and we avoid maintaining a separate inherent
+    // helper just for this corner.
     let cols_ident = PopulatorIdents::nested_struct_cols(idx);
     let lbs_ident = PopulatorIdents::nested_list_builders(idx);
 
     let on_leaf = |acc: &TokenStream| {
         let cols_ident = cols_ident.clone();
-        if is_generic {
-            quote! {
-                let __df_derive_tmp_df = (#acc).to_dataframe()?;
-                let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
-                    .get_column_names()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
-                    let __df_derive_v = __df_derive_tmp_df
-                        .column(__df_derive_name.as_str())?
-                        .get(0)?
-                        .into_static();
-                    #cols_ident[j].push(__df_derive_v);
-                }
-            }
-        } else {
-            quote! {
-                let nested_values = (#acc).__df_derive_to_anyvalues()?;
-                for (j, value) in nested_values.into_iter().enumerate() {
-                    #cols_ident[j].push(value);
-                }
+        quote! {
+            let __df_derive_tmp_df = (#acc).to_dataframe()?;
+            let __df_derive_names: ::std::vec::Vec<String> = __df_derive_tmp_df
+                .get_column_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            for (j, __df_derive_name) in __df_derive_names.iter().enumerate() {
+                let __df_derive_v = __df_derive_tmp_df
+                    .column(__df_derive_name.as_str())?
+                    .get(0)?
+                    .into_static();
+                #cols_ident[j].push(__df_derive_v);
             }
         }
     };
@@ -628,48 +580,6 @@ fn generate_empty_series_for_struct(
                 };
                 let empty_series = #pp::Series::new_empty(prefixed_name.as_str().into(), &dtype);
                 nested_series.push(empty_series.into());
-            }
-            nested_series
-        }
-    }
-}
-
-fn generate_null_series_for_struct(
-    type_path: &TokenStream,
-    column_name: &str,
-    as_list: bool,
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    quote! {
-        {
-            let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-            for (inner_name, inner_dtype) in #type_path::schema()? {
-                let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
-                let dtype = if #as_list {
-                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
-                } else {
-                    inner_dtype
-                };
-                let null_series = #pp::Series::new_empty(prefixed_name.as_str().into(), &dtype);
-                let null_series_with_value = null_series.extend_constant(#pp::AnyValue::Null, 1)?;
-                nested_series.push(null_series_with_value.into());
-            }
-            nested_series
-        }
-    }
-}
-
-fn generate_scalar_struct_logic(column_name: &str, access_path: &TokenStream) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    quote! {
-        {
-            let nested_df = (#access_path).to_dataframe()?;
-            let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-
-            for col_name in nested_df.get_column_names() {
-                let prefixed_name = ::std::format!("{}.{}", #column_name, col_name);
-                let series = nested_df.column(col_name)?.clone().with_name(prefixed_name.as_str().into());
-                nested_series.push(series.into());
             }
             nested_series
         }

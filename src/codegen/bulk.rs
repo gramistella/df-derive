@@ -327,6 +327,148 @@ pub fn gen_bulk_generic_vec(
     }}
 }
 
+/// Bulk emit for a leaf concrete-struct field (`payload: Inner`). Collects
+/// `Vec<&Inner>` once and calls `Inner::__df_derive_columnar_from_refs`,
+/// then ships each schema column to `ctx`. No clone is required — the
+/// references are valid for the lifetime of `items`. Structurally simpler
+/// than `gen_bulk_concrete_vec`: no offsets, no list builders, just gather
+/// refs and clone-with-prefix the inner columns.
+///
+/// Replaces the per-row `(#access).__df_derive_to_anyvalues()?` push that
+/// the columnar path used for nested-leaf fields, removing the per-row
+/// `AnyValue` round-trip that scaled with N.
+pub fn gen_bulk_concrete_leaf(
+    ty: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let refs_ident = format_ident!("__df_derive_gen_refs_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let consume = bulk_consume_inner_series(
+        ctx,
+        &quote! { __df_derive_col_name },
+        &quote! {
+            #df_ident
+                .column(__df_derive_col_name)?
+                .as_materialized_series()
+                .clone()
+        },
+    );
+    quote! {{
+        let #refs_ident: ::std::vec::Vec<&#ty> = items
+            .iter()
+            .map(|__df_derive_it| &(#access))
+            .collect();
+        let #df_ident = #ty::__df_derive_columnar_from_refs(&#refs_ident)?;
+        for (__df_derive_col_name, _) in <#ty as #to_df_trait>::schema()? {
+            let __df_derive_col_name: &str = __df_derive_col_name.as_str();
+            #consume
+        }
+    }}
+}
+
+/// Bulk emit for `payload: Option<Inner>` where `Inner` is a concrete
+/// derived struct type. Mirrors `gen_bulk_generic_option` but uses
+/// `Vec<&Inner>` (no clone) and the inherent helper.
+///
+/// Three runtime branches:
+/// - Every item is `None`: emit a typed-null inner for each column.
+/// - Every item is `Some` (gather length matches `items.len()`): skip the
+///   `IdxCa` scatter — `take` would be the identity here, and the setup
+///   cost dominates on small inputs (especially N=1, where it would be
+///   pure overhead vs. the per-row path).
+/// - Mixed: build the gather `DataFrame`, then scatter each column with a
+///   typed `take` over an `IdxCa` of original positions.
+pub fn gen_bulk_concrete_option(
+    ty: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let nn_ident = format_ident!("__df_derive_gen_nn_{}", idx);
+    let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
+    let take_ident = format_ident!("__df_derive_gen_take_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+
+    let consume_direct = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {
+            #df_ident
+                .column(#col_name_var)?
+                .as_materialized_series()
+                .clone()
+        },
+    );
+    let consume_filled = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let __df_derive_inner_col = #df_ident
+                .column(#col_name_var)?
+                .as_materialized_series();
+            __df_derive_inner_col.take(&#take_ident)?
+        }},
+    );
+    let consume_empty = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {
+            #pp::Series::new_empty("".into(), &#dtype_var)
+                .extend_constant(#pp::AnyValue::Null, items.len())?
+        },
+    );
+
+    quote! {{
+        let mut #nn_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_v) => {
+                    #pos_ident.push(::std::option::Option::Some(
+                        #nn_ident.len() as #pp::IdxSize,
+                    ));
+                    #nn_ident.push(__df_derive_v);
+                }
+                ::std::option::Option::None => {
+                    #pos_ident.push(::std::option::Option::None);
+                }
+            }
+        }
+        if #nn_ident.is_empty() {
+            for (#col_name_var, #dtype_var) in <#ty as #to_df_trait>::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
+                let #dtype_var = &#dtype_var;
+                #consume_empty
+            }
+        } else if #nn_ident.len() == items.len() {
+            let #df_ident = #ty::__df_derive_columnar_from_refs(&#nn_ident)?;
+            for (#col_name_var, _) in <#ty as #to_df_trait>::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
+                #consume_direct
+            }
+        } else {
+            let #df_ident = #ty::__df_derive_columnar_from_refs(&#nn_ident)?;
+            let #take_ident: #pp::IdxCa =
+                <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #pos_ident.iter().copied(),
+                );
+            for (#col_name_var, _) in <#ty as #to_df_trait>::schema()? {
+                let #col_name_var: &str = #col_name_var.as_str();
+                #consume_filled
+            }
+        }
+    }}
+}
+
 /// Bulk emit for `payload: Vec<T>` where `T` is a concrete derived struct
 /// type (i.e. has the inherent `__df_derive_columnar_from_refs` helper).
 /// Flattens via `&T` references — no `T: Clone` requirement — and calls

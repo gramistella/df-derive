@@ -1,6 +1,6 @@
 use crate::ir::{BaseType, PrimitiveTransform, StructIR, Wrapper, has_vec};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::Ident;
 
 use super::populator_idents::PopulatorIdents;
@@ -49,24 +49,10 @@ impl Strategy {
         }
     }
 
-    pub fn gen_series_creation(&self) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_series_creation(),
-            Self::Nested(s) => s.gen_series_creation(),
-        }
-    }
-
     pub fn gen_empty_series_creation(&self) -> TokenStream {
         match self {
             Self::Primitive(s) => s.gen_empty_series_creation(),
             Self::Nested(s) => s.gen_empty_series_creation(),
-        }
-    }
-
-    pub fn gen_anyvalue_conversion(&self) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_anyvalue_conversion(),
-            Self::Nested(s) => s.gen_anyvalue_conversion(),
         }
     }
 
@@ -252,28 +238,6 @@ impl PrimitiveStrategy {
         quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
     }
 
-    fn gen_series_creation(&self) -> TokenStream {
-        let name = &self.field_name;
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { self.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { self.#index_lit }
-            },
-        );
-        let p = &self.p;
-        super::primitive::generate_primitive_for_series(
-            name,
-            &access,
-            &p.base_type,
-            p.transform.as_ref(),
-            &self.wrappers,
-        )
-    }
-
     fn gen_empty_series_creation(&self) -> TokenStream {
         let mapping = crate::codegen::type_registry::compute_mapping(
             &self.p.base_type,
@@ -284,27 +248,6 @@ impl PrimitiveStrategy {
         let name = &self.field_name;
         let pp = super::polars_paths::prelude();
         quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
-    }
-
-    fn gen_anyvalue_conversion(&self) -> TokenStream {
-        let p = &self.p;
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { self.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { self.#index_lit }
-            },
-        );
-        super::primitive::generate_primitive_for_anyvalue(
-            &format_ident!("values"),
-            &access,
-            &p.base_type,
-            p.transform.as_ref(),
-            &self.wrappers,
-        )
     }
 
     fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
@@ -422,50 +365,9 @@ impl NestedStructStrategy {
         )
     }
 
-    fn gen_series_creation(&self) -> TokenStream {
-        let name = &self.field_name;
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { self.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { self.#index_lit }
-            },
-        );
-        super::nested::generate_nested_for_series(
-            &self.n.type_path,
-            name,
-            &access,
-            &self.wrappers,
-            self.n.is_generic,
-        )
-    }
-
     fn gen_empty_series_creation(&self) -> TokenStream {
         let name = &self.field_name;
         super::nested::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
-    }
-
-    fn gen_anyvalue_conversion(&self) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { self.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { self.#index_lit }
-            },
-        );
-        super::nested::generate_nested_for_anyvalue(
-            &self.n.type_path,
-            &format_ident!("values"),
-            &access,
-            &self.wrappers,
-            self.n.is_generic,
-        )
     }
 
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
@@ -521,17 +423,16 @@ impl NestedStructStrategy {
     /// for the depth-1 wrapper shapes the bulk helpers support: bare leaf,
     /// `Option<T>`, or `Vec<T>`.
     ///
-    /// Dispatch:
-    /// - Bare leaf / `Option<T>`: generic-only. Concrete nested structs keep
-    ///   the per-row inherent `__df_derive_*` fast paths in
-    ///   `generate_nested_for_*` — those already do typed-buffer work
-    ///   per-call and the bulk overhead would be an allocation hit for
-    ///   common cases.
-    /// - `Vec<T>`: works for both. Generic uses the `T: Clone` bound to
-    ///   build a `Vec<T>` and call `<T as Columnar>::columnar_to_dataframe`.
-    ///   Concrete uses `Vec<&Inner>` and the inherent
-    ///   `Inner::__df_derive_columnar_from_refs`, side-stepping any
-    ///   `Inner: Clone` requirement on user struct types.
+    /// Dispatch — every shape has both generic and concrete bulk emitters.
+    /// Generic uses the `T: Clone` and `<T as Columnar>` bounds the macro
+    /// injects on the type parameter; concrete uses `Vec<&Inner>` plus the
+    /// inherent `Inner::__df_derive_columnar_from_refs` helper, avoiding any
+    /// `Inner: Clone` requirement on user struct types.
+    ///
+    /// Deeper nestings (`Option<Vec<T>>`, `Vec<Vec<T>>`, etc.) fall through
+    /// to the per-row pipeline; those paths already drive `Vec<AnyValue>`
+    /// aggregation through `__df_derive_vec_to_inner_list_values`, so the
+    /// added bulk machinery isn't worth the complexity.
     fn try_bulk_emit(
         &self,
         idx: usize,
@@ -550,6 +451,7 @@ impl NestedStructStrategy {
                 &access,
                 ctx,
             ),
+            [] => super::bulk::gen_bulk_concrete_leaf(ty, to_df_trait, idx, &access, ctx),
             [Wrapper::Option] if self.n.is_generic => super::bulk::gen_bulk_generic_option(
                 ty,
                 columnar_trait,
@@ -558,6 +460,9 @@ impl NestedStructStrategy {
                 &access,
                 ctx,
             ),
+            [Wrapper::Option] => {
+                super::bulk::gen_bulk_concrete_option(ty, to_df_trait, idx, &access, ctx)
+            }
             [Wrapper::Vec] if self.n.is_generic => super::bulk::gen_bulk_generic_vec(
                 ty,
                 columnar_trait,

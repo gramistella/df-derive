@@ -4,7 +4,6 @@ use std::time::Duration;
 
 #[path = "../tests/common.rs"]
 mod core;
-use crate::core::dataframe::ToDataFrame;
 use crate::core::dataframe::ToDataFrameVec;
 
 const N_USERS: usize = 50_000;

@@ -27,6 +27,7 @@ fn tests() {
     t.pass("tests/pass/22-as-str-on-struct.rs");
     t.pass("tests/pass/23-as-str-redundant-on-string.rs");
     t.pass("tests/pass/24-decimal-and-time-unit-attrs.rs");
+    t.pass("tests/pass/25-doubly-optional-nested.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

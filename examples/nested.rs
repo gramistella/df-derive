@@ -47,9 +47,6 @@ struct Person {
     address: Address,
 }
 
-// Import the trait to make it available for nested structs
-use crate::dataframe::ToDataFrame;
-
 fn main() -> polars::prelude::PolarsResult<()> {
     let person = Person {
         name: "John Doe".to_string(),

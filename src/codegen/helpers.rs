@@ -89,7 +89,9 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
                 let mut iter = values.into_iter();
                 for (col_name, _dtype) in schema.into_iter() {
                     let prefixed_name = format!("{}.{}", column_name, col_name);
-                    let list_val = iter.next().expect("values length must match schema");
+                    let list_val = iter.next().ok_or_else(|| polars_err!(
+                        ComputeError: "df-derive: __df_derive_vec_to_inner_list_values produced fewer values than schema columns (codegen invariant violation)"
+                    ))?;
                     let list_series = Series::new(prefixed_name.as_str().into(), &[list_val]);
                     nested_series.push(list_series.into());
                 }

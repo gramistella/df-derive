@@ -124,7 +124,10 @@ fn gen_primitive_vec_inner_series(
             let #elem_owned_ident = (*#elem_ident).clone();
             let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
             { #recur_elem_tokens_ts }
-            #list_vals_ident.push(#per_item_vals_ident.pop().expect("expected single AnyValue for primitive element"));
+            let __df_derive_elem_av = #per_item_vals_ident.pop().ok_or_else(|| polars::prelude::polars_err!(
+                ComputeError: "df-derive: expected single AnyValue for primitive vec element (codegen invariant violation)"
+            ))?;
+            #list_vals_ident.push(__df_derive_elem_av);
         }
         let mut __df_derive_inner = polars::prelude::Series::new("".into(), &#list_vals_ident);
         if #do_cast { __df_derive_inner = __df_derive_inner.cast(&#elem_dtype)?; }
@@ -186,7 +189,9 @@ fn gen_nested_vec_to_list_anyvalues(
                             }
                             out
                         }
-                        _ => unreachable!("expected list AnyValue for vec_to_inner_list_values"),
+                        _ => return ::std::result::Result::Err(polars::prelude::polars_err!(
+                            ComputeError: "df-derive: expected list AnyValue from __df_derive_vec_to_inner_list_values (codegen invariant violation)"
+                        )),
                     };
                     let inner = polars::prelude::Series::new("".into(), &__df_derive_list_vals);
                     __df_derive_out.push(polars::prelude::AnyValue::List(inner));

@@ -1,0 +1,5 @@
+error: unknown key in #[df_derive(...)] field attribute; expected `as_str` or `as_string`
+ --> tests/fail/100-fail-unknown-field-attribute.rs:7:17
+  |
+7 |     #[df_derive(as_strg)]
+  |                 ^^^^^^^

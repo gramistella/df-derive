@@ -149,7 +149,10 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
         .iter()
         .map(|f| match &f.base_type {
             BaseType::Struct(type_ident, type_args) => {
-                if matches!(f.transform, Some(PrimitiveTransform::ToString)) {
+                if matches!(
+                    f.transform,
+                    Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
+                ) {
                     Strategy::Primitive(PrimitiveStrategy::new(
                         f.name.clone(),
                         f.field_index,
@@ -172,7 +175,10 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
                 }
             }
             BaseType::Generic(type_ident) => {
-                if matches!(f.transform, Some(PrimitiveTransform::ToString)) {
+                if matches!(
+                    f.transform,
+                    Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
+                ) {
                     Strategy::Primitive(PrimitiveStrategy::new(
                         f.name.clone(),
                         f.field_index,
@@ -213,7 +219,7 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
 /// the turbofish form `Foo::<M, N>`, which is valid in both expression and
 /// type position in modern Rust. The turbofish is necessary in expression
 /// position (`Foo::<M>::schema()`) and accepted everywhere else.
-fn build_type_path(
+pub(super) fn build_type_path(
     ident: &Ident,
     args: Option<&syn::AngleBracketedGenericArguments>,
 ) -> TokenStream {

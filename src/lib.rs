@@ -292,8 +292,11 @@ use syn::{DeriveInput, parse_macro_input};
 ///   path; the `Columnar` path is inferred by replacing the last path segment with `Columnar`.
 ///   Optionally, set both explicitly with
 ///   `#[df_derive(columnar = "path::Columnar")]`.
-/// - Field-level: `#[df_derive(as_string)]` to stringify values (e.g., enums) during conversion,
-///   resulting in `DataType::String` or `List<String>`.
+/// - Field-level: `#[df_derive(as_string)]` to stringify values via `Display` (e.g., enums) during
+///   conversion, resulting in `DataType::String` or `List<String>`. Allocates a `String` per row.
+/// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
+///   conversion. Same column type as `as_string` but avoids the per-row allocation. The two
+///   attributes are mutually exclusive on a given field.
 ///
 /// Notes:
 ///

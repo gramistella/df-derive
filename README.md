@@ -157,6 +157,37 @@ struct WithEnums {
 
 Columns will use `DataType::String` (or `List<String>` for `Vec<_>`), and values are produced via `ToString`. See the complete working example with `cargo run --example as_string`.
 
+#### Borrowing strings: `#[df_derive(as_str)]`
+
+If your field's type already implements `AsRef<str>` — validated newtypes, interned identifiers, enums with a `match`-based string view — prefer `#[df_derive(as_str)]`. It populates the same `Vec<&str>` / `Vec<Option<&str>>` columnar buffer the bare-`String` borrowing path uses, so the per-row `String` allocation that `as_string` performs is avoided entirely.
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+enum Status { Active, Inactive }
+
+impl AsRef<str> for Status {
+    fn as_ref(&self) -> &str {
+        match self {
+            Status::Active => "ACTIVE",
+            Status::Inactive => "INACTIVE",
+        }
+    }
+}
+
+#[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+struct WithEnums {
+    #[df_derive(as_str)] status: Status,
+    #[df_derive(as_str)] opt_status: Option<Status>,
+    #[df_derive(as_str)] statuses: Vec<Status>,
+    #[df_derive(as_str)] opt_statuses: Option<Vec<Status>>,
+}
+```
+
+Selection rule: if your field's type implements `AsRef<str>`, prefer `as_str` — it borrows the string for the duration of the conversion. Otherwise use `as_string`, which formats via `Display` and allocates a `String` per row. The two attributes are mutually exclusive on a given field; using both raises a compile error pointing at the field.
+
+`Vec<T>` and `Option<Vec<T>>` shapes also benefit — the inner `Series` is built from a borrowed `&str` iterator, so there is no per-element clone either.
+
 ## Supported types
 
 - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`

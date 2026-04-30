@@ -11,20 +11,51 @@ fn is_option(wrappers: &[Wrapper]) -> bool {
     wrappers.iter().any(|w| matches!(w, Wrapper::Option))
 }
 
-/// True for `String` and `Option<String>` leaves with no transform — the cases
-/// where the columnar populator buffer can borrow `&str` from `items` instead
-/// of cloning each row's `String`. `Vec<_>` wrappers, transforms
-/// (`ToString`, `DecimalToString`, …), and deeper nestings keep the existing
-/// owning-buffer path.
-fn is_borrowable_string_leaf(
+/// Borrow strategy for a leaf that can populate the `Vec<&str>` /
+/// `Vec<Option<&str>>` columnar buffer instead of an owning `Vec<String>`.
+/// Only the bare leaf and bare `Option<…>` shapes flatten into one of these
+/// two buffer layouts; `Vec<_>` wrappers (and deeper nestings) build their
+/// inner Series via `common::generate_inner_series_from_vec`, which has its
+/// own borrowing path for `as_str`.
+enum BorrowKind {
+    /// Bare `String` / `Option<String>` with no transform (or with the
+    /// redundant `as_str` attribute, which behaves identically because
+    /// `&String` deref-coerces to `&str`). Emit `&(#access)` and
+    /// `(#access).as_deref()`.
+    StringLeaf,
+    /// `as_str` on a non-`String` base type. Emit
+    /// `<T as ::core::convert::AsRef<str>>::as_ref(&(#access))` (UFCS) and
+    /// the analogous `Option`-mapped form. The carried token is the
+    /// type-path expression suitable for splicing into UFCS (`Foo`,
+    /// `Foo::<M>`, or `T`).
+    AsStr(TokenStream),
+}
+
+/// Classify whether a primitive leaf can use the borrowing fast path. Returns
+/// `None` for `Vec<_>`-wrapped or deeper-nested fields, and for any base/
+/// transform combination that requires an owned buffer.
+fn classify_borrow(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
-) -> bool {
-    if !matches!(base, BaseType::String) || transform.is_some() {
-        return false;
+) -> Option<BorrowKind> {
+    if !matches!(wrappers, [] | [Wrapper::Option]) {
+        return None;
     }
-    matches!(wrappers, [] | [Wrapper::Option])
+    match (base, transform) {
+        (BaseType::String, None | Some(PrimitiveTransform::AsStr)) => Some(BorrowKind::StringLeaf),
+        (BaseType::Struct(ident, args), Some(PrimitiveTransform::AsStr)) => Some(
+            BorrowKind::AsStr(super::strategy::build_type_path(ident, args.as_ref())),
+        ),
+        (BaseType::Generic(ident), Some(PrimitiveTransform::AsStr)) => {
+            Some(BorrowKind::AsStr(quote! { #ident }))
+        }
+        // `AsStr` on a non-string primitive base would be meaningless; the
+        // per-field `AsRef<str>` const-fn assert in helpers.rs catches it
+        // with a clean error span. Falling through here lets the existing
+        // owning-buffer path handle compilation up to that assert.
+        _ => None,
+    }
 }
 
 // --- Context-specific generation APIs ---
@@ -44,47 +75,61 @@ fn gen_primitive_vec_inner_series(
         syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
     let list_vals_ident = syn::Ident::new("__df_derive_list_vals", proc_macro2::Span::call_site());
 
-    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, tail);
-    let elem_dtype = mapping.element_dtype;
-    let do_cast = crate::codegen::type_registry::needs_cast(transform);
-    let fast_inner_ts = super::common::generate_inner_series_from_vec(acc, base_type, transform);
     let base_is_struct = matches!(base_type, BaseType::Struct(..));
+    // `as_str` routes Vec<T> shapes (including `Vec<Struct>`) through the
+    // borrowing fast path: `generate_inner_series_from_vec` already builds
+    // `Vec<&str>` via UFCS. Without this carve-out, `Vec<Struct>+as_str`
+    // would fall to the recursive per-element loop and clone every element.
+    let as_str_fast_ok = matches!(transform, Some(PrimitiveTransform::AsStr));
 
-    // Recursively process a single vector element as a primitive and push one AnyValue
-    let recur_elem_tokens = || {
-        // Ensure we work with an owned primitive value regardless of reference
-        let elem_owned_access = quote! { (*#elem_ident).clone() };
-        super::wrapped_codegen::generate_primitive_for_anyvalue(
-            &per_item_vals_ident,
-            &elem_owned_access,
-            base_type,
-            transform,
-            tail,
-        )
-    };
-    let recur_elem_tokens_ts = recur_elem_tokens();
-
-    if !base_is_struct && tail.is_empty() {
-        quote! {{ { #fast_inner_ts } }}
-    } else if !base_is_struct
+    if (!base_is_struct || as_str_fast_ok) && tail.is_empty() {
+        let fast_inner_ts =
+            super::common::generate_inner_series_from_vec(acc, base_type, transform);
+        return quote! {{ { #fast_inner_ts } }};
+    }
+    if !base_is_struct
         && tail.len() == 1
         && matches!(tail[0], Wrapper::Option)
         && transform.is_none()
     {
-        quote! {{ polars::prelude::Series::new("".into(), &(#acc)) }}
-    } else {
-        quote! {{
-            let mut #list_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
-            for #elem_ident in (#acc).iter() {
-                let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
-                { #recur_elem_tokens_ts }
-                #list_vals_ident.push(#per_item_vals_ident.pop().expect("expected single AnyValue for primitive element"));
-            }
-            let mut __df_derive_inner = polars::prelude::Series::new("".into(), &#list_vals_ident);
-            if #do_cast { __df_derive_inner = __df_derive_inner.cast(&#elem_dtype)?; }
-            __df_derive_inner
-        }}
+        return quote! {{ polars::prelude::Series::new("".into(), &(#acc)) }};
     }
+
+    // Fallback recursive per-element path (rare wrapper depths and any
+    // non-`as_str` `Vec<Struct>`-with-tail). Eagerly emitting the fast-path
+    // tokens above for shapes that don't use them risks unrelated codegen
+    // errors leaking into the user's output, so build them lazily.
+    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, tail);
+    let elem_dtype = mapping.element_dtype;
+    let do_cast = crate::codegen::type_registry::needs_cast(transform);
+    // Bind the cloned element to a named local so the inner recursion sees
+    // a place expression rather than the `(*elem).clone()` temporary. The
+    // inner-Vec borrowing path (`generate_inner_series_from_vec`) takes a
+    // `&str` view into the access, and that borrow must outlive the
+    // `Vec<&str>` it builds — a bare temp would drop at the previous `;`
+    // and dangle. The binding has no effect on owning paths.
+    let elem_owned_ident =
+        syn::Ident::new("__df_derive_elem_owned", proc_macro2::Span::call_site());
+    let elem_owned_access = quote! { #elem_owned_ident };
+    let recur_elem_tokens_ts = super::wrapped_codegen::generate_primitive_for_anyvalue(
+        &per_item_vals_ident,
+        &elem_owned_access,
+        base_type,
+        transform,
+        tail,
+    );
+    quote! {{
+        let mut #list_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
+        for #elem_ident in (#acc).iter() {
+            let #elem_owned_ident = (*#elem_ident).clone();
+            let mut #per_item_vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::new();
+            { #recur_elem_tokens_ts }
+            #list_vals_ident.push(#per_item_vals_ident.pop().expect("expected single AnyValue for primitive element"));
+        }
+        let mut __df_derive_inner = polars::prelude::Series::new("".into(), &#list_vals_ident);
+        if #do_cast { __df_derive_inner = __df_derive_inner.cast(&#elem_dtype)?; }
+        __df_derive_inner
+    }}
 }
 
 /// Build tokens that evaluate to `Vec<polars::prelude::AnyValue>`, where each element
@@ -527,11 +572,11 @@ pub fn generate_primitive_for_series(
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {
-        // Borrowing fast path for `String` leaves with no transform: build the
-        // 1-row Series from `&[&str]` so the per-row `to_dataframe(&self)` API
-        // doesn't clone the field's `String` before handing it to Polars.
-        if matches!(base_type, BaseType::String) && transform.is_none() {
-            return quote! {
+        // Borrowing fast path: build the 1-row Series from `&[&str]` so the
+        // per-row `to_dataframe(&self)` API doesn't allocate before handing
+        // bytes to Polars.
+        match classify_borrow(base_type, transform, wrappers) {
+            Some(BorrowKind::StringLeaf) => quote! {
                 vec![{
                     let s = polars::prelude::Series::new(
                         #series_name.into(),
@@ -539,20 +584,31 @@ pub fn generate_primitive_for_series(
                     );
                     s.into()
                 }]
-            };
-        }
-        let mapped = super::common::generate_primitive_access_expr(acc, transform);
-        let cast_ts = if do_cast {
-            quote! { s = s.cast(&#dtype)?; }
-        } else {
-            quote! {}
-        };
-        quote! {
-            vec![{
-                let mut s = polars::prelude::Series::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
-                #cast_ts
-                s.into()
-            }]
+            },
+            Some(BorrowKind::AsStr(ty_path)) => quote! {
+                vec![{
+                    let s = polars::prelude::Series::new(
+                        #series_name.into(),
+                        &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
+                    );
+                    s.into()
+                }]
+            },
+            None => {
+                let mapped = super::common::generate_primitive_access_expr(acc, transform);
+                let cast_ts = if do_cast {
+                    quote! { s = s.cast(&#dtype)?; }
+                } else {
+                    quote! {}
+                };
+                quote! {
+                    vec![{
+                        let mut s = polars::prelude::Series::new(#series_name.into(), ::std::slice::from_ref(&{ #mapped }));
+                        #cast_ts
+                        s.into()
+                    }]
+                }
+            }
         }
     };
 
@@ -598,17 +654,34 @@ pub fn generate_primitive_for_columnar_push(
     wrappers: &[Wrapper],
     idx: usize,
 ) -> TokenStream {
-    // Borrowing fast path for `String` / `Option<String>`: the buffer is
-    // declared as `Vec<&str>` / `Vec<Option<&str>>` by `primitive_decls`, so we
-    // push borrows of the field instead of cloning each row's `String` into an
-    // owned buffer. The borrows live as long as `items`, which outlives the
-    // buffer.
-    if is_borrowable_string_leaf(base_type, transform, wrappers) {
+    // Borrowing fast path: the buffer is declared as `Vec<&str>` /
+    // `Vec<Option<&str>>` by `primitive_decls`, so we push borrows of the
+    // field instead of cloning each row's `String` into an owned buffer.
+    // The borrows live as long as `items`, which outlives the buffer.
+    if let Some(kind) = classify_borrow(base_type, transform, wrappers) {
         let vec_ident = format_ident!("__df_derive_buf_{}", idx);
-        return if is_option(wrappers) {
-            quote! { #vec_ident.push((#access).as_deref()); }
-        } else {
-            quote! { #vec_ident.push(&(#access)); }
+        let opt = is_option(wrappers);
+        return match kind {
+            BorrowKind::StringLeaf => {
+                if opt {
+                    quote! { #vec_ident.push((#access).as_deref()); }
+                } else {
+                    quote! { #vec_ident.push(&(#access)); }
+                }
+            }
+            BorrowKind::AsStr(ty_path) => {
+                if opt {
+                    quote! {
+                        #vec_ident.push(
+                            (#access).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
+                        );
+                    }
+                } else {
+                    quote! {
+                        #vec_ident.push(<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#access)));
+                    }
+                }
+            }
         };
     }
 
@@ -664,29 +737,38 @@ pub fn generate_primitive_for_anyvalue(
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {
-        // Borrowing fast path for `String` leaves with no transform: skip the
-        // user-side clone by building the 1-element Series from `&[&str]`.
-        // The Series owns its own Arrow buffer once `from_slice` returns, so
-        // `s.get(0)?.into_static()` is safe to call after the borrow's scope.
-        if matches!(base_type, BaseType::String) && transform.is_none() {
-            return quote! {
+        // Borrowing fast path: skip the user-side allocation by building the
+        // 1-element Series from `&[&str]`. The Series owns its own Arrow
+        // buffer once `from_slice` returns, so `s.get(0)?.into_static()` is
+        // safe to call after the borrow's scope.
+        match classify_borrow(base_type, transform, wrappers) {
+            Some(BorrowKind::StringLeaf) => quote! {
                 let s = polars::prelude::Series::new(
                     "".into(),
                     &[(#acc).as_str()],
                 );
                 #values_vec_ident.push(s.get(0)?.into_static());
-            };
-        }
-        let mapped = super::common::generate_primitive_access_expr(acc, transform);
-        let cast_ts = if do_cast {
-            quote! { s = s.cast(&#dtype)?; }
-        } else {
-            quote! {}
-        };
-        quote! {
-            let mut s = polars::prelude::Series::new("".into(), std::slice::from_ref(&{ #mapped }));
-            #cast_ts
-            #values_vec_ident.push(s.get(0)?.into_static());
+            },
+            Some(BorrowKind::AsStr(ty_path)) => quote! {
+                let s = polars::prelude::Series::new(
+                    "".into(),
+                    &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
+                );
+                #values_vec_ident.push(s.get(0)?.into_static());
+            },
+            None => {
+                let mapped = super::common::generate_primitive_access_expr(acc, transform);
+                let cast_ts = if do_cast {
+                    quote! { s = s.cast(&#dtype)?; }
+                } else {
+                    quote! {}
+                };
+                quote! {
+                    let mut s = polars::prelude::Series::new("".into(), std::slice::from_ref(&{ #mapped }));
+                    #cast_ts
+                    #values_vec_ident.push(s.get(0)?.into_static());
+                }
+            }
         }
     };
 
@@ -874,12 +956,13 @@ pub fn primitive_decls(
     let opt = is_option(wrappers);
     let vec = is_vec(wrappers);
 
-    // Borrowing fast path for `String` / `Option<String>`: a `Vec<&str>` (or
+    // Borrowing fast path for `String` / `Option<String>` and any base type
+    // with `as_str` (`AsRef<str>` impl): a `Vec<&str>` (or
     // `Vec<Option<&str>>`) buffer borrows from `items` instead of cloning each
     // row's `String`. `Series::new(name, &Vec<&str>)` dispatches to
     // `StringChunked::from_slice` and produces the same `Utf8ViewArray`-backed
     // column the owning path produces.
-    if is_borrowable_string_leaf(base_type, transform, wrappers) {
+    if classify_borrow(base_type, transform, wrappers).is_some() {
         let vec_ident = format_ident!("__df_derive_buf_{}", idx);
         if opt {
             decls.push(quote! {

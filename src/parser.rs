@@ -1,4 +1,4 @@
-use crate::ir::{FieldIR, PrimitiveTransform, StructIR};
+use crate::ir::{FieldIR, StructIR};
 use crate::type_analysis::analyze_type;
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
@@ -6,21 +6,45 @@ use syn::{Data, DeriveInput, Fields, Ident};
 #[derive(Default, Clone, Copy)]
 struct FieldAttributes {
     as_string: bool,
+    as_str: bool,
 }
 
-fn parse_attributes(field: &syn::Field) -> FieldAttributes {
+fn parse_attributes(
+    field: &syn::Field,
+    field_display_name: &str,
+) -> Result<FieldAttributes, syn::Error> {
     let mut attrs = FieldAttributes::default();
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
-            let _ = attr.parse_nested_meta(|meta| {
+            attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("as_string") {
                     attrs.as_string = true;
+                    Ok(())
+                } else if meta.path.is_ident("as_str") {
+                    attrs.as_str = true;
+                    Ok(())
+                } else {
+                    // Reject unknown keys so a typo (e.g. `as_strg` or `as_string` swapped
+                    // with `as_str`) surfaces at the user's source instead of being
+                    // silently ignored.
+                    Err(meta.error(
+                        "unknown key in #[df_derive(...)] field attribute; expected `as_str` or `as_string`",
+                    ))
                 }
-                Ok(())
-            });
+            })?;
         }
     }
-    attrs
+    if attrs.as_string && attrs.as_str {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has both `as_str` and `as_string`; \
+                 pick one — `as_str` borrows via `AsRef<str>` (no allocation), \
+                 `as_string` formats via `Display` (allocates per row)"
+            ),
+        ));
+    }
+    Ok(attrs)
 }
 
 /// Parse a `syn::DeriveInput` into the new IR used by the next-gen codegen.
@@ -44,19 +68,20 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                         .expect("named fields must have ident")
                         .clone();
 
-                    let attrs = parse_attributes(field);
-                    let analyzed = analyze_type(&field.ty, attrs.as_string, &generic_params)?;
+                    let display_name = field_name_ident.to_string();
+                    let attrs = parse_attributes(field, &display_name)?;
+                    let analyzed =
+                        analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
 
                     let base_type = analyzed.base.clone();
                     let transform = analyzed.transform.clone();
-                    // Note: as_string attribute is represented as transform=ToString; codegen will interpret
-                    let _ = PrimitiveTransform::ToString; // keep enum referenced for linking
                     fields_ir.push(FieldIR {
                         name: field_name_ident,
                         field_index: None,
                         wrappers: analyzed.wrappers.clone(),
                         base_type,
                         transform,
+                        field_ty: field.ty.clone(),
                     });
                 }
             }
@@ -68,8 +93,10 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                 for (index, field) in unnamed.unnamed.iter().enumerate() {
                     let field_name_ident = format_ident!("field_{}", index);
 
-                    let attrs = parse_attributes(field);
-                    let analyzed = analyze_type(&field.ty, attrs.as_string, &generic_params)?;
+                    let display_name = field_name_ident.to_string();
+                    let attrs = parse_attributes(field, &display_name)?;
+                    let analyzed =
+                        analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
 
                     let base_type = analyzed.base.clone();
                     let transform = analyzed.transform.clone();
@@ -79,6 +106,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                         wrappers: analyzed.wrappers.clone(),
                         base_type,
                         transform,
+                        field_ty: field.ty.clone(),
                     });
                 }
             }

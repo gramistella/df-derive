@@ -11,6 +11,7 @@ pub struct AnalyzedType {
 pub fn analyze_type(
     ty: &Type,
     as_string: bool,
+    as_str: bool,
     generic_params: &[Ident],
 ) -> Result<AnalyzedType, syn::Error> {
     let mut wrappers: Vec<Wrapper> = Vec::new();
@@ -46,8 +47,12 @@ pub fn analyze_type(
     let base = analyze_base_type(current_type, generic_params)
         .ok_or_else(|| syn::Error::new_spanned(current_type, "Unsupported field type"))?;
 
-    // Determine abstract transform; attribute stringification overrides
-    let transform = if as_string {
+    // Determine abstract transform; `as_str` and `as_string` attributes override
+    // any base-type-driven default. The two attributes are mutually exclusive
+    // (enforced in the parser).
+    let transform = if as_str {
+        Some(PrimitiveTransform::AsStr)
+    } else if as_string {
         Some(PrimitiveTransform::ToString)
     } else {
         match &base {

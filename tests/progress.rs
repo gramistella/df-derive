@@ -23,7 +23,12 @@ fn tests() {
     t.pass("tests/pass/18-custom-trait.rs");
     t.pass("tests/pass/19-complex-wrappers.rs");
     t.pass("tests/pass/20-generics.rs");
+    t.pass("tests/pass/21-field-as-str-attribute.rs");
+    t.pass("tests/pass/22-as-str-on-struct.rs");
+    t.pass("tests/pass/23-as-str-redundant-on-string.rs");
 
-    // This file should fail to compile.
+    // These files should fail to compile.
     t.compile_fail("tests/fail/98-fail-unsupported-type.rs");
+    t.compile_fail("tests/fail/99-fail-as-str-and-as-string-conflict.rs");
+    t.compile_fail("tests/fail/100-fail-unknown-field-attribute.rs");
 }

@@ -75,6 +75,35 @@ pub fn generate_inner_series_from_vec(
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
 ) -> TokenStream {
+    // Borrowing path for `as_str` on `Vec<T>` shapes: build a `Vec<&str>`
+    // through `AsRef<str>` via UFCS so the polars Series sees the same
+    // `&[&str]` slice the bare-`String` borrowing path uses. No per-element
+    // allocation.
+    if matches!(transform, Some(PrimitiveTransform::AsStr)) {
+        let ty_path = match base_type {
+            BaseType::Struct(ident, args) => super::strategy::build_type_path(ident, args.as_ref()),
+            BaseType::Generic(ident) => quote! { #ident },
+            // `BaseType::String` falls through here too: `String: AsRef<str>`
+            // makes UFCS valid. Non-string primitive bases are caught by the
+            // per-field `AsRef<str>` assert in helpers.rs; this fallback
+            // keeps codegen syntactically valid up to that assert firing.
+            _ => quote! { ::std::string::String },
+        };
+        // `#vec_access` must be a place expression (e.g. `self.field` or a
+        // named binding) — never a temporary that drops at the next `;`.
+        // The on_vec callers all pass non-temp expressions; the deep-nesting
+        // path in `gen_primitive_vec_inner_series` binds the inner clone to
+        // a named local before recursing, so that recursion enters this
+        // function with a name too.
+        return quote! {{
+            let __df_derive_conv: ::std::vec::Vec<&str> = (#vec_access)
+                .iter()
+                .map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
+                .collect();
+            let inner_series = polars::prelude::Series::new("".into(), &__df_derive_conv);
+            inner_series
+        }};
+    }
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
     let dtype = mapping.element_dtype;
     let do_cast = crate::codegen::type_registry::needs_cast(transform);

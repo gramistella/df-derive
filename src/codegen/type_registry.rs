@@ -26,8 +26,14 @@ fn base_and_transform_to_rust_and_dtype(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
 ) -> (TokenStream, TokenStream) {
-    // Attribute stringification always materializes as String dtype
-    if transform.is_some_and(|t| matches!(*t, PrimitiveTransform::ToString)) {
+    // Attribute stringification (`as_string`) and borrowing (`as_str`) both
+    // materialize as a String dtype. The borrowing path emits `Vec<&str>`
+    // buffers directly and bypasses this fallback element type, but keeping
+    // them aligned means a stray code path that doesn't yet handle `AsStr`
+    // degrades to allocating, not panicking.
+    if transform
+        .is_some_and(|t| matches!(*t, PrimitiveTransform::ToString | PrimitiveTransform::AsStr))
+    {
         return (
             quote! { ::std::string::String },
             quote! { polars::prelude::DataType::String },
@@ -88,11 +94,9 @@ fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream 
 }
 
 pub fn needs_cast(transform: Option<&PrimitiveTransform>) -> bool {
-    transform.is_some_and(|t| {
-        matches!(
-            *t,
-            PrimitiveTransform::DateTimeToMillis | PrimitiveTransform::DecimalToString
-        )
+    transform.is_some_and(|t| match t {
+        PrimitiveTransform::DateTimeToMillis | PrimitiveTransform::DecimalToString => true,
+        PrimitiveTransform::ToString | PrimitiveTransform::AsStr => false,
     })
 }
 
@@ -106,6 +110,20 @@ pub fn map_primitive_expr(
             PrimitiveTransform::DateTimeToMillis => quote! { (#var).timestamp_millis() },
             PrimitiveTransform::ToString | PrimitiveTransform::DecimalToString => {
                 quote! { (#var).to_string() }
+            }
+            PrimitiveTransform::AsStr => {
+                // Allocating fallback for codegen sites that can't use a
+                // `Vec<&str>` columnar buffer — in practice this is only
+                // hit at the leaf of stacked-Option shapes (e.g.
+                // `Option<Option<T>>`), where the buffer type
+                // `Vec<Option<String>>` flattens both layers anyway. All
+                // `Vec<…>` shapes route around this arm via
+                // `generate_inner_series_from_vec`, which builds a
+                // `Vec<&str>` directly. Emitting valid Rust here keeps the
+                // per-field `AsRef<str>` const-fn assert as the canonical
+                // user-visible error rather than a proc-macro internal
+                // panic.
+                quote! { <_ as ::core::convert::AsRef<str>>::as_ref(&(#var)).to_string() }
             }
         },
     )

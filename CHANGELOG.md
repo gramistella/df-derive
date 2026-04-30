@@ -21,6 +21,30 @@ All notable changes to this project will be documented in this file.
 - New benchmark `09_generics` covering unit, primitive, and nested-struct
   generic instantiations, plus an A/B comparison between the per-row and
   bulk columnar paths for generic fields.
+- New `#[df_derive(as_str)]` field attribute: borrows `&str` via
+  `<T as AsRef<str>>::as_ref` for `T` and `Option<T>` shapes (and the
+  inner-element conversion for `Vec<T>` / `Option<Vec<T>>` shapes),
+  populating the same `Vec<&str>` / `Vec<Option<&str>>` columnar buffer
+  the bare-`String` borrowing path uses. Use this instead of
+  `#[df_derive(as_string)]` when the field's type implements
+  `AsRef<str>` — it skips the per-row `String` allocation. The
+  attributes are mutually exclusive on a given field; using both raises
+  a compile error pointing at the field declaration. The macro emits a
+  per-field `const _DF_DERIVE_ASSERT_AS_REF_STR_*` assert inside the
+  generated impl so a missing `AsRef<str>` impl surfaces at the user's
+  struct rather than in macro-expanded source. Performance notes: `T`,
+  `Option<T>`, `Vec<T>`, and `Option<Vec<T>>` use the bulk borrowing
+  path (`&[&str]` / `&[Option<&str>]` handed to Polars in one shot).
+  `Vec<Vec<T>>` and `Option<Vec<Vec<T>>>` clone the inner `Vec<T>`
+  per outer element (because the recursive emitter binds the inner
+  Vec to a named local), then build the inner `Vec<&str>` in bulk
+  for that row. `Vec<Option<T>>` and other tail-Option shapes flow
+  each element through a 1-row Series plus an `AnyValue` conversion;
+  no per-row `String` clone, but per-element Polars-machinery
+  overhead. Stacked `Option<Option<T>>` shapes fall back to an
+  allocating path that calls `AsRef<str>::as_ref` followed by
+  `.to_string()` because Polars has no native
+  `Option<Option<&str>>` buffer shape.
 
 ### Changed
 

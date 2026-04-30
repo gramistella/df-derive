@@ -24,6 +24,11 @@ pub struct FieldIR {
     pub base_type: BaseType,
     /// Optional transform to apply when materializing values
     pub transform: Option<PrimitiveTransform>,
+    /// The original `syn::Type` of the field. Preserved so codegen can splice
+    /// it into trait-bound asserts (e.g. `T: AsRef<str>`) with the user's
+    /// source span, putting compiler errors at the field declaration rather
+    /// than deep in macro expansion.
+    pub field_ty: syn::Type,
 }
 
 /// Optional transformation applied to primitive values during codegen
@@ -35,6 +40,9 @@ pub enum PrimitiveTransform {
     DecimalToString,
     /// Convert any value to `String` using `ToString`
     ToString,
+    /// Borrow `&str` via `<T as AsRef<str>>::as_ref` for the duration of the
+    /// columnar populator pass. Zero-allocation per row.
+    AsStr,
 }
 
 /// The base Rust type (primitive or user-defined struct)

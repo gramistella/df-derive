@@ -34,6 +34,7 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
     cur
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
@@ -100,17 +101,46 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
     };
 
     let (vec_values_decls, vec_values_per_item, vec_values_finishers) =
-        super::common::prepare_vec_anyvalues_parts(ir, &it_ident);
+        super::common::prepare_vec_anyvalues_parts(ir, config, &it_ident);
 
-    let to_anyvalues_pieces: Vec<TokenStream> = super::strategy::build_strategies(ir)
+    let to_anyvalues_pieces: Vec<TokenStream> = super::strategy::build_strategies(ir, config)
         .iter()
         .map(super::strategy::RowWiseGenerator::gen_anyvalue_conversion)
         .collect();
+
+    let (cf_decls, cf_pushes, cf_builders) =
+        super::common::prepare_columnar_parts(ir, config, &it_ident);
 
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #(#as_ref_str_asserts)*
             #collect_vec_impl
+            /// Builds the columnar `DataFrame` for a slice of references to
+            /// `Self`. Used both by the trait `columnar_to_dataframe` shim
+            /// (which collects refs from `&[Self]`) and by the bulk-vec
+            /// emitter on parent structs that hold a `Vec<Self>` field
+            /// (which flattens a parent's inner Vecs into a `Vec<&Self>`
+            /// without requiring `Self: Clone`).
+            #[doc(hidden)]
+            pub fn __df_derive_columnar_from_refs(items: &[&Self]) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+                if items.is_empty() {
+                    return <Self as #to_df_trait>::empty_dataframe();
+                }
+                use polars::prelude::*;
+                #(#cf_decls)*
+                for #it_ident in items { #(#cf_pushes)* }
+                let mut columns: ::std::vec::Vec<polars::prelude::Column> = ::std::vec::Vec::new();
+                #(#cf_builders)*
+                if columns.is_empty() {
+                    let num_rows = items.len();
+                    let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
+                        .extend_constant(AnyValue::Null, num_rows)?;
+                    let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
+                    df.drop_in_place("_dummy")?;
+                    return Ok(df);
+                }
+                DataFrame::new_infer_height(columns)
+            }
             #[doc(hidden)]
             pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> polars::prelude::PolarsResult<::std::vec::Vec<polars::prelude::AnyValue>> {
                 use polars::prelude::*;

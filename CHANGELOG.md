@@ -119,6 +119,53 @@ All notable changes to this project will be documented in this file.
   (`Vec<Owner>` where `Owner` contains `Vec<User>` and each `User` holds
   `Option<Address>` with three `String` fields) drops from 50.78 ms to
   43.72 ms (-13.9%) on top of the columnar fast path.
+- The bulk-Vec emit pattern (previously gated on
+  `is_generic = true`) now applies to all `Vec<Inner>` fields whose `Inner`
+  is a derived struct, not just `Vec<T>` for a generic type parameter. The
+  macro emits an inherent `__df_derive_columnar_from_refs(items: &[&Self])`
+  helper alongside the trait `Columnar` impl; the trait method
+  `columnar_to_dataframe(&[Self])` becomes a thin shim that collects
+  references and forwards. The parent's bulk emitter for non-generic
+  `Vec<Inner>` flattens parents' inner Vecs into a single `Vec<&Inner>`,
+  calls `Inner::__df_derive_columnar_from_refs(&flat)` once, and slices
+  each inner column per parent. Critically the refs path means the bulk
+  generalization does **not** add an `Inner: Clone` bound on user struct
+  types — only the existing generic-T path keeps using `Clone` (already a
+  macro-injected bound on every type parameter).
+- All list-output paths (primitive `Vec<T>`, primitive `Vec<Option<T>>`,
+  primitive `Vec<Vec<T>>`, nested `Vec<Option<Struct>>`,
+  `Vec<Vec<Struct>>`, generic `Vec<T>`/`Option<T>` bulk emits, etc.) now
+  build the outer `List<inner_dtype>` series via
+  `polars::chunked_array::builder::get_list_builder` plus per-row
+  `append_series` calls, instead of accumulating
+  `Vec<polars::prelude::AnyValue::List>` and rebuilding the outer Series
+  via `Series::new("", &avs)`. The previous shape paid for an inferring
+  scan over the AnyValue vec plus a per-row `cast(inner_type)` inside
+  Polars' `any_values_to_list`. The new shape calls the typed list
+  builder directly: `ListPrimitiveChunkedBuilder` for primitive inners,
+  `ListStringChunkedBuilder` for strings,
+  `AnonymousOwnedListBuilder` for struct/list inners — so the inner
+  buffer stays typed end-to-end.
+- Generic `Option<T>` bulk emit and the `Vec<Option<Struct>>`
+  semi-optimized scatter now use `Series::take(&IdxCa)` to map each
+  non-null inner column back to its outer position, instead of building a
+  `Vec<AnyValue>` of position-indexed values and round-tripping through
+  `Series::new("", &avs)`. Typed buffers stay typed across the scatter.
+- Bench impact at the workloads that exercise the affected paths (numbers
+  reported as criterion mean, ms):
+  - `02_empty_nested_vec` (10k Hosts, every Host has empty inner
+    `Vec<Metric>`): 4.484 → 0.343 (~13×).
+  - `07_deep_nesting_vec` (20k Users with `Vec<Order>` of `Vec<Item>`):
+    213.40 → 56.38 (~3.8×).
+  - `06_optional_vec_custom_struct` (`Option<Vec<Holding>>`, 30k
+    Investors): 53.31 → 31.52 (~1.7×). The outer `Option<Vec<>>` shape
+    doesn't itself take the bulk path; the win comes from the new
+    list-builder outer aggregation in `nested_columnar_builders`.
+  - `08_complex_wrappers`: 81.38 → 58.10 (~1.4×).
+  - `04_vec_custom_struct` (1 MarketData with 100k Quote children, the
+    row-wise `to_dataframe(&self)` API): 1.127 → 1.104 (within criterion
+    noise — for "1 parent with many children", the per-row inner-helper
+    call already amortizes its setup cost).
 
 ## [0.2.0] - 2025-11-8
 

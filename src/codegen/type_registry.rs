@@ -93,6 +93,39 @@ fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream 
     }
 }
 
+/// Dtype of one element of the *outermost* list in `wrappers`, used to
+/// construct the per-field `ListBuilder` for nested-Vec shapes. The inner
+/// Series fed to that builder has this dtype:
+///
+/// - `Vec<T>` → element dtype (the list contains `T` directly).
+/// - `Vec<Vec<T>>` → `List<element>` (each element is itself a list of `T`).
+/// - `Vec<Vec<Vec<T>>>` → `List<List<element>>`, etc.
+/// - `Option<Vec<T>>` / `Vec<Option<T>>` → element dtype (`Option` doesn't
+///   add a list layer; nullability is carried by the values, not a wrapper).
+///
+/// The macro's `schema()` reporting wraps `element` exactly once for any
+/// `Vec`-containing field (a known limitation), so the outer Series's
+/// runtime dtype can be deeper than the reported schema dtype. The list
+/// builder needs the runtime dtype of its appended Series, not the schema's
+/// flattened version, or strict-typed builders like
+/// `ListPrimitiveChunkedBuilder` reject the append with a `SchemaMismatch`.
+pub fn outer_list_inner_dtype(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> TokenStream {
+    let (_, element_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
+    let vec_count = wrappers
+        .iter()
+        .filter(|w| matches!(w, Wrapper::Vec))
+        .count();
+    let mut dt = element_dtype;
+    for _ in 0..vec_count.saturating_sub(1) {
+        dt = quote! { polars::prelude::DataType::List(Box::new(#dt)) };
+    }
+    dt
+}
+
 pub fn needs_cast(transform: Option<&PrimitiveTransform>) -> bool {
     transform.is_some_and(|t| match t {
         PrimitiveTransform::DateTimeToMillis | PrimitiveTransform::DecimalToString => true,

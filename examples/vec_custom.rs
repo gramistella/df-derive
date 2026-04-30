@@ -49,9 +49,6 @@ struct MarketData {
     quotes: Vec<Quote>,
 }
 
-// Import the trait to make it available for nested structs
-use crate::dataframe::ToDataFrame;
-
 fn main() -> polars::prelude::PolarsResult<()> {
     let market_data = MarketData {
         symbol: "AAPL".to_string(),

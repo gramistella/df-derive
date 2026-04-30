@@ -102,6 +102,22 @@ fn gen_primitive_vec_inner_series(
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, tail);
     let elem_dtype = mapping.element_dtype;
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
+    // For empty input we have to construct a typed empty Series — `Series::new`
+    // on an empty `Vec<AnyValue>` produces dtype Null, which strict-typed list
+    // builders (e.g. `ListPrimitiveChunkedBuilder`, `ListStringChunkedBuilder`)
+    // reject when the parent feeds the empty inner via `append_series`. The
+    // typed-empty needs the same per-tail-Vec wrapping the non-empty Series's
+    // inferred dtype gets (each `AnyValue::List(...)` adds one `List<>` layer
+    // in inference), so wrap `elem_dtype` once per remaining `Vec` in `tail`.
+    // Resolved at codegen time, so emit the wrap layers as nested tokens
+    // rather than a runtime `for _ in 0..tail_vec_count` (which would fire
+    // `clippy::reversed_empty_ranges` for `tail_vec_count == 0`).
+    let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
+    let mut empty_dtype = elem_dtype.clone();
+    for _ in 0..tail_vec_count {
+        empty_dtype =
+            quote! { polars::prelude::DataType::List(::std::boxed::Box::new(#empty_dtype)) };
+    }
     // Bind the cloned element to a named local so the inner recursion sees
     // a place expression rather than the `(*elem).clone()` temporary. The
     // inner-Vec borrowing path (`generate_inner_series_from_vec`) takes a
@@ -129,14 +145,20 @@ fn gen_primitive_vec_inner_series(
             ))?;
             #list_vals_ident.push(__df_derive_elem_av);
         }
-        let mut __df_derive_inner = polars::prelude::Series::new("".into(), &#list_vals_ident);
-        if #do_cast { __df_derive_inner = __df_derive_inner.cast(&#elem_dtype)?; }
+        let __df_derive_inner = if #list_vals_ident.is_empty() {
+            polars::prelude::Series::new_empty("".into(), &#empty_dtype)
+        } else {
+            let mut __df_derive_s = polars::prelude::Series::new("".into(), &#list_vals_ident);
+            if #do_cast { __df_derive_s = __df_derive_s.cast(&#elem_dtype)?; }
+            __df_derive_s
+        };
         __df_derive_inner
     }}
 }
 
 /// Build tokens that evaluate to `Vec<polars::prelude::AnyValue>`, where each element
 /// is a `AnyValue::List(inner_series)` for one nested struct field across the vector.
+#[allow(clippy::too_many_lines)]
 fn gen_nested_vec_to_list_anyvalues(
     ty: &TokenStream,
     acc: &TokenStream,
@@ -146,61 +168,76 @@ fn gen_nested_vec_to_list_anyvalues(
         // Fast path: Vec<Struct>
         quote! { #ty::__df_derive_vec_to_inner_list_values(&(#acc))? }
     } else if tail.len() == 1 && matches!(tail[0], Wrapper::Option) {
-        // Semi-optimized: Vec<Option<Struct>>
+        // Semi-optimized: Vec<Option<Struct>>. Build the inner DataFrame
+        // once over the non-null subset, then per inner column scatter back
+        // over the original `Vec<Option<Struct>>` positions via
+        // `Series::take(&IdxCa)` — typed Series in, typed Series out, no
+        // `Vec<AnyValue>` round-trip (which previously paid for an
+        // AnyValue dispatch per outer position plus an inferring scan when
+        // the outer Series was rebuilt).
         let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
         let pos_ident = syn::Ident::new("__df_derive_pos", proc_macro2::Span::call_site());
         let nn_ident = syn::Ident::new("__df_derive_nn", proc_macro2::Span::call_site());
         let vals_ident = syn::Ident::new("__df_derive_vals", proc_macro2::Span::call_site());
+        let take_ident = syn::Ident::new("__df_derive_take", proc_macro2::Span::call_site());
         quote! {{
             let #schema_ident = #ty::schema()?;
-            let mut #pos_ident: ::std::vec::Vec<::std::option::Option<usize>> = ::std::vec::Vec::with_capacity((#acc).len());
+            let mut #pos_ident: ::std::vec::Vec<::std::option::Option<polars::prelude::IdxSize>> =
+                ::std::vec::Vec::with_capacity((#acc).len());
             let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
             for __df_derive_maybe in (#acc).iter() {
                 match __df_derive_maybe {
                     ::std::option::Option::Some(v) => {
-                        #pos_ident.push(::std::option::Option::Some(#nn_ident.len()));
+                        #pos_ident.push(::std::option::Option::Some(
+                            #nn_ident.len() as polars::prelude::IdxSize,
+                        ));
                         #nn_ident.push((*v).clone());
                     }
                     ::std::option::Option::None => #pos_ident.push(::std::option::Option::None),
                 }
             }
             if #nn_ident.is_empty() {
-                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
-                for _ in 0..#schema_ident.len() {
-                    let __df_derive_nulls: ::std::vec::Vec<polars::prelude::AnyValue> = (0..(#acc).len()).map(|_| polars::prelude::AnyValue::Null).collect();
-                    let inner = polars::prelude::Series::new("".into(), &__df_derive_nulls);
+                // All-None path: produce one outer-list cell per inner schema
+                // column, each a typed-null Series of length `(#acc).len()`.
+                // Pre-typing avoids feeding `dtype Null` into a list builder
+                // that expects e.g. `list[Float64]` (which `ListPrimitiveChunkedBuilder::append_series` rejects).
+                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
+                    ::std::vec::Vec::with_capacity(#schema_ident.len());
+                for (_inner_name, __df_derive_inner_dtype) in #schema_ident.iter() {
+                    let inner = polars::prelude::Series::new_empty("".into(), __df_derive_inner_dtype)
+                        .extend_constant(polars::prelude::AnyValue::Null, (#acc).len())?;
                     __df_derive_out.push(polars::prelude::AnyValue::List(inner));
                 }
                 __df_derive_out
             } else {
                 let #vals_ident = #ty::__df_derive_vec_to_inner_list_values(&#nn_ident)?;
-                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
+                let #take_ident: polars::prelude::IdxCa =
+                    polars::prelude::IdxCa::from_iter_options(
+                        "".into(),
+                        #pos_ident.iter().copied(),
+                    );
+                let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> =
+                    ::std::vec::Vec::with_capacity(#schema_ident.len());
                 for j in 0..#schema_ident.len() {
-                    let __df_derive_list_vals: ::std::vec::Vec<polars::prelude::AnyValue> = match &#vals_ident[j] {
-                        polars::prelude::AnyValue::List(inner) => {
-                            let mut out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#pos_ident.len());
-                            for __df_derive_ix in #pos_ident.iter() {
-                                if let ::std::option::Option::Some(k) = __df_derive_ix {
-                                    let v = inner.get(*k)?;
-                                    out.push(v.into_static());
-                                } else {
-                                    out.push(polars::prelude::AnyValue::Null);
-                                }
-                            }
-                            out
+                    let inner = match &#vals_ident[j] {
+                        polars::prelude::AnyValue::List(__df_derive_inner_full) => {
+                            __df_derive_inner_full.take(&#take_ident)?
                         }
                         _ => return ::std::result::Result::Err(polars::prelude::polars_err!(
                             ComputeError: "df-derive: expected list AnyValue from __df_derive_vec_to_inner_list_values (codegen invariant violation)"
                         )),
                     };
-                    let inner = polars::prelude::Series::new("".into(), &__df_derive_list_vals);
                     __df_derive_out.push(polars::prelude::AnyValue::List(inner));
                 }
                 __df_derive_out
             }
         }}
     } else {
-        // Fallback: recursive per-element
+        // Fallback: recursive per-element. Used for rarer nestings
+        // (e.g. `Vec<Vec<Struct>>`). We accept a per-element AnyValue
+        // round-trip here — the outer aggregation still uses typed Series,
+        // and we explicitly type the empty case so list builders that demand
+        // a specific inner dtype don't reject an inferred-Null Series.
         let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
         let cols_buf_ident =
             syn::Ident::new("__df_derive_cols_buf", proc_macro2::Span::call_site());
@@ -220,6 +257,24 @@ fn gen_nested_vec_to_list_anyvalues(
         };
         let recur_elem_ts = recur_elem();
 
+        // Each `Vec` in `tail` adds one extra `List<>` layer to the
+        // inferred dtype of the inner Series rebuilt below. Skip the wrap
+        // loop in generated tokens when `tail_vec_count == 0` so we don't
+        // emit a `for _ in 0..0` that trips `clippy::reversed_empty_ranges`.
+        let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
+        let wrap_extra_for_empty = if tail_vec_count == 0 {
+            quote! {}
+        } else {
+            let count_lit = tail_vec_count;
+            quote! {
+                for _ in 0..#count_lit {
+                    __df_derive_wrapped = polars::prelude::DataType::List(
+                        ::std::boxed::Box::new(__df_derive_wrapped),
+                    );
+                }
+            }
+        };
+
         quote! {{
             let #schema_ident = #ty::schema()?;
             let mut #cols_buf_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> = #schema_ident.iter().map(|_| ::std::vec::Vec::with_capacity((#acc).len())).collect();
@@ -229,8 +284,14 @@ fn gen_nested_vec_to_list_anyvalues(
                 for (j, v) in #per_item_vals_ident.into_iter().enumerate() { #cols_buf_ident[j].push(v); }
             }
             let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
-            for j in 0..#schema_ident.len() {
-                let inner = polars::prelude::Series::new("".into(), &#cols_buf_ident[j]);
+            for (j, (_inner_name, __df_derive_inner_dtype)) in #schema_ident.iter().enumerate() {
+                let inner = if #cols_buf_ident[j].is_empty() {
+                    let mut __df_derive_wrapped = __df_derive_inner_dtype.clone();
+                    #wrap_extra_for_empty
+                    polars::prelude::Series::new_empty("".into(), &__df_derive_wrapped)
+                } else {
+                    polars::prelude::Series::new("".into(), &#cols_buf_ident[j])
+                };
                 __df_derive_out.push(polars::prelude::AnyValue::List(inner));
             }
             __df_derive_out
@@ -255,6 +316,29 @@ fn gen_generic_vec_to_list_anyvalues(
     let recur_elem_ts =
         generate_generic_for_anyvalue(ty, &per_item_vals_ident, &quote! { #elem_ident }, tail);
 
+    // Each `Vec` in `tail` adds one `List<>` layer to the inferred dtype of
+    // the inner Series rebuilt below (each per-element recursion pushes an
+    // `AnyValue::List(...)` into `cols_buf`). The empty-input branch has to
+    // produce that same wrapped dtype explicitly so a downstream typed list
+    // builder doesn't reject the empty Series with `SchemaMismatch`.
+    //
+    // The wrap loop runs at macro time (not in generated tokens) so we don't
+    // emit a `for _ in 0..0` for a zero-Vec tail — that would trip
+    // `clippy::reversed_empty_ranges` inside the user's expanded code.
+    let tail_vec_count = tail.iter().filter(|w| matches!(w, Wrapper::Vec)).count();
+    let wrap_extra_for_empty = if tail_vec_count == 0 {
+        quote! {}
+    } else {
+        let count_lit = tail_vec_count;
+        quote! {
+            for _ in 0..#count_lit {
+                __df_derive_wrapped = polars::prelude::DataType::List(
+                    ::std::boxed::Box::new(__df_derive_wrapped),
+                );
+            }
+        }
+    };
+
     quote! {{
         let #schema_ident = #ty::schema()?;
         let mut #cols_buf_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> =
@@ -265,8 +349,14 @@ fn gen_generic_vec_to_list_anyvalues(
             for (j, v) in #per_item_vals_ident.into_iter().enumerate() { #cols_buf_ident[j].push(v); }
         }
         let mut __df_derive_out: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(#schema_ident.len());
-        for j in 0..#schema_ident.len() {
-            let inner = polars::prelude::Series::new("".into(), &#cols_buf_ident[j]);
+        for (j, (_inner_name, __df_derive_inner_dtype)) in #schema_ident.iter().enumerate() {
+            let inner = if #cols_buf_ident[j].is_empty() {
+                let mut __df_derive_wrapped = __df_derive_inner_dtype.clone();
+                #wrap_extra_for_empty
+                polars::prelude::Series::new_empty("".into(), &__df_derive_wrapped)
+            } else {
+                polars::prelude::Series::new("".into(), &#cols_buf_ident[j])
+            };
             __df_derive_out.push(polars::prelude::AnyValue::List(inner));
         }
         __df_derive_out
@@ -386,6 +476,8 @@ fn bulk_consume_inner_series(
 /// calls `T::columnar_to_dataframe`, then ships each schema column to `ctx`.
 pub fn gen_bulk_generic_leaf(
     ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
@@ -407,8 +499,8 @@ pub fn gen_bulk_generic_leaf(
             .iter()
             .map(|__df_derive_it| (#access).clone())
             .collect();
-        let #df_ident = #ty::columnar_to_dataframe(&#slice_ident)?;
-        for (__df_derive_col_name, _) in #ty::schema()? {
+        let #df_ident = <#ty as #columnar_trait>::columnar_to_dataframe(&#slice_ident)?;
+        for (__df_derive_col_name, _) in <#ty as #to_df_trait>::schema()? {
             let __df_derive_col_name: &str = __df_derive_col_name.as_str();
             #consume
         }
@@ -418,15 +510,21 @@ pub fn gen_bulk_generic_leaf(
 /// Bulk emit for `payload: Option<T>`. Builds the gather (`nn`) plus position
 /// (`pos`) vectors, calls `T::columnar_to_dataframe(&nn)` once (skipping when
 /// every item is `None`), then scatters each `T` column back over the
-/// original positions, emitting `AnyValue::Null` where the source was `None`.
+/// original positions, emitting nulls where the source was `None`. Builds the
+/// scattered Series via `Series::take` over an indices `IdxCa` instead of a
+/// `Vec<AnyValue>` round-trip — typed buffers stay typed and we skip the
+/// `AnyValue` dispatch per element.
 pub fn gen_bulk_generic_option(
     ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
 ) -> TokenStream {
     let nn_ident = format_ident!("__df_derive_gen_nn_{}", idx);
     let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
+    let take_ident = format_ident!("__df_derive_gen_take_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
     let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
@@ -435,20 +533,10 @@ pub fn gen_bulk_generic_option(
         ctx,
         &col_name_var,
         &quote! {{
-            let __df_derive_inner_col = #df_ident.column(#col_name_var)?;
-            let mut __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> =
-                ::std::vec::Vec::with_capacity(items.len());
-            for __df_derive_ix in #pos_ident.iter() {
-                match __df_derive_ix {
-                    ::std::option::Option::Some(k) => {
-                        __df_derive_vals.push(__df_derive_inner_col.get(*k)?.into_static());
-                    }
-                    ::std::option::Option::None => {
-                        __df_derive_vals.push(polars::prelude::AnyValue::Null);
-                    }
-                }
-            }
-            polars::prelude::Series::new("".into(), &__df_derive_vals)
+            let __df_derive_inner_col = #df_ident
+                .column(#col_name_var)?
+                .as_materialized_series();
+            __df_derive_inner_col.take(&#take_ident)?
         }},
     );
     let consume_empty = bulk_consume_inner_series(
@@ -462,12 +550,14 @@ pub fn gen_bulk_generic_option(
 
     quote! {{
         let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
-        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<usize>> =
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<polars::prelude::IdxSize>> =
             ::std::vec::Vec::with_capacity(items.len());
         for __df_derive_it in items {
             match &(#access) {
                 ::std::option::Option::Some(__df_derive_v) => {
-                    #pos_ident.push(::std::option::Option::Some(#nn_ident.len()));
+                    #pos_ident.push(::std::option::Option::Some(
+                        #nn_ident.len() as polars::prelude::IdxSize,
+                    ));
                     #nn_ident.push(__df_derive_v.clone());
                 }
                 ::std::option::Option::None => {
@@ -476,13 +566,18 @@ pub fn gen_bulk_generic_option(
             }
         }
         if #nn_ident.is_empty() {
-            for (#col_name_var, #dtype_var) in #ty::schema()? {
+            for (#col_name_var, #dtype_var) in <#ty as #to_df_trait>::schema()? {
                 let #col_name_var: &str = #col_name_var.as_str();
+                let #dtype_var = &#dtype_var;
                 #consume_empty
             }
         } else {
-            let #df_ident = #ty::columnar_to_dataframe(&#nn_ident)?;
-            for (#col_name_var, _) in #ty::schema()? {
+            let #df_ident = <#ty as #columnar_trait>::columnar_to_dataframe(&#nn_ident)?;
+            let #take_ident: polars::prelude::IdxCa = polars::prelude::IdxCa::from_iter_options(
+                "".into(),
+                #pos_ident.iter().copied(),
+            );
+            for (#col_name_var, _) in <#ty as #to_df_trait>::schema()? {
                 let #col_name_var: &str = #col_name_var.as_str();
                 #consume_filled
             }
@@ -490,13 +585,104 @@ pub fn gen_bulk_generic_option(
     }}
 }
 
-/// Bulk emit for `payload: Vec<T>`. Flattens every parent row's `Vec<T>` into
-/// a single contiguous slice plus a `lengths`-style offsets array, calls
-/// `T::columnar_to_dataframe(&flat)` once, then slices each `T` column per
-/// parent row to build a list-of-lists series (or list-of-list `AnyValue` for
-/// the vec-anyvalues path).
+/// Build the per-inner-column emit for a bulk-vec context: given the inner
+/// `DataFrame` (already computed from the flat slice) plus the `offsets`
+/// array, slice the inner column per parent row and feed each slice to a
+/// typed `ListBuilder`. The finisher produces a `ListChunked` that goes
+/// straight into either the parent `columns` Vec or an outer `AnyValue::List`.
+///
+/// Going through `ListBuilderTrait` directly skips the dtype-inference scan
+/// and per-row `cast(inner_type)` Polars does inside
+/// `any_values_to_list` when consuming a `Vec<AnyValue::List>`. The
+/// `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder` selected by
+/// `get_list_builder` for primitive inner dtypes copies elements with
+/// `extend_from_slice` rather than per-element `AnyValue` dispatch; the
+/// `AnonymousOwnedListBuilder` selected for struct/list inner dtypes
+/// Arc-shares chunks rather than wrapping them in an `AnyValue` envelope.
+fn bulk_vec_consume_inner_columns(
+    ctx: BulkContext<'_>,
+    df_ident: &Ident,
+    offsets_ident: &Ident,
+    schema_iter_ts: &TokenStream,
+) -> TokenStream {
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+    let consume_filled = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let __df_derive_inner_col = #df_ident
+                .column(#col_name_var)?
+                .as_materialized_series();
+            let mut __df_derive_lb = polars::chunked_array::builder::get_list_builder(
+                #dtype_var,
+                __df_derive_inner_col.len(),
+                items.len(),
+                "".into(),
+            );
+            for __df_derive_i in 0..items.len() {
+                let __df_derive_start = #offsets_ident[__df_derive_i];
+                let __df_derive_end = #offsets_ident[__df_derive_i + 1];
+                let __df_derive_slice = __df_derive_inner_col
+                    .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
+                __df_derive_lb.append_series(&__df_derive_slice)?;
+            }
+            polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb).into_series()
+        }},
+    );
+    quote! {
+        for (#col_name_var, #dtype_var) in #schema_iter_ts {
+            let #col_name_var: &str = #col_name_var.as_str();
+            let #dtype_var: &polars::prelude::DataType = &#dtype_var;
+            #consume_filled
+        }
+    }
+}
+
+/// Build the all-empty-rows emit for a bulk-vec context: when every parent
+/// row's inner Vec is empty (so the flat slice is empty and we skip the
+/// inner `columnar_to_dataframe` call), still produce one outer-list column
+/// per inner schema entry, each containing `items.len()` empty inner lists.
+fn bulk_vec_consume_empty_columns(
+    ctx: BulkContext<'_>,
+    schema_iter_ts: &TokenStream,
+) -> TokenStream {
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+    let consume_empty = bulk_consume_inner_series(
+        ctx,
+        &col_name_var,
+        &quote! {{
+            let __df_derive_empty = polars::prelude::Series::new_empty("".into(), #dtype_var);
+            let mut __df_derive_lb = polars::chunked_array::builder::get_list_builder(
+                #dtype_var,
+                0,
+                items.len(),
+                "".into(),
+            );
+            for _ in 0..items.len() {
+                __df_derive_lb.append_series(&__df_derive_empty)?;
+            }
+            polars::prelude::ListBuilderTrait::finish(&mut *__df_derive_lb).into_series()
+        }},
+    );
+    quote! {
+        for (#col_name_var, #dtype_var) in #schema_iter_ts {
+            let #col_name_var: &str = #col_name_var.as_str();
+            let #dtype_var: &polars::prelude::DataType = &#dtype_var;
+            #consume_empty
+        }
+    }
+}
+
+/// Bulk emit for `payload: Vec<T>` where `T` is a generic type parameter.
+/// Flattens via `T: Clone` (already a macro-injected bound on `T`), calls
+/// `<T as Columnar>::columnar_to_dataframe(&flat)` once, then ships each
+/// inner column to `ctx` via `bulk_vec_consume_inner_columns`.
 pub fn gen_bulk_generic_vec(
     ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
     idx: usize,
     access: &TokenStream,
     ctx: BulkContext<'_>,
@@ -504,46 +690,15 @@ pub fn gen_bulk_generic_vec(
     let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
     let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
-    let dtype_var = quote! { __df_derive_dtype };
-    let col_name_var = quote! { __df_derive_col_name };
-
-    let consume_filled = bulk_consume_inner_series(
-        ctx,
-        &col_name_var,
-        &quote! {{
-            let __df_derive_inner_col = #df_ident
-                .column(#col_name_var)?
-                .as_materialized_series()
-                .clone();
-            let mut __df_derive_rows: ::std::vec::Vec<polars::prelude::AnyValue> =
-                ::std::vec::Vec::with_capacity(items.len());
-            for __df_derive_i in 0..items.len() {
-                let __df_derive_start = #offsets_ident[__df_derive_i];
-                let __df_derive_end = #offsets_ident[__df_derive_i + 1];
-                let __df_derive_slice = __df_derive_inner_col
-                    .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
-                __df_derive_rows.push(polars::prelude::AnyValue::List(__df_derive_slice));
-            }
-            polars::prelude::Series::new("".into(), &__df_derive_rows)
-        }},
-    );
-    let consume_empty = bulk_consume_inner_series(
-        ctx,
-        &col_name_var,
-        &quote! {{
-            let mut __df_derive_rows: ::std::vec::Vec<polars::prelude::AnyValue> =
-                ::std::vec::Vec::with_capacity(items.len());
-            for _ in 0..items.len() {
-                let __df_derive_empty = polars::prelude::Series::new_empty("".into(), &#dtype_var);
-                __df_derive_rows.push(polars::prelude::AnyValue::List(__df_derive_empty));
-            }
-            polars::prelude::Series::new("".into(), &__df_derive_rows)
-        }},
-    );
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    let consume_filled =
+        bulk_vec_consume_inner_columns(ctx, &df_ident, &offsets_ident, &schema_iter);
+    let consume_empty = bulk_vec_consume_empty_columns(ctx, &schema_iter);
 
     quote! {{
         let mut #flat_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
-        let mut #offsets_ident: ::std::vec::Vec<usize> = ::std::vec::Vec::with_capacity(items.len() + 1);
+        let mut #offsets_ident: ::std::vec::Vec<usize> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
         #offsets_ident.push(0);
         for __df_derive_it in items {
             for __df_derive_v in (&(#access)).iter() {
@@ -552,16 +707,50 @@ pub fn gen_bulk_generic_vec(
             #offsets_ident.push(#flat_ident.len());
         }
         if #flat_ident.is_empty() {
-            for (#col_name_var, #dtype_var) in #ty::schema()? {
-                let #col_name_var: &str = #col_name_var.as_str();
-                #consume_empty
-            }
+            #consume_empty
         } else {
-            let #df_ident = #ty::columnar_to_dataframe(&#flat_ident)?;
-            for (#col_name_var, _) in #ty::schema()? {
-                let #col_name_var: &str = #col_name_var.as_str();
-                #consume_filled
+            let #df_ident = <#ty as #columnar_trait>::columnar_to_dataframe(&#flat_ident)?;
+            #consume_filled
+        }
+    }}
+}
+
+/// Bulk emit for `payload: Vec<T>` where `T` is a concrete derived struct
+/// type (i.e. has the inherent `__df_derive_columnar_from_refs` helper).
+/// Flattens via `&T` references — no `T: Clone` requirement — and calls
+/// the inherent helper directly, then ships each inner column to `ctx` via
+/// `bulk_vec_consume_inner_columns`.
+pub fn gen_bulk_concrete_vec(
+    ty: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    let consume_filled =
+        bulk_vec_consume_inner_columns(ctx, &df_ident, &offsets_ident, &schema_iter);
+    let consume_empty = bulk_vec_consume_empty_columns(ctx, &schema_iter);
+
+    quote! {{
+        let mut #flat_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #offsets_ident: ::std::vec::Vec<usize> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets_ident.push(0);
+        for __df_derive_it in items {
+            for __df_derive_v in (&(#access)).iter() {
+                #flat_ident.push(__df_derive_v);
             }
+            #offsets_ident.push(#flat_ident.len());
+        }
+        if #flat_ident.is_empty() {
+            #consume_empty
+        } else {
+            let #df_ident = #ty::__df_derive_columnar_from_refs(&#flat_ident)?;
+            #consume_filled
         }
     }}
 }
@@ -714,8 +903,8 @@ pub fn generate_primitive_for_columnar_push(
     let on_option_none = |tail: &[Wrapper]| {
         let tail_has_vec = tail.iter().any(|w| matches!(w, Wrapper::Vec));
         if tail_has_vec {
-            let vals_ident = format_ident!("__df_derive_pv_vals_{}", idx);
-            quote! { #vals_ident.push(polars::prelude::AnyValue::Null); }
+            let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+            quote! { #lb_ident.append_null(); }
         } else {
             let vec_ident = format_ident!("__df_derive_buf_{}", idx);
             quote! { #vec_ident.push(::std::option::Option::None); }
@@ -724,10 +913,10 @@ pub fn generate_primitive_for_columnar_push(
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
         let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
-        let vals_ident = format_ident!("__df_derive_pv_vals_{}", idx);
+        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
         quote! {{
             let inner_series = { #inner_series_ts };
-            #vals_ident.push(polars::prelude::AnyValue::List(inner_series));
+            #lb_ident.append_series(&inner_series)?;
         }}
     };
 
@@ -858,12 +1047,17 @@ pub fn generate_nested_for_columnar_push(
     is_generic: bool,
 ) -> TokenStream {
     let ty = type_path.clone();
+    let vec = is_vec(wrappers);
 
-    let cols_ident = if is_vec(wrappers) {
-        format_ident!("__df_derive_nv_cols_{}", idx)
-    } else {
-        format_ident!("__df_derive_ns_cols_{}", idx)
-    };
+    // For non-vec shapes the populator is `Vec<Vec<AnyValue>>` (one inner
+    // Vec per inner schema column, accumulating one AnyValue per outer row).
+    // For vec shapes the populator is `Vec<Box<dyn ListBuilderTrait>>`
+    // (one builder per inner schema column, accumulating one outer-list
+    // entry per outer row). The on-leaf branch only runs for non-vec
+    // shapes — `process_wrappers` reaches the leaf only when no `Vec`
+    // wrapper is present.
+    let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+    let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
 
     let on_leaf = |acc: &TokenStream| {
         let cols_ident = cols_ident.clone();
@@ -894,12 +1088,23 @@ pub fn generate_nested_for_columnar_push(
     };
 
     let on_option_none = |_tail: &[Wrapper]| {
-        let cols_ident = cols_ident.clone();
-        quote! { for j in 0..#cols_ident.len() { #cols_ident[j].push(polars::prelude::AnyValue::Null); } }
+        if vec {
+            let lbs_ident = lbs_ident.clone();
+            quote! {
+                for j in 0..#lbs_ident.len() { #lbs_ident[j].append_null(); }
+            }
+        } else {
+            let cols_ident = cols_ident.clone();
+            quote! {
+                for j in 0..#cols_ident.len() {
+                    #cols_ident[j].push(polars::prelude::AnyValue::Null);
+                }
+            }
+        }
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let cols_ident = cols_ident.clone();
+        let lbs_ident = lbs_ident.clone();
         let list_vals_ts = if is_generic {
             gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
         } else {
@@ -907,7 +1112,21 @@ pub fn generate_nested_for_columnar_push(
         };
         quote! {{
             let __df_derive_vals: ::std::vec::Vec<polars::prelude::AnyValue> = { #list_vals_ts };
-            for (j, v) in __df_derive_vals.into_iter().enumerate() { #cols_ident[j].push(v); }
+            for (j, __df_derive_v) in __df_derive_vals.into_iter().enumerate() {
+                match __df_derive_v {
+                    polars::prelude::AnyValue::List(__df_derive_inner) => {
+                        #lbs_ident[j].append_series(&__df_derive_inner)?;
+                    }
+                    polars::prelude::AnyValue::Null => {
+                        #lbs_ident[j].append_null();
+                    }
+                    _ => {
+                        return ::std::result::Result::Err(polars::prelude::polars_err!(
+                            ComputeError: "df-derive: expected list or null AnyValue from nested vec helper (codegen invariant violation)"
+                        ));
+                    }
+                }
+            }
         }}
     };
 
@@ -991,8 +1210,33 @@ pub fn primitive_decls(
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let elem_rust_ty = mapping.rust_element_type;
     if vec {
-        let vals_ident = format_ident!("__df_derive_pv_vals_{}", idx);
-        decls.push(quote! { let mut #vals_ident: ::std::vec::Vec<polars::prelude::AnyValue> = ::std::vec::Vec::with_capacity(items.len()); });
+        // The outer column is `List<inner_dtype>`. Push per-row inner Series
+        // through `ListBuilderTrait::append_series` rather than collecting
+        // `Vec<AnyValue::List>` and rebuilding via `Series::new` — that
+        // intermediate paid for an inferring scan over the AnyValue vec plus a
+        // `cast(inner_type)` per row inside Polars' `any_values_to_list`.
+        // `get_list_builder` returns a typed builder
+        // (`ListPrimitiveChunkedBuilder` for numeric, `ListStringChunkedBuilder`
+        // for strings, etc.) so the inner buffer stays typed end-to-end.
+        //
+        // For nested-Vec shapes (`Vec<Vec<T>>`, `Vec<Vec<Vec<T>>>`, …) the
+        // per-row inner Series is itself `List<…>`-shaped, so the builder's
+        // expected inner dtype must include those extra list layers — see
+        // `outer_list_inner_dtype`. Using `element_dtype` here would
+        // wrong-foot the strict-typed builder (`ListPrimitiveChunkedBuilder`
+        // unpacks via the inner Native type and rejects a `list[…]` slice).
+        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
+        let inner_dtype =
+            crate::codegen::type_registry::outer_list_inner_dtype(base_type, transform, wrappers);
+        decls.push(quote! {
+            let mut #lb_ident: ::std::boxed::Box<dyn polars::prelude::ListBuilderTrait> =
+                polars::chunked_array::builder::get_list_builder(
+                    &#inner_dtype,
+                    items.len() * 4,
+                    items.len(),
+                    "".into(),
+                );
+        });
     } else {
         let vec_ident = format_ident!("__df_derive_buf_{}", idx);
         if opt {
@@ -1012,19 +1256,16 @@ pub fn primitive_finishers_for_vec_anyvalues(
 ) -> TokenStream {
     let vec = is_vec(wrappers);
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
-    let dtype = if vec {
-        mapping.element_dtype
-    } else {
-        mapping.full_dtype
-    };
     let needs_cast = crate::codegen::type_registry::needs_cast(transform);
     if vec {
-        let vals_ident = format_ident!("__df_derive_pv_vals_{}", idx);
+        let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
         quote! {
-            let inner = polars::prelude::Series::new("".into(), &#vals_ident);
+            let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
+                .into_series();
             out_values.push(polars::prelude::AnyValue::List(inner));
         }
     } else {
+        let dtype = mapping.full_dtype;
         let vec_ident = format_ident!("__df_derive_buf_{}", idx);
         quote! {
             let mut inner = polars::prelude::Series::new("".into(), &#vec_ident);
@@ -1047,18 +1288,76 @@ pub fn nested_empty_series_row(
 pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -> Vec<TokenStream> {
     let mut decls: Vec<TokenStream> = Vec::new();
     let vec = is_vec(wrappers);
-    let schema_ident = if vec {
-        format_ident!("__df_derive_nv_schema_{}", idx)
+    if vec {
+        // Vec<Struct> shapes that didn't take the bulk-concrete fast path
+        // (i.e. `Vec<Option<Struct>>`, `Vec<Vec<Struct>>`, etc.). Per parent
+        // row we still call the inner helper to get one inner Series per
+        // schema column; instead of accumulating those into a
+        // `Vec<AnyValue::List>` and rebuilding the outer list series via
+        // `Series::new`, we feed each inner Series straight into a typed
+        // `ListBuilder` per inner column. Skips the AnyValue inference scan
+        // and per-row `cast(inner_type)` Polars does inside
+        // `any_values_to_list`.
+        //
+        // For nested-Vec shapes (`Vec<Vec<Struct>>`, …), the per-row inner
+        // Series feeding the builder is itself `List<…>`-shaped, so the
+        // builder's inner dtype must include `(vec_count - 1)` extra
+        // `List<>` layers around the inner-struct schema dtype — see the
+        // analogous wrap in `outer_list_inner_dtype` for primitives. Without
+        // this, `ListPrimitiveChunkedBuilder` rejects the deeper `list[…]`
+        // slice with a `SchemaMismatch`.
+        let schema_ident = format_ident!("__df_derive_nv_schema_{}", idx);
+        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        let extra_list_layers = wrappers
+            .iter()
+            .filter(|w| matches!(w, Wrapper::Vec))
+            .count()
+            .saturating_sub(1);
+        // Emit the wrap loop only when there's something to wrap. `for _ in
+        // 0..0` is technically fine but trips `clippy::reversed_empty_ranges`
+        // inside the user's monomorphized code, which we can't easily silence
+        // from a macro without leaking attribute annotations into user types.
+        let wrap_extra = if extra_list_layers == 0 {
+            quote! {}
+        } else {
+            quote! {
+                for _ in 0..#extra_list_layers {
+                    __df_derive_wrapped = polars::prelude::DataType::List(
+                        ::std::boxed::Box::new(__df_derive_wrapped),
+                    );
+                }
+            }
+        };
+        decls.push(quote! { let #schema_ident = #type_path::schema()?; });
+        decls.push(quote! {
+            let mut #lbs_ident: ::std::vec::Vec<
+                ::std::boxed::Box<dyn polars::prelude::ListBuilderTrait>,
+            > = #schema_ident
+                .iter()
+                .map(|(_, __df_derive_inner_dtype)| {
+                    let mut __df_derive_wrapped = __df_derive_inner_dtype.clone();
+                    #wrap_extra
+                    polars::chunked_array::builder::get_list_builder(
+                        &__df_derive_wrapped,
+                        items.len() * 4,
+                        items.len(),
+                        "".into(),
+                    )
+                })
+                .collect();
+        });
     } else {
-        format_ident!("__df_derive_ns_schema_{}", idx)
-    };
-    let cols_ident = if vec {
-        format_ident!("__df_derive_nv_cols_{}", idx)
-    } else {
-        format_ident!("__df_derive_ns_cols_{}", idx)
-    };
-    decls.push(quote! { let #schema_ident = #type_path::schema()?; });
-    decls.push(quote! { let mut #cols_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> = #schema_ident.iter().map(|_| ::std::vec::Vec::with_capacity(items.len())).collect(); });
+        let schema_ident = format_ident!("__df_derive_ns_schema_{}", idx);
+        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        decls.push(quote! { let #schema_ident = #type_path::schema()?; });
+        decls.push(quote! {
+            let mut #cols_ident: ::std::vec::Vec<::std::vec::Vec<polars::prelude::AnyValue>> =
+                #schema_ident
+                    .iter()
+                    .map(|_| ::std::vec::Vec::with_capacity(items.len()))
+                    .collect();
+        });
+    }
     decls
 }
 
@@ -1069,15 +1368,22 @@ pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> T
     } else {
         format_ident!("__df_derive_ns_schema_{}", idx)
     };
-    let cols_ident = if vec {
-        format_ident!("__df_derive_nv_cols_{}", idx)
+    if vec {
+        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        quote! {
+            for j in 0..#schema_ident.len() {
+                let inner = polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j])
+                    .into_series();
+                out_values.push(polars::prelude::AnyValue::List(inner));
+            }
+        }
     } else {
-        format_ident!("__df_derive_ns_cols_{}", idx)
-    };
-    quote! {
-        for j in 0..#schema_ident.len() {
-            let inner = polars::prelude::Series::new("".into(), &#cols_ident[j]);
-            out_values.push(polars::prelude::AnyValue::List(inner));
+        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        quote! {
+            for j in 0..#schema_ident.len() {
+                let inner = polars::prelude::Series::new("".into(), &#cols_ident[j]);
+                out_values.push(polars::prelude::AnyValue::List(inner));
+            }
         }
     }
 }
@@ -1093,19 +1399,28 @@ pub fn nested_columnar_builders(
     } else {
         format_ident!("__df_derive_ns_schema_{}", idx)
     };
-    let cols_ident = if vec {
-        format_ident!("__df_derive_nv_cols_{}", idx)
-    } else {
-        format_ident!("__df_derive_ns_cols_{}", idx)
-    };
     let name = field_name;
-    vec![quote! {{
-        for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
-            let full_name = format!("{}.{}", #name, col_name);
-            let s = polars::prelude::Series::new(full_name.as_str().into(), &#cols_ident[j]);
-            columns.push(s.into());
-        }
-    }}]
+    if vec {
+        let lbs_ident = format_ident!("__df_derive_nv_lbs_{}", idx);
+        vec![quote! {{
+            for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
+                let full_name = format!("{}.{}", #name, col_name);
+                let s = polars::prelude::ListBuilderTrait::finish(&mut *#lbs_ident[j])
+                    .into_series()
+                    .with_name(full_name.as_str().into());
+                columns.push(s.into());
+            }
+        }}]
+    } else {
+        let cols_ident = format_ident!("__df_derive_ns_cols_{}", idx);
+        vec![quote! {{
+            for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
+                let full_name = format!("{}.{}", #name, col_name);
+                let s = polars::prelude::Series::new(full_name.as_str().into(), &#cols_ident[j]);
+                columns.push(s.into());
+            }
+        }}]
+    }
 }
 
 pub fn generate_schema_entries_for_struct(

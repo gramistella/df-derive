@@ -19,6 +19,18 @@ pub(super) struct NestedIR {
     /// also use this form (just the param ident) since the macro injects
     /// the trait bounds that make `T::method()` resolve.
     type_path: TokenStream,
+    /// Fully-qualified path to the `Columnar` trait, prebuilt for UFCS calls
+    /// (`<#type_path as #columnar_trait>::columnar_to_dataframe(&flat)`). The
+    /// bulk emitters use this so they work for both generic-parameter base
+    /// types (where the trait is bound on the parameter) and concrete struct
+    /// base types (where the trait isn't necessarily in scope at the call
+    /// site, e.g. inside the inherent `__df_derive_columnar_from_refs` body).
+    columnar_trait: TokenStream,
+    /// Fully-qualified path to the `ToDataFrame` trait, prebuilt for UFCS
+    /// calls to `schema()` from inside bulk-emit token streams. Same scope
+    /// problem as `columnar_trait`: bulk-emit tokens are inlined into bodies
+    /// (e.g. inherent helpers) where `ToDataFrame` may not be in scope.
+    to_df_trait: TokenStream,
     is_generic: bool,
 }
 
@@ -144,7 +156,9 @@ impl VecAnyvaluesBulkEmitter for Strategy {
     }
 }
 
-pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
+pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strategy> {
+    let columnar_trait = &config.columnar_trait_path;
+    let to_df_trait = &config.to_dataframe_trait_path;
     ir.fields
         .iter()
         .map(|f| match &f.base_type {
@@ -169,6 +183,8 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
                         f.wrappers.clone(),
                         NestedIR {
                             type_path: build_type_path(type_ident, type_args.as_ref()),
+                            columnar_trait: columnar_trait.clone(),
+                            to_df_trait: to_df_trait.clone(),
                             is_generic: false,
                         },
                     ))
@@ -195,6 +211,8 @@ pub fn build_strategies(ir: &StructIR) -> Vec<Strategy> {
                         f.wrappers.clone(),
                         NestedIR {
                             type_path: quote! { #type_ident },
+                            columnar_trait: columnar_trait.clone(),
+                            to_df_trait: to_df_trait.clone(),
                             is_generic: true,
                         },
                     ))
@@ -373,9 +391,11 @@ impl ColumnarBuilderFinisher for PrimitiveStrategy {
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
         if self.wrappers.iter().any(|w| matches!(w, Wrapper::Vec)) {
-            let vals_ident = format_ident!("__df_derive_pv_vals_{}", idx);
+            let lb_ident = format_ident!("__df_derive_pv_lb_{}", idx);
             vec![quote! {{
-                let s = polars::prelude::Series::new(#name.into(), &#vals_ident);
+                let s = polars::prelude::ListBuilderTrait::finish(&mut *#lb_ident)
+                    .into_series()
+                    .with_name(#name.into());
                 columns.push(s.into());
             }}]
         } else {
@@ -530,25 +550,59 @@ impl NestedStructStrategy {
 
     /// Returns `Some(emit)` when this strategy has a bulk implementation for
     /// the given context; `None` falls back to the per-row pipeline. Eligible
-    /// only when the field's base type is a generic parameter and the wrapper
-    /// shape is one of the depth-1 cases the bulk helpers support: bare leaf,
+    /// for the depth-1 wrapper shapes the bulk helpers support: bare leaf,
     /// `Option<T>`, or `Vec<T>`.
+    ///
+    /// Dispatch:
+    /// - Bare leaf / `Option<T>`: generic-only. Concrete nested structs keep
+    ///   the per-row inherent `__df_derive_*` fast paths in
+    ///   `generate_nested_for_*` — those already do typed-buffer work
+    ///   per-call and the bulk overhead would be an allocation hit for
+    ///   common cases.
+    /// - `Vec<T>`: works for both. Generic uses the `T: Clone` bound to
+    ///   build a `Vec<T>` and call `<T as Columnar>::columnar_to_dataframe`.
+    ///   Concrete uses `Vec<&Inner>` and the inherent
+    ///   `Inner::__df_derive_columnar_from_refs`, side-stepping any
+    ///   `Inner: Clone` requirement on user struct types.
     fn try_bulk_emit(
         &self,
         idx: usize,
         ctx: super::wrapped_codegen::BulkContext<'_>,
     ) -> Option<Vec<TokenStream>> {
-        if !self.n.is_generic {
-            return None;
-        }
         let ty = &self.n.type_path;
+        let columnar_trait = &self.n.columnar_trait;
+        let to_df_trait = &self.n.to_df_trait;
         let access = self.it_access();
         let emit = match self.wrappers.as_slice() {
-            [] => super::wrapped_codegen::gen_bulk_generic_leaf(ty, idx, &access, ctx),
-            [Wrapper::Option] => {
-                super::wrapped_codegen::gen_bulk_generic_option(ty, idx, &access, ctx)
+            [] if self.n.is_generic => super::wrapped_codegen::gen_bulk_generic_leaf(
+                ty,
+                columnar_trait,
+                to_df_trait,
+                idx,
+                &access,
+                ctx,
+            ),
+            [Wrapper::Option] if self.n.is_generic => {
+                super::wrapped_codegen::gen_bulk_generic_option(
+                    ty,
+                    columnar_trait,
+                    to_df_trait,
+                    idx,
+                    &access,
+                    ctx,
+                )
             }
-            [Wrapper::Vec] => super::wrapped_codegen::gen_bulk_generic_vec(ty, idx, &access, ctx),
+            [Wrapper::Vec] if self.n.is_generic => super::wrapped_codegen::gen_bulk_generic_vec(
+                ty,
+                columnar_trait,
+                to_df_trait,
+                idx,
+                &access,
+                ctx,
+            ),
+            [Wrapper::Vec] => {
+                super::wrapped_codegen::gen_bulk_concrete_vec(ty, to_df_trait, idx, &access, ctx)
+            }
             _ => return None,
         };
         Some(vec![emit])

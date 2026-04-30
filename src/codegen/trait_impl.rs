@@ -31,7 +31,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         };
     }
 
-    let strategies = super::strategy::build_strategies(ir);
+    let strategies = super::strategy::build_strategies(ir, config);
     let series_creations: Vec<TokenStream> = strategies
         .iter()
         .map(super::strategy::RowWiseGenerator::gen_series_creation)
@@ -48,7 +48,12 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     quote! {
         impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-                use polars::prelude::NamedFrom;
+                // Pull traits from polars' prelude into scope (incl. `NamedFrom`,
+                // `IntoSeries`, `NewChunkedArray`, `ListBuilderTrait`) so the
+                // bulk-emit and list-builder helpers spliced in by
+                // `series_creations` can resolve `T::method(...)` paths
+                // without having to UFCS-qualify every trait method.
+                use polars::prelude::*;
                 let mut all_series: Vec<polars::prelude::Column> = Vec::new();
                 #(
                     all_series.extend(#series_creations);

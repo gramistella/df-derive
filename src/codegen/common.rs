@@ -20,9 +20,10 @@ pub fn generate_primitive_access_expr(
 
 pub fn prepare_vec_anyvalues_parts(
     ir: &StructIR,
+    config: &super::MacroConfig,
     it_ident: &syn::Ident,
 ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    let strategies = strategy::build_strategies(ir);
+    let strategies = strategy::build_strategies(ir, config);
     let mut decls: Vec<TokenStream> = Vec::new();
     let mut pushes: Vec<TokenStream> = Vec::new();
     let mut finishers: Vec<TokenStream> = Vec::new();
@@ -44,9 +45,10 @@ pub fn prepare_vec_anyvalues_parts(
 
 pub fn prepare_columnar_parts(
     ir: &StructIR,
+    config: &super::MacroConfig,
     it_ident: &syn::Ident,
 ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    let strategies = strategy::build_strategies(ir);
+    let strategies = strategy::build_strategies(ir, config);
     let mut decls: Vec<TokenStream> = Vec::new();
     let mut pushes: Vec<TokenStream> = Vec::new();
     let mut builders: Vec<TokenStream> = Vec::new();

@@ -120,18 +120,16 @@ fn gen_primitive_vec_inner_series(
     for _ in 0..tail_vec_count {
         empty_dtype = quote! { #pp::DataType::List(::std::boxed::Box::new(#empty_dtype)) };
     }
-    // Bind the cloned element to a named local so the inner recursion sees
-    // a place expression rather than the `(*elem).clone()` temporary. The
-    // inner-Vec borrowing path (`generate_inner_series_from_vec`) takes a
-    // `&str` view into the access, and that borrow must outlive the
-    // `Vec<&str>` it builds — a bare temp would drop at the previous `;`
-    // and dangle. The binding has no effect on owning paths.
-    let elem_owned_ident =
-        syn::Ident::new("__df_derive_elem_owned", proc_macro2::Span::call_site());
-    let elem_owned_access = quote! { #elem_owned_ident };
+    // The `for #elem_ident in (#acc).iter()` binding is itself a long-lived
+    // place expression (a `&T_full` referencing storage owned by `#acc`), so
+    // the inner recursion can borrow from it directly. Cloning into an owned
+    // local would have forced `T: Clone` on every generic param of the
+    // enclosing struct — overly restrictive when only this fallback path
+    // (deeper-than-`Vec<T>` shapes with a transform) ever needs the borrow.
+    let elem_access = quote! { #elem_ident };
     let recur_elem_tokens_ts = generate_primitive_for_anyvalue(
         &per_item_vals_ident,
-        &elem_owned_access,
+        &elem_access,
         base_type,
         transform,
         tail,
@@ -139,7 +137,6 @@ fn gen_primitive_vec_inner_series(
     quote! {{
         let mut #list_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
         for #elem_ident in (#acc).iter() {
-            let #elem_owned_ident = (*#elem_ident).clone();
             let mut #per_item_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
             { #recur_elem_tokens_ts }
             let __df_derive_elem_av = #per_item_vals_ident.pop().ok_or_else(|| #pp::polars_err!(

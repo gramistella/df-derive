@@ -366,23 +366,55 @@ MIT. See `LICENSE`.
 
 This crate currently resolves default trait paths to a `dataframe` module under the `paft` ecosystem. Concretely, it attempts to implement:
 
-- `paft::dataframe::ToDataFrame` and `paft::dataframe::Columnar` (or `paft-core::dataframe::...`) if those crates are present.
+- `paft::dataframe::ToDataFrame`, `paft::dataframe::Columnar`, and `paft::dataframe::Decimal128Encode` (or `paft-core::dataframe::...`) if those crates are present.
 
 You can override these paths for any runtime by annotating your type with `#[df_derive(...)]`:
 
 ```rust
 #[derive(df_derive::ToDataFrame)]
-#[df_derive(trait = "my_runtime::dataframe::ToDataFrame")] // Columnar will be inferred as my_runtime::dataframe::Columnar
+#[df_derive(trait = "my_runtime::dataframe::ToDataFrame")]
+// `Columnar` and `Decimal128Encode` are inferred as
+// `my_runtime::dataframe::Columnar` / `my_runtime::dataframe::Decimal128Encode`
 struct MyType { /* fields */ }
 ```
 
-If you need to override both explicitly:
+If you need to override them explicitly:
 
 ```rust
 #[derive(df_derive::ToDataFrame)]
 #[df_derive(
     trait = "my_runtime::dataframe::ToDataFrame",
     columnar = "my_runtime::dataframe::Columnar",
+    decimal128_encode = "my_runtime::dataframe::Decimal128Encode",
 )]
 struct MyType { /* fields */ }
 ```
+
+## Custom decimal backends
+
+`Decimal` fields are converted to a polars `Decimal(precision, scale)` column by going through a small user-pluggable trait, `Decimal128Encode`:
+
+```rust
+pub trait Decimal128Encode {
+    fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+}
+```
+
+The implementer rescales the value to the schema scale and returns the mantissa as an `i128`. A `None` return surfaces as a polars `ComputeError` from the generated code, matching the existing scale-up overflow path.
+
+**Rounding contract (load-bearing).** Implementations MUST use round-half-to-even (banker's rounding) on scale-down. Polars' own `str_to_dec128` rounds that way, so backends that disagree on tie-breaking (e.g., `rust_decimal::Decimal::rescale` rounds half-away-from-zero) would produce different bytes than the historical `to_string + cast` path the codegen replaced. Sticking to round-half-to-even keeps the column byte-identical across decimal backends.
+
+**Default discovery.** The codegen looks for `Decimal128Encode` next to the `ToDataFrame` and `Columnar` traits — i.e. by default `paft::dataframe::Decimal128Encode` (or `paft-core::dataframe::...`), and otherwise the `dataframe` module the user pointed `trait = "..."` at. So, in the common case, the migration path is "add an `impl Decimal128Encode for MyDecimal` next to your existing `ToDataFrame` impls; no derive attribute needed".
+
+**Per-derive override.** If your decimal trait lives somewhere else, point at it explicitly:
+
+```rust
+#[derive(df_derive::ToDataFrame)]
+#[df_derive(
+    trait = "my_runtime::dataframe::ToDataFrame",
+    decimal128_encode = "my_runtime::decimal_backend::Decimal128Encode",
+)]
+struct Tx { /* … */ }
+```
+
+**Backend status.** `paft-decimal` (planned) provides `Decimal128Encode` impls for `rust_decimal::Decimal` and `bigdecimal::BigDecimal` so projects can mix backends without writing the rescale themselves. Until then, a copy-paste-ready `rust_decimal` impl lives in `tests/common.rs`.

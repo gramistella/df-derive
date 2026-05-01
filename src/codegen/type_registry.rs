@@ -237,6 +237,7 @@ pub fn anyvalue_static_expr(
 pub fn map_primitive_expr(
     var: &TokenStream,
     transform: Option<&PrimitiveTransform>,
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     transform.map_or_else(
         || quote! { (#var).clone() },
@@ -257,63 +258,40 @@ pub fn map_primitive_expr(
                 quote! { (#var).to_string() }
             }
             PrimitiveTransform::DecimalToInt128 { scale, .. } => {
-                // Rescale the rust_decimal mantissa to the schema scale,
-                // matching the historical `to_string + parse` round-trip
-                // through polars's `str_to_dec128`. That path uses
-                // round-half-to-even (banker's rounding) on scale-down, so
-                // we replicate it here directly on the i128 mantissa rather
-                // than going through `rust_decimal::Decimal::rescale`, which
-                // uses half-away-from-zero. Scale-up can overflow for large
-                // inputs, so this expression is treated as fallible by
-                // `is_fallible_conversion`: the overflow arm `return`s an
-                // `Err(...)` from the innermost enclosing function (a
-                // `try_collect` closure for `Vec<Decimal>` shapes, or
-                // `columnar_from_refs` / `to_inner_values` for the leaf
-                // populator paths).
+                // Dispatch the rescale through the user-controlled
+                // `Decimal128Encode` trait so different decimal backends
+                // (`rust_decimal::Decimal`, `bigdecimal::BigDecimal`, …) can
+                // own the conversion. Each implementer must use round-half-
+                // to-even (banker's rounding) on scale-down so observable
+                // bytes match polars's `str_to_dec128`. A `None` return
+                // surfaces as a polars `ComputeError`, matching the
+                // historical scale-up overflow path.
                 //
-                // Bounds: `rust_decimal::Decimal::scale()` is capped at
-                // `MAX_SCALE = 28`, polars caps decimal scale at 38, so the
-                // scale-up `diff` is at most 38 and the scale-down `diff`
-                // is at most 28. `10i128.pow(diff)` therefore fits in i128
-                // for either direction (max `10^38 < 2^127`).
+                // The trait is imported anonymously (`use ... as _;`) inside
+                // the emitted block so we can call the method via dot syntax
+                // (`receiver.try_to_i128_mantissa(...)`). Dot syntax triggers
+                // method resolution, which auto-derefs through `&Decimal` /
+                // `&&Decimal` etc. — necessary because callers pass receivers
+                // of both shapes (place expressions like `self.field` of
+                // type `Decimal`, and iterator items of type `&Decimal`).
+                // Function-call form on a trait path does NOT auto-deref,
+                // which would force the codegen to know the bare field type.
+                // The anonymous-import idiom doesn't introduce any name into
+                // user scope. The implementer's body is small enough that
+                // the compiler inlines through the trait dispatch (confirmed
+                // by bench 13 not regressing).
                 let target = u32::from(*scale);
                 let pp = super::polars_paths::prelude();
                 quote! {{
-                    let __df_d = (#var);
-                    let __df_d_scale = __df_d.scale();
-                    let __df_d_m: i128 = __df_d.mantissa();
-                    let __df_target: u32 = #target;
-                    if __df_d_scale == __df_target {
-                        __df_d_m
-                    } else if __df_d_scale < __df_target {
-                        let __df_diff = __df_target - __df_d_scale;
-                        let __df_pow = 10i128.pow(__df_diff);
-                        match __df_d_m.checked_mul(__df_pow) {
-                            ::std::option::Option::Some(__df_v) => __df_v,
-                            ::std::option::Option::None => return ::std::result::Result::Err(#pp::polars_err!(
-                                ComputeError: "df-derive: decimal mantissa overflow rescaling from scale {} to scale {}",
-                                __df_d_scale, __df_target
-                            )),
-                        }
-                    } else {
-                        // Scale-down with round-half-to-even on the unsigned
-                        // magnitude, then re-apply sign — matches polars's
-                        // `div_128_pow10` semantics.
-                        let __df_diff = __df_d_scale - __df_target;
-                        let __df_pow = 10i128.pow(__df_diff) as u128;
-                        let __df_neg = __df_d_m < 0;
-                        let __df_abs = __df_d_m.unsigned_abs();
-                        let __df_q = (__df_abs / __df_pow) as i128;
-                        let __df_r = __df_abs % __df_pow;
-                        let __df_half = __df_pow / 2;
-                        let __df_rounded = if __df_r > __df_half {
-                            __df_q + 1
-                        } else if __df_r < __df_half {
-                            __df_q
-                        } else {
-                            __df_q + (__df_q & 1)
-                        };
-                        if __df_neg { -__df_rounded } else { __df_rounded }
+                    use #decimal128_encode_trait as _;
+                    match (#var).try_to_i128_mantissa(#target) {
+                        ::std::option::Option::Some(__df_m) => __df_m,
+                        ::std::option::Option::None => return ::std::result::Result::Err(
+                            #pp::polars_err!(ComputeError:
+                                "df-derive: decimal mantissa rescale to scale {} failed (overflow or precision loss)",
+                                #target
+                            )
+                        ),
                     }
                 }}
             }

@@ -16,6 +16,22 @@ All notable changes to this project will be documented in this file.
   re-exported through `polars::prelude`, so downstream crates must declare
   it themselves. Migration: add `polars-arrow = "0.53"` to your
   `Cargo.toml` alongside `polars`.
+- Decimal codegen now dispatches through a `Decimal128Encode` trait instead
+  of inlining `rust_decimal::Decimal::scale()` / `mantissa()`, so custom
+  decimal backends (`bigdecimal::BigDecimal`, arbitrary-precision types,
+  etc.) can plug in without forking the macro. The trait shape is
+  `fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>`; a
+  `None` return surfaces as a polars `ComputeError`, matching the existing
+  scale-up overflow path. Implementations MUST use round-half-to-even
+  (banker's rounding) on scale-down so the bytes the derive emits match
+  polars's own `str_to_dec128`. The codegen looks for the trait next to
+  `ToDataFrame` / `Columnar` (default `paft::dataframe::Decimal128Encode`,
+  inferred when only `trait = "..."` is overridden); a per-derive
+  `#[df_derive(decimal128_encode = "...")]` attribute points at custom
+  paths. **Migration for existing `rust_decimal::Decimal` users**: add
+  `impl Decimal128Encode for rust_decimal::Decimal` to the same module
+  that hosts your `ToDataFrame` impls — a copy-paste-ready impl lives in
+  `tests/common.rs`. No source change at the call sites.
 
 ## [0.3.0] - 2026-04-28
 

@@ -7,8 +7,9 @@ use quote::quote;
 pub fn generate_primitive_access_expr(
     var: &TokenStream,
     transform: Option<&PrimitiveTransform>,
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
-    crate::codegen::type_registry::map_primitive_expr(var, transform)
+    crate::codegen::type_registry::map_primitive_expr(var, transform, decimal128_encode_trait)
 }
 
 // generate_fast_path_primitives removed; logic is now handled in strategies
@@ -84,6 +85,7 @@ pub fn generate_inner_series_from_vec(
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
     option_wrap: bool,
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
 
@@ -150,7 +152,7 @@ pub fn generate_inner_series_from_vec(
     if needs_conv {
         let elem_ident = syn::Ident::new("__df_derive_e", proc_macro2::Span::call_site());
         let var_ts = quote! { #elem_ident };
-        let mapped = generate_primitive_access_expr(&var_ts, transform);
+        let mapped = generate_primitive_access_expr(&var_ts, transform, decimal128_encode_trait);
         // Fallible conversions (currently only `DateTime<Utc>` →
         // `timestamp_nanos_opt`) embed a `?` in the mapped expression. A bare
         // `.map(|e| { #mapped }).collect::<Vec<_>>()` would treat the closure

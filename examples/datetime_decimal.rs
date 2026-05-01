@@ -40,6 +40,39 @@ mod dataframe {
             <T as Columnar>::columnar_to_dataframe(self)
         }
     }
+
+    pub trait Decimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+
+    impl Decimal128Encode for rust_decimal::Decimal {
+        #[inline]
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+            let source_scale = self.scale();
+            let mantissa: i128 = self.mantissa();
+            if source_scale == target_scale {
+                return Some(mantissa);
+            }
+            if source_scale < target_scale {
+                let diff = target_scale - source_scale;
+                let pow = 10i128.pow(diff);
+                return mantissa.checked_mul(pow);
+            }
+            let diff = source_scale - target_scale;
+            let pow = 10i128.pow(diff).cast_unsigned();
+            let neg = mantissa < 0;
+            let abs = mantissa.unsigned_abs();
+            let q = (abs / pow).cast_signed();
+            let r = abs % pow;
+            let half = pow / 2;
+            let rounded = match r.cmp(&half) {
+                std::cmp::Ordering::Greater => q + 1,
+                std::cmp::Ordering::Less => q,
+                std::cmp::Ordering::Equal => q + (q & 1),
+            };
+            Some(if neg { -rounded } else { rounded })
+        }
+    }
 }
 
 #[derive(ToDataFrame)]

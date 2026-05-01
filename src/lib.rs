@@ -337,9 +337,12 @@ use syn::{DeriveInput, parse_macro_input};
 /// Attributes:
 ///
 /// - Container-level: `#[df_derive(trait = "path::ToDataFrame")]` to set the `ToDataFrame` trait
-///   path; the `Columnar` path is inferred by replacing the last path segment with `Columnar`.
-///   Optionally, set both explicitly with
-///   `#[df_derive(columnar = "path::Columnar")]`.
+///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last
+///   path segment with `Columnar` / `Decimal128Encode`. Optionally, set them explicitly with
+///   `#[df_derive(columnar = "path::Columnar")]` and
+///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. The latter is the dispatch
+///   point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal backends —
+///   see "Custom decimal backends" in the README for the trait contract.
 /// - Field-level: `#[df_derive(as_string)]` to stringify values via `Display` (e.g., enums) during
 ///   conversion, resulting in `DataType::String` or `List<String>`. Allocates a `String` per row.
 /// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
@@ -375,6 +378,7 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     let default_df_mod = codegen::resolve_paft_crate_path();
     let mut to_df_trait_path_ts = quote! { #default_df_mod::ToDataFrame };
     let mut columnar_trait_path_ts = quote! { #default_df_mod::Columnar };
+    let mut decimal128_encode_trait_path_ts = quote! { #default_df_mod::Decimal128Encode };
 
     for attr in &ast.attrs {
         if attr.path().is_ident("df_derive") {
@@ -386,17 +390,36 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
                     to_df_trait_path_ts = quote! { #path };
 
                     // Automatically infer the Columnar trait path by replacing the final segment
-                    let mut columnar_path = path;
+                    let mut columnar_path = path.clone();
                     if let Some(last_segment) = columnar_path.segments.last_mut() {
                         last_segment.ident = syn::Ident::new("Columnar", last_segment.ident.span());
                     }
                     columnar_trait_path_ts = quote! { #columnar_path };
+
+                    // Same inference for Decimal128Encode: rebase the trait
+                    // path's final segment so a user who only sets `trait =
+                    // "..."` gets all three siblings without separate
+                    // attributes. Custom decimal-only overrides go through
+                    // `decimal128_encode` below.
+                    let mut decimal_path = path;
+                    if let Some(last_segment) = decimal_path.segments.last_mut() {
+                        last_segment.ident =
+                            syn::Ident::new("Decimal128Encode", last_segment.ident.span());
+                    }
+                    decimal128_encode_trait_path_ts = quote! { #decimal_path };
                     Ok(())
                 } else if meta.path.is_ident("columnar") {
                     let lit: syn::LitStr = meta.value()?.parse()?;
                     let path: syn::Path = syn::parse_str(&lit.value())
                         .map_err(|e| meta.error(format!("invalid columnar trait path: {e}")))?;
                     columnar_trait_path_ts = quote! { #path };
+                    Ok(())
+                } else if meta.path.is_ident("decimal128_encode") {
+                    let lit: syn::LitStr = meta.value()?.parse()?;
+                    let path: syn::Path = syn::parse_str(&lit.value()).map_err(|e| {
+                        meta.error(format!("invalid decimal128_encode trait path: {e}"))
+                    })?;
+                    decimal128_encode_trait_path_ts = quote! { #path };
                     Ok(())
                 } else {
                     Err(meta.error("unsupported key in #[df_derive(...)] attribute"))
@@ -410,6 +433,7 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     let config = codegen::MacroConfig {
         to_dataframe_trait_path: to_df_trait_path_ts,
         columnar_trait_path: columnar_trait_path_ts,
+        decimal128_encode_trait_path: decimal128_encode_trait_path_ts,
     };
     // Build the intermediate representation
     let ir = match parser::parse_to_ir(&ast) {

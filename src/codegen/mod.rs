@@ -17,11 +17,18 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 /// Macro-wide configuration for generated code
+#[allow(clippy::struct_field_names)]
 pub struct MacroConfig {
     /// Fully-qualified path to the `ToDataFrame` trait (e.g., `paft::dataframe::ToDataFrame`)
     pub to_dataframe_trait_path: TokenStream,
     /// Fully-qualified path to the Columnar trait (e.g., `paft::dataframe::Columnar`)
     pub columnar_trait_path: TokenStream,
+    /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
+    /// fields to dispatch the value-to-i128-mantissa rescale through
+    /// user-controlled code. Defaults to a sibling of the `ToDataFrame` trait
+    /// (`<default-or-user-mod>::Decimal128Encode`); custom decimal backends
+    /// override this with `#[df_derive(decimal128_encode = "...")]`.
+    pub decimal128_encode_trait_path: TokenStream,
 }
 
 pub fn resolve_paft_crate_path() -> TokenStream {

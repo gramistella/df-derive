@@ -31,6 +31,7 @@ fn tests() {
     t.pass("tests/pass/26-generics-no-clone.rs");
     t.pass("tests/pass/27-decimal-i128-direct.rs");
     t.pass("tests/pass/28-option-vec-struct-validity.rs");
+    t.pass("tests/pass/29-decimal128-encode-trait.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

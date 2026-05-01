@@ -10,6 +10,13 @@ use super::populator_idents::PopulatorIdents;
 pub(super) struct PrimitiveIR {
     base_type: BaseType,
     transform: Option<PrimitiveTransform>,
+    /// Fully-qualified path to the `Decimal128Encode` trait, prebuilt for
+    /// trait-method-call syntax inside emitted token streams. Only relevant
+    /// for `BaseType::Decimal` fields with a `DecimalToInt128` transform —
+    /// other base/transform combinations ignore the path. Stored on every
+    /// `PrimitiveIR` regardless because cloning a `TokenStream` is cheap and
+    /// it sidesteps an `Option<TokenStream>` everywhere downstream.
+    decimal128_encode_trait: TokenStream,
 }
 #[derive(Clone)]
 pub(super) struct NestedIR {
@@ -138,6 +145,7 @@ impl Strategy {
 pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strategy> {
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
+    let decimal_encode = &config.decimal128_encode_trait_path;
     ir.fields
         .iter()
         .map(|f| match &f.base_type {
@@ -153,6 +161,7 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
                         PrimitiveIR {
                             base_type: f.base_type.clone(),
                             transform: f.transform.clone(),
+                            decimal128_encode_trait: decimal_encode.clone(),
                         },
                     ))
                 } else {
@@ -181,6 +190,7 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
                         PrimitiveIR {
                             base_type: f.base_type.clone(),
                             transform: f.transform.clone(),
+                            decimal128_encode_trait: decimal_encode.clone(),
                         },
                     ))
                 } else {
@@ -204,6 +214,7 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
                 PrimitiveIR {
                     base_type: f.base_type.clone(),
                     transform: f.transform.clone(),
+                    decimal128_encode_trait: decimal_encode.clone(),
                 },
             )),
         })
@@ -312,6 +323,7 @@ impl PrimitiveStrategy {
             self.p.transform.as_ref(),
             &self.wrappers,
             idx,
+            &self.p.decimal128_encode_trait,
         )
     }
 
@@ -332,6 +344,7 @@ impl PrimitiveStrategy {
             &self.p.base_type,
             self.p.transform.as_ref(),
             &self.wrappers,
+            &self.p.decimal128_encode_trait,
         )
     }
 

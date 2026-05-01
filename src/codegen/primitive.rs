@@ -66,6 +66,7 @@ fn gen_primitive_vec_inner_series(
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
     tail: &[Wrapper],
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
@@ -80,8 +81,13 @@ fn gen_primitive_vec_inner_series(
     let as_str_fast_ok = matches!(transform, Some(PrimitiveTransform::AsStr));
 
     if (!base_is_struct || as_str_fast_ok) && tail.is_empty() {
-        let fast_inner_ts =
-            super::common::generate_inner_series_from_vec(acc, base_type, transform, false);
+        let fast_inner_ts = super::common::generate_inner_series_from_vec(
+            acc,
+            base_type,
+            transform,
+            false,
+            decimal128_encode_trait,
+        );
         return quote! {{ { #fast_inner_ts } }};
     }
     // `Vec<Option<T>>` shapes for every (base, transform) combination that
@@ -95,8 +101,13 @@ fn gen_primitive_vec_inner_series(
     if (!base_is_struct || as_str_fast_ok)
         && let [Wrapper::Option] = tail
     {
-        let fast_inner_ts =
-            super::common::generate_inner_series_from_vec(acc, base_type, transform, true);
+        let fast_inner_ts = super::common::generate_inner_series_from_vec(
+            acc,
+            base_type,
+            transform,
+            true,
+            decimal128_encode_trait,
+        );
         return quote! {{ { #fast_inner_ts } }};
     }
 
@@ -120,8 +131,13 @@ fn gen_primitive_vec_inner_series(
             inner_series_dtype =
                 quote! { #pp::DataType::List(::std::boxed::Box::new(#inner_series_dtype)) };
         }
-        let inner_series_ts =
-            gen_primitive_vec_inner_series(&quote! { #elem_ident }, base_type, transform, rest);
+        let inner_series_ts = gen_primitive_vec_inner_series(
+            &quote! { #elem_ident },
+            base_type,
+            transform,
+            rest,
+            decimal128_encode_trait,
+        );
         return quote! {{
             let mut __df_derive_lb: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
                 #cab::get_list_builder(
@@ -178,8 +194,14 @@ fn gen_primitive_vec_inner_series(
     // `Vec` + `pop()` round-trip. That also drops a runtime `polars_err!`
     // branch from the generated code that statically cannot fire.
     let elem_access = quote! { #elem_ident };
-    let recur_elem_tokens_ts =
-        generate_primitive_for_anyvalue(&list_vals_ident, &elem_access, base_type, transform, tail);
+    let recur_elem_tokens_ts = generate_primitive_for_anyvalue(
+        &list_vals_ident,
+        &elem_access,
+        base_type,
+        transform,
+        tail,
+        decimal128_encode_trait,
+    );
     quote! {{
         let mut #list_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
         for #elem_ident in (#acc).iter() {
@@ -204,6 +226,7 @@ pub fn generate_primitive_for_columnar_push(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
     idx: usize,
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     // Borrowing fast path: the buffer is declared as `Vec<&str>` /
     // `Vec<Option<&str>>` by `primitive_decls`, so we push borrows of the
@@ -240,7 +263,8 @@ pub fn generate_primitive_for_columnar_push(
 
     let on_leaf = |acc: &TokenStream| {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
-        let mapped = super::common::generate_primitive_access_expr(acc, transform);
+        let mapped =
+            super::common::generate_primitive_access_expr(acc, transform, decimal128_encode_trait);
         if opt_scalar {
             quote! { #vec_ident.push(::std::option::Option::Some({ #mapped })); }
         } else {
@@ -261,7 +285,13 @@ pub fn generate_primitive_for_columnar_push(
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
+        let inner_series_ts = gen_primitive_vec_inner_series(
+            acc,
+            base_type,
+            transform,
+            tail,
+            decimal128_encode_trait,
+        );
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         let pp = super::polars_paths::prelude();
         quote! {{
@@ -279,6 +309,7 @@ pub fn generate_primitive_for_anyvalue(
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
+    decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
 
@@ -296,7 +327,11 @@ pub fn generate_primitive_for_anyvalue(
                 )
             },
             None => {
-                let mapped = super::common::generate_primitive_access_expr(acc, transform);
+                let mapped = super::common::generate_primitive_access_expr(
+                    acc,
+                    transform,
+                    decimal128_encode_trait,
+                );
                 crate::codegen::type_registry::anyvalue_static_expr(base_type, transform, &mapped)
             }
         };
@@ -308,7 +343,13 @@ pub fn generate_primitive_for_anyvalue(
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let inner_series_ts = gen_primitive_vec_inner_series(acc, base_type, transform, tail);
+        let inner_series_ts = gen_primitive_vec_inner_series(
+            acc,
+            base_type,
+            transform,
+            tail,
+            decimal128_encode_trait,
+        );
         quote! {{
             let inner_series = { #inner_series_ts };
             #values_vec_ident.push(#pp::AnyValue::List(inner_series));

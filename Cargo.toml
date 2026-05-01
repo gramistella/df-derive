@@ -77,3 +77,15 @@ harness = false
 [[bench]]
 name = "11_slow_path_shapes"
 harness = false
+
+[[bench]]
+name = "12_tuple_structs"
+harness = false
+
+[[bench]]
+name = "13_datetime_decimal_columns"
+harness = false
+
+[[bench]]
+name = "14_as_string_enum"
+harness = false

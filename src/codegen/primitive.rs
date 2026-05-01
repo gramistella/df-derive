@@ -447,41 +447,59 @@ pub fn primitive_decls(
         // Native types don't match what `ListPrimitiveChunkedBuilder` accepts
         // or because the typed route was measured slower for them.
         if let Some(info) = typed_primitive_list_info(base_type, transform, wrappers) {
-            let native = &info.native_type;
-            let mapping_inner =
-                crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
-            let inner_logical = mapping_inner.element_dtype;
-            let constructor = if info.needs_values_type {
-                // Decimal: physical `Int128` differs from logical `Decimal(p, s)`.
-                // `new_with_values_type` gives the chunked array its physical
-                // storage type while the field carries the logical dtype, so
-                // the finished `ListChunked`'s schema matches `T::schema()`
-                // exactly without a post-finish cast.
-                quote! {
-                    #pp::ListPrimitiveChunkedBuilder::<#native>::new_with_values_type(
-                        "".into(),
-                        items.len(),
-                        items.len() * 4,
-                        #pp::DataType::Int128,
-                        #inner_logical,
-                    )
+            match &info.kind {
+                BuilderKind::Primitive(p) => {
+                    let native = &p.native_type;
+                    let mapping_inner =
+                        crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
+                    let inner_logical = mapping_inner.element_dtype;
+                    let constructor = if p.needs_values_type {
+                        // Decimal: physical `Int128` differs from logical `Decimal(p, s)`.
+                        // `new_with_values_type` gives the chunked array its physical
+                        // storage type while the field carries the logical dtype, so
+                        // the finished `ListChunked`'s schema matches `T::schema()`
+                        // exactly without a post-finish cast.
+                        quote! {
+                            #pp::ListPrimitiveChunkedBuilder::<#native>::new_with_values_type(
+                                "".into(),
+                                items.len(),
+                                items.len() * 4,
+                                #pp::DataType::Int128,
+                                #inner_logical,
+                            )
+                        }
+                    } else {
+                        // DateTime / bare numerics: physical matches what the buffer
+                        // stores; the field dtype is the schema's logical dtype
+                        // directly.
+                        quote! {
+                            #pp::ListPrimitiveChunkedBuilder::<#native>::new(
+                                "".into(),
+                                items.len(),
+                                items.len() * 4,
+                                #inner_logical,
+                            )
+                        }
+                    };
+                    decls.push(quote! {
+                        let mut #lb_ident: #pp::ListPrimitiveChunkedBuilder<#native> = #constructor;
+                    });
                 }
-            } else {
-                // DateTime / bare numerics: physical matches what the buffer
-                // stores; the field dtype is the schema's logical dtype
-                // directly.
-                quote! {
-                    #pp::ListPrimitiveChunkedBuilder::<#native>::new(
-                        "".into(),
-                        items.len(),
-                        items.len() * 4,
-                        #inner_logical,
-                    )
+                BuilderKind::String => {
+                    // `value_capacity` is the inner-builder's `MutableBinaryViewArray`
+                    // pre-allocation. `items.len() * 4` matches the heuristic the
+                    // `Box<dyn>` path's `get_list_builder` uses for strings (5x
+                    // value_capacity at the call site, divided through), and the
+                    // builder reallocates as needed regardless.
+                    decls.push(quote! {
+                        let mut #lb_ident: #pp::ListStringChunkedBuilder = #pp::ListStringChunkedBuilder::new(
+                            "".into(),
+                            items.len(),
+                            items.len() * 4,
+                        );
+                    });
                 }
-            };
-            decls.push(quote! {
-                let mut #lb_ident: #pp::ListPrimitiveChunkedBuilder<#native> = #constructor;
-            });
+            }
         } else {
             let inner_dtype = crate::codegen::type_registry::outer_list_inner_dtype(
                 base_type, transform, wrappers,
@@ -544,8 +562,8 @@ pub fn primitive_finishers_for_vec_anyvalues(
     }
 }
 
-/// Concrete `ListPrimitiveChunkedBuilder<Native>` declaration parameters for
-/// the single-`Vec` primitive shapes that benefit from bypassing the
+/// Concrete typed-builder declaration parameters for the single-`Vec`
+/// primitive shapes that benefit from bypassing the
 /// `Box<dyn ListBuilderTrait>` path. Currently covers:
 /// - `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
 ///   `Vec<Option<DateTime>>`.
@@ -554,11 +572,28 @@ pub fn primitive_finishers_for_vec_anyvalues(
 ///   `Iterator<Item = Option<Native>> + TrustedLen` straight into
 ///   `append_iter`, avoiding `Series::new`, the inferring scan, and the
 ///   `to_physical_repr`/`unpack` round-trip inside `append_series`.
+/// - `Vec<String>` / `Vec<Option<String>>` — feed an
+///   `Iterator<Item = Option<&str>> + TrustedLen` straight into the typed
+///   `ListStringChunkedBuilder::append_trusted_len_iter`, avoiding the
+///   per-row `Vec<&str>` + `Series::new` + `append_series` round-trip.
 ///
 /// Returns `None` for any shape that doesn't have exactly one `Vec` layer or
 /// for base/transform combinations not in the list above — those keep using
 /// the existing `get_list_builder` -> `Box<dyn ListBuilderTrait>` path.
 pub(super) struct TypedListInfo {
+    pub kind: BuilderKind,
+}
+
+/// Which concrete typed list builder a given primitive shape resolves to.
+/// `Primitive` covers everything that fits `ListPrimitiveChunkedBuilder<T>`;
+/// `String` carries no extra data because `ListStringChunkedBuilder` has a
+/// single concrete type with no native-type parameter.
+pub(super) enum BuilderKind {
+    Primitive(PrimitiveBuilderInfo),
+    String,
+}
+
+pub(super) struct PrimitiveBuilderInfo {
     /// Polars chunked-array native type token (`Int128Type`, `Int64Type`,
     /// `Int32Type`, …). Splices into `ListPrimitiveChunkedBuilder<#native_type>`.
     pub native_type: TokenStream,
@@ -592,31 +627,32 @@ pub(super) fn typed_primitive_list_info(
         return None;
     }
     let pp = super::polars_paths::prelude();
-    let numeric = |native_type: TokenStream, native_rust: TokenStream| {
+    let primitive = |native_type: TokenStream,
+                     native_rust: TokenStream,
+                     fallible: bool,
+                     needs_values_type: bool| {
         Some(TypedListInfo {
-            native_type,
-            native_rust,
-            fallible: false,
-            needs_values_type: false,
+            kind: BuilderKind::Primitive(PrimitiveBuilderInfo {
+                native_type,
+                native_rust,
+                fallible,
+                needs_values_type,
+            }),
         })
+    };
+    let numeric = |native_type: TokenStream, native_rust: TokenStream| {
+        primitive(native_type, native_rust, false, false)
     };
     match (base, transform) {
         (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { .. })) => {
-            Some(TypedListInfo {
-                native_type: quote! { #pp::Int128Type },
-                native_rust: quote! { i128 },
-                fallible: true,
-                needs_values_type: true,
-            })
+            primitive(quote! { #pp::Int128Type }, quote! { i128 }, true, true)
         }
-        (BaseType::DateTimeUtc, Some(PrimitiveTransform::DateTimeToInt(unit))) => {
-            Some(TypedListInfo {
-                native_type: quote! { #pp::Int64Type },
-                native_rust: quote! { i64 },
-                fallible: matches!(unit, DateTimeUnit::Nanoseconds),
-                needs_values_type: false,
-            })
-        }
+        (BaseType::DateTimeUtc, Some(PrimitiveTransform::DateTimeToInt(unit))) => primitive(
+            quote! { #pp::Int64Type },
+            quote! { i64 },
+            matches!(unit, DateTimeUnit::Nanoseconds),
+            false,
+        ),
         (BaseType::I8, None) => numeric(quote! { #pp::Int8Type }, quote! { i8 }),
         (BaseType::I16, None) => numeric(quote! { #pp::Int16Type }, quote! { i16 }),
         (BaseType::I32, None) => numeric(quote! { #pp::Int32Type }, quote! { i32 }),
@@ -627,6 +663,14 @@ pub(super) fn typed_primitive_list_info(
         (BaseType::U64, None) => numeric(quote! { #pp::UInt64Type }, quote! { u64 }),
         (BaseType::F32, None) => numeric(quote! { #pp::Float32Type }, quote! { f32 }),
         (BaseType::F64, None) => numeric(quote! { #pp::Float64Type }, quote! { f64 }),
+        // `Vec<String>` / `Vec<Option<String>>` go through
+        // `ListStringChunkedBuilder::append_trusted_len_iter`. The `as_str`
+        // transform path is handled separately via `classify_borrow` and the
+        // `Vec<&str>` borrowing buffer; we only catch the no-transform
+        // shape here so we don't double-route.
+        (BaseType::String, None) => Some(TypedListInfo {
+            kind: BuilderKind::String,
+        }),
         // `BaseType::Bool` is intentionally NOT routed through the typed
         // `ListBooleanChunkedBuilder` fast path. Its `append_iter` goes
         // through `extend_trusted_len_unchecked`, which always pushes a
@@ -646,12 +690,12 @@ pub(super) fn typed_primitive_list_info(
     }
 }
 
-/// Emit `append_iter`-based inner-list materialization for the typed
-/// `ListPrimitiveChunkedBuilder<Native>` path. `inner_tail` is what remains
-/// after the outer `Vec<…>` is consumed — must be `[]` (`Vec<Native>` shape)
-/// or `[Wrapper::Option]` (`Vec<Option<Native>>` shape); other shapes don't
-/// reach this helper because `typed_primitive_list_info` requires
-/// `vec_count == 1` and the only single-Vec inner shapes are bare and Option.
+/// Emit typed-builder inner-list materialization for the typed-builder fast
+/// path. `inner_tail` is what remains after the outer `Vec<…>` is consumed —
+/// must be `[]` (`Vec<T>` shape) or `[Wrapper::Option]` (`Vec<Option<T>>`
+/// shape); other shapes don't reach this helper because
+/// `typed_primitive_list_info` requires `vec_count == 1` and the only
+/// single-Vec inner shapes are bare and Option.
 fn gen_typed_list_append(
     vec_access: &TokenStream,
     inner_tail: &[Wrapper],
@@ -662,6 +706,29 @@ fn gen_typed_list_append(
     decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
     let inner_opt = matches!(inner_tail, [Wrapper::Option]);
+    match &info.kind {
+        BuilderKind::Primitive(p) => gen_typed_primitive_list_append(
+            vec_access,
+            inner_opt,
+            base_type,
+            transform,
+            p,
+            builder_ident,
+            decimal128_encode_trait,
+        ),
+        BuilderKind::String => gen_typed_string_list_append(vec_access, inner_opt, builder_ident),
+    }
+}
+
+fn gen_typed_primitive_list_append(
+    vec_access: &TokenStream,
+    inner_opt: bool,
+    base_type: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    info: &PrimitiveBuilderInfo,
+    builder_ident: &Ident,
+    decimal128_encode_trait: &TokenStream,
+) -> TokenStream {
     let elem_ident = syn::Ident::new("__df_derive_e", proc_macro2::Span::call_site());
     let mapped = super::common::generate_primitive_access_expr(
         &quote! { #elem_ident },
@@ -744,4 +811,24 @@ fn gen_typed_list_append(
             #builder_ident.append_iter((#vec_access).iter() #map_expr);
         }}
     }
+}
+
+/// Emit `append_trusted_len_iter`-based inner-list materialization for the
+/// typed `ListStringChunkedBuilder` path. The iterator yields `Option<&str>`
+/// borrowing from the parent's Vec; `slice::Iter::map(...)` is `TrustedLen`
+/// per polars-arrow's impls, so we can call the trusted-len overload and
+/// skip the per-row `Vec<&str>` + `Series::new` + `append_series` round-trip.
+fn gen_typed_string_list_append(
+    vec_access: &TokenStream,
+    inner_opt: bool,
+    builder_ident: &Ident,
+) -> TokenStream {
+    let map_expr = if inner_opt {
+        quote! { .map(::std::option::Option::<::std::string::String>::as_deref) }
+    } else {
+        quote! { .map(|__df_derive_e| ::std::option::Option::Some(__df_derive_e.as_str())) }
+    };
+    quote! {{
+        #builder_ident.append_trusted_len_iter((#vec_access).iter() #map_expr);
+    }}
 }

@@ -2,8 +2,11 @@
 // parameter routed through `ToDataFrame` / `Columnar`. Two flavors live here:
 //
 //   - Concrete-struct (`is_generic == false`) calls the inherent
-//     `__df_derive_vec_to_inner_list_values` helper for nested-Vec
-//     aggregation.
+//     `__df_derive_vec_to_inner_list_values` (owned slice) /
+//     `__df_derive_refs_to_inner_list_values` (borrowed slice) helpers for
+//     nested-Vec aggregation. The refs variant lets the
+//     `Vec<Option<Struct>>` path scatter into typed Series without cloning
+//     each `Some(v)` into an owned `Vec<Self>`.
 //   - Generic-parameter (`is_generic == true`) uses only the `ToDataFrame`
 //     and `Columnar` traits — nothing inherent — because the parameter type
 //     isn't known at macro-expansion time.
@@ -81,6 +84,11 @@ fn gen_nested_vec_anyvalues_flat(ty: &TokenStream, acc: &TokenStream) -> TokenSt
 /// Series out — no `Vec<AnyValue>` round-trip (which previously paid for an
 /// `AnyValue` dispatch per outer position plus an inferring scan when the outer
 /// Series was rebuilt).
+///
+/// Borrowing path: collects `&Struct` references for each `Some(v)` and feeds
+/// them into `__df_derive_refs_to_inner_list_values`, avoiding the per-Some
+/// clone that an owned `Vec<Self>` would require. Critical when the inner
+/// struct holds `String`s or other heap-allocating fields.
 fn gen_nested_vec_anyvalues_option(ty: &TokenStream, acc: &TokenStream) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let schema_ident = syn::Ident::new("__df_derive_schema", proc_macro2::Span::call_site());
@@ -92,14 +100,14 @@ fn gen_nested_vec_anyvalues_option(ty: &TokenStream, acc: &TokenStream) -> Token
         let #schema_ident = #ty::schema()?;
         let mut #pos_ident: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
             ::std::vec::Vec::with_capacity((#acc).len());
-        let mut #nn_ident: ::std::vec::Vec<#ty> = ::std::vec::Vec::new();
+        let mut #nn_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
         for __df_derive_maybe in (#acc).iter() {
             match __df_derive_maybe {
                 ::std::option::Option::Some(v) => {
                     #pos_ident.push(::std::option::Option::Some(
                         #nn_ident.len() as #pp::IdxSize,
                     ));
-                    #nn_ident.push((*v).clone());
+                    #nn_ident.push(v);
                 }
                 ::std::option::Option::None => #pos_ident.push(::std::option::Option::None),
             }
@@ -119,7 +127,7 @@ fn gen_nested_vec_anyvalues_option(ty: &TokenStream, acc: &TokenStream) -> Token
             }
             __df_derive_out
         } else {
-            let #vals_ident = #ty::__df_derive_vec_to_inner_list_values(&#nn_ident)?;
+            let #vals_ident = #ty::__df_derive_refs_to_inner_list_values(&#nn_ident)?;
             let #take_ident: #pp::IdxCa =
                 <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
                     "".into(),
@@ -133,7 +141,7 @@ fn gen_nested_vec_anyvalues_option(ty: &TokenStream, acc: &TokenStream) -> Token
                         __df_derive_inner_full.take(&#take_ident)?
                     }
                     _ => return ::std::result::Result::Err(#pp::polars_err!(
-                        ComputeError: "df-derive: expected list AnyValue from __df_derive_vec_to_inner_list_values (codegen invariant violation)"
+                        ComputeError: "df-derive: expected list AnyValue from __df_derive_refs_to_inner_list_values (codegen invariant violation)"
                     )),
                 };
                 __df_derive_out.push(#pp::AnyValue::List(inner));

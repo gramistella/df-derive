@@ -1,9 +1,11 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
-use std::time::Duration;
 
+#[path = "support/mod.rs"]
+mod bench_support;
 #[path = "../tests/common.rs"]
 mod core;
+use crate::bench_support::configure_criterion;
 use crate::core::dataframe::ToDataFrameVec;
 
 const N_ROWS: usize = 100_000;
@@ -40,15 +42,6 @@ fn benchmark_top_level_vec(c: &mut Criterion) {
             std::hint::black_box(df)
         });
     });
-}
-fn configure_criterion() -> Criterion {
-    Criterion::default()
-        .sample_size(150)
-        .warm_up_time(Duration::from_secs(8))
-        .measurement_time(Duration::from_secs(20))
-        .nresamples(200_000)
-        .noise_threshold(0.02)
-        .confidence_level(0.99)
 }
 
 criterion_group! {

@@ -8,11 +8,12 @@
 // once. From there each schema column of `T` is sliced/scattered into the
 // parent's columns or `AnyValue::List` entries.
 //
-// Three wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
-// `Option<T>`, and `Vec<T>`. Deeper nestings (`Option<Vec<T>>`, etc.) keep
-// using the per-row trait-only paths defined elsewhere; those are rare and
-// the bulk variants would need offset+position bookkeeping that isn't worth
-// the added complexity.
+// Four wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
+// `Option<T>`, `Vec<T>`, and `Option<Vec<T>>`. The remaining nestings
+// (`Vec<Option<T>>`, `Vec<Vec<T>>`, etc.) keep using the per-row trait-only
+// paths defined elsewhere; those are rarer and the bulk variants would
+// need additional position bookkeeping that isn't worth the added
+// complexity.
 //
 // Generic and concrete shapes share the same emitter — the trait method
 // `Columnar::columnar_from_refs(&[&Self])` is the one entry point for both,
@@ -215,6 +216,12 @@ pub fn gen_bulk_option(
 /// using `offsets_buf_expr` (a fully-validated `OffsetsBuffer<i64>`) to
 /// partition the inner array into per-outer-row slices.
 ///
+/// `validity_expr` is the token stream evaluating to
+/// `Option<polars_arrow::bitmap::Bitmap>` — pass a literal
+/// `::std::option::Option::None` for the non-`Option<Vec>` paths, or an
+/// expression building a `Some(Bitmap)` whose length matches the number of
+/// outer rows for the `Option<Vec>` path.
+///
 /// The result avoids the redundant copy that `ListBuilderTrait::append_series`
 /// performs after `Inner::columnar_from_refs` already materialized the inner
 /// values: we reuse the `Arc<dyn Array>` chunk straight from the inner Series
@@ -225,6 +232,7 @@ fn bulk_vec_emit_list_series(
     inner_col_expr: &TokenStream,
     offsets_buf_expr: &TokenStream,
     logical_inner_dtype_expr: &TokenStream,
+    validity_expr: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     quote! {{
@@ -237,13 +245,13 @@ fn bulk_vec_emit_list_series(
             #pp::LargeListArray::default_datatype(__df_derive_inner_arrow_dt),
             #offsets_buf_expr,
             __df_derive_inner_chunk,
-            ::std::option::Option::None,
+            #validity_expr,
         );
         // SAFETY: `inner_logical_dtype` is the same logical dtype the inner
         // Series was built with, so the chunk's arrow dtype matches the
-        // declared `List(inner)` logical dtype. No list-level nulls are
-        // applied (every outer row is a non-null Vec — null lists are
-        // handled in the `Option<Vec>` path, not here).
+        // declared `List(inner)` logical dtype. The validity bitmap (when
+        // present) was built with one bit per outer row, the same length as
+        // `offsets.len_proxy()`, so `LargeListArray::new` accepts it.
         let __df_derive_outer: #pp::Series = unsafe {
             #pp::Series::from_chunks_and_dtype_unchecked(
                 "".into(),
@@ -264,6 +272,13 @@ fn bulk_vec_emit_list_series(
 /// that goes straight into either the parent `columns` Vec or an outer
 /// `AnyValue::List`.
 ///
+/// `validity_expr` is the per-call token stream for the outer-list validity
+/// bitmap: `::std::option::Option::None` for the `[Vec]` path, or a
+/// `Some(bitmap.clone())` expression for the `[Option, Vec]` path. The
+/// bitmap is constructed once per field (above the schema loop) and cloned
+/// per inner column so each `LargeListArray` carries its own
+/// `Arc`-shared view.
+///
 /// Direct `LargeListArray` construction skips the redundant copy that
 /// `ListBuilderTrait::append_series` performs after `Inner::columnar_from_refs`
 /// already materialized the inner values. The chunk itself is an
@@ -274,6 +289,7 @@ fn bulk_vec_consume_inner_columns(
     df_ident: &Ident,
     offsets_buf_ident: &Ident,
     schema_iter_ts: &TokenStream,
+    validity_expr: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let dtype_var = quote! { __df_derive_dtype };
@@ -286,8 +302,12 @@ fn bulk_vec_consume_inner_columns(
     };
     let offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#offsets_buf_ident) };
     let logical_dtype_expr = quote! { (*#dtype_var).clone() };
-    let series_expr =
-        bulk_vec_emit_list_series(&inner_col_expr, &offsets_buf_expr, &logical_dtype_expr);
+    let series_expr = bulk_vec_emit_list_series(
+        &inner_col_expr,
+        &offsets_buf_expr,
+        &logical_dtype_expr,
+        validity_expr,
+    );
     let consume_filled = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
@@ -312,6 +332,7 @@ fn bulk_vec_consume_empty_columns(
     ctx: BulkContext<'_>,
     empty_offsets_buf_ident: &Ident,
     schema_iter_ts: &TokenStream,
+    validity_expr: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let dtype_var = quote! { __df_derive_dtype };
@@ -321,8 +342,12 @@ fn bulk_vec_consume_empty_columns(
     };
     let offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#empty_offsets_buf_ident) };
     let logical_dtype_expr = quote! { (*#dtype_var).clone() };
-    let series_expr =
-        bulk_vec_emit_list_series(&inner_col_expr, &offsets_buf_expr, &logical_dtype_expr);
+    let series_expr = bulk_vec_emit_list_series(
+        &inner_col_expr,
+        &offsets_buf_expr,
+        &logical_dtype_expr,
+        validity_expr,
+    );
     let consume_empty = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
@@ -356,9 +381,16 @@ pub fn gen_bulk_vec(
     let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
     let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
-    let consume_filled =
-        bulk_vec_consume_inner_columns(ctx, &df_ident, &offsets_buf_ident, &schema_iter);
-    let consume_empty = bulk_vec_consume_empty_columns(ctx, &empty_offsets_buf_ident, &schema_iter);
+    let no_validity = quote! { ::std::option::Option::None };
+    let consume_filled = bulk_vec_consume_inner_columns(
+        ctx,
+        &df_ident,
+        &offsets_buf_ident,
+        &schema_iter,
+        &no_validity,
+    );
+    let consume_empty =
+        bulk_vec_consume_empty_columns(ctx, &empty_offsets_buf_ident, &schema_iter, &no_validity);
 
     // Build the shared `OffsetsBuffer` once per branch — every inner-column
     // iteration clones the buffer (cheap; `OffsetsBuffer` wraps an
@@ -383,6 +415,96 @@ pub fn gen_bulk_vec(
             }
             #offsets_ident.push(#flat_ident.len() as i64);
         }
+        if #flat_ident.is_empty() {
+            #empty_buf_setup
+            #consume_empty
+        } else {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #filled_buf_setup
+            #consume_filled
+        }
+    }}
+}
+
+/// Bulk emit for `payload: Option<Vec<T>>`. Like `gen_bulk_vec` but each
+/// parent row is either `Some(Vec<T>)` (contributes inner refs and an
+/// offset entry, marked valid in the outer-list bitmap) or `None`
+/// (contributes no inner refs, repeats the previous offset, marked null).
+/// `Inner::columnar_from_refs` runs exactly once over the flattened slice;
+/// the resulting outer `LargeListArray` carries a `Bitmap` so `None`-rows
+/// surface as null lists rather than empty ones.
+///
+/// `pa_root` is the cached token stream for the `polars-arrow` crate root.
+pub fn gen_bulk_option_vec(
+    pa_root: &TokenStream,
+    ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let offsets_buf_ident = format_ident!("__df_derive_gen_offsets_buf_{}", idx);
+    let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
+    let validity_bitmap_ident = format_ident!("__df_derive_gen_validity_bm_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    // Each inner-column iteration clones the bitmap into the
+    // `LargeListArray`; `Bitmap` is `Arc`-shared so this is cheap.
+    let validity_expr = quote! {
+        ::std::option::Option::Some(::std::clone::Clone::clone(&#validity_bitmap_ident))
+    };
+    let consume_filled = bulk_vec_consume_inner_columns(
+        ctx,
+        &df_ident,
+        &offsets_buf_ident,
+        &schema_iter,
+        &validity_expr,
+    );
+    let consume_empty =
+        bulk_vec_consume_empty_columns(ctx, &empty_offsets_buf_ident, &schema_iter, &validity_expr);
+
+    // Build the shared `OffsetsBuffer` once per branch.
+    let filled_buf_setup = quote! {
+        let #offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#offsets_ident)?;
+    };
+    let empty_buf_setup = quote! {
+        let #empty_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
+    };
+
+    // The validity bitmap is built once from a `MutableBitmap` populated in
+    // the same outer-row scan that builds offsets/flat refs, then frozen
+    // via `From<MutableBitmap> for Bitmap`. Pre-sizing with
+    // `with_capacity(items.len())` skips the otherwise-amortized regrowth.
+    quote! {{
+        let mut #flat_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #offsets_ident: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets_ident.push(0);
+        let mut __df_derive_validity_mb: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_inner_vec) => {
+                    for __df_derive_v in __df_derive_inner_vec.iter() {
+                        #flat_ident.push(__df_derive_v);
+                    }
+                    __df_derive_validity_mb.push(true);
+                }
+                ::std::option::Option::None => {
+                    __df_derive_validity_mb.push(false);
+                }
+            }
+            #offsets_ident.push(#flat_ident.len() as i64);
+        }
+        let #validity_bitmap_ident: #pa_root::bitmap::Bitmap =
+            <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                #pa_root::bitmap::MutableBitmap,
+            >>::from(__df_derive_validity_mb);
         if #flat_ident.is_empty() {
             #empty_buf_setup
             #consume_empty

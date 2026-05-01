@@ -39,10 +39,15 @@ pub enum PrimitiveTransform {
     /// used to produce the i64 (`timestamp_millis` / `timestamp_micros` /
     /// `timestamp_nanos_opt`) and the `DataType::Datetime(...)` cast target.
     DateTimeToInt(DateTimeUnit),
-    /// Convert `rust_decimal::Decimal` to `String` and cast to a
-    /// `Decimal(precision, scale)` column. `precision` is bounded by the
-    /// Polars invariant `1 <= precision <= 38`.
-    DecimalToString { precision: u8, scale: u8 },
+    /// Convert `rust_decimal::Decimal` to its `i128` mantissa rescaled to the
+    /// schema `scale`, then build an `Int128Chunked` cast directly to
+    /// `Decimal(precision, scale)`. `precision` is bounded by the Polars
+    /// invariant `1 <= precision <= 38`. Rescale matches the historical
+    /// `to_string + parse` round-trip through polars's `str_to_dec128`:
+    /// scale-up multiplies the mantissa (and surfaces overflow as a polars
+    /// `ComputeError`); scale-down rounds the magnitude using
+    /// round-half-to-even (banker's rounding) and re-applies the sign.
+    DecimalToInt128 { precision: u8, scale: u8 },
     /// Convert any value to `String` using `ToString`
     ToString,
     /// Borrow `&str` via `<T as AsRef<str>>::as_ref` for the duration of the

@@ -26,6 +26,7 @@ polars = { version = "0.53.0", features = ["timezones", "dtype-decimal"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 rust_decimal = { version = "1.41.0", features = ["serde"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
+pretty_assertions = "1.4"
 
 [profile.bench]
 opt-level = 3

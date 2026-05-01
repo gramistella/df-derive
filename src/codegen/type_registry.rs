@@ -26,12 +26,12 @@ fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
     }
 }
 
-/// Pull the chosen `Decimal(precision, scale)` out of a `DecimalToString {..}`
+/// Pull the chosen `Decimal(precision, scale)` out of a `DecimalToInt128 {..}`
 /// transform. Falls back to the crate defaults for unrelated transforms — same
 /// defensive rationale as `datetime_unit`.
 const fn decimal_precision_scale(transform: Option<&PrimitiveTransform>) -> (u8, u8) {
     match transform {
-        Some(PrimitiveTransform::DecimalToString { precision, scale }) => (*precision, *scale),
+        Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => (*precision, *scale),
         _ => (DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE),
     }
 }
@@ -96,14 +96,14 @@ fn base_and_transform_to_rust_and_dtype(
             )
         }
         BaseType::Decimal => {
-            // we materialize as String then cast to Decimal dtype later
+            // We materialize as raw `i128` mantissa values (rescaled to the
+            // schema scale by `map_primitive_expr`), so the column finisher
+            // can build an `Int128Chunked` and call `into_decimal_unchecked`
+            // — no per-row string allocation or parse.
             let (precision, scale) = decimal_precision_scale(transform);
             let p = precision as usize;
             let s = scale as usize;
-            (
-                quote! { ::std::string::String },
-                quote! { #dt::Decimal(#p, #s) },
-            )
+            (quote! { i128 }, quote! { #dt::Decimal(#p, #s) })
         }
         BaseType::Struct(..) | BaseType::Generic(_) => (quote! { () }, quote! { #dt::Null }),
     }
@@ -153,22 +153,33 @@ pub fn outer_list_inner_dtype(
 
 pub fn needs_cast(transform: Option<&PrimitiveTransform>) -> bool {
     transform.is_some_and(|t| match t {
-        PrimitiveTransform::DateTimeToInt(_) | PrimitiveTransform::DecimalToString { .. } => true,
+        PrimitiveTransform::DateTimeToInt(_) | PrimitiveTransform::DecimalToInt128 { .. } => true,
         PrimitiveTransform::ToString | PrimitiveTransform::AsStr => false,
     })
 }
 
 /// True for transforms whose value-mapping expression returns via `?` (i.e.
 /// the expression has type `PolarsResult<_>` and short-circuits on error).
-/// Currently only `DateTime<Utc> → i64` at nanosecond precision is fallible:
-/// `chrono::DateTime::timestamp_nanos_opt` returns `None` for dates outside
-/// approximately [1677, 2262]. Callers that splice the mapped expression into
-/// a closure (e.g. `.map(|e| { #mapped }).collect()`) need to switch to a
-/// `try_collect`-style pattern when this returns true.
+/// Two transforms are fallible:
+///
+/// - `DateTime<Utc> → i64` at nanosecond precision: `timestamp_nanos_opt`
+///   returns `None` for dates outside approximately [1677, 2262].
+/// - `Decimal → i128` rescale on scale-up: an i128 mantissa multiplied by
+///   `10^diff` for `diff` up to 38 can overflow for sufficiently large
+///   inputs. We surface the overflow as a `PolarsResult` error rather than
+///   panicking, matching the behavior of the historical `to_string + parse`
+///   path which raised a polars `ComputeError` on overflow.
+///
+/// Callers that splice the mapped expression into a closure (e.g.
+/// `.map(|e| { #mapped }).collect()`) need to switch to a `try_collect`-style
+/// pattern when this returns true.
 pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> bool {
     matches!(
         transform,
-        Some(PrimitiveTransform::DateTimeToInt(DateTimeUnit::Nanoseconds))
+        Some(
+            PrimitiveTransform::DateTimeToInt(DateTimeUnit::Nanoseconds)
+                | PrimitiveTransform::DecimalToInt128 { .. }
+        )
     )
 }
 
@@ -177,12 +188,6 @@ pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> b
 /// `to_inner_values(&self)` per-row path to materialize each leaf without
 /// going through a 1-element Series + `get(0)?.into_static()` round-trip —
 /// at scale that's ~N-fields × N-rows throwaway Series allocations.
-///
-/// Decimal collapses to `StringOwned` here on purpose: the per-row path is
-/// only reached for deep-wrapper shapes (`Option<Option<Inner>>`, deeper
-/// `Vec` nests) and for direct user calls on `to_inner_values`. Top-level
-/// frame construction routes through the columnar path, where the per-column
-/// `Vec<String>` buffer is cast to `Decimal(p, s)` at the finisher.
 pub fn anyvalue_static_expr(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -197,9 +202,12 @@ pub fn anyvalue_static_expr(
                     #pp::AnyValue::Datetime(#mapped_var, #unit_ts, ::std::option::Option::None)
                 };
             }
-            PrimitiveTransform::ToString
-            | PrimitiveTransform::AsStr
-            | PrimitiveTransform::DecimalToString { .. } => {
+            PrimitiveTransform::DecimalToInt128 { precision, scale } => {
+                let p = *precision as usize;
+                let s = *scale as usize;
+                return quote! { #pp::AnyValue::Decimal(#mapped_var, #p, #s) };
+            }
+            PrimitiveTransform::ToString | PrimitiveTransform::AsStr => {
                 return quote! { #pp::AnyValue::StringOwned((#mapped_var).into()) };
             }
         }
@@ -245,8 +253,69 @@ pub fn map_primitive_expr(
                     }
                 }
             },
-            PrimitiveTransform::ToString | PrimitiveTransform::DecimalToString { .. } => {
+            PrimitiveTransform::ToString => {
                 quote! { (#var).to_string() }
+            }
+            PrimitiveTransform::DecimalToInt128 { scale, .. } => {
+                // Rescale the rust_decimal mantissa to the schema scale,
+                // matching the historical `to_string + parse` round-trip
+                // through polars's `str_to_dec128`. That path uses
+                // round-half-to-even (banker's rounding) on scale-down, so
+                // we replicate it here directly on the i128 mantissa rather
+                // than going through `rust_decimal::Decimal::rescale`, which
+                // uses half-away-from-zero. Scale-up can overflow for large
+                // inputs, so this expression is treated as fallible by
+                // `is_fallible_conversion`: the overflow arm `return`s an
+                // `Err(...)` from the innermost enclosing function (a
+                // `try_collect` closure for `Vec<Decimal>` shapes, or
+                // `columnar_from_refs` / `to_inner_values` for the leaf
+                // populator paths).
+                //
+                // Bounds: `rust_decimal::Decimal::scale()` is capped at
+                // `MAX_SCALE = 28`, polars caps decimal scale at 38, so the
+                // scale-up `diff` is at most 38 and the scale-down `diff`
+                // is at most 28. `10i128.pow(diff)` therefore fits in i128
+                // for either direction (max `10^38 < 2^127`).
+                let target = u32::from(*scale);
+                let pp = super::polars_paths::prelude();
+                quote! {{
+                    let __df_d = (#var);
+                    let __df_d_scale = __df_d.scale();
+                    let __df_d_m: i128 = __df_d.mantissa();
+                    let __df_target: u32 = #target;
+                    if __df_d_scale == __df_target {
+                        __df_d_m
+                    } else if __df_d_scale < __df_target {
+                        let __df_diff = __df_target - __df_d_scale;
+                        let __df_pow = 10i128.pow(__df_diff);
+                        match __df_d_m.checked_mul(__df_pow) {
+                            ::std::option::Option::Some(__df_v) => __df_v,
+                            ::std::option::Option::None => return ::std::result::Result::Err(#pp::polars_err!(
+                                ComputeError: "df-derive: decimal mantissa overflow rescaling from scale {} to scale {}",
+                                __df_d_scale, __df_target
+                            )),
+                        }
+                    } else {
+                        // Scale-down with round-half-to-even on the unsigned
+                        // magnitude, then re-apply sign — matches polars's
+                        // `div_128_pow10` semantics.
+                        let __df_diff = __df_d_scale - __df_target;
+                        let __df_pow = 10i128.pow(__df_diff) as u128;
+                        let __df_neg = __df_d_m < 0;
+                        let __df_abs = __df_d_m.unsigned_abs();
+                        let __df_q = (__df_abs / __df_pow) as i128;
+                        let __df_r = __df_abs % __df_pow;
+                        let __df_half = __df_pow / 2;
+                        let __df_rounded = if __df_r > __df_half {
+                            __df_q + 1
+                        } else if __df_r < __df_half {
+                            __df_q
+                        } else {
+                            __df_q + (__df_q & 1)
+                        };
+                        if __df_neg { -__df_rounded } else { __df_rounded }
+                    }
+                }}
             }
             PrimitiveTransform::AsStr => {
                 // Allocating fallback for codegen sites that can't use a

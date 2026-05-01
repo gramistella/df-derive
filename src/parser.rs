@@ -185,7 +185,7 @@ fn apply_dtype_overrides(
                 ),
             ));
         }
-        *transform = Some(PrimitiveTransform::DecimalToString { precision, scale });
+        *transform = Some(PrimitiveTransform::DecimalToInt128 { precision, scale });
     }
     if let Some(unit) = attrs.time_unit {
         if attrs.as_str || attrs.as_string {

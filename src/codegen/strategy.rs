@@ -330,38 +330,69 @@ impl PrimitiveStrategy {
             // (`outer_list_inner_dtype`), so the finished series already has
             // the schema-declared dtype — no cast needed here.
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-            vec![quote! {{
+            return vec![quote! {{
                 let s = #pp::IntoSeries::into_series(
                     #pp::ListBuilderTrait::finish(&mut *#lb_ident),
                 )
                 .with_name(#name.into());
                 columns.push(s.into());
-            }}]
-        } else {
-            // Non-Vec primitive: the buffer holds the raw element type chosen
-            // by `compute_mapping` (e.g. `Vec<i64>` for `DateTime<Utc>`,
-            // `Vec<String>` for `Decimal`). For transforms whose schema dtype
-            // differs from the buffer's natural Series dtype (`Datetime(...)`
-            // and `Decimal(p, s)`), `needs_cast` returns true and we cast the
-            // built Series to the schema dtype — matching what the row-wise
-            // path does in `generate_primitive_for_series`. Without this cast,
-            // the columnar/batch DataFrame's runtime dtype diverges from
-            // `T::schema()`.
-            let p = &self.p;
-            let mapping = crate::codegen::type_registry::compute_mapping(
-                &p.base_type,
-                p.transform.as_ref(),
-                &self.wrappers,
-            );
-            let dtype = mapping.full_dtype;
-            let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
-            let vec_ident = PopulatorIdents::primitive_buf(idx);
-            vec![quote! {{
-                let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
-                if #do_cast { s = s.cast(&#dtype)?; }
-                columns.push(s.into());
-            }}]
+            }}];
         }
+        // Decimal: the buffer is `Vec<i128>` / `Vec<Option<i128>>` already
+        // rescaled to the schema scale. Build the `DecimalChunked` directly
+        // via `Int128Chunked::into_decimal_unchecked` — skips the
+        // `Series::new(&Vec<i128>) → cast(Decimal)` round-trip.
+        if let (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { precision, scale })) =
+            (&self.p.base_type, self.p.transform.as_ref())
+        {
+            let p = *precision as usize;
+            let s = *scale as usize;
+            let vec_ident = PopulatorIdents::primitive_buf(idx);
+            let int128 = super::polars_paths::int128_chunked();
+            let opt = crate::ir::has_option(&self.wrappers);
+            return if opt {
+                vec![quote! {{
+                    let ca = <#int128 as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                        #name.into(),
+                        #vec_ident.into_iter(),
+                    );
+                    let s = #pp::IntoSeries::into_series(
+                        ca.into_decimal_unchecked(#p, #s),
+                    );
+                    columns.push(s.into());
+                }}]
+            } else {
+                vec![quote! {{
+                    let ca = #int128::from_vec(#name.into(), #vec_ident);
+                    let s = #pp::IntoSeries::into_series(
+                        ca.into_decimal_unchecked(#p, #s),
+                    );
+                    columns.push(s.into());
+                }}]
+            };
+        }
+        // Non-Vec primitive: the buffer holds the raw element type chosen
+        // by `compute_mapping` (e.g. `Vec<i64>` for `DateTime<Utc>`). For
+        // transforms whose schema dtype differs from the buffer's natural
+        // Series dtype (`Datetime(...)`), `needs_cast` returns true and we
+        // cast the built Series to the schema dtype — matching what the
+        // row-wise path does in `generate_primitive_for_series`. Without
+        // this cast, the columnar/batch DataFrame's runtime dtype diverges
+        // from `T::schema()`.
+        let p = &self.p;
+        let mapping = crate::codegen::type_registry::compute_mapping(
+            &p.base_type,
+            p.transform.as_ref(),
+            &self.wrappers,
+        );
+        let dtype = mapping.full_dtype;
+        let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
+        let vec_ident = PopulatorIdents::primitive_buf(idx);
+        vec![quote! {{
+            let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
+            if #do_cast { s = s.cast(&#dtype)?; }
+            columns.push(s.into());
+        }}]
     }
 }
 

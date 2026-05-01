@@ -67,7 +67,7 @@ pub fn analyze_type(
     } else {
         match &base {
             BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToInt(DEFAULT_DATETIME_UNIT)),
-            BaseType::Decimal => Some(PrimitiveTransform::DecimalToString {
+            BaseType::Decimal => Some(PrimitiveTransform::DecimalToInt128 {
                 precision: DEFAULT_DECIMAL_PRECISION,
                 scale: DEFAULT_DECIMAL_SCALE,
             }),

@@ -235,6 +235,12 @@ fn bulk_vec_emit_list_series(
     validity_expr: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
+    // The `unsafe` call to `Series::from_chunks_and_dtype_unchecked` is
+    // hoisted into a free helper (`__df_derive_assemble_list_series_unchecked`)
+    // emitted at the top of the per-derive `const _: () = { ... };` scope.
+    // Keeping the unsafe outside the impl methods on `Self` prevents
+    // `clippy::unsafe_derive_deserialize` from firing in downstream crates
+    // that pair `#[derive(ToDataFrame)]` with `#[derive(Deserialize)]`.
     quote! {{
         let __df_derive_inner_col: #pp::Series = #inner_col_expr;
         let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
@@ -247,21 +253,10 @@ fn bulk_vec_emit_list_series(
             __df_derive_inner_chunk,
             #validity_expr,
         );
-        // SAFETY: `inner_logical_dtype` is the same logical dtype the inner
-        // Series was built with, so the chunk's arrow dtype matches the
-        // declared `List(inner)` logical dtype. The validity bitmap (when
-        // present) was built with one bit per outer row, the same length as
-        // `offsets.len_proxy()`, so `LargeListArray::new` accepts it.
-        let __df_derive_outer: #pp::Series = unsafe {
-            #pp::Series::from_chunks_and_dtype_unchecked(
-                "".into(),
-                ::std::vec![
-                    ::std::boxed::Box::new(__df_derive_list_arr) as #pp::ArrayRef,
-                ],
-                &#pp::DataType::List(::std::boxed::Box::new(#logical_inner_dtype_expr)),
-            )
-        };
-        __df_derive_outer
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            #logical_inner_dtype_expr,
+        )
     }}
 }
 

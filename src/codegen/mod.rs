@@ -59,11 +59,59 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let helpers_impl = helpers::generate_helpers_impl(ir, config);
+    let pp = polars_paths::prelude();
 
+    // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`
+    // scope. Inherent impls inside an anonymous const still apply to the outer
+    // type (the same trick `serde_derive` uses), so `Foo::__df_derive_*` calls
+    // from sibling derives keep working. The free helper
+    // `__df_derive_assemble_list_series_unchecked` lives inside the same scope,
+    // hidden from the user's namespace, and is the only place the bulk path's
+    // `unsafe` call to `Series::from_chunks_and_dtype_unchecked` lives — so
+    // `clippy::unsafe_derive_deserialize` no longer sees `unsafe` inside any
+    // impl method on `Self` and stops firing on downstream
+    // `#[derive(ToDataFrame, Deserialize)]` types.
+    //
+    // The helper is `#[inline(always)]` so the call site collapses; the
+    // bulk path's perf is unchanged. Plain `#[inline]` was insufficient on
+    // `bench/02_empty_nested_vec` (~7% regression), where the per-row work
+    // is dominated by the `Series::from_chunks_and_dtype_unchecked` call
+    // and a non-collapsed call frame is observable. Its signature is fully
+    // concrete (no generics) so a single instantiation per derive serves
+    // both `gen_bulk_vec` and `gen_bulk_option_vec` call sites.
     quote! {
-        #trait_impl
-        #columnar_impl
-        #helpers_impl
+        const _: () = {
+            #[inline(always)]
+            #[allow(non_snake_case, clippy::inline_always)]
+            fn __df_derive_assemble_list_series_unchecked(
+                list_arr: #pp::LargeListArray,
+                inner_logical_dtype: #pp::DataType,
+            ) -> #pp::Series {
+                // SAFETY: `list_arr` was constructed with
+                // `LargeListArray::default_datatype(inner_arrow_dtype)`, where
+                // `inner_arrow_dtype` is the arrow dtype of the inner Series
+                // chunk produced by `Inner::columnar_from_refs`. That arrow
+                // dtype is the physical projection of `inner_logical_dtype`
+                // (both derive from the same `Inner::schema()` entry), so
+                // the chunk's arrow dtype matches the
+                // `List(inner_logical_dtype)` declaration. Validity (when
+                // present) was built with one bit per outer row, satisfying
+                // `LargeListArray::new`.
+                unsafe {
+                    #pp::Series::from_chunks_and_dtype_unchecked(
+                        "".into(),
+                        ::std::vec![
+                            ::std::boxed::Box::new(list_arr) as #pp::ArrayRef,
+                        ],
+                        &#pp::DataType::List(::std::boxed::Box::new(inner_logical_dtype)),
+                    )
+                }
+            }
+
+            #trait_impl
+            #columnar_impl
+            #helpers_impl
+        };
     }
 }
 

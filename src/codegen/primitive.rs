@@ -243,44 +243,26 @@ pub fn generate_primitive_for_anyvalue(
     wrappers: &[Wrapper],
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
-    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
-    let dtype = mapping.full_dtype;
-    let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {
-        // Borrowing fast path: skip the user-side allocation by building the
-        // 1-element Series from `&[&str]`. The Series owns its own Arrow
-        // buffer once `from_slice` returns, so `s.get(0)?.into_static()` is
-        // safe to call after the borrow's scope.
-        match classify_borrow(base_type, transform, wrappers) {
-            Some(BorrowKind::StringLeaf) => quote! {
-                let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                    "".into(),
-                    &[(#acc).as_str()],
-                );
-                #values_vec_ident.push(s.get(0)?.into_static());
-            },
+        // Direct AnyValue construction — one push per leaf, no detour through
+        // a 1-element `Series` + `get(0)?.into_static()`. At ~10M leaves for a
+        // 10-field × 1M-row aggregation that's a measurable saving.
+        let av = match classify_borrow(base_type, transform, wrappers) {
+            Some(BorrowKind::StringLeaf) => {
+                quote! { #pp::AnyValue::StringOwned((#acc).clone().into()) }
+            }
             Some(BorrowKind::AsStr(ty_path)) => quote! {
-                let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                    "".into(),
-                    &[<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc))],
-                );
-                #values_vec_ident.push(s.get(0)?.into_static());
+                #pp::AnyValue::StringOwned(
+                    <#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#acc)).to_string().into()
+                )
             },
             None => {
                 let mapped = super::common::generate_primitive_access_expr(acc, transform);
-                let cast_ts = if do_cast {
-                    quote! { s = s.cast(&#dtype)?; }
-                } else {
-                    quote! {}
-                };
-                quote! {
-                    let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), ::core::slice::from_ref(&{ #mapped }));
-                    #cast_ts
-                    #values_vec_ident.push(s.get(0)?.into_static());
-                }
+                crate::codegen::type_registry::anyvalue_static_expr(base_type, transform, &mapped)
             }
-        }
+        };
+        quote! { #values_vec_ident.push({ #av }); }
     };
 
     let on_option_none = |_tail: &[Wrapper]| {

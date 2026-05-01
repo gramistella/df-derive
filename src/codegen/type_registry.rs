@@ -172,6 +172,60 @@ pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> b
     )
 }
 
+/// Build the `AnyValue::<Variant>(…)` constructor expression for one already-
+/// mapped primitive value (the result of `map_primitive_expr`). Used by the
+/// `to_inner_values(&self)` per-row path to materialize each leaf without
+/// going through a 1-element Series + `get(0)?.into_static()` round-trip —
+/// at scale that's ~N-fields × N-rows throwaway Series allocations.
+///
+/// Decimal collapses to `StringOwned` here on purpose: the per-row path is
+/// only reached for deep-wrapper shapes (`Option<Option<Inner>>`, deeper
+/// `Vec` nests) and for direct user calls on `to_inner_values`. Top-level
+/// frame construction routes through the columnar path, where the per-column
+/// `Vec<String>` buffer is cast to `Decimal(p, s)` at the finisher.
+pub fn anyvalue_static_expr(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    mapped_var: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    if let Some(t) = transform {
+        match t {
+            PrimitiveTransform::DateTimeToInt(unit) => {
+                let unit_ts = time_unit_tokens(*unit);
+                return quote! {
+                    #pp::AnyValue::Datetime(#mapped_var, #unit_ts, ::std::option::Option::None)
+                };
+            }
+            PrimitiveTransform::ToString
+            | PrimitiveTransform::AsStr
+            | PrimitiveTransform::DecimalToString { .. } => {
+                return quote! { #pp::AnyValue::StringOwned((#mapped_var).into()) };
+            }
+        }
+    }
+    match base {
+        BaseType::F64 => quote! { #pp::AnyValue::Float64(#mapped_var) },
+        BaseType::F32 => quote! { #pp::AnyValue::Float32(#mapped_var) },
+        BaseType::I64 | BaseType::ISize => quote! { #pp::AnyValue::Int64(#mapped_var) },
+        BaseType::U64 | BaseType::USize => quote! { #pp::AnyValue::UInt64(#mapped_var) },
+        BaseType::I32 => quote! { #pp::AnyValue::Int32(#mapped_var) },
+        BaseType::U32 => quote! { #pp::AnyValue::UInt32(#mapped_var) },
+        BaseType::I16 => quote! { #pp::AnyValue::Int16(#mapped_var) },
+        BaseType::U16 => quote! { #pp::AnyValue::UInt16(#mapped_var) },
+        BaseType::I8 => quote! { #pp::AnyValue::Int8(#mapped_var) },
+        BaseType::U8 => quote! { #pp::AnyValue::UInt8(#mapped_var) },
+        BaseType::Bool => quote! { #pp::AnyValue::Boolean(#mapped_var) },
+        BaseType::String => quote! { #pp::AnyValue::StringOwned((#mapped_var).into()) },
+        BaseType::DateTimeUtc | BaseType::Decimal => unreachable!(
+            "df-derive: DateTime/Decimal base reached anyvalue_static_expr without its mandatory transform (codegen invariant)"
+        ),
+        BaseType::Struct(..) | BaseType::Generic(_) => unreachable!(
+            "df-derive: nested struct/generic leaves do not flow through the primitive AnyValue helper"
+        ),
+    }
+}
+
 pub fn map_primitive_expr(
     var: &TokenStream,
     transform: Option<&PrimitiveTransform>,

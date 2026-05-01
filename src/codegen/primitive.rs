@@ -5,7 +5,9 @@
 // traversal in `super::wrapper_processor::process_wrappers` and the
 // borrow-classification logic in `classify_borrow`.
 
-use crate::ir::{BaseType, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count};
+use crate::ir::{
+    BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count,
+};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
@@ -272,12 +274,24 @@ pub fn generate_primitive_for_columnar_push(
         }
     };
 
+    // Typed-builder shapes: `Vec<Decimal>` / `Vec<Option<Decimal>>` and
+    // `Vec<DateTime>` / `Vec<Option<DateTime>>`. The decl emitted in
+    // `primitive_decls` is a concrete `ListPrimitiveChunkedBuilder<Native>`,
+    // not a `Box<dyn ListBuilderTrait>`, so the push site references it by
+    // value (no `&mut *` deref) and reaches `append_iter` / `append_null`
+    // inherently / via the trait.
+    let typed_info = typed_primitive_list_info(base_type, transform, wrappers);
+
     let on_option_none = |tail: &[Wrapper]| {
         let tail_has_vec = has_vec(tail);
         if tail_has_vec {
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
             let pp = super::polars_paths::prelude();
-            quote! { #pp::ListBuilderTrait::append_null(&mut *#lb_ident); }
+            if typed_info.is_some() {
+                quote! { #pp::ListBuilderTrait::append_null(&mut #lb_ident); }
+            } else {
+                quote! { #pp::ListBuilderTrait::append_null(&mut *#lb_ident); }
+            }
         } else {
             let vec_ident = PopulatorIdents::primitive_buf(idx);
             quote! { #vec_ident.push(::std::option::Option::None); }
@@ -285,6 +299,18 @@ pub fn generate_primitive_for_columnar_push(
     };
 
     let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
+        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+        if let Some(info) = typed_info.as_ref() {
+            return gen_typed_list_append(
+                acc,
+                tail,
+                base_type,
+                transform,
+                info,
+                &lb_ident,
+                decimal128_encode_trait,
+            );
+        }
         let inner_series_ts = gen_primitive_vec_inner_series(
             acc,
             base_type,
@@ -292,7 +318,6 @@ pub fn generate_primitive_for_columnar_push(
             tail,
             decimal128_encode_trait,
         );
-        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         let pp = super::polars_paths::prelude();
         quote! {{
             let inner_series = { #inner_series_ts };
@@ -412,19 +437,65 @@ pub fn primitive_decls(
         // wrong-foot the strict-typed builder (`ListPrimitiveChunkedBuilder`
         // unpacks via the inner Native type and rejects a `list[…]` slice).
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-        let inner_dtype =
-            crate::codegen::type_registry::outer_list_inner_dtype(base_type, transform, wrappers);
         let pp = super::polars_paths::prelude();
-        let cab = super::polars_paths::chunked_array_builder();
-        decls.push(quote! {
-            let mut #lb_ident: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
-                #cab::get_list_builder(
-                    &#inner_dtype,
-                    items.len() * 4,
-                    items.len(),
-                    "".into(),
-                );
-        });
+        // `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
+        // `Vec<Option<DateTime>>` shapes use a concrete typed builder so the
+        // per-parent-row push site can call `append_iter` directly — bypassing
+        // `Series::new` + cast + `append_series`'s `to_physical_repr` round-
+        // trip. Other primitive shapes keep using the `Box<dyn>` path because
+        // those don't dominate any current bench and the dynamic-dispatch
+        // cost is comparatively small for primitives whose Native matches
+        // their schema dtype.
+        if let Some(info) = typed_primitive_list_info(base_type, transform, wrappers) {
+            let native = &info.native_type;
+            let mapping_inner =
+                crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
+            let inner_logical = mapping_inner.element_dtype;
+            let constructor = if info.needs_values_type {
+                // Decimal: physical `Int128` differs from logical `Decimal(p, s)`.
+                // `new_with_values_type` gives the chunked array its physical
+                // storage type while the field carries the logical dtype, so
+                // the finished `ListChunked`'s schema matches `T::schema()`
+                // exactly without a post-finish cast.
+                quote! {
+                    #pp::ListPrimitiveChunkedBuilder::<#native>::new_with_values_type(
+                        "".into(),
+                        items.len(),
+                        items.len() * 4,
+                        #pp::DataType::Int128,
+                        #inner_logical,
+                    )
+                }
+            } else {
+                // DateTime: physical `Int64` matches what the buffer stores;
+                // the field dtype is `Datetime(unit, None)` directly.
+                quote! {
+                    #pp::ListPrimitiveChunkedBuilder::<#native>::new(
+                        "".into(),
+                        items.len(),
+                        items.len() * 4,
+                        #inner_logical,
+                    )
+                }
+            };
+            decls.push(quote! {
+                let mut #lb_ident: #pp::ListPrimitiveChunkedBuilder<#native> = #constructor;
+            });
+        } else {
+            let inner_dtype = crate::codegen::type_registry::outer_list_inner_dtype(
+                base_type, transform, wrappers,
+            );
+            let cab = super::polars_paths::chunked_array_builder();
+            decls.push(quote! {
+                let mut #lb_ident: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
+                    #cab::get_list_builder(
+                        &#inner_dtype,
+                        items.len() * 4,
+                        items.len(),
+                        "".into(),
+                    );
+            });
+        }
     } else {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
         if opt {
@@ -448,9 +519,16 @@ pub fn primitive_finishers_for_vec_anyvalues(
     let needs_cast = crate::codegen::type_registry::needs_cast(transform);
     if vec {
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+        // Typed builder: call inherent `finish`-via-trait without `&mut *` deref.
+        // Boxed-dyn builder: dereference the Box first.
+        let builder_ref = if typed_primitive_list_info(base_type, transform, wrappers).is_some() {
+            quote! { &mut #lb_ident }
+        } else {
+            quote! { &mut *#lb_ident }
+        };
         quote! {
             let inner = #pp::IntoSeries::into_series(
-                #pp::ListBuilderTrait::finish(&mut *#lb_ident),
+                #pp::ListBuilderTrait::finish(#builder_ref),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }
@@ -462,5 +540,166 @@ pub fn primitive_finishers_for_vec_anyvalues(
             if #needs_cast { inner = inner.cast(&#dtype)?; }
             out_values.push(#pp::AnyValue::List(inner));
         }
+    }
+}
+
+/// Concrete `ListPrimitiveChunkedBuilder<Native>` declaration parameters for
+/// `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
+/// `Vec<Option<DateTime>>` shapes. These are the columnar bottlenecks where
+/// per-parent-row `Series::new` + cast + `append_series` overhead dominated
+/// the previous boxed-dyn `Box<dyn ListBuilderTrait>` path. With this typed
+/// builder the codegen can call `append_iter` over an
+/// `Iterator<Item = Option<Native>> + TrustedLen` directly, bypassing
+/// `Series::new` and the `to_physical_repr`/`unpack` round-trip inside
+/// `append_series`.
+///
+/// Returns `None` for any shape that doesn't have exactly one `Vec` layer or
+/// for non-Decimal/DateTime base types — those keep using the existing
+/// `get_list_builder` -> `Box<dyn ListBuilderTrait>` path.
+pub(super) struct TypedListInfo {
+    /// Polars chunked-array native type token (`Int128Type` or `Int64Type`).
+    pub native_type: TokenStream,
+    /// Native rust element type (`i128` or `i64`).
+    pub native_rust: TokenStream,
+    /// Whether the per-element conversion is fallible. Decimal rescale always
+    /// is (overflow on scale-up; overflow via the trait is also fallible);
+    /// `DateTime` is fallible only at nanosecond precision
+    /// (`timestamp_nanos_opt` returns `None` outside ~[1677, 2262]).
+    pub fallible: bool,
+    /// Whether the schema dtype needs `new_with_values_type` (logical dtype
+    /// differs from physical). Decimal does — its physical is `Int128` but
+    /// the schema dtype is `Decimal(p, s)`. `DateTime` doesn't — `Int64`
+    /// physical matches what `::new` stores in the field, and the cast to
+    /// `Datetime` is metadata-only when the buffer's already i64.
+    pub needs_values_type: bool,
+}
+
+pub(super) fn typed_primitive_list_info(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> Option<TypedListInfo> {
+    if vec_count(wrappers) != 1 {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    match (base, transform) {
+        (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { .. })) => {
+            Some(TypedListInfo {
+                native_type: quote! { #pp::Int128Type },
+                native_rust: quote! { i128 },
+                fallible: true,
+                needs_values_type: true,
+            })
+        }
+        (BaseType::DateTimeUtc, Some(PrimitiveTransform::DateTimeToInt(unit))) => {
+            Some(TypedListInfo {
+                native_type: quote! { #pp::Int64Type },
+                native_rust: quote! { i64 },
+                fallible: matches!(unit, DateTimeUnit::Nanoseconds),
+                needs_values_type: false,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Emit `append_iter`-based inner-list materialization for the typed
+/// `ListPrimitiveChunkedBuilder<Native>` path. `inner_tail` is what remains
+/// after the outer `Vec<…>` is consumed — must be `[]` (`Vec<Native>` shape)
+/// or `[Wrapper::Option]` (`Vec<Option<Native>>` shape); other shapes don't
+/// reach this helper because `typed_primitive_list_info` requires
+/// `vec_count == 1` and the only single-Vec inner shapes are bare and Option.
+fn gen_typed_list_append(
+    vec_access: &TokenStream,
+    inner_tail: &[Wrapper],
+    base_type: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    info: &TypedListInfo,
+    builder_ident: &Ident,
+    decimal128_encode_trait: &TokenStream,
+) -> TokenStream {
+    let inner_opt = matches!(inner_tail, [Wrapper::Option]);
+    let elem_ident = syn::Ident::new("__df_derive_e", proc_macro2::Span::call_site());
+    let mapped = super::common::generate_primitive_access_expr(
+        &quote! { #elem_ident },
+        transform,
+        decimal128_encode_trait,
+    );
+    let native_rust = &info.native_rust;
+
+    // The trait-import idiom matches `map_primitive_expr`: anonymously bring
+    // `Decimal128Encode` into scope so the trait method on the receiver
+    // resolves via dot-syntax method resolution. Idempotent for non-Decimal
+    // shapes (the import is unused but doesn't introduce a name).
+    let import_trait = match (base_type, transform) {
+        (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { .. })) => {
+            quote! { use #decimal128_encode_trait as _; }
+        }
+        _ => quote! {},
+    };
+
+    if info.fallible {
+        // Fallible per-element conversion (`?` inside `mapped`, plus the
+        // `return Err(polars_err!(...))` path baked into the Decimal rescale
+        // expression). Collect into a `Vec<Option<Native>>` first so the
+        // closure short-circuits cleanly through the outer `?`, then drive
+        // `append_iter` from the owned Vec (`std::vec::IntoIter` is
+        // `TrustedLen`).
+        //
+        // The closure return type pins both type parameters explicitly:
+        // `Option<Native>` for the Ok variant, `PolarsError` for the Err
+        // variant. The `_` placeholder inferred from the `return Err(
+        // polars_err!(...))` path doesn't propagate outward through the
+        // proc-macro context (rustc reports E0282 on the derive site), so
+        // the explicit `PolarsError` bypasses that.
+        let pp = super::polars_paths::prelude();
+        let collect_ts = if inner_opt {
+            quote! {
+                let __df_derive_conv: ::std::vec::Vec<::std::option::Option<#native_rust>> = (#vec_access)
+                    .iter()
+                    .map(|__df_derive_opt| -> ::std::result::Result<::std::option::Option<#native_rust>, #pp::PolarsError> {
+                        ::std::result::Result::Ok(match __df_derive_opt {
+                            ::std::option::Option::Some(#elem_ident) => {
+                                ::std::option::Option::Some({ #mapped })
+                            }
+                            ::std::option::Option::None => ::std::option::Option::None,
+                        })
+                    })
+                    .collect::<::std::result::Result<::std::vec::Vec<::std::option::Option<#native_rust>>, #pp::PolarsError>>()?;
+            }
+        } else {
+            quote! {
+                let __df_derive_conv: ::std::vec::Vec<::std::option::Option<#native_rust>> = (#vec_access)
+                    .iter()
+                    .map(|#elem_ident| -> ::std::result::Result<::std::option::Option<#native_rust>, #pp::PolarsError> {
+                        ::std::result::Result::Ok(::std::option::Option::Some({ #mapped }))
+                    })
+                    .collect::<::std::result::Result<::std::vec::Vec<::std::option::Option<#native_rust>>, #pp::PolarsError>>()?;
+            }
+        };
+        quote! {{
+            #import_trait
+            #collect_ts
+            #builder_ident.append_iter(__df_derive_conv.into_iter());
+        }}
+    } else {
+        // Non-fallible: feed `Iter<Option<Native>>` straight to `append_iter`.
+        // `std::slice::Iter` is `TrustedLen`; `Map<TrustedLen, _>` preserves it.
+        // This avoids the per-row scratch `Vec` allocation entirely.
+        let map_expr = if inner_opt {
+            quote! {
+                .map(|__df_derive_opt| __df_derive_opt
+                    .as_ref()
+                    .map(|#elem_ident| { #mapped }))
+            }
+        } else {
+            quote! {
+                .map(|#elem_ident| ::std::option::Option::Some({ #mapped }))
+            }
+        };
+        quote! {{
+            #builder_ident.append_iter((#vec_access).iter() #map_expr);
+        }}
     }
 }

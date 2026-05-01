@@ -353,12 +353,26 @@ impl PrimitiveStrategy {
         let pp = super::polars_paths::prelude();
         if has_vec(&self.wrappers) {
             // The list builder was constructed with the correct inner dtype
-            // (`outer_list_inner_dtype`), so the finished series already has
-            // the schema-declared dtype — no cast needed here.
+            // (`outer_list_inner_dtype` / `inner_logical`), so the finished
+            // series already has the schema-declared dtype — no cast needed
+            // here. Typed `ListPrimitiveChunkedBuilder<Native>` finishers call
+            // `ListBuilderTrait::finish(&mut self)` directly; the boxed-dyn
+            // path needs the `&mut *` deref through the Box.
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+            let builder_ref = if super::primitive::typed_primitive_list_info(
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+            )
+            .is_some()
+            {
+                quote! { &mut #lb_ident }
+            } else {
+                quote! { &mut *#lb_ident }
+            };
             return vec![quote! {{
                 let s = #pp::IntoSeries::into_series(
-                    #pp::ListBuilderTrait::finish(&mut *#lb_ident),
+                    #pp::ListBuilderTrait::finish(#builder_ref),
                 )
                 .with_name(#name.into());
                 columns.push(s.into());

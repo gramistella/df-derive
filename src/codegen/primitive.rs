@@ -69,8 +69,6 @@ fn gen_primitive_vec_inner_series(
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let elem_ident = syn::Ident::new("__df_derive_vec_elem", proc_macro2::Span::call_site());
-    let per_item_vals_ident =
-        syn::Ident::new("__df_derive_elem_values", proc_macro2::Span::call_site());
     let list_vals_ident = syn::Ident::new("__df_derive_list_vals", proc_macro2::Span::call_site());
 
     let base_is_struct = matches!(base_type, BaseType::Struct(..));
@@ -126,23 +124,19 @@ fn gen_primitive_vec_inner_series(
     // local would have forced `T: Clone` on every generic param of the
     // enclosing struct — overly restrictive when only this fallback path
     // (deeper-than-`Vec<T>` shapes with a transform) ever needs the borrow.
+    //
+    // `generate_primitive_for_anyvalue` always emits exactly one `AnyValue`
+    // push per call (one per `Vec` element), so route those pushes straight
+    // into the outer list buffer instead of paying for a per-element scratch
+    // `Vec` + `pop()` round-trip. That also drops a runtime `polars_err!`
+    // branch from the generated code that statically cannot fire.
     let elem_access = quote! { #elem_ident };
-    let recur_elem_tokens_ts = generate_primitive_for_anyvalue(
-        &per_item_vals_ident,
-        &elem_access,
-        base_type,
-        transform,
-        tail,
-    );
+    let recur_elem_tokens_ts =
+        generate_primitive_for_anyvalue(&list_vals_ident, &elem_access, base_type, transform, tail);
     quote! {{
         let mut #list_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::with_capacity((#acc).len());
         for #elem_ident in (#acc).iter() {
-            let mut #per_item_vals_ident: ::std::vec::Vec<#pp::AnyValue> = ::std::vec::Vec::new();
-            { #recur_elem_tokens_ts }
-            let __df_derive_elem_av = #per_item_vals_ident.pop().ok_or_else(|| #pp::polars_err!(
-                ComputeError: "df-derive: expected single AnyValue for primitive vec element (codegen invariant violation)"
-            ))?;
-            #list_vals_ident.push(__df_derive_elem_av);
+            #recur_elem_tokens_ts
         }
         let __df_derive_inner = if #list_vals_ident.is_empty() {
             #pp::Series::new_empty("".into(), &#empty_dtype)

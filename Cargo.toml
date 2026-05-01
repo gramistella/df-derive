@@ -92,3 +92,7 @@ harness = false
 [[bench]]
 name = "14_as_string_enum"
 harness = false
+
+[[bench]]
+name = "15_as_str_enum"
+harness = false

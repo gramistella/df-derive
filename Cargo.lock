@@ -690,6 +690,7 @@ dependencies = [
  "chrono",
  "criterion",
  "polars",
+ "polars-arrow",
  "pretty_assertions",
  "proc-macro-crate",
  "proc-macro2",

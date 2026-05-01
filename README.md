@@ -26,11 +26,14 @@ Add the macro crate and Polars. You will also need a trait defining the `to_data
 [dependencies]
 df-derive = "0.3.0"
 polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
+polars-arrow = "0.53"
 
 # If you use these types in your models
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 ```
+
+`df-derive` requires `polars-arrow` as a direct dependency (it is compiled transitively via `polars` but not re-exported through `polars::prelude`). Add `polars-arrow = "0.53"` to your `Cargo.toml` alongside `polars`.
 
 ## Quick start
 
@@ -47,6 +50,7 @@ edition = "2024"
 [dependencies]
 df-derive = "0.3"
 polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
+polars-arrow = "0.53"
 ```
 
 src/main.rs:

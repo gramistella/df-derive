@@ -210,58 +210,85 @@ pub fn gen_bulk_option(
     }}
 }
 
-/// Build the per-inner-column emit for a bulk-vec context: given the inner
-/// `DataFrame` (already computed from the flat slice) plus the `offsets`
-/// array, slice the inner column per parent row and feed each slice to a
-/// typed `ListBuilder`. The finisher produces a `ListChunked` that goes
-/// straight into either the parent `columns` Vec or an outer `AnyValue::List`.
+/// Build a `Series` expression that wraps `inner_col_expr` (a single-chunk
+/// Series of inner values) as a `List<inner_logical_dtype>` outer column,
+/// using `offsets_buf_expr` (a fully-validated `OffsetsBuffer<i64>`) to
+/// partition the inner array into per-outer-row slices.
 ///
-/// Going through `ListBuilderTrait` directly skips the dtype-inference scan
-/// and per-row `cast(inner_type)` Polars does inside
-/// `any_values_to_list` when consuming a `Vec<AnyValue::List>`. The
-/// `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder` selected by
-/// `get_list_builder` for primitive inner dtypes copies elements with
-/// `extend_from_slice` rather than per-element `AnyValue` dispatch; the
-/// `AnonymousOwnedListBuilder` selected for struct/list inner dtypes
-/// Arc-shares chunks rather than wrapping them in an `AnyValue` envelope.
+/// The result avoids the redundant copy that `ListBuilderTrait::append_series`
+/// performs after `Inner::columnar_from_refs` already materialized the inner
+/// values: we reuse the `Arc<dyn Array>` chunk straight from the inner Series
+/// (`rechunk` + `chunks()[0].clone()` clones only the `Arc`, not the
+/// element data) and stitch it under an `Arc::clone`-shared
+/// `LargeListArray` view.
+fn bulk_vec_emit_list_series(
+    inner_col_expr: &TokenStream,
+    offsets_buf_expr: &TokenStream,
+    logical_inner_dtype_expr: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    quote! {{
+        let __df_derive_inner_col: #pp::Series = #inner_col_expr;
+        let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
+        let __df_derive_inner_chunk: #pp::ArrayRef =
+            __df_derive_inner_rech.chunks()[0].clone();
+        let __df_derive_inner_arrow_dt = __df_derive_inner_chunk.dtype().clone();
+        let __df_derive_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_arrow_dt),
+            #offsets_buf_expr,
+            __df_derive_inner_chunk,
+            ::std::option::Option::None,
+        );
+        // SAFETY: `inner_logical_dtype` is the same logical dtype the inner
+        // Series was built with, so the chunk's arrow dtype matches the
+        // declared `List(inner)` logical dtype. No list-level nulls are
+        // applied (every outer row is a non-null Vec — null lists are
+        // handled in the `Option<Vec>` path, not here).
+        let __df_derive_outer: #pp::Series = unsafe {
+            #pp::Series::from_chunks_and_dtype_unchecked(
+                "".into(),
+                ::std::vec![
+                    ::std::boxed::Box::new(__df_derive_list_arr) as #pp::ArrayRef,
+                ],
+                &#pp::DataType::List(::std::boxed::Box::new(#logical_inner_dtype_expr)),
+            )
+        };
+        __df_derive_outer
+    }}
+}
+
+/// Build the per-inner-column emit for a bulk-vec context: given the inner
+/// `DataFrame` (already computed from the flat slice) plus the shared
+/// `OffsetsBuffer`, wrap the inner column under a single `LargeListArray`
+/// whose offsets we already computed. The result is a `ListChunked` Series
+/// that goes straight into either the parent `columns` Vec or an outer
+/// `AnyValue::List`.
+///
+/// Direct `LargeListArray` construction skips the redundant copy that
+/// `ListBuilderTrait::append_series` performs after `Inner::columnar_from_refs`
+/// already materialized the inner values. The chunk itself is an
+/// `Arc<dyn Array>` clone of the inner Series's first chunk — element data
+/// is not duplicated.
 fn bulk_vec_consume_inner_columns(
     ctx: BulkContext<'_>,
     df_ident: &Ident,
-    offsets_ident: &Ident,
+    offsets_buf_ident: &Ident,
     schema_iter_ts: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
-    let cab = super::polars_paths::chunked_array_builder();
     let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
-    let consume_filled = bulk_consume_inner_series(
-        ctx,
-        &col_name_var,
-        &quote! {{
-            let __df_derive_inner_col = #df_ident
-                .column(#col_name_var)?
-                .as_materialized_series();
-            let mut __df_derive_lb = #cab::get_list_builder(
-                #dtype_var,
-                __df_derive_inner_col.len(),
-                items.len(),
-                "".into(),
-            );
-            for __df_derive_i in 0..items.len() {
-                let __df_derive_start = #offsets_ident[__df_derive_i];
-                let __df_derive_end = #offsets_ident[__df_derive_i + 1];
-                let __df_derive_slice = __df_derive_inner_col
-                    .slice(__df_derive_start as i64, __df_derive_end - __df_derive_start);
-                #pp::ListBuilderTrait::append_series(
-                    &mut *__df_derive_lb,
-                    &__df_derive_slice,
-                )?;
-            }
-            #pp::IntoSeries::into_series(
-                #pp::ListBuilderTrait::finish(&mut *__df_derive_lb),
-            )
-        }},
-    );
+    let inner_col_expr = quote! {
+        #df_ident
+            .column(#col_name_var)?
+            .as_materialized_series()
+            .clone()
+    };
+    let offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#offsets_buf_ident) };
+    let logical_dtype_expr = quote! { (*#dtype_var).clone() };
+    let series_expr =
+        bulk_vec_emit_list_series(&inner_col_expr, &offsets_buf_expr, &logical_dtype_expr);
+    let consume_filled = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
             let #col_name_var: &str = #col_name_var.as_str();
@@ -275,36 +302,28 @@ fn bulk_vec_consume_inner_columns(
 /// row's inner Vec is empty (so the flat slice is empty and we skip the
 /// inner `columnar_from_refs` call), still produce one outer-list column
 /// per inner schema entry, each containing `items.len()` empty inner lists.
+///
+/// Uses the same direct `LargeListArray` construction as the filled branch:
+/// a single empty-Series chunk plus an all-zero offsets `Vec` produces the
+/// correct `[List, List, ...]` shape where every row is a present-but-empty
+/// inner list. (`validity = None` keeps the lists non-null; the
+/// `Option<Vec>` path handles null lists.)
 fn bulk_vec_consume_empty_columns(
     ctx: BulkContext<'_>,
+    empty_offsets_buf_ident: &Ident,
     schema_iter_ts: &TokenStream,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
-    let cab = super::polars_paths::chunked_array_builder();
     let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
-    let consume_empty = bulk_consume_inner_series(
-        ctx,
-        &col_name_var,
-        &quote! {{
-            let __df_derive_empty = #pp::Series::new_empty("".into(), #dtype_var);
-            let mut __df_derive_lb = #cab::get_list_builder(
-                #dtype_var,
-                0,
-                items.len(),
-                "".into(),
-            );
-            for _ in 0..items.len() {
-                #pp::ListBuilderTrait::append_series(
-                    &mut *__df_derive_lb,
-                    &__df_derive_empty,
-                )?;
-            }
-            #pp::IntoSeries::into_series(
-                #pp::ListBuilderTrait::finish(&mut *__df_derive_lb),
-            )
-        }},
-    );
+    let inner_col_expr = quote! {
+        #pp::Series::new_empty("".into(), #dtype_var)
+    };
+    let offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#empty_offsets_buf_ident) };
+    let logical_dtype_expr = quote! { (*#dtype_var).clone() };
+    let series_expr =
+        bulk_vec_emit_list_series(&inner_col_expr, &offsets_buf_expr, &logical_dtype_expr);
+    let consume_empty = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
     quote! {
         for (#col_name_var, #dtype_var) in #schema_iter_ts {
             let #col_name_var: &str = #col_name_var.as_str();
@@ -318,7 +337,12 @@ fn bulk_vec_consume_empty_columns(
 /// `T: Clone` requirement — and calls `<T as Columnar>::columnar_from_refs`
 /// once, then ships each inner column to `ctx` via
 /// `bulk_vec_consume_inner_columns`.
+///
+/// `pa_root` is the cached token stream for the `polars-arrow` crate root,
+/// resolved once per macro invocation by the caller and threaded through
+/// here so we don't re-run `proc_macro_crate::crate_name` per field.
 pub fn gen_bulk_vec(
+    pa_root: &TokenStream,
     ty: &TokenStream,
     columnar_trait: &TokenStream,
     to_df_trait: &TokenStream,
@@ -328,27 +352,43 @@ pub fn gen_bulk_vec(
 ) -> TokenStream {
     let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
     let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let offsets_buf_ident = format_ident!("__df_derive_gen_offsets_buf_{}", idx);
+    let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
     let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
     let consume_filled =
-        bulk_vec_consume_inner_columns(ctx, &df_ident, &offsets_ident, &schema_iter);
-    let consume_empty = bulk_vec_consume_empty_columns(ctx, &schema_iter);
+        bulk_vec_consume_inner_columns(ctx, &df_ident, &offsets_buf_ident, &schema_iter);
+    let consume_empty = bulk_vec_consume_empty_columns(ctx, &empty_offsets_buf_ident, &schema_iter);
+
+    // Build the shared `OffsetsBuffer` once per branch — every inner-column
+    // iteration clones the buffer (cheap; `OffsetsBuffer` wraps an
+    // `Arc`-shared `Buffer`).
+    let filled_buf_setup = quote! {
+        let #offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#offsets_ident)?;
+    };
+    let empty_buf_setup = quote! {
+        let #empty_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
+    };
 
     quote! {{
         let mut #flat_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
-        let mut #offsets_ident: ::std::vec::Vec<usize> =
+        let mut #offsets_ident: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         #offsets_ident.push(0);
         for __df_derive_it in items {
             for __df_derive_v in (&(#access)).iter() {
                 #flat_ident.push(__df_derive_v);
             }
-            #offsets_ident.push(#flat_ident.len());
+            #offsets_ident.push(#flat_ident.len() as i64);
         }
         if #flat_ident.is_empty() {
+            #empty_buf_setup
             #consume_empty
         } else {
             let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #filled_buf_setup
             #consume_filled
         }
     }}

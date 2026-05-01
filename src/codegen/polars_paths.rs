@@ -47,3 +47,27 @@ pub fn int128_chunked() -> TokenStream {
     let pp = prelude();
     quote! { #pp::Int128Chunked }
 }
+
+/// Token tree for the user-visible `polars-arrow` crate root.
+///
+/// `polars-arrow` is a hard requirement for downstream crates that use
+/// `#[derive(ToDataFrame)]`: the macro emits `OffsetsBuffer` and
+/// `LargeListArray` paths to construct list arrays directly, which
+/// achieves 7-10× speedups on `Vec<Struct>` columns. `polars` 0.53
+/// already compiles `polars-arrow` transitively but doesn't re-export it
+/// under any public path, so a user pinning `polars` must declare
+/// `polars-arrow` as a direct dep too.
+///
+/// `Itself` and `Err` collapse to `::polars_arrow` for the same reason as
+/// `root()` — the macro never expands inside `polars-arrow`, and a
+/// missing direct dep is best surfaced as `unresolved import
+/// ::polars_arrow` at the call site.
+pub fn polars_arrow_root() -> TokenStream {
+    match crate_name("polars-arrow") {
+        Ok(FoundCrate::Name(name)) => {
+            let ident = format_ident!("{}", name);
+            quote! { ::#ident }
+        }
+        Ok(FoundCrate::Itself) | Err(_) => quote! { ::polars_arrow },
+    }
+}

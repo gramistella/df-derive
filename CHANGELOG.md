@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking**: `polars-arrow` is now a required direct dependency for crates
+  using `#[derive(ToDataFrame)]`. The macro emits `::polars_arrow::*` paths
+  to construct list arrays directly via `OffsetsBuffer` and
+  `LargeListArray`, achieving 7–10× speedups on `Vec<Struct>` columns by
+  reusing the inner `Arc<dyn Array>` chunk instead of going through
+  `ListBuilderTrait::append_series`. `polars-arrow` is already compiled
+  transitively via `polars` (which depends on it internally) but is not
+  re-exported through `polars::prelude`, so downstream crates must declare
+  it themselves. Migration: add `polars-arrow = "0.53"` to your
+  `Cargo.toml` alongside `polars`.
+
 ## [0.3.0] - 2026-04-28
 
 ### Added

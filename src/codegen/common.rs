@@ -59,19 +59,31 @@ pub fn prepare_columnar_parts(
 
 // --- Shared helpers and wrapper-aware builders ---
 
-/// Build an efficient inner Series from a Vec or Vec<Option<T>> for primitive types.
-/// Applies mapping only when transforms require it (stringify/casts), otherwise zero-copy.
+/// Build an efficient inner Series from a `Vec<T>` (`option_wrap == false`) or
+/// `Vec<Option<T>>` (`option_wrap == true`). Applies the per-element transform
+/// when one is required (stringify/casts), otherwise hands the slice straight
+/// to `Series::new` for a zero-copy build. The Option-wrapped form mirrors the
+/// non-Option form in three branches:
+///
+/// - `as_str` builds `Vec<Option<&str>>` via UFCS so the Series borrows from
+///   the original storage instead of allocating a per-row `String`.
+/// - `to_string` / decimal-stringify / datetime-to-i64 builds
+///   `Vec<Option<U>>` where `U` is the mapping's `rust_element_type`, then
+///   optionally `cast`s to the target dtype.
+/// - No-transform passes `&Vec<Option<T>>` straight to `Series::new`, relying
+///   on polars' `NamedFrom<&[Option<T>], _>` impl for the typed primitive.
 pub fn generate_inner_series_from_vec(
     vec_access: &TokenStream,
     base_type: &BaseType,
     transform: Option<&PrimitiveTransform>,
+    option_wrap: bool,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
 
-    // Borrowing path for `as_str` on `Vec<T>` shapes: build a `Vec<&str>`
+    // Borrowing path for `as_str`: build a `Vec<&str>` (or `Vec<Option<&str>>`)
     // through `AsRef<str>` via UFCS so the polars Series sees the same
-    // `&[&str]` slice the bare-`String` borrowing path uses. No per-element
-    // allocation.
+    // `&[&str]` / `&[Option<&str>]` slice the bare-`String` borrowing path
+    // uses. No per-element allocation.
     if matches!(transform, Some(PrimitiveTransform::AsStr)) {
         // The parser rejects `as_str` on any base outside this trio (see
         // `reject_as_str_on_incompatible_base`); reaching another arm here
@@ -104,6 +116,16 @@ pub fn generate_inner_series_from_vec(
         // path in `gen_primitive_vec_inner_series` binds the inner clone to
         // a named local before recursing, so that recursion enters this
         // function with a name too.
+        if option_wrap {
+            return quote! {{
+                let __df_derive_conv: ::std::vec::Vec<::std::option::Option<&str>> = (#vec_access)
+                    .iter()
+                    .map(|__df_derive_opt| __df_derive_opt.as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref))
+                    .collect();
+                let inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
+                inner_series
+            }};
+        }
         return quote! {{
             let __df_derive_conv: ::std::vec::Vec<&str> = (#vec_access)
                 .iter()
@@ -131,25 +153,51 @@ pub fn generate_inner_series_from_vec(
         // final `?` propagates to the outer fn. Pin the closure return type
         // with an explicit annotation so type inference doesn't surprise us
         // when callers add new fallible transforms.
-        if crate::codegen::type_registry::is_fallible_conversion(transform) {
-            quote! {{
+        let fallible = crate::codegen::type_registry::is_fallible_conversion(transform);
+        let collect_ts = match (option_wrap, fallible) {
+            (false, false) => quote! {
+                let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access)
+                    .iter()
+                    .map(|#elem_ident| { #mapped })
+                    .collect();
+            },
+            (false, true) => quote! {
                 let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access)
                     .iter()
                     .map(|#elem_ident| -> #pp::PolarsResult<_> { ::std::result::Result::Ok({ #mapped }) })
                     .collect::<#pp::PolarsResult<::std::vec::Vec<_>>>()?;
-                let mut inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
-                if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
-                inner_series
-            }}
-        } else {
-            quote! {{
-                let __df_derive_conv: ::std::vec::Vec<_> = (#vec_access).iter().map(|#elem_ident| { #mapped }).collect();
-                let mut inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
-                if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
-                inner_series
-            }}
-        }
+            },
+            (true, false) => quote! {
+                let __df_derive_conv: ::std::vec::Vec<::std::option::Option<_>> = (#vec_access)
+                    .iter()
+                    .map(|__df_derive_opt| __df_derive_opt.as_ref().map(|#elem_ident| { #mapped }))
+                    .collect();
+            },
+            (true, true) => quote! {
+                // Per-element fallible conversion threaded through the Option
+                // layer: a `None` stays `None`, a `Some(v)` becomes either
+                // `Some(mapped)` or short-circuits the outer try via `?`.
+                let __df_derive_conv: ::std::vec::Vec<::std::option::Option<_>> = (#vec_access)
+                    .iter()
+                    .map(|__df_derive_opt| -> #pp::PolarsResult<::std::option::Option<_>> {
+                        ::std::result::Result::Ok(match __df_derive_opt {
+                            ::std::option::Option::Some(#elem_ident) => ::std::option::Option::Some({ #mapped }),
+                            ::std::option::Option::None => ::std::option::Option::None,
+                        })
+                    })
+                    .collect::<#pp::PolarsResult<::std::vec::Vec<::std::option::Option<_>>>>()?;
+            },
+        };
+        quote! {{
+            #collect_ts
+            let mut inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &__df_derive_conv);
+            if #do_cast { inner_series = inner_series.cast(&#dtype)?; }
+            inner_series
+        }}
     } else {
+        // Transform-less branch covers both `Vec<T>` and `Vec<Option<T>>` — in
+        // both cases polars' `NamedFrom<&[T_or_Option_T], _>` impls produce
+        // the typed Series directly without any per-element allocation.
         quote! {{
             let mut inner_series = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &(#vec_access));
             if #do_cast { inner_series = inner_series.cast(&#dtype)?; }

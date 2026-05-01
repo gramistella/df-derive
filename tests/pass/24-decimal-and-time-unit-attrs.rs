@@ -8,8 +8,8 @@ use polars::prelude::*;
 use rust_decimal::Decimal;
 
 // Mix every supported wrapper shape (`T`, `Option<T>`, `Vec<T>`,
-// `Option<Vec<T>>`) so a regression in any of the wrapper-aware codegen paths
-// is caught by the schema/runtime dtype assertions below.
+// `Option<Vec<T>>`, `Vec<Option<T>>`) so a regression in any of the wrapper-
+// aware codegen paths is caught by the schema/runtime dtype assertions below.
 #[derive(ToDataFrame, Clone)]
 struct OverrideEverything {
     #[df_derive(decimal(precision = 18, scale = 6))]
@@ -20,6 +20,8 @@ struct OverrideEverything {
     fees: Vec<Decimal>,
     #[df_derive(decimal(precision = 30, scale = 12))]
     opt_amounts: Option<Vec<Decimal>>,
+    #[df_derive(decimal(precision = 16, scale = 5))]
+    nullable_fees: Vec<Option<Decimal>>,
 
     #[df_derive(time_unit = "us")]
     ts_us: DateTime<Utc>,
@@ -29,6 +31,8 @@ struct OverrideEverything {
     opt_ts: Option<DateTime<Utc>>,
     #[df_derive(time_unit = "ns")]
     ts_log: Vec<DateTime<Utc>>,
+    #[df_derive(time_unit = "ns")]
+    nullable_ts_log: Vec<Option<DateTime<Utc>>>,
 
     // No override → default behavior preserved.
     default_price: Decimal,
@@ -55,11 +59,13 @@ fn main() {
         big_amount: Some(Decimal::new(1, 18)),
         fees: vec![Decimal::new(50, 2), Decimal::new(75, 2)],
         opt_amounts: Some(vec![Decimal::new(123, 4), Decimal::new(456, 4)]),
+        nullable_fees: vec![Some(Decimal::new(100, 2)), None, Some(Decimal::new(200, 2))],
 
         ts_us: ts,
         ts_ns: ts,
         opt_ts: Some(ts),
         ts_log: vec![ts, ts],
+        nullable_ts_log: vec![Some(ts), None, Some(ts)],
 
         default_price: Decimal::new(99, 2),
         default_ts: ts,
@@ -80,6 +86,10 @@ fn main() {
         DataType::List(Box::new(DataType::Decimal(30, 12)))
     );
     assert_eq!(
+        schema_dtype(&schema, "nullable_fees"),
+        DataType::List(Box::new(DataType::Decimal(16, 5)))
+    );
+    assert_eq!(
         schema_dtype(&schema, "ts_us"),
         DataType::Datetime(TimeUnit::Microseconds, None)
     );
@@ -93,6 +103,10 @@ fn main() {
     );
     assert_eq!(
         schema_dtype(&schema, "ts_log"),
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+    );
+    assert_eq!(
+        schema_dtype(&schema, "nullable_ts_log"),
         DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
     );
     assert_eq!(
@@ -117,6 +131,10 @@ fn main() {
         DataType::List(Box::new(DataType::Decimal(30, 12)))
     );
     assert_eq!(
+        dtype(&df, "nullable_fees"),
+        DataType::List(Box::new(DataType::Decimal(16, 5)))
+    );
+    assert_eq!(
         dtype(&df, "ts_us"),
         DataType::Datetime(TimeUnit::Microseconds, None)
     );
@@ -130,6 +148,10 @@ fn main() {
     );
     assert_eq!(
         dtype(&df, "ts_log"),
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+    );
+    assert_eq!(
+        dtype(&df, "nullable_ts_log"),
         DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
     );
     assert_eq!(dtype(&df, "default_price"), DataType::Decimal(38, 10));
@@ -156,6 +178,14 @@ fn main() {
     assert_eq!(
         dtype(&df_batch, "fees"),
         DataType::List(Box::new(DataType::Decimal(12, 4)))
+    );
+    assert_eq!(
+        dtype(&df_batch, "nullable_fees"),
+        DataType::List(Box::new(DataType::Decimal(16, 5)))
+    );
+    assert_eq!(
+        dtype(&df_batch, "nullable_ts_log"),
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
     );
 
     // The chrono call selected by `time_unit = "ns"` (`timestamp_nanos_opt`)

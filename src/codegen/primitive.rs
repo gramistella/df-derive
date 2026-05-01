@@ -72,28 +72,32 @@ fn gen_primitive_vec_inner_series(
     let list_vals_ident = syn::Ident::new("__df_derive_list_vals", proc_macro2::Span::call_site());
 
     let base_is_struct = matches!(base_type, BaseType::Struct(..));
-    // `as_str` routes Vec<T> shapes (including `Vec<Struct>`) through the
-    // borrowing fast path: `generate_inner_series_from_vec` already builds
-    // `Vec<&str>` via UFCS. Without this carve-out, `Vec<Struct>+as_str`
-    // would fall to the recursive per-element loop and clone every element.
+    // `as_str` routes Vec<T> and Vec<Option<T>> shapes (including with struct
+    // bases) through the borrowing fast path: `generate_inner_series_from_vec`
+    // already builds `Vec<&str>` / `Vec<Option<&str>>` via UFCS. Without this
+    // carve-out, `Vec<Struct>+as_str` would fall to the recursive per-element
+    // loop and clone every element.
     let as_str_fast_ok = matches!(transform, Some(PrimitiveTransform::AsStr));
 
     if (!base_is_struct || as_str_fast_ok) && tail.is_empty() {
         let fast_inner_ts =
-            super::common::generate_inner_series_from_vec(acc, base_type, transform);
+            super::common::generate_inner_series_from_vec(acc, base_type, transform, false);
         return quote! {{ { #fast_inner_ts } }};
     }
-    if !base_is_struct
-        && tail.len() == 1
-        && matches!(tail[0], Wrapper::Option)
-        && transform.is_none()
+    // `Vec<Option<T>>` shapes for every (base, transform) combination that
+    // reaches this codegen path: the unified `generate_inner_series_from_vec`
+    // builds a typed `Vec<Option<U>>` (or `Vec<Option<&str>>` for `as_str`)
+    // and hands it to `Series::new`, with an optional `cast` for transforms
+    // that go through a stand-in dtype (i64 → Datetime, String → Decimal).
+    // Struct/Generic bases only land here paired with an `AsStr`/`ToString`
+    // transform per `build_strategies`, so all reachable combinations are
+    // representable as one of the unified branches.
+    if (!base_is_struct || as_str_fast_ok)
+        && let [Wrapper::Option] = tail
     {
-        return quote! {{
-            <#pp::Series as #pp::NamedFrom<_, _>>::new(
-                "".into(),
-                &(#acc),
-            )
-        }};
+        let fast_inner_ts =
+            super::common::generate_inner_series_from_vec(acc, base_type, transform, true);
+        return quote! {{ { #fast_inner_ts } }};
     }
 
     // Fallback recursive per-element path (rare wrapper depths and any

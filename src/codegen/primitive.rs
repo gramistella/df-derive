@@ -100,10 +100,53 @@ fn gen_primitive_vec_inner_series(
         return quote! {{ { #fast_inner_ts } }};
     }
 
-    // Fallback recursive per-element path (rare wrapper depths and any
-    // non-`as_str` `Vec<Struct>`-with-tail). Eagerly emitting the fast-path
-    // tokens above for shapes that don't use them risks unrelated codegen
-    // errors leaking into the user's output, so build them lazily.
+    // `Vec<Vec<…>>` (and deeper) — replace the outer `Vec<AnyValue::List(...)>`
+    // aggregation + inferring `Series::new` with a typed `ListBuilder` whose
+    // inner dtype matches the recursive call's output. Per outer element we
+    // recursively build a typed inner Series via the fast paths above (or a
+    // deeper Step-3 layer for `Vec<Vec<Vec<…>>>`), then `append_series` — no
+    // per-row `AnyValue::List` allocation, no inferring scan over a
+    // `Vec<AnyValue>` at the end.
+    if let [Wrapper::Vec, rest @ ..] = tail {
+        let cab = super::polars_paths::chunked_array_builder();
+        let mut inner_series_dtype =
+            crate::codegen::type_registry::compute_mapping(base_type, transform, &[]).element_dtype;
+        // Each remaining `Vec` in `rest` adds one `List<>` layer to the inner
+        // Series's runtime dtype (Option layers don't add a layer — Polars
+        // carries nullability in values). The strict-typed builder below
+        // rejects an `append_series` whose dtype doesn't match `inner_dtype`,
+        // so this wrap has to track the recursive call's output exactly.
+        for _ in 0..vec_count(rest) {
+            inner_series_dtype =
+                quote! { #pp::DataType::List(::std::boxed::Box::new(#inner_series_dtype)) };
+        }
+        let inner_series_ts =
+            gen_primitive_vec_inner_series(&quote! { #elem_ident }, base_type, transform, rest);
+        return quote! {{
+            let mut __df_derive_lb: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
+                #cab::get_list_builder(
+                    &#inner_series_dtype,
+                    (#acc).len() * 4,
+                    (#acc).len(),
+                    "".into(),
+                );
+            for #elem_ident in (#acc).iter() {
+                let __df_derive_inner_series = { #inner_series_ts };
+                #pp::ListBuilderTrait::append_series(
+                    &mut *__df_derive_lb,
+                    &__df_derive_inner_series,
+                )?;
+            }
+            #pp::IntoSeries::into_series(#pp::ListBuilderTrait::finish(&mut *__df_derive_lb))
+        }};
+    }
+
+    // Fallback recursive per-element path: any tail starting with `Option` and
+    // having a non-empty rest (e.g. `Vec<Option<Vec<T>>>` or
+    // `Vec<Option<Option<T>>>`), and `Vec<Struct>`-with-tail shapes that pair
+    // a struct base with a non-`AsStr` transform. Eagerly emitting the
+    // fast-path tokens above for shapes that don't use them risks unrelated
+    // codegen errors leaking into the user's output, so build them lazily.
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, tail);
     let elem_dtype = mapping.element_dtype;
     let do_cast = crate::codegen::type_registry::needs_cast(transform);

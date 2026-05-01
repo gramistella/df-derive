@@ -19,6 +19,11 @@ struct Container {
     custom_items: Vec<Option<Item>>,
     // An optional vec of optional primitives
     opt_vec_opt_primitive: Option<Vec<Option<i32>>>,
+    // A vec of vecs of primitives — exercises the typed `ListBuilder` path in
+    // `gen_primitive_vec_inner_series` for `tail = [Vec, ...]`.
+    nested_primitive: Vec<Vec<i32>>,
+    // A vec of vecs of vecs — locks the recursive `ListBuilder` nesting.
+    triple_nested: Vec<Vec<Vec<i32>>>,
 }
 
 fn main() {
@@ -33,13 +38,15 @@ fn main() {
             Some(Item { id: 300, name: "C".to_string() }),
         ],
         opt_vec_opt_primitive: Some(vec![Some(1), None, Some(3)]),
+        nested_primitive: vec![vec![1, 2, 3], vec![], vec![10, 20]],
+        triple_nested: vec![vec![vec![1, 2], vec![3]], vec![vec![]], vec![]],
     };
 
     let df = container.to_dataframe().unwrap();
     println!("📊 DataFrame with complex wrappers:\n{}", df);
 
-    // Expected columns: id, primitive_items, custom_items.id, custom_items.name, opt_vec_opt_primitive
-    assert_eq!(df.shape(), (1, 5));
+    // Expected columns: id, primitive_items, custom_items.id, custom_items.name, opt_vec_opt_primitive, nested_primitive, triple_nested
+    assert_eq!(df.shape(), (1, 7));
 
     // Verify schema
     let schema = df.schema();
@@ -47,6 +54,21 @@ fn main() {
     assert_eq!(schema.get("custom_items.id").unwrap(), &DataType::List(Box::new(DataType::UInt32)));
     assert_eq!(schema.get("custom_items.name").unwrap(), &DataType::List(Box::new(DataType::String)));
     assert_eq!(schema.get("opt_vec_opt_primitive").unwrap(), &DataType::List(Box::new(DataType::Int32)));
+    // The runtime DataFrame's schema reflects the actual nesting depth (one
+    // List<> per `Vec<>` layer in the field type). The macro's static
+    // `schema()` collapses to a single List<element> regardless of depth (a
+    // known limitation), but `df.schema()` here reads the column dtypes that
+    // the typed `ListBuilder` chain emits, which carry the full nesting.
+    assert_eq!(
+        schema.get("nested_primitive").unwrap(),
+        &DataType::List(Box::new(DataType::List(Box::new(DataType::Int32))))
+    );
+    assert_eq!(
+        schema.get("triple_nested").unwrap(),
+        &DataType::List(Box::new(DataType::List(Box::new(DataType::List(Box::new(
+            DataType::Int32
+        ))))))
+    );
 
     // Verify values for Vec<Option<i32>>
     let s_primitive = match df.column("primitive_items").unwrap().get(0).unwrap() {
@@ -73,6 +95,43 @@ fn main() {
     let ca_custom_name: &StringChunked = s_custom_name.str().unwrap();
     let vec_custom_name: Vec<Option<&str>> = ca_custom_name.into_iter().collect();
     assert_eq!(vec_custom_name, vec![Some("A"), None, Some("C")]);
+
+    // Verify values for Vec<Vec<i32>> — drill through the outer list to confirm
+    // each inner Series is a typed Int32, not a fallback dtype-Null Series. A
+    // regression that loses the typed `ListBuilder` path would produce one of:
+    //   - `List<Null>` (empty inner, fallback empty path)
+    //   - `Series` of `AnyValue` re-inferred to `List<List<Int32>>` mismatch
+    let s_nested = match df.column("nested_primitive").unwrap().get(0).unwrap() {
+        AnyValue::List(inner) => inner.clone(),
+        _ => panic!("Expected List AnyValue for 'nested_primitive'"),
+    };
+    assert_eq!(s_nested.dtype(), &DataType::List(Box::new(DataType::Int32)));
+    assert_eq!(s_nested.len(), 3);
+    let nested_rows: Vec<Vec<Option<i32>>> = (0..s_nested.len())
+        .map(|i| match s_nested.get(i).unwrap() {
+            AnyValue::List(inner) => inner.i32().unwrap().into_iter().collect(),
+            _ => panic!("Expected List AnyValue for inner row"),
+        })
+        .collect();
+    assert_eq!(
+        nested_rows,
+        vec![
+            vec![Some(1), Some(2), Some(3)],
+            vec![],
+            vec![Some(10), Some(20)],
+        ],
+    );
+
+    // Vec<Vec<Vec<i32>>>: outermost cell → list of list of i32 → list of i32.
+    let s_triple = match df.column("triple_nested").unwrap().get(0).unwrap() {
+        AnyValue::List(inner) => inner.clone(),
+        _ => panic!("Expected List AnyValue for 'triple_nested'"),
+    };
+    assert_eq!(
+        s_triple.dtype(),
+        &DataType::List(Box::new(DataType::List(Box::new(DataType::Int32))))
+    );
+    assert_eq!(s_triple.len(), 3);
 
     println!("✅ Complex wrapper combinations test passed!");
 }

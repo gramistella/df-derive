@@ -438,14 +438,14 @@ pub fn primitive_decls(
         // unpacks via the inner Native type and rejects a `list[…]` slice).
         let lb_ident = PopulatorIdents::primitive_list_builder(idx);
         let pp = super::polars_paths::prelude();
-        // `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
-        // `Vec<Option<DateTime>>` shapes use a concrete typed builder so the
-        // per-parent-row push site can call `append_iter` directly — bypassing
-        // `Series::new` + cast + `append_series`'s `to_physical_repr` round-
-        // trip. Other primitive shapes keep using the `Box<dyn>` path because
-        // those don't dominate any current bench and the dynamic-dispatch
-        // cost is comparatively small for primitives whose Native matches
-        // their schema dtype.
+        // Single-`Vec` shapes covered by `typed_primitive_list_info` use a
+        // concrete typed builder so the per-parent-row push site can call
+        // `append_iter` directly — bypassing `Series::new` + cast +
+        // `append_series`'s `to_physical_repr` round-trip. Other primitive
+        // shapes (e.g. nested `Vec<Vec<…>>`, `Vec<String>`, `Vec<bool>`,
+        // struct-based leaves) keep using the `Box<dyn>` path because their
+        // Native types don't match what `ListPrimitiveChunkedBuilder` accepts
+        // or because the typed route was measured slower for them.
         if let Some(info) = typed_primitive_list_info(base_type, transform, wrappers) {
             let native = &info.native_type;
             let mapping_inner =
@@ -467,8 +467,9 @@ pub fn primitive_decls(
                     )
                 }
             } else {
-                // DateTime: physical `Int64` matches what the buffer stores;
-                // the field dtype is `Datetime(unit, None)` directly.
+                // DateTime / bare numerics: physical matches what the buffer
+                // stores; the field dtype is the schema's logical dtype
+                // directly.
                 quote! {
                     #pp::ListPrimitiveChunkedBuilder::<#native>::new(
                         "".into(),
@@ -544,33 +545,41 @@ pub fn primitive_finishers_for_vec_anyvalues(
 }
 
 /// Concrete `ListPrimitiveChunkedBuilder<Native>` declaration parameters for
-/// `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
-/// `Vec<Option<DateTime>>` shapes. These are the columnar bottlenecks where
-/// per-parent-row `Series::new` + cast + `append_series` overhead dominated
-/// the previous boxed-dyn `Box<dyn ListBuilderTrait>` path. With this typed
-/// builder the codegen can call `append_iter` over an
-/// `Iterator<Item = Option<Native>> + TrustedLen` directly, bypassing
-/// `Series::new` and the `to_physical_repr`/`unpack` round-trip inside
-/// `append_series`.
+/// the single-`Vec` primitive shapes that benefit from bypassing the
+/// `Box<dyn ListBuilderTrait>` path. Currently covers:
+/// - `Vec<Decimal>` / `Vec<Option<Decimal>>` and `Vec<DateTime>` /
+///   `Vec<Option<DateTime>>`.
+/// - Bare numerics (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`) without a
+///   transform — `Vec<T>` / `Vec<Option<T>>` shapes feed an
+///   `Iterator<Item = Option<Native>> + TrustedLen` straight into
+///   `append_iter`, avoiding `Series::new`, the inferring scan, and the
+///   `to_physical_repr`/`unpack` round-trip inside `append_series`.
 ///
 /// Returns `None` for any shape that doesn't have exactly one `Vec` layer or
-/// for non-Decimal/DateTime base types — those keep using the existing
-/// `get_list_builder` -> `Box<dyn ListBuilderTrait>` path.
+/// for base/transform combinations not in the list above — those keep using
+/// the existing `get_list_builder` -> `Box<dyn ListBuilderTrait>` path.
 pub(super) struct TypedListInfo {
-    /// Polars chunked-array native type token (`Int128Type` or `Int64Type`).
+    /// Polars chunked-array native type token (`Int128Type`, `Int64Type`,
+    /// `Int32Type`, …). Splices into `ListPrimitiveChunkedBuilder<#native_type>`.
     pub native_type: TokenStream,
-    /// Native rust element type (`i128` or `i64`).
+    /// Native rust element type (`i128`, `i64`, …). Used by the fallible
+    /// branch in `gen_typed_list_append` to type the per-row scratch
+    /// `Vec<Option<#native_rust>>` whose `into_iter()` feeds `append_iter`.
+    /// The non-fallible branch doesn't need it (it iterates the source Vec
+    /// directly).
     pub native_rust: TokenStream,
     /// Whether the per-element conversion is fallible. Decimal rescale always
     /// is (overflow on scale-up; overflow via the trait is also fallible);
     /// `DateTime` is fallible only at nanosecond precision
-    /// (`timestamp_nanos_opt` returns `None` outside ~[1677, 2262]).
+    /// (`timestamp_nanos_opt` returns `None` outside ~[1677, 2262]). Bare
+    /// numerics are infallible.
     pub fallible: bool,
     /// Whether the schema dtype needs `new_with_values_type` (logical dtype
     /// differs from physical). Decimal does — its physical is `Int128` but
-    /// the schema dtype is `Decimal(p, s)`. `DateTime` doesn't — `Int64`
-    /// physical matches what `::new` stores in the field, and the cast to
-    /// `Datetime` is metadata-only when the buffer's already i64.
+    /// the schema dtype is `Decimal(p, s)`. `DateTime` and bare numerics
+    /// don't — physical matches what `::new` stores in the field, and the
+    /// cast to the field dtype is metadata-only when the buffer's already
+    /// the right Native type.
     pub needs_values_type: bool,
 }
 
@@ -583,6 +592,14 @@ pub(super) fn typed_primitive_list_info(
         return None;
     }
     let pp = super::polars_paths::prelude();
+    let numeric = |native_type: TokenStream, native_rust: TokenStream| {
+        Some(TypedListInfo {
+            native_type,
+            native_rust,
+            fallible: false,
+            needs_values_type: false,
+        })
+    };
     match (base, transform) {
         (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { .. })) => {
             Some(TypedListInfo {
@@ -600,6 +617,31 @@ pub(super) fn typed_primitive_list_info(
                 needs_values_type: false,
             })
         }
+        (BaseType::I8, None) => numeric(quote! { #pp::Int8Type }, quote! { i8 }),
+        (BaseType::I16, None) => numeric(quote! { #pp::Int16Type }, quote! { i16 }),
+        (BaseType::I32, None) => numeric(quote! { #pp::Int32Type }, quote! { i32 }),
+        (BaseType::I64, None) => numeric(quote! { #pp::Int64Type }, quote! { i64 }),
+        (BaseType::U8, None) => numeric(quote! { #pp::UInt8Type }, quote! { u8 }),
+        (BaseType::U16, None) => numeric(quote! { #pp::UInt16Type }, quote! { u16 }),
+        (BaseType::U32, None) => numeric(quote! { #pp::UInt32Type }, quote! { u32 }),
+        (BaseType::U64, None) => numeric(quote! { #pp::UInt64Type }, quote! { u64 }),
+        (BaseType::F32, None) => numeric(quote! { #pp::Float32Type }, quote! { f32 }),
+        (BaseType::F64, None) => numeric(quote! { #pp::Float64Type }, quote! { f64 }),
+        // `BaseType::Bool` is intentionally NOT routed through the typed
+        // `ListBooleanChunkedBuilder` fast path. Its `append_iter` goes
+        // through `extend_trusted_len_unchecked`, which always pushes a
+        // validity bit per element (regardless of nullability), whereas the
+        // slow path's `Series::new(&Vec<bool>) + append_series` goes through
+        // `BooleanType::from_slice` (bulk, no validity for non-null input)
+        // and is faster overall. Bench 12 (`Vec<bool>`) measured a ~45%
+        // regression with the typed route — so bool keeps the existing
+        // boxed-dyn dispatch.
+        //
+        // `BaseType::ISize` / `BaseType::USize` are also omitted: their
+        // materialized buffer type (`i64` / `u64`) doesn't match the field's
+        // native `isize` / `usize`, so the per-element `(__df_derive_e).clone()`
+        // produces the wrong Native type for the typed builder. The slow
+        // path keeps working through the inferring `Series::new` -> cast.
         _ => None,
     }
 }

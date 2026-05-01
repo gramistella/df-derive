@@ -546,13 +546,14 @@ impl NestedStructStrategy {
     /// Returns `Some(emit)` when this strategy has a bulk implementation for
     /// the given context; `None` falls back to the per-row pipeline. Eligible
     /// for the depth-1 and depth-2 wrapper shapes the bulk helpers support:
-    /// bare leaf, `Option<T>`, `Vec<T>`, and `Option<Vec<T>>`.
+    /// bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, and
+    /// `Vec<Option<T>>`.
     ///
     /// All bulk emitters route through the `Columnar::columnar_from_refs`
     /// trait method, which works uniformly for both generic-parameter and
     /// concrete-struct base types — no per-element clone required.
     ///
-    /// Remaining nestings (`Vec<Option<T>>`, `Vec<Vec<T>>`, etc.) fall
+    /// Remaining nestings (`Vec<Vec<T>>`, `Option<Option<T>>`, etc.) fall
     /// through to the per-row pipeline; those paths already drive
     /// `Vec<AnyValue>` aggregation through
     /// `__df_derive_vec_to_inner_list_values`, so the added bulk machinery
@@ -582,6 +583,15 @@ impl NestedStructStrategy {
                 ctx,
             ),
             [Wrapper::Option, Wrapper::Vec] => super::bulk::gen_bulk_option_vec(
+                pa_root,
+                ty,
+                columnar_trait,
+                to_df_trait,
+                idx,
+                &access,
+                ctx,
+            ),
+            [Wrapper::Vec, Wrapper::Option] => super::bulk::gen_bulk_vec_option(
                 pa_root,
                 ty,
                 columnar_trait,

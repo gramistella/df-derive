@@ -6,7 +6,6 @@ mod bench_support;
 #[path = "../tests/common.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::ToDataFrame;
 use crate::core::dataframe::ToDataFrameVec;
 
 const N_CONTAINERS: usize = 30_000;

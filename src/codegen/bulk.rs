@@ -8,12 +8,12 @@
 // once. From there each schema column of `T` is sliced/scattered into the
 // parent's columns or `AnyValue::List` entries.
 //
-// Four wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
-// `Option<T>`, `Vec<T>`, and `Option<Vec<T>>`. The remaining nestings
-// (`Vec<Option<T>>`, `Vec<Vec<T>>`, etc.) keep using the per-row trait-only
-// paths defined elsewhere; those are rarer and the bulk variants would
-// need additional position bookkeeping that isn't worth the added
-// complexity.
+// Five wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
+// `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, and `Vec<Option<T>>`. The
+// remaining nestings (`Vec<Vec<T>>`, `Option<Option<T>>`, etc.) keep using
+// the per-row trait-only paths defined elsewhere; those are rarer and the
+// bulk variants would need additional position bookkeeping that isn't
+// worth the added complexity.
 //
 // Generic and concrete shapes share the same emitter — the trait method
 // `Columnar::columnar_from_refs(&[&Self])` is the one entry point for both,
@@ -286,8 +286,6 @@ fn bulk_vec_consume_inner_columns(
     schema_iter_ts: &TokenStream,
     validity_expr: &TokenStream,
 ) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let dtype_var = quote! { __df_derive_dtype };
     let col_name_var = quote! { __df_derive_col_name };
     let inner_col_expr = quote! {
         #df_ident
@@ -295,10 +293,33 @@ fn bulk_vec_consume_inner_columns(
             .as_materialized_series()
             .clone()
     };
+    bulk_vec_consume_columns_with_expr(
+        ctx,
+        offsets_buf_ident,
+        schema_iter_ts,
+        validity_expr,
+        &inner_col_expr,
+    )
+}
+
+/// Per-inner-column consume loop sharing the `LargeListArray` assembly with
+/// `bulk_vec_consume_inner_columns`, but parameterized over the inner-Series
+/// expression. Lets the `[Vec, Option]` path swap in a `take`-expanded inner
+/// Series without copying the unsafe-hoisting plumbing.
+fn bulk_vec_consume_columns_with_expr(
+    ctx: BulkContext<'_>,
+    offsets_buf_ident: &Ident,
+    schema_iter_ts: &TokenStream,
+    validity_expr: &TokenStream,
+    inner_col_expr: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
     let offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#offsets_buf_ident) };
     let logical_dtype_expr = quote! { (*#dtype_var).clone() };
     let series_expr = bulk_vec_emit_list_series(
-        &inner_col_expr,
+        inner_col_expr,
         &offsets_buf_expr,
         &logical_dtype_expr,
         validity_expr,
@@ -505,6 +526,187 @@ pub fn gen_bulk_option_vec(
             #consume_empty
         } else {
             let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #filled_buf_setup
+            #consume_filled
+        }
+    }}
+}
+
+/// Bundle of per-branch consume tokens for `gen_bulk_vec_option`. Pre-built
+/// before the `quote!` body so the main function stays focused on the
+/// outer-row scan and branch dispatch.
+struct VecOptionConsumes {
+    direct: TokenStream,
+    filled: TokenStream,
+    all_absent: TokenStream,
+    empty: TokenStream,
+}
+
+fn build_vec_option_consumes(
+    ctx: BulkContext<'_>,
+    df_ident: &Ident,
+    offsets_buf_ident: &Ident,
+    empty_offsets_buf_ident: &Ident,
+    take_ident: &Ident,
+    total_ident: &Ident,
+    schema_iter: &TokenStream,
+) -> VecOptionConsumes {
+    let pp = super::polars_paths::prelude();
+    let no_validity = quote! { ::std::option::Option::None };
+    let direct =
+        bulk_vec_consume_inner_columns(ctx, df_ident, offsets_buf_ident, schema_iter, &no_validity);
+    let take_expr = quote! {{
+        let __df_derive_inner_full = #df_ident
+            .column(__df_derive_col_name)?
+            .as_materialized_series();
+        __df_derive_inner_full.take(&#take_ident)?
+    }};
+    let filled = bulk_vec_consume_columns_with_expr(
+        ctx,
+        offsets_buf_ident,
+        schema_iter,
+        &no_validity,
+        &take_expr,
+    );
+    let null_expr = quote! {
+        #pp::Series::new_empty("".into(), __df_derive_dtype)
+            .extend_constant(#pp::AnyValue::Null, #total_ident)?
+    };
+    let all_absent = bulk_vec_consume_columns_with_expr(
+        ctx,
+        offsets_buf_ident,
+        schema_iter,
+        &no_validity,
+        &null_expr,
+    );
+    let empty =
+        bulk_vec_consume_empty_columns(ctx, empty_offsets_buf_ident, schema_iter, &no_validity);
+    VecOptionConsumes {
+        direct,
+        filled,
+        all_absent,
+        empty,
+    }
+}
+
+/// Bulk emit for `payload: Vec<Option<T>>`. Inverse of `gen_bulk_option_vec`:
+/// the **outer** list is always non-null, but **inner elements** can be
+/// null. Per parent row we iterate the outer Vec, splitting `Some(v)`
+/// references into a flat slice and recording per-element positions:
+/// `Some(j)` for a present element (where `j` indexes the gathered inner
+/// `DataFrame`) and `None` for an absent one.
+///
+/// `Inner::columnar_from_refs` runs once over the gathered slice. For each
+/// inner schema column we then call `Series::take(&IdxCa)` against the
+/// per-element positions to expand the gathered column back to the
+/// total-element count, with null entries materialized at the `None`
+/// positions. The resulting per-column Series is wrapped in a
+/// `LargeListArray` with `validity = None` (outer list rows are non-null)
+/// and the parent-row offsets. The single `take` per inner schema column
+/// replaces the per-parent-row `take` performed by the slow
+/// `nested.rs::gen_nested_vec_anyvalues_option` path.
+///
+/// Four runtime branches:
+/// - `total == 0`: every outer Vec is empty, so emit one outer-list column
+///   per inner schema entry of `items.len()` empty (non-null) lists.
+/// - `flat.is_empty()` (but `total > 0`): every Some-position turned out to
+///   be None, so the gathered slice is empty. Skip the
+///   `columnar_from_refs(&[])` round-trip and emit per-column null Series
+///   of length `total` directly.
+/// - `flat.len() == total`: no inner nulls — gathered Series already has
+///   the right length. Skip the `IdxCa` + `take` overhead.
+/// - Mixed: build the `IdxCa` once and `take` per inner column.
+///
+/// `pa_root` is the cached token stream for the `polars-arrow` crate root.
+pub fn gen_bulk_vec_option(
+    pa_root: &TokenStream,
+    ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
+    let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let offsets_buf_ident = format_ident!("__df_derive_gen_offsets_buf_{}", idx);
+    let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
+    let take_ident = format_ident!("__df_derive_gen_take_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let total_ident = format_ident!("__df_derive_gen_total_{}", idx);
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    let consumes = build_vec_option_consumes(
+        ctx,
+        &df_ident,
+        &offsets_buf_ident,
+        &empty_offsets_buf_ident,
+        &take_ident,
+        &total_ident,
+        &schema_iter,
+    );
+    let VecOptionConsumes {
+        direct: consume_direct,
+        filled: consume_filled,
+        all_absent: consume_all_absent,
+        empty: consume_empty,
+    } = consumes;
+
+    let filled_buf_setup = quote! {
+        let #offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#offsets_ident)?;
+    };
+    let empty_buf_setup = quote! {
+        let #empty_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
+    };
+
+    quote! {{
+        let mut #total_ident: usize = 0;
+        for __df_derive_it in items {
+            #total_ident += (&(#access)).len();
+        }
+        let mut #flat_ident: ::std::vec::Vec<&#ty> =
+            ::std::vec::Vec::with_capacity(#total_ident);
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(#total_ident);
+        let mut #offsets_ident: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets_ident.push(0);
+        for __df_derive_it in items {
+            for __df_derive_maybe in (&(#access)).iter() {
+                match __df_derive_maybe {
+                    ::std::option::Option::Some(__df_derive_v) => {
+                        #pos_ident.push(::std::option::Option::Some(
+                            #flat_ident.len() as #pp::IdxSize,
+                        ));
+                        #flat_ident.push(__df_derive_v);
+                    }
+                    ::std::option::Option::None => {
+                        #pos_ident.push(::std::option::Option::None);
+                    }
+                }
+            }
+            #offsets_ident.push(#pos_ident.len() as i64);
+        }
+        if #total_ident == 0 {
+            #empty_buf_setup
+            #consume_empty
+        } else if #flat_ident.is_empty() {
+            #filled_buf_setup
+            #consume_all_absent
+        } else if #flat_ident.len() == #total_ident {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #filled_buf_setup
+            #consume_direct
+        } else {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            let #take_ident: #pp::IdxCa =
+                <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #pos_ident.iter().copied(),
+                );
             #filled_buf_setup
             #consume_filled
         }

@@ -109,6 +109,51 @@ fn parse_attributes(
     Ok(attrs)
 }
 
+/// Reject `#[df_derive(as_str)]` on a base type that codegen knows cannot be
+/// `AsRef<str>`. Without this check, the silent fallback in
+/// `generate_inner_series_from_vec` would emit UFCS-against-`String` tokens
+/// and lean on the per-field `AsRef<str>` const-fn assert in `helpers.rs` to
+/// fail compilation. Surfacing the mistake at parse time yields a cleaner
+/// span and message at the user's attribute, not deep in macro expansion.
+/// `Struct` / `Generic` / `String` bases are still allowed: the first two are
+/// validated by the runtime assert (the parser cannot know whether a user
+/// type implements `AsRef<str>`), and `String` itself implements it.
+fn reject_as_str_on_incompatible_base(
+    field: &syn::Field,
+    field_display_name: &str,
+    attrs: FieldAttributes,
+    base: &BaseType,
+) -> Result<(), syn::Error> {
+    if !attrs.as_str {
+        return Ok(());
+    }
+    match base {
+        BaseType::String | BaseType::Struct(..) | BaseType::Generic(..) => Ok(()),
+        BaseType::F64
+        | BaseType::F32
+        | BaseType::I64
+        | BaseType::U64
+        | BaseType::I32
+        | BaseType::U32
+        | BaseType::I16
+        | BaseType::U16
+        | BaseType::I8
+        | BaseType::U8
+        | BaseType::Bool
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_str` but its base type does not implement \
+                 `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
+                 generic type parameters — drop the attribute or change the field type"
+            ),
+        )),
+    }
+}
+
 /// Apply user-specified `decimal(...)` / `time_unit = "..."` overrides to the
 /// transform produced by `analyze_type`. Rejects combinations that don't make
 /// sense (e.g. `decimal(...)` on a non-`Decimal` field, or alongside
@@ -210,6 +255,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
 
                 let base_type = analyzed.base.clone();
                 let mut transform = analyzed.transform.clone();
+                reject_as_str_on_incompatible_base(field, &display_name, attrs, &base_type)?;
                 apply_dtype_overrides(field, &display_name, attrs, &base_type, &mut transform)?;
                 fields_ir.push(FieldIR {
                     name: field_name_ident,
@@ -233,6 +279,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
 
                 let base_type = analyzed.base.clone();
                 let mut transform = analyzed.transform.clone();
+                reject_as_str_on_incompatible_base(field, &display_name, attrs, &base_type)?;
                 apply_dtype_overrides(field, &display_name, attrs, &base_type, &mut transform)?;
                 fields_ir.push(FieldIR {
                     name: field_name_ident,

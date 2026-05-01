@@ -40,4 +40,5 @@ fn tests() {
     t.compile_fail("tests/fail/103-fail-time-unit-invalid-value.rs");
     t.compile_fail("tests/fail/104-fail-decimal-precision-out-of-range.rs");
     t.compile_fail("tests/fail/105-fail-decimal-with-as-string.rs");
+    t.compile_fail("tests/fail/106-fail-as-str-on-non-string-base.rs");
 }

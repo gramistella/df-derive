@@ -73,14 +73,30 @@ pub fn generate_inner_series_from_vec(
     // `&[&str]` slice the bare-`String` borrowing path uses. No per-element
     // allocation.
     if matches!(transform, Some(PrimitiveTransform::AsStr)) {
+        // The parser rejects `as_str` on any base outside this trio (see
+        // `reject_as_str_on_incompatible_base`); reaching another arm here
+        // would mean the IR was hand-constructed past that gate.
         let ty_path = match base_type {
             BaseType::Struct(ident, args) => super::strategy::build_type_path(ident, args.as_ref()),
             BaseType::Generic(ident) => quote! { #ident },
-            // `BaseType::String` falls through here too: `String: AsRef<str>`
-            // makes UFCS valid. Non-string primitive bases are caught by the
-            // per-field `AsRef<str>` assert in helpers.rs; this fallback
-            // keeps codegen syntactically valid up to that assert firing.
-            _ => quote! { ::std::string::String },
+            BaseType::String => quote! { ::std::string::String },
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::DateTimeUtc
+            | BaseType::Decimal => unreachable!(
+                "df-derive: as_str on incompatible base type leaked past parser validation"
+            ),
         };
         // `#vec_access` must be a place expression (e.g. `self.field` or a
         // named binding) — never a temporary that drops at the next `;`.

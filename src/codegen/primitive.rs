@@ -198,10 +198,6 @@ pub fn generate_primitive_for_columnar_push(
         };
     }
 
-    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
-    let _dtype = mapping.full_dtype.clone();
-    let _elem_rust_ty = mapping.rust_element_type;
-    let _do_cast = crate::codegen::type_registry::needs_cast(transform);
     let opt_scalar = has_option(wrappers) && !has_vec(wrappers);
 
     let on_leaf = |acc: &TokenStream| {
@@ -248,8 +244,7 @@ pub fn generate_primitive_for_anyvalue(
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
-    let dtype = mapping.full_dtype.clone();
-    let _elem_rust_ty = mapping.rust_element_type;
+    let dtype = mapping.full_dtype;
     let do_cast = crate::codegen::type_registry::needs_cast(transform);
 
     let on_leaf = |acc: &TokenStream| {

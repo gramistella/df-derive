@@ -54,11 +54,17 @@ fn benchmark_tuple_structs(c: &mut Criterion) {
     let mixed = generate_mixed_tuples();
     let nested = generate_outer_tuples();
 
-    c.bench_function("tuple_structs_conversion", |b| {
+    c.bench_function("tuple_mixed", |b| {
         b.iter(|| {
-            let df_mixed = std::hint::black_box(&mixed).to_dataframe().unwrap();
-            let df_nested = std::hint::black_box(&nested).to_dataframe().unwrap();
-            std::hint::black_box((df_mixed, df_nested))
+            let df = std::hint::black_box(&mixed).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
+    c.bench_function("tuple_nested", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&nested).to_dataframe().unwrap();
+            std::hint::black_box(df)
         });
     });
 }

@@ -93,9 +93,18 @@ pub(super) const fn is_direct_view_to_string_leaf(
 /// Caller must have already gated on the predicate. The generated code
 /// clears the reused `String` scratch, runs `Display::fmt` into it via
 /// `write!`, and pushes the resulting `&str` into the
-/// `MutableBinaryViewArray<str>` (`push_value` copies the bytes, so the
-/// scratch is safe to reuse on the next row). For `[Option]` wrappers the
-/// match wraps the push so `None` rows trigger `push_null` instead.
+/// `MutableBinaryViewArray<str>` (`push_value_ignore_validity` copies the
+/// bytes, so the scratch is safe to reuse on the next row).
+///
+/// Both shapes track validity externally — the bare arm has no validity at
+/// all (none ever initialized) and the `[Option]` arm uses the same
+/// split-buffer pattern as `gen_option_string_direct_push` (a parallel
+/// `MutableBitmap` pre-filled to all-`true`, with the `None` arm flipping
+/// the row's bit to `false` via the safe `MutableBitmap::set`). Neither
+/// shape ever calls `push_null` / `init_validity`, so the buffer's internal
+/// validity is always `None` and `push_value_ignore_validity` skips the
+/// per-row `if let Some(validity) ... validity.push(true)` branch
+/// `push_value` would otherwise do.
 fn gen_direct_view_to_string_push(
     access: &TokenStream,
     wrappers: &[Wrapper],
@@ -104,18 +113,22 @@ fn gen_direct_view_to_string_push(
     let buf_ident = PopulatorIdents::primitive_buf(idx);
     let str_ident = PopulatorIdents::primitive_str_scratch(idx);
     if matches!(wrappers, [Wrapper::Option]) {
+        let validity_ident = PopulatorIdents::primitive_validity(idx);
+        let row_idx = PopulatorIdents::primitive_row_idx(idx);
         return quote! {
             match &(#access) {
                 ::std::option::Option::Some(__df_derive_v) => {
                     use ::std::fmt::Write as _;
                     #str_ident.clear();
                     ::std::write!(&mut #str_ident, "{}", __df_derive_v).unwrap();
-                    #buf_ident.push_value(#str_ident.as_str());
+                    #buf_ident.push_value_ignore_validity(#str_ident.as_str());
                 }
                 ::std::option::Option::None => {
-                    #buf_ident.push_null();
+                    #buf_ident.push_value_ignore_validity("");
+                    #validity_ident.set(#row_idx, false);
                 }
             }
+            #row_idx += 1;
         };
     }
     quote! {
@@ -123,7 +136,7 @@ fn gen_direct_view_to_string_push(
             use ::std::fmt::Write as _;
             #str_ident.clear();
             ::std::write!(&mut #str_ident, "{}", &(#access)).unwrap();
-            #buf_ident.push_value(#str_ident.as_str());
+            #buf_ident.push_value_ignore_validity(#str_ident.as_str());
         }
     }
 }
@@ -435,9 +448,40 @@ fn gen_option_string_direct_array_expr(idx: usize) -> TokenStream {
     }
 }
 
-/// Columnar finish tokens for the `Option<String>` direct fast path.
-/// Returns `None` for any shape that doesn't match the carve-out. Caller
-/// pushes the produced statement onto the per-derive `columns` vec.
+/// Columnar finish tokens for the bare-`String` and bare-`as_string`
+/// direct fast paths. Both share the same single-buffer layout
+/// (`MutableBinaryViewArray<str>` only — no validity is ever initialized)
+/// so the finisher is identical: freeze the values into a `Utf8ViewArray`
+/// and wrap in `StringChunked::with_chunk`. Returns `None` for any shape
+/// that doesn't match either carve-out.
+pub(super) fn gen_bare_view_string_direct_columnar_finish(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+    name: &str,
+) -> Option<TokenStream> {
+    let bare_to_string = is_direct_view_to_string_leaf(transform, wrappers) && !has_option(wrappers);
+    if !is_direct_view_string_leaf(base, transform, wrappers) && !bare_to_string {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    Some(quote! {{
+        let s = #pp::IntoSeries::into_series(
+            #pp::StringChunked::with_chunk(#name.into(), #buf_ident.freeze()),
+        );
+        columns.push(s.into());
+    }})
+}
+
+/// Columnar finish tokens for the `Option<String>` and `Option<as_string>`
+/// direct fast paths. Both share the same split-buffer layout
+/// (`MutableBinaryViewArray<str>` + parallel `MutableBitmap`) so the
+/// finisher is identical: freeze the values, attach the bitmap via
+/// `Utf8ViewArray::with_validity` (collapsing to `None` when no bits are
+/// unset), and wrap in `StringChunked::with_chunk`. Returns `None` for any
+/// shape that doesn't match either carve-out.
 pub(super) fn gen_option_string_direct_columnar_finish(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -445,7 +489,9 @@ pub(super) fn gen_option_string_direct_columnar_finish(
     idx: usize,
     name: &str,
 ) -> Option<TokenStream> {
-    if !is_direct_view_option_string_leaf(base, transform, wrappers) {
+    let is_option_to_string =
+        is_direct_view_to_string_leaf(transform, wrappers) && has_option(wrappers);
+    if !is_direct_view_option_string_leaf(base, transform, wrappers) && !is_option_to_string {
         return None;
     }
     let pp = super::polars_paths::prelude();
@@ -953,8 +999,15 @@ pub fn primitive_decls(
     // Direct fast path for top-level `as_string` leaves (see
     // `is_direct_view_to_string_leaf`): accumulate into a view array, with a
     // reused `String` scratch that each row clears and writes Display::fmt
-    // into. The view array's `push_value` copies the bytes, so reusing the
-    // scratch on the next row is sound.
+    // into. The view array's `push_value_ignore_validity` copies the bytes,
+    // so reusing the scratch on the next row is sound.
+    //
+    // The `[Option]` shape also declares a parallel `MutableBitmap` pre-
+    // filled to all-`true` plus a row counter — same split-buffer layout
+    // as `is_direct_view_option_string_leaf` — so per-row pushes can use
+    // `push_value_ignore_validity` (skipping the buffer's internal
+    // `if let Some(validity)` branch) and `None` rows just flip a single
+    // bit via the safe `MutableBitmap::set`.
     if is_direct_view_to_string_leaf(transform, wrappers) {
         let buf_ident = PopulatorIdents::primitive_buf(idx);
         let str_ident = PopulatorIdents::primitive_str_scratch(idx);
@@ -966,6 +1019,20 @@ pub fn primitive_decls(
         decls.push(quote! {
             let mut #str_ident: ::std::string::String = ::std::string::String::new();
         });
+        if matches!(wrappers, [Wrapper::Option]) {
+            let validity_ident = PopulatorIdents::primitive_validity(idx);
+            let row_idx = PopulatorIdents::primitive_row_idx(idx);
+            decls.push(quote! {
+                let mut #validity_ident: #pa_root::bitmap::MutableBitmap = {
+                    let mut __df_derive_b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+                    __df_derive_b.extend_constant(items.len(), true);
+                    __df_derive_b
+                };
+            });
+            decls.push(quote! {
+                let mut #row_idx: usize = 0;
+            });
+        }
         return decls;
     }
 
@@ -1126,17 +1193,17 @@ pub fn primitive_finishers_for_vec_anyvalues(
             out_values.push(#pp::AnyValue::List(inner));
         }
     } else if is_direct_view_string_leaf(base_type, transform, wrappers)
-        || is_direct_view_to_string_leaf(transform, wrappers)
+        || (is_direct_view_to_string_leaf(transform, wrappers) && !has_option(wrappers))
     {
         // Direct `MutableBinaryViewArray<str>` accumulation (see
         // `primitive_decls`): freeze into a `Utf8ViewArray`, wrap as a
         // `StringChunked`, convert to Series — same dtype as the
         // `Series::new(&Vec<&str>)` path, minus the second walk through the
-        // intermediate `Vec<&str>`. Covers both the bare-String fast path
-        // (`is_direct_view_string_leaf`) and the `as_string` Display fast
-        // path (`is_direct_view_to_string_leaf`); the scratch String the
-        // Display path also declares is just dropped here without further
-        // use.
+        // intermediate `Vec<&str>`. Covers the bare-`String` fast path
+        // (`is_direct_view_string_leaf`) and the bare-`as_string` Display
+        // fast path (`is_direct_view_to_string_leaf` with no Option). The
+        // `Option<as_string>` shape is handled below alongside the
+        // `Option<String>` split-buffer pattern.
         let buf_ident = PopulatorIdents::primitive_buf(idx);
         quote! {
             let inner = #pp::IntoSeries::into_series(
@@ -1144,13 +1211,16 @@ pub fn primitive_finishers_for_vec_anyvalues(
             );
             out_values.push(#pp::AnyValue::List(inner));
         }
-    } else if is_direct_view_option_string_leaf(base_type, transform, wrappers) {
-        // `Option<String>` direct fast path: the buffer is a
-        // `MutableBinaryViewArray<str>` with parallel `MutableBitmap`
-        // validity. Freeze the values, attach the bitmap via
-        // `Utf8ViewArray::with_validity` (collapsing to `None` if no unset
-        // bits), wrap in `StringChunked::with_chunk` — same column dtype as
-        // the `Series::new(&Vec<Option<&str>>)` slow path, minus the second
+    } else if is_direct_view_option_string_leaf(base_type, transform, wrappers)
+        || (is_direct_view_to_string_leaf(transform, wrappers) && has_option(wrappers))
+    {
+        // `Option<String>` and `Option<as_string>` direct fast paths share
+        // the same split-buffer layout: a `MutableBinaryViewArray<str>`
+        // values buffer with a parallel `MutableBitmap` validity. Freeze
+        // the values, attach the bitmap via `Utf8ViewArray::with_validity`
+        // (collapsing to `None` if no unset bits), wrap in
+        // `StringChunked::with_chunk` — same column dtype as the
+        // `Series::new(&Vec<Option<&str>>)` slow path, minus the second
         // walk and the per-row validity branch.
         let arr_expr = gen_option_string_direct_array_expr(idx);
         quote! {

@@ -494,36 +494,23 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
-        // Top-level (non-Option) `String` (no transform): the buffer is a
-        // `MutableBinaryViewArray<str>` accumulated row-by-row in the items
-        // loop (see `primitive_decls`). Freeze it into a `Utf8ViewArray`,
-        // wrap in `StringChunked::with_chunk`, and convert to a Series —
-        // same `Utf8ViewArray`-backed column the `Series::new(&Vec<&str>)`
-        // path produces, minus the second walk through the intermediate
-        // `Vec<&str>`.
-        if super::primitive::is_direct_view_string_leaf(
+        // Top-level bare-`String` and bare-`as_string` Display fast paths:
+        // single `MutableBinaryViewArray<str>` buffer, freeze + wrap in
+        // `StringChunked::with_chunk`. Top-level `Option<String>` and
+        // `Option<as_string>` Display fast paths: split-buffer
+        // (`MutableBinaryViewArray<str>` + parallel `MutableBitmap`),
+        // freeze + `with_validity` + `StringChunked::with_chunk`. Same
+        // column dtype as the slow path in both cases, minus the second
+        // walk through the intermediate `Vec<&str>` / `Vec<Option<&str>>`.
+        if let Some(emit) = super::primitive::gen_bare_view_string_direct_columnar_finish(
             &self.p.base_type,
             self.p.transform.as_ref(),
             &self.wrappers,
-        ) || super::primitive::is_direct_view_to_string_leaf(
-            self.p.transform.as_ref(),
-            &self.wrappers,
+            idx,
+            name,
         ) {
-            let buf_ident = PopulatorIdents::primitive_buf(idx);
-            return vec![quote! {{
-                let s = #pp::IntoSeries::into_series(
-                    #pp::StringChunked::with_chunk(#name.into(), #buf_ident.freeze()),
-                );
-                columns.push(s.into());
-            }}];
+            return vec![emit];
         }
-        // Top-level `Option<String>` (see `is_direct_view_option_string_leaf`):
-        // freeze the `MutableBinaryViewArray<str>` values into a
-        // `Utf8ViewArray`, attach the parallel `MutableBitmap` validity via
-        // `with_validity` (which `From<MutableBitmap> for Option<Bitmap>`
-        // collapses to `None` when no bits are unset), wrap in
-        // `StringChunked::with_chunk`. Same column dtype as the
-        // `Series::new(&Vec<Option<&str>>)` slow path, minus the second walk.
         if let Some(emit) = super::primitive::gen_option_string_direct_columnar_finish(
             &self.p.base_type,
             self.p.transform.as_ref(),

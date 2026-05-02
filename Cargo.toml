@@ -96,3 +96,7 @@ harness = false
 [[bench]]
 name = "15_as_str_enum"
 harness = false
+
+[[bench]]
+name = "16_option_vec_option_struct"
+harness = false

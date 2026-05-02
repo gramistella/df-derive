@@ -57,6 +57,18 @@ struct VecOptBool {
     items: Vec<Option<bool>>,
 }
 
+#[derive(ToDataFrame, Clone)]
+struct VecVecBool {
+    id: u64,
+    items: Vec<Vec<bool>>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct VecVecOptString {
+    id: u64,
+    items: Vec<Vec<Option<String>>>,
+}
+
 fn generate_vec_opt_string() -> Vec<VecOptString> {
     (0..N_ROWS)
         .map(|i| VecOptString {
@@ -184,6 +196,38 @@ fn generate_vec_opt_bool() -> Vec<VecOptBool> {
         .collect()
 }
 
+fn generate_vec_vec_bool() -> Vec<VecVecBool> {
+    (0..N_ROWS)
+        .map(|i| VecVecBool {
+            id: i as u64,
+            items: (0..(i % 5 + 2))
+                .map(|j| (0..(j % 4 + 2)).map(|k| (i + j + k) % 2 == 0).collect())
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_vec_opt_string() -> Vec<VecVecOptString> {
+    (0..N_ROWS)
+        .map(|i| VecVecOptString {
+            id: i as u64,
+            items: (0..(i % 5 + 2))
+                .map(|j| {
+                    (0..(j % 4 + 2))
+                        .map(|k| {
+                            if (i + j + k) % 4 == 0 {
+                                None
+                            } else {
+                                Some(format!("s-{i}-{j}-{k}"))
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn benchmark_vec_opt_string(c: &mut Criterion) {
     let data = generate_vec_opt_string();
     c.bench_function("vec_opt_string", |b| {
@@ -254,6 +298,26 @@ fn benchmark_vec_opt_bool(c: &mut Criterion) {
     });
 }
 
+fn benchmark_vec_vec_bool(c: &mut Criterion) {
+    let data = generate_vec_vec_bool();
+    c.bench_function("vec_vec_bool", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+}
+
+fn benchmark_vec_vec_opt_string(c: &mut Criterion) {
+    let data = generate_vec_vec_opt_string();
+    c.bench_function("vec_vec_opt_string", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+}
+
 criterion_group! {
     name = benches;
     config = configure_criterion();
@@ -264,6 +328,8 @@ criterion_group! {
         benchmark_vec_vec_i32,
         benchmark_vec_vec_opt_i32,
         benchmark_vec_vec_string,
-        benchmark_vec_opt_bool
+        benchmark_vec_opt_bool,
+        benchmark_vec_vec_bool,
+        benchmark_vec_vec_opt_string
 }
 criterion_main!(benches);

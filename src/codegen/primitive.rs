@@ -2190,16 +2190,154 @@ pub(super) fn try_gen_vec_option_string_emit(
     Some(emit)
 }
 
+/// Eligible-shape probe for the bulk `Vec<Option<bool>>` emit. Returns
+/// `true` only when wrappers are exactly `[Vec, Option]`, the base is
+/// `Bool`, and there is no transform.
+///
+/// Excludes the numeric/string siblings (`Vec<Option<numeric>>`,
+/// `Vec<Option<String>>`) which have their own emitters with different
+/// leaf storage, the no-Option sibling (`Vec<bool>`), and any deeper
+/// nesting (`Option<Vec<Option<bool>>>`, `Vec<Vec<Option<bool>>>`)
+/// whose flattening invariants this emitter doesn't model.
+pub(super) const fn is_direct_vec_option_bool_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none()
+        && matches!(base, BaseType::Bool)
+        && matches!(wrappers, [Wrapper::Vec, Wrapper::Option])
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Option<bool>>` (wrappers exactly `[Vec, Option]`, base `Bool`, no
+/// transform). `None` for any other shape — caller falls back to the
+/// boxed-dyn `ListBuilderTrait::append_series` per-row path.
+///
+/// Combines the flat-and-offsets pattern from the `Vec<bool>` emitter with
+/// the inner-validity split-buffer from the `Option<bool>` direct path:
+/// values live in a `MutableBitmap` (bool is bit-packed in arrow) pre-
+/// filled to all-`false`, validity in a parallel `MutableBitmap` pre-
+/// filled to all-`true`. Per-row push-equivalent only flips a single bit
+/// for the rare arms — `Some(true)` flips a value bit, `None` flips a
+/// validity bit, `Some(false)` is zero-work. Uses the safe
+/// `MutableBitmap::set` (a bounds-checked single-byte write) so no
+/// `unsafe` lands inside the user's `Columnar` impl method.
+///
+/// The finisher constructs a `BooleanArray::new(Boolean, values.into(),
+/// validity.into())` (validity collapses to `None` if no bits are unset),
+/// wraps it in a `LargeListArray` partitioned by the per-row offsets, and
+/// consumes the array via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` so the resulting Series's
+/// dtype is `List<Boolean>` exactly (no post-finish cast).
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_option_bool_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !is_direct_vec_option_bool_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::Boolean };
+    let series_block = quote! {{
+        let mut __df_derive_total: usize = 0;
+        for __df_derive_it in items {
+            __df_derive_total += (&(#access)).len();
+        }
+        let mut __df_derive_values: #pa_root::bitmap::MutableBitmap = {
+            let mut __df_derive_b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(__df_derive_total);
+            __df_derive_b.extend_constant(__df_derive_total, false);
+            __df_derive_b
+        };
+        let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
+            let mut __df_derive_b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(__df_derive_total);
+            __df_derive_b.extend_constant(__df_derive_total, true);
+            __df_derive_b
+        };
+        let mut __df_derive_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_offsets.push(0);
+        let mut __df_derive_row_idx: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_opt in (&(#access)).iter() {
+                match __df_derive_opt {
+                    ::std::option::Option::Some(true) => {
+                        __df_derive_values.set(__df_derive_row_idx, true);
+                    }
+                    ::std::option::Option::Some(false) => {}
+                    ::std::option::Option::None => {
+                        __df_derive_validity.set(__df_derive_row_idx, false);
+                    }
+                }
+                __df_derive_row_idx += 1;
+            }
+            __df_derive_offsets.push(__df_derive_row_idx as i64);
+        }
+        let __df_derive_arr: #pa_root::array::BooleanArray =
+            #pa_root::array::BooleanArray::new(
+                #pa_root::datatypes::ArrowDataType::Boolean,
+                ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(__df_derive_values),
+                ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                    __df_derive_validity,
+                ),
+            );
+        let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_offsets)?;
+        let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_arr).clone(),
+            ),
+            __df_derive_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            #leaf_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}
+
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
 /// `Vec<bool>` (wrappers exactly `[Vec]`, base `Bool`, no transform). `None`
 /// for any other shape — caller falls back to the boxed-dyn
 /// `ListBuilderTrait::append_series` per-row path.
 ///
-/// Sibling shapes (`Vec<Option<bool>>`, `Option<Vec<bool>>`, `Vec<Vec<bool>>`)
-/// keep the existing path: the `[Vec, Option]` and `[Option, Vec]` cases
-/// would need a validity bitmap that this emitter intentionally omits, and
-/// the numeric `Vec<Vec<T>>` fast path explicitly excludes Bool because of
-/// the validity-bit cost it would re-introduce there.
+/// Sibling shapes (`Option<Vec<bool>>`, `Vec<Vec<bool>>`) keep the
+/// existing path: the `[Option, Vec]` case would need a validity bitmap
+/// that this emitter intentionally omits, and the numeric `Vec<Vec<T>>`
+/// fast path explicitly excludes Bool because of the validity-bit cost
+/// it would re-introduce there. `Vec<Option<bool>>` is handled separately
+/// by `try_gen_vec_option_bool_emit` via a split-buffer pattern (values
+/// in a bit-packed `MutableBitmap`, validity in a parallel `MutableBitmap`).
 ///
 /// The block scans `items` once, extending a flat `Vec<bool>` from each
 /// row's inner Vec while recording per-row offsets. It then constructs a

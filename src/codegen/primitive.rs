@@ -1626,6 +1626,181 @@ pub(super) fn try_gen_nested_primitive_vec_emit(
     Some(emit)
 }
 
+/// Eligible-shape probe for the bulk `Vec<Option<T>>` numeric-primitive
+/// emit. Returns `true` only when wrappers are exactly `[Vec, Option]`, the
+/// base is a bare numeric primitive (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`),
+/// and there is no transform. Other shapes — `Vec<Option<bool>>`,
+/// `Vec<Option<String>>`, `Vec<Option<DateTime>>`, `Vec<Option<Decimal>>`,
+/// `Option<Vec<Option<T>>>`, `Vec<Vec<Option<T>>>` — keep the typed-
+/// `ListPrimitiveChunkedBuilder` per-row path: bool would need a validity
+/// bit per element regardless, the string / datetime / decimal shapes need
+/// transforms or different storage, and any extra wrapper level changes the
+/// flattening invariants this emitter relies on.
+pub(super) const fn is_direct_vec_option_numeric_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    if transform.is_some() || !matches!(wrappers, [Wrapper::Vec, Wrapper::Option]) {
+        return false;
+    }
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+    )
+}
+
+/// Native rust + leaf `polars::prelude::DataType` token tree for the
+/// `Vec<Option<T>>` numeric-primitive fast path. Caller must gate on
+/// `is_direct_vec_option_numeric_leaf` so the non-numeric arms are
+/// statically unreachable.
+fn vec_option_numeric_leaf_types(base: &BaseType) -> (TokenStream, TokenStream) {
+    let pp = super::polars_paths::prelude();
+    match base {
+        BaseType::I8 => (quote! { i8 }, quote! { #pp::DataType::Int8 }),
+        BaseType::I16 => (quote! { i16 }, quote! { #pp::DataType::Int16 }),
+        BaseType::I32 => (quote! { i32 }, quote! { #pp::DataType::Int32 }),
+        BaseType::I64 => (quote! { i64 }, quote! { #pp::DataType::Int64 }),
+        BaseType::U8 => (quote! { u8 }, quote! { #pp::DataType::UInt8 }),
+        BaseType::U16 => (quote! { u16 }, quote! { #pp::DataType::UInt16 }),
+        BaseType::U32 => (quote! { u32 }, quote! { #pp::DataType::UInt32 }),
+        BaseType::U64 => (quote! { u64 }, quote! { #pp::DataType::UInt64 }),
+        BaseType::F32 => (quote! { f32 }, quote! { #pp::DataType::Float32 }),
+        BaseType::F64 => (quote! { f64 }, quote! { #pp::DataType::Float64 }),
+        BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => unreachable!(
+            "vec_option_numeric_leaf_types called for non-numeric base; \
+             callers must gate on is_direct_vec_option_numeric_leaf"
+        ),
+    }
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Option<T>>` over a bare numeric primitive base (no transform).
+/// `None` for any other shape — caller falls through to the typed
+/// `ListPrimitiveChunkedBuilder<Native>::append_iter` per-row path.
+///
+/// The block scans `items` once, computing the total leaf count, then
+/// allocates a flat `Vec<Native>` and a parallel `MutableBitmap` pre-filled
+/// with `true` at that capacity. Each `Some(v)` row pushes the value (the
+/// validity bit is already set); each `None` row pushes `<Native>::default()`
+/// as a placeholder and flips the corresponding bit via the safe
+/// `MutableBitmap::set` (a bounds-checked single-byte write — cheaper than
+/// the typed-builder's per-element `MutablePrimitiveArray::push(Option<T>)`
+/// branching on the validity-active flag and the discriminant). The
+/// finisher builds a `PrimitiveArray::<Native>::new(dtype, flat.into(),
+/// Some(validity.into()))` — both conversions are zero-copy: `Vec<T> ->
+/// Buffer<T>` and `MutableBitmap -> Option<Bitmap>` (the latter collapses
+/// to `None` when no bits were unset, preserving the no-null fast path) —
+/// wraps it in a `LargeListArray` partitioned by the per-row offsets, and
+/// consumes the array via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` so the resulting Series's
+/// dtype is `List<leaf>` exactly (no post-finish cast).
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_option_numeric_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !is_direct_vec_option_numeric_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let (native, leaf_dtype) = vec_option_numeric_leaf_types(base);
+    let series_block = quote! {{
+        let mut __df_derive_total: usize = 0;
+        for __df_derive_it in items {
+            __df_derive_total += (&(#access)).len();
+        }
+        let mut __df_derive_flat: ::std::vec::Vec<#native> =
+            ::std::vec::Vec::with_capacity(__df_derive_total);
+        let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
+            let mut __df_derive_b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(__df_derive_total);
+            __df_derive_b.extend_constant(__df_derive_total, true);
+            __df_derive_b
+        };
+        let mut __df_derive_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_opt in (&(#access)).iter() {
+                match __df_derive_opt {
+                    ::std::option::Option::Some(__df_derive_v) => {
+                        __df_derive_flat.push(*__df_derive_v);
+                    }
+                    ::std::option::Option::None => {
+                        __df_derive_flat.push(<#native as ::std::default::Default>::default());
+                        __df_derive_validity.set(__df_derive_flat.len() - 1, false);
+                    }
+                }
+            }
+            __df_derive_offsets.push(__df_derive_flat.len() as i64);
+        }
+        let __df_derive_arr: #pa_root::array::PrimitiveArray<#native> =
+            #pa_root::array::PrimitiveArray::<#native>::new(
+                <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
+                __df_derive_flat.into(),
+                ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                    __df_derive_validity,
+                ),
+            );
+        let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_offsets)?;
+        let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_arr).clone(),
+            ),
+            __df_derive_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            #leaf_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}
+
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
 /// `Vec<bool>` (wrappers exactly `[Vec]`, base `Bool`, no transform). `None`
 /// for any other shape — caller falls back to the boxed-dyn

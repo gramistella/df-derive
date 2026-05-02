@@ -1,6 +1,7 @@
 mod bulk;
 mod columnar_impl;
 mod common;
+mod encoder;
 mod helpers;
 mod nested;
 mod polars_paths;

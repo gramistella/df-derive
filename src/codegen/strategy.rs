@@ -3,6 +3,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
+use super::encoder::{self, Encoder, LeafCtx};
 use super::populator_idents::PopulatorIdents;
 
 // Recreate light-weight IR mirrors for internal use to avoid coupling to old FieldKind
@@ -191,37 +192,35 @@ impl PrimitiveStrategy {
         )
     }
 
-    /// Try each direct-finish helper for the non-`Vec` primitive shapes that
-    /// have a fast path: bare-`String`/`as_string`, `Option<String>`/
-    /// `Option<as_string>`, bare numeric / `Option<numeric>`, and
-    /// `Option<bool>`. Each helper returns `None` for shapes outside its
-    /// carve-out, so the first `Some` wins. Same column dtype as the
-    /// `Series::new(name, &Vec<…>)` slow path in every case, minus the
-    /// second walk (and per-row validity branch where applicable). Returns
-    /// `None` only when no fast path applies — caller falls through to the
-    /// generic owning-buffer finisher.
-    fn gen_columnar_direct_fast_path_finish(&self, idx: usize, name: &str) -> Option<TokenStream> {
-        let base = &self.p.base_type;
-        let transform = self.p.transform.as_ref();
-        let wrappers = &self.wrappers;
-        super::primitive::gen_bare_view_string_direct_columnar_finish(
-            base, transform, wrappers, idx, name,
+    /// Build the per-field encoder when this shape (`[]` or `[Option]` over a
+    /// supported primitive leaf) is served by the encoder IR. Returns `None`
+    /// for `Vec<...>` shapes (Step 2) and for the few leaf carve-outs the IR
+    /// doesn't yet cover (notably bare `ISize`/`USize`).
+    ///
+    /// `access` is only meaningful for the encoder's `push` field; the `decls`
+    /// and `finish_series` fields are independent of it (modulo `name`, which
+    /// is baked into `finish_series`). Callers that only consume
+    /// `decls`/`finish_series` may pass any well-formed expression — the
+    /// `gen_populator_inits`, `gen_columnar_builders`, and
+    /// `gen_vec_values_finishers` paths do this with `quote! {}`.
+    ///
+    /// `name` is the column name baked into the produced Series. Pass the
+    /// field name for the columnar context; pass `""` for the vec-anyvalues
+    /// context (matching the prior `primitive_finishers_for_vec_anyvalues`
+    /// behavior — the rename happens implicitly through `AnyValue::List`).
+    fn try_build_encoder(&self, access: &TokenStream, idx: usize, name: &str) -> Option<Encoder> {
+        let ctx = LeafCtx {
+            access,
+            idx,
+            name,
+            decimal128_encode_trait: &self.p.decimal128_encode_trait,
+        };
+        encoder::try_build_encoder(
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+            &ctx,
         )
-        .or_else(|| {
-            super::primitive::gen_option_string_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::gen_numeric_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::gen_option_bool_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
     }
 }
 
@@ -250,6 +249,18 @@ impl StrategyVariant for PrimitiveStrategy {
     }
 
     fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
+        // Encoder IR for `[]`/`[Option]` shapes wraps the same Series
+        // expression in `AnyValue::List(...)` — same emission as the prior
+        // `primitive_finishers_for_vec_anyvalues` direct fast paths, just
+        // routed through the IR.
+        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, "") {
+            let series = enc.finish_series;
+            let pp = super::polars_paths::prelude();
+            return quote! {
+                let inner = { #series };
+                out_values.push(#pp::AnyValue::List(inner));
+            };
+        }
         super::primitive::primitive_finishers_for_vec_anyvalues(
             &self.wrappers,
             &self.p.base_type,
@@ -259,6 +270,13 @@ impl StrategyVariant for PrimitiveStrategy {
     }
 
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
+        // Encoder IR covers the `[]` and `[Option]` primitive shapes —
+        // `try_build_encoder` returns `None` for everything else (Vec layers,
+        // unsupported leaf carve-outs), and we fall through to the legacy
+        // `primitive_decls` for those.
+        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, &self.field_name) {
+            return enc.decls;
+        }
         super::primitive::primitive_decls(
             &self.wrappers,
             &self.p.base_type,
@@ -278,6 +296,9 @@ impl StrategyVariant for PrimitiveStrategy {
                 quote! { #it_ident.#index_lit }
             },
         );
+        if let Some(enc) = self.try_build_encoder(&access, idx, &self.field_name) {
+            return enc.push;
+        }
         super::primitive::generate_primitive_for_columnar_push(
             &access,
             &self.p.base_type,
@@ -536,51 +557,21 @@ impl StrategyVariant for PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
-        if let Some(emit) = self.gen_columnar_direct_fast_path_finish(idx, name) {
-            return vec![emit];
+        // Encoder IR covers the `[]` and `[Option]` primitive shapes; falls
+        // through to the legacy ISize/USize generic finisher when
+        // `try_build_encoder` returns `None`.
+        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, name) {
+            let series = enc.finish_series;
+            return vec![quote! {{
+                let s = { #series };
+                columns.push(s.into());
+            }}];
         }
-
-        // Decimal: the buffer is `Vec<i128>` / `Vec<Option<i128>>` already
-        // rescaled to the schema scale. Build the `DecimalChunked` directly
-        // via `Int128Chunked::into_decimal_unchecked` — skips the
-        // `Series::new(&Vec<i128>) → cast(Decimal)` round-trip.
-        if let (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { precision, scale })) =
-            (&self.p.base_type, self.p.transform.as_ref())
-        {
-            let p = *precision as usize;
-            let s = *scale as usize;
-            let vec_ident = PopulatorIdents::primitive_buf(idx);
-            let int128 = super::polars_paths::int128_chunked();
-            let opt = crate::ir::has_option(&self.wrappers);
-            return if opt {
-                vec![quote! {{
-                    let ca = <#int128 as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                        #name.into(),
-                        #vec_ident.into_iter(),
-                    );
-                    let s = #pp::IntoSeries::into_series(
-                        ca.into_decimal_unchecked(#p, #s),
-                    );
-                    columns.push(s.into());
-                }}]
-            } else {
-                vec![quote! {{
-                    let ca = #int128::from_vec(#name.into(), #vec_ident);
-                    let s = #pp::IntoSeries::into_series(
-                        ca.into_decimal_unchecked(#p, #s),
-                    );
-                    columns.push(s.into());
-                }}]
-            };
-        }
-        // Non-Vec primitive: the buffer holds the raw element type chosen
-        // by `compute_mapping` (e.g. `Vec<i64>` for `DateTime<Utc>`). For
-        // transforms whose schema dtype differs from the buffer's natural
-        // Series dtype (`Datetime(...)`), `needs_cast` returns true and we
-        // cast the built Series to the schema dtype — matching what the
-        // row-wise path does in `generate_primitive_for_series`. Without
-        // this cast, the columnar/batch DataFrame's runtime dtype diverges
-        // from `T::schema()`.
+        // Non-Vec primitive (currently only ISize/USize bare and Option):
+        // the buffer holds the raw element type chosen by `compute_mapping`
+        // (e.g. `Vec<i64>` for `ISize`). The remaining cases need no cast
+        // (transform is `None` so `needs_cast` is false) — but we keep the
+        // gated `s.cast` to match the prior generic path's emission exactly.
         let p = &self.p;
         let mapping = crate::codegen::type_registry::compute_mapping(
             &p.base_type,

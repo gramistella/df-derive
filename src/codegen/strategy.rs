@@ -494,45 +494,7 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
-        // Top-level bare-`String` and bare-`as_string` Display fast paths:
-        // single `MutableBinaryViewArray<str>` buffer, freeze + wrap in
-        // `StringChunked::with_chunk`. Top-level `Option<String>` and
-        // `Option<as_string>` Display fast paths: split-buffer
-        // (`MutableBinaryViewArray<str>` + parallel `MutableBitmap`),
-        // freeze + `with_validity` + `StringChunked::with_chunk`. Same
-        // column dtype as the slow path in both cases, minus the second
-        // walk through the intermediate `Vec<&str>` / `Vec<Option<&str>>`.
-        if let Some(emit) = super::primitive::gen_bare_view_string_direct_columnar_finish(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            idx,
-            name,
-        ) {
-            return vec![emit];
-        }
-        if let Some(emit) = super::primitive::gen_option_string_direct_columnar_finish(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            idx,
-            name,
-        ) {
-            return vec![emit];
-        }
-        // Numeric direct fast paths: `i*/u*/f*` bare and `Option<…>` of those.
-        // Both bypass `Series::new(name, &buf)` — bare consumes the
-        // `Vec<Native>` zero-copy via `<*Chunked>::from_vec`, and Option uses
-        // a `PrimitiveArray::new` built from a `Vec<#native>` + `MutableBitmap`
-        // pair (see `primitive_decls` and the corresponding direct-finish
-        // helper). Same column dtype as the slow path, minus the second walk.
-        if let Some(emit) = super::primitive::gen_numeric_direct_columnar_finish(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            idx,
-            name,
-        ) {
+        if let Some(emit) = self.gen_columnar_direct_fast_path_finish(idx, name) {
             return vec![emit];
         }
 
@@ -591,6 +553,39 @@ impl PrimitiveStrategy {
             if #do_cast { s = s.cast(&#dtype)?; }
             columns.push(s.into());
         }}]
+    }
+
+    /// Try each direct-finish helper for the non-`Vec` primitive shapes that
+    /// have a fast path: bare-`String`/`as_string`, `Option<String>`/
+    /// `Option<as_string>`, bare numeric / `Option<numeric>`, and
+    /// `Option<bool>`. Each helper returns `None` for shapes outside its
+    /// carve-out, so the first `Some` wins. Same column dtype as the
+    /// `Series::new(name, &Vec<…>)` slow path in every case, minus the
+    /// second walk (and per-row validity branch where applicable). Returns
+    /// `None` only when no fast path applies — caller falls through to the
+    /// generic owning-buffer finisher.
+    fn gen_columnar_direct_fast_path_finish(&self, idx: usize, name: &str) -> Option<TokenStream> {
+        let base = &self.p.base_type;
+        let transform = self.p.transform.as_ref();
+        let wrappers = &self.wrappers;
+        super::primitive::gen_bare_view_string_direct_columnar_finish(
+            base, transform, wrappers, idx, name,
+        )
+        .or_else(|| {
+            super::primitive::gen_option_string_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
+        .or_else(|| {
+            super::primitive::gen_numeric_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
+        .or_else(|| {
+            super::primitive::gen_option_bool_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
     }
 }
 

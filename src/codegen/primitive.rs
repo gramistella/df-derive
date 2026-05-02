@@ -353,6 +353,114 @@ fn gen_option_numeric_direct_array_expr(base: &BaseType, idx: usize) -> TokenStr
     }
 }
 
+/// Top-level `Option<bool>` leaf (no transform, exactly `[Option]`). Bool
+/// is bit-packed in arrow, so the values side gets its own `MutableBitmap`
+/// instead of the `Vec<#native>` the numeric fast path uses. Both bitmaps
+/// are pre-filled to a default at decl time — values to all-`false` and
+/// validity to all-`true` — so the per-row hot path only flips a single
+/// bit for the rare arms (`Some(true)` and `None`). The common
+/// `Some(false)` case is a zero-work pass-through, mirroring the
+/// `Option<String>` fast path's "Some is free" optimization.
+///
+/// Excluded by `is_direct_primitive_array_option_numeric_leaf` (which
+/// excludes Bool because numeric has a `Vec<Native>` storage and bool is
+/// bit-packed) and by `is_direct_view_option_string_leaf` (different base).
+/// Without this carve-out `Option<bool>` falls through to the
+/// `Vec<Option<bool>>` + `Series::new` path, which walks the Vec twice
+/// inside `from_slice_options` and pays the per-row "is validity active?"
+/// branch inside the bool builder.
+pub(super) const fn is_direct_option_bool_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none() && matches!(base, BaseType::Bool) && matches!(wrappers, [Wrapper::Option])
+}
+
+/// Buffer-pair declarations for the `Option<bool>` direct fast path: a
+/// `MutableBitmap` for values (bool is bit-packed in arrow) and a parallel
+/// `MutableBitmap` for validity. Values is pre-filled to all-`false` and
+/// validity is pre-filled to all-`true`; the per-row push only writes for
+/// the rare arms (`Some(true)` flips a value bit, `None` flips a validity
+/// bit). Caller must gate on `is_direct_option_bool_leaf`.
+fn gen_option_bool_direct_decls(idx: usize) -> Vec<TokenStream> {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let row_idx = PopulatorIdents::primitive_row_idx(idx);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    vec![
+        quote! {
+            let mut #buf_ident: #pa_root::bitmap::MutableBitmap = {
+                let mut __df_derive_b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+                __df_derive_b.extend_constant(items.len(), false);
+                __df_derive_b
+            };
+        },
+        quote! {
+            let mut #validity_ident: #pa_root::bitmap::MutableBitmap = {
+                let mut __df_derive_b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+                __df_derive_b.extend_constant(items.len(), true);
+                __df_derive_b
+            };
+        },
+        quote! {
+            let mut #row_idx: usize = 0;
+        },
+    ]
+}
+
+/// Per-row push tokens for the `Option<bool>` direct fast path. Caller
+/// must gate on `is_direct_option_bool_leaf`. The two bitmaps were
+/// pre-filled at decl time (values=all-false, validity=all-true), so:
+/// - `Some(true)`: flip the value bit at `row_idx` to `true`.
+/// - `Some(false)`: zero work — the value bit is already false.
+/// - `None`: flip the validity bit at `row_idx` to `false`.
+///
+/// Uses the safe `MutableBitmap::set` (not `set_unchecked`) so no `unsafe`
+/// lands inside the user's `Columnar::columnar_from_refs` impl method —
+/// that would trip `clippy::unsafe_derive_deserialize` for any downstream
+/// struct that pairs `#[derive(ToDataFrame, Deserialize)]`. The bounds
+/// check inside `set` is a single well-predicted compare against a
+/// loop-invariant length.
+fn gen_option_bool_direct_push(access: &TokenStream, idx: usize) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let row_idx = PopulatorIdents::primitive_row_idx(idx);
+    quote! {
+        match (#access) {
+            ::std::option::Option::Some(true) => {
+                #buf_ident.set(#row_idx, true);
+            }
+            ::std::option::Option::Some(false) => {}
+            ::std::option::Option::None => {
+                #validity_ident.set(#row_idx, false);
+            }
+        }
+        #row_idx += 1;
+    }
+}
+
+/// Build a `BooleanArray` from the values + validity `MutableBitmap` pair
+/// for the `Option<bool>` fast path. Caller must gate on
+/// `is_direct_option_bool_leaf`. Values converts via
+/// `Bitmap::from(MutableBitmap)`; validity converts via
+/// `Option<Bitmap>::from(MutableBitmap)` which collapses to `None` if no
+/// bits are unset (preserving the no-null fast path).
+fn gen_option_bool_direct_array_expr(idx: usize) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    quote! {
+        #pa_root::array::BooleanArray::new(
+            #pa_root::datatypes::ArrowDataType::Boolean,
+            ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#buf_ident),
+            ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                #validity_ident,
+            ),
+        )
+    }
+}
+
 /// Buffer-pair declarations for the `Option<String>` direct fast path: a
 /// `MutableBinaryViewArray<str>` for values and a `MutableBitmap` for
 /// validity, both pre-sized to `items.len()`. The validity bitmap is
@@ -461,7 +569,8 @@ pub(super) fn gen_bare_view_string_direct_columnar_finish(
     idx: usize,
     name: &str,
 ) -> Option<TokenStream> {
-    let bare_to_string = is_direct_view_to_string_leaf(transform, wrappers) && !has_option(wrappers);
+    let bare_to_string =
+        is_direct_view_to_string_leaf(transform, wrappers) && !has_option(wrappers);
     if !is_direct_view_string_leaf(base, transform, wrappers) && !bare_to_string {
         return None;
     }
@@ -499,6 +608,34 @@ pub(super) fn gen_option_string_direct_columnar_finish(
     Some(quote! {{
         let s = #pp::IntoSeries::into_series(
             #pp::StringChunked::with_chunk(#name.into(), { #arr_expr }),
+        );
+        columns.push(s.into());
+    }})
+}
+
+/// Columnar finish tokens for the `Option<bool>` direct fast path. Builds
+/// a `BooleanArray::new(Boolean, values.into(), validity.into())` from the
+/// values + validity `MutableBitmap` pair and wraps it in
+/// `BooleanChunked::with_chunk(name, arr).into_series()` — same column
+/// dtype as the `Series::new(&Vec<Option<bool>>)` slow path, minus the
+/// second walk through the intermediate `Vec<Option<bool>>` and the
+/// per-row validity branch inside the bool builder. Returns `None` for
+/// any shape that doesn't match `is_direct_option_bool_leaf`.
+pub(super) fn gen_option_bool_direct_columnar_finish(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+    name: &str,
+) -> Option<TokenStream> {
+    if !is_direct_option_bool_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let arr_expr = gen_option_bool_direct_array_expr(idx);
+    Some(quote! {{
+        let s = #pp::IntoSeries::into_series(
+            #pp::BooleanChunked::with_chunk(#name.into(), { #arr_expr }),
         );
         columns.push(s.into());
     }})
@@ -809,6 +946,15 @@ pub fn generate_primitive_for_columnar_push(
         return gen_option_numeric_direct_push(access, base_type, idx);
     }
 
+    // Direct split-`MutableBitmap` accumulation for top-level `Option<bool>`
+    // (no transform). Bool is bit-packed in arrow, so values and validity
+    // both live in `MutableBitmap`s pre-filled to defaults (values=false,
+    // validity=true) — `Some(false)` is zero-work, `Some(true)` flips one
+    // value bit, `None` flips one validity bit. See `is_direct_option_bool_leaf`.
+    if is_direct_option_bool_leaf(base_type, transform, wrappers) {
+        return gen_option_bool_direct_push(access, idx);
+    }
+
     // Borrowing fast path: the buffer is declared as `Vec<&str>` /
     // `Vec<Option<&str>>` by `primitive_decls`, so we push borrows of the
     // field instead of cloning each row's `String` into an owned buffer.
@@ -1043,6 +1189,15 @@ pub fn primitive_decls(
         return decls;
     }
 
+    // Direct fast path for top-level `Option<bool>` (see
+    // `is_direct_option_bool_leaf`): two `MutableBitmap`s (bit-packed
+    // values + validity), both pre-filled to defaults so the per-row hot
+    // path only flips bits for the rare arms.
+    if is_direct_option_bool_leaf(base_type, transform, wrappers) {
+        decls.extend(gen_option_bool_direct_decls(idx));
+        return decls;
+    }
+
     // Borrowing fast path for any base type with `as_str` (`AsRef<str>` impl):
     // a `Vec<&str>` (or `Vec<Option<&str>>`) buffer borrows from `items`
     // instead of cloning each row's `String`. `Series::new(name, &Vec<&str>)`
@@ -1256,6 +1411,21 @@ pub fn primitive_finishers_for_vec_anyvalues(
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #chunked::with_chunk("".into(), { #arr_expr }),
+            );
+            out_values.push(#pp::AnyValue::List(inner));
+        }
+    } else if is_direct_option_bool_leaf(base_type, transform, wrappers) {
+        // `Option<bool>` direct fast path: bit-packed values + parallel
+        // validity in two `MutableBitmap`s. Build a `BooleanArray::new`
+        // directly (zero-copy via `Bitmap::from(MutableBitmap)` on values
+        // and `Option<Bitmap>::from(MutableBitmap)` collapsing to `None`
+        // on validity) and wrap in `BooleanChunked::with_chunk` — same
+        // column dtype as the `Series::new(&Vec<Option<bool>>)` slow path,
+        // minus the second walk and the per-row validity branch.
+        let arr_expr = gen_option_bool_direct_array_expr(idx);
+        quote! {
+            let inner = #pp::IntoSeries::into_series(
+                #pp::BooleanChunked::with_chunk("".into(), { #arr_expr }),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }

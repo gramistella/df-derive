@@ -33,6 +33,16 @@ impl PopulatorIdents {
         format_ident!("__df_derive_val_{}", idx)
     }
 
+    /// Reused `String` scratch buffer for the
+    /// `is_direct_view_to_string_leaf` fast path. Paired with `primitive_buf`
+    /// (which holds `MutableBinaryViewArray<str>` on that path) so each row
+    /// can clear-and-write into the scratch via `Display::fmt` and then push
+    /// the resulting `&str` into the view array (which copies the bytes),
+    /// avoiding a fresh per-row `String` allocation.
+    pub(super) fn primitive_str_scratch(idx: usize) -> Ident {
+        format_ident!("__df_derive_str_{}", idx)
+    }
+
     /// `Box<dyn ListBuilderTrait>` for `Vec<primitive>` shapes — the typed
     /// list builder that keeps the inner buffer typed end-to-end.
     pub(super) fn primitive_list_builder(idx: usize) -> Ident {

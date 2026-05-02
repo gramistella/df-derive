@@ -38,6 +38,69 @@ pub(super) const fn is_direct_view_string_leaf(
     transform.is_none() && matches!(base, BaseType::String) && wrappers.is_empty()
 }
 
+/// Top-level `as_string` leaf (`#[df_derive(as_string)]`) with bare or
+/// `Option<…>` wrappers, any base whose `Display::fmt` produces a string.
+/// Replaces the per-row `(field).to_string()` allocation with a reused
+/// `String` scratch + `MutableBinaryViewArray<str>` accumulator: each row
+/// clears the scratch, runs `write!(scratch, "{}", field)` (Display writes
+/// straight into the scratch), then `push_value(scratch.as_str())` copies
+/// the bytes into the view array — so reusing the scratch the next row is
+/// safe. Replaces `items.len()` heap allocations with the scratch's
+/// log-shaped growth (effectively constant for fixed-format Displays like
+/// enum names), and skips the second walk over `Vec<String>` that
+/// `Series::new` would do internally.
+///
+/// Same `wrappers in {[], [Option]}` carve-out as the borrowing/`as_str`
+/// path: deeper nestings (`Vec<…>`, `Option<Option<…>>`) keep the existing
+/// owning-buffer pipeline because the per-row work to flatten them into a
+/// single `MutableBinaryViewArray<str>` would overshoot the saving.
+pub(super) const fn is_direct_view_to_string_leaf(
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    matches!(transform, Some(PrimitiveTransform::ToString))
+        && matches!(wrappers, [] | [Wrapper::Option])
+}
+
+/// Per-row push tokens for the `is_direct_view_to_string_leaf` fast path.
+/// Caller must have already gated on the predicate. The generated code
+/// clears the reused `String` scratch, runs `Display::fmt` into it via
+/// `write!`, and pushes the resulting `&str` into the
+/// `MutableBinaryViewArray<str>` (`push_value` copies the bytes, so the
+/// scratch is safe to reuse on the next row). For `[Option]` wrappers the
+/// match wraps the push so `None` rows trigger `push_null` instead.
+fn gen_direct_view_to_string_push(
+    access: &TokenStream,
+    wrappers: &[Wrapper],
+    idx: usize,
+) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let str_ident = PopulatorIdents::primitive_str_scratch(idx);
+    if matches!(wrappers, [Wrapper::Option]) {
+        return quote! {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_v) => {
+                    use ::std::fmt::Write as _;
+                    #str_ident.clear();
+                    ::std::write!(&mut #str_ident, "{}", __df_derive_v).unwrap();
+                    #buf_ident.push_value(#str_ident.as_str());
+                }
+                ::std::option::Option::None => {
+                    #buf_ident.push_null();
+                }
+            }
+        };
+    }
+    quote! {
+        {
+            use ::std::fmt::Write as _;
+            #str_ident.clear();
+            ::std::write!(&mut #str_ident, "{}", &(#access)).unwrap();
+            #buf_ident.push_value(#str_ident.as_str());
+        }
+    }
+}
+
 /// Top-level bare-numeric leaf (no transform, no `Vec<…>`, no `Option<…>`).
 /// The buffer is already `Vec<Native>`; the finisher swaps the
 /// `Series::new(&Vec<Native>)` path — which dispatches to `from_slice` and
@@ -518,6 +581,15 @@ pub fn generate_primitive_for_columnar_push(
         return quote! { #buf_ident.push_value((#access).as_str()); };
     }
 
+    // Direct `MutableBinaryViewArray<str>` accumulation for top-level
+    // `as_string` leaves: clear the reused `String` scratch, run
+    // `Display::fmt` into it, then push the resulting `&str` (the view
+    // array copies the bytes). Replaces `items.len()` per-row `String`
+    // allocations with the scratch's amortized growth.
+    if is_direct_view_to_string_leaf(transform, wrappers) {
+        return gen_direct_view_to_string_push(access, wrappers, idx);
+    }
+
     // Direct `Vec<#native>` + `MutableBitmap` accumulation for top-level
     // `Option<numeric>` (no transform): the buffer holds either the row's
     // value (if Some) or `<#native>::default()` (if None), and the bitmap
@@ -706,6 +778,25 @@ pub fn primitive_decls(
         return decls;
     }
 
+    // Direct fast path for top-level `as_string` leaves (see
+    // `is_direct_view_to_string_leaf`): accumulate into a view array, with a
+    // reused `String` scratch that each row clears and writes Display::fmt
+    // into. The view array's `push_value` copies the bytes, so reusing the
+    // scratch on the next row is sound.
+    if is_direct_view_to_string_leaf(transform, wrappers) {
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        let str_ident = PopulatorIdents::primitive_str_scratch(idx);
+        let pa_root = super::polars_paths::polars_arrow_root();
+        decls.push(quote! {
+            let mut #buf_ident: #pa_root::array::MutableBinaryViewArray<str> =
+                #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
+        });
+        decls.push(quote! {
+            let mut #str_ident: ::std::string::String = ::std::string::String::new();
+        });
+        return decls;
+    }
+
     // Direct fast path for top-level `Option<numeric>` (see
     // `is_direct_primitive_array_option_numeric_leaf`).
     if is_direct_primitive_array_option_numeric_leaf(base_type, transform, wrappers) {
@@ -862,12 +953,18 @@ pub fn primitive_finishers_for_vec_anyvalues(
             );
             out_values.push(#pp::AnyValue::List(inner));
         }
-    } else if is_direct_view_string_leaf(base_type, transform, wrappers) {
+    } else if is_direct_view_string_leaf(base_type, transform, wrappers)
+        || is_direct_view_to_string_leaf(transform, wrappers)
+    {
         // Direct `MutableBinaryViewArray<str>` accumulation (see
         // `primitive_decls`): freeze into a `Utf8ViewArray`, wrap as a
         // `StringChunked`, convert to Series — same dtype as the
         // `Series::new(&Vec<&str>)` path, minus the second walk through the
-        // intermediate `Vec<&str>`.
+        // intermediate `Vec<&str>`. Covers both the bare-String fast path
+        // (`is_direct_view_string_leaf`) and the `as_string` Display fast
+        // path (`is_direct_view_to_string_leaf`); the scratch String the
+        // Display path also declares is just dropped here without further
+        // use.
         let buf_ident = PopulatorIdents::primitive_buf(idx);
         quote! {
             let inner = #pp::IntoSeries::into_series(

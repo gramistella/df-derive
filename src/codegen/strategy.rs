@@ -476,6 +476,24 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
+        // Top-level `as_string` leaf (bare or `Option<…>`, see
+        // `is_direct_view_to_string_leaf`): same finalization as the
+        // direct-view-string fast path above. The buffer is a
+        // `MutableBinaryViewArray<str>` already populated row-by-row from
+        // the reused `String` scratch — freeze, wrap in `StringChunked`,
+        // convert to Series.
+        if super::primitive::is_direct_view_to_string_leaf(
+            self.p.transform.as_ref(),
+            &self.wrappers,
+        ) {
+            let buf_ident = PopulatorIdents::primitive_buf(idx);
+            return vec![quote! {{
+                let s = #pp::IntoSeries::into_series(
+                    #pp::StringChunked::with_chunk(#name.into(), #buf_ident.freeze()),
+                );
+                columns.push(s.into());
+            }}];
+        }
         // Numeric direct fast paths: `i*/u*/f*` bare and `Option<…>` of those.
         // Both bypass `Series::new(name, &buf)` — bare consumes the
         // `Vec<Native>` zero-copy via `<*Chunked>::from_vec`, and Option uses

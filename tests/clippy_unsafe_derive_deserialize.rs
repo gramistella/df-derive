@@ -21,6 +21,13 @@
 // - `Option<Vec<DerivedStruct>>` (the `gen_bulk_option_vec` path)
 // — paired with a `Decimal` field, the shape that surfaced the original
 // downstream report.
+//
+// Also covers `Option<String>` — the direct-view fast path for that shape
+// uses a `MutableBitmap` for validity. An earlier draft used the unsafe
+// `set_unchecked` to flip the per-row bit, which would have re-introduced
+// `unsafe` into the user's impl method. The current code uses the safe
+// `MutableBitmap::set` (bounds-checked, no `unsafe` keyword) so this lint
+// does not fire on `Option<String>` fields either.
 
 #![deny(clippy::unsafe_derive_deserialize)]
 
@@ -46,6 +53,7 @@ struct Outer {
     price: Decimal,
     #[df_derive(decimal(precision = 18, scale = 6))]
     maybe_price: Option<Decimal>,
+    label: Option<String>,
     payloads: Vec<Inner>,
     optional_payloads: Option<Vec<Inner>>,
 }
@@ -57,6 +65,7 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
             id: 1,
             price: Decimal::new(12345, 2),
             maybe_price: Some(Decimal::new(6789, 2)),
+            label: Some("alpha".to_string()),
             payloads: vec![
                 Inner {
                     field_a: 10,
@@ -76,6 +85,7 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
             id: 2,
             price: Decimal::new(0, 0),
             maybe_price: None,
+            label: None,
             payloads: vec![],
             optional_payloads: None,
         },
@@ -86,6 +96,10 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
     assert_eq!(
         df_single.column("price").unwrap().dtype(),
         &DataType::Decimal(18, 6)
+    );
+    assert_eq!(
+        df_single.column("label").unwrap().dtype(),
+        &DataType::String
     );
     assert_eq!(
         df_single.column("payloads.field_a").unwrap().dtype(),
@@ -114,6 +128,14 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
             .unwrap()
             .get(1)
             .unwrap(),
+        AnyValue::Null
+    );
+    assert_eq!(
+        df_batch.column("label").unwrap().get(0).unwrap(),
+        AnyValue::String("alpha")
+    );
+    assert_eq!(
+        df_batch.column("label").unwrap().get(1).unwrap(),
         AnyValue::Null
     );
 }

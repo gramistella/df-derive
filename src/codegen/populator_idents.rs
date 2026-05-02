@@ -33,6 +33,14 @@ impl PopulatorIdents {
         format_ident!("__df_derive_val_{}", idx)
     }
 
+    /// Row counter for the `is_direct_view_option_string_leaf` fast path.
+    /// Indexes the pre-filled `MutableBitmap` so the per-row push only
+    /// writes a single byte for `None` rows via `set_unchecked`, instead
+    /// of pushing both `true` and `false` bits unconditionally.
+    pub(super) fn primitive_row_idx(idx: usize) -> Ident {
+        format_ident!("__df_derive_ri_{}", idx)
+    }
+
     /// Reused `String` scratch buffer for the
     /// `is_direct_view_to_string_leaf` fast path. Paired with `primitive_buf`
     /// (which holds `MutableBinaryViewArray<str>` on that path) so each row

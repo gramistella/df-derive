@@ -460,11 +460,12 @@ impl PrimitiveStrategy {
         // wrap in `StringChunked::with_chunk`, and convert to a Series —
         // same `Utf8ViewArray`-backed column the `Series::new(&Vec<&str>)`
         // path produces, minus the second walk through the intermediate
-        // `Vec<&str>`. `Option<String>` keeps the `Vec<Option<&str>>`
-        // borrowing buffer (see `is_direct_view_string_leaf` for the carve-out
-        // rationale).
+        // `Vec<&str>`.
         if super::primitive::is_direct_view_string_leaf(
             &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+        ) || super::primitive::is_direct_view_to_string_leaf(
             self.p.transform.as_ref(),
             &self.wrappers,
         ) {
@@ -476,23 +477,21 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
-        // Top-level `as_string` leaf (bare or `Option<…>`, see
-        // `is_direct_view_to_string_leaf`): same finalization as the
-        // direct-view-string fast path above. The buffer is a
-        // `MutableBinaryViewArray<str>` already populated row-by-row from
-        // the reused `String` scratch — freeze, wrap in `StringChunked`,
-        // convert to Series.
-        if super::primitive::is_direct_view_to_string_leaf(
+        // Top-level `Option<String>` (see `is_direct_view_option_string_leaf`):
+        // freeze the `MutableBinaryViewArray<str>` values into a
+        // `Utf8ViewArray`, attach the parallel `MutableBitmap` validity via
+        // `with_validity` (which `From<MutableBitmap> for Option<Bitmap>`
+        // collapses to `None` when no bits are unset), wrap in
+        // `StringChunked::with_chunk`. Same column dtype as the
+        // `Series::new(&Vec<Option<&str>>)` slow path, minus the second walk.
+        if let Some(emit) = super::primitive::gen_option_string_direct_columnar_finish(
+            &self.p.base_type,
             self.p.transform.as_ref(),
             &self.wrappers,
+            idx,
+            name,
         ) {
-            let buf_ident = PopulatorIdents::primitive_buf(idx);
-            return vec![quote! {{
-                let s = #pp::IntoSeries::into_series(
-                    #pp::StringChunked::with_chunk(#name.into(), #buf_ident.freeze()),
-                );
-                columns.push(s.into());
-            }}];
+            return vec![emit];
         }
         // Numeric direct fast paths: `i*/u*/f*` bare and `Option<…>` of those.
         // Both bypass `Series::new(name, &buf)` — bare consumes the

@@ -21,21 +21,48 @@ use super::populator_idents::PopulatorIdents;
 /// column the `Series::new(&Vec<&str>)` path produces, minus the second walk
 /// that `from_slice_values` would do.
 ///
-/// `Option<String>` is intentionally excluded: the per-row `match` +
-/// `push_value`/`push_null` (or generic `push(Option<V>)`) carries enough
-/// extra work in the items loop to overshoot the second-walk savings on this
-/// polars version — measured a ~7-8% regression on `string_columns_optional`
-/// when both branches were routed through this fast path. The existing
-/// `Vec<Option<&str>>` path stays cheap because its per-row push is a fat
-/// pointer memcpy, and the second walk it pays for is amortized inside
-/// polars' tight `extend` body. Only the required (non-Option) branch
-/// captures the saving cleanly.
+/// `Option<String>` is handled separately by `is_direct_view_option_string_leaf`
+/// via a split-buffer pattern (values into `MutableBinaryViewArray<str>`,
+/// validity into `MutableBitmap`). A previous single-buffer attempt that
+/// routed the per-row `match` through `push_value`/`push_null` measured a
+/// ~7-8% regression on `string_columns_optional` because the validity
+/// bookkeeping inside `MutableBinaryViewArray` is per-row branchy on
+/// `validity.is_some()`. Splitting validity into its own bitmap mirrors the
+/// `Option<numeric>` fix and decouples the two pushes so each one is a
+/// straight-line append.
 pub(super) const fn is_direct_view_string_leaf(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> bool {
     transform.is_none() && matches!(base, BaseType::String) && wrappers.is_empty()
+}
+
+/// Top-level `Option<String>` leaf (no transform, exactly `[Option]`). The
+/// fast path declares a `MutableBinaryViewArray<str>` for values plus a
+/// `MutableBitmap` for validity, with the bitmap pre-filled to all-`true`
+/// at decl time. Per-row, `Some` pushes the row's `&str` to the view array
+/// and does no validity work (the bit is already set); `None` pushes an
+/// empty placeholder string (which `push_value_into_buffer` handles as an
+/// inline view, no buffer allocation) and flips the corresponding bit to
+/// `false` via the safe `MutableBitmap::set`. A row counter tracks the
+/// index so the `None` arm can address the bit directly without a per-row
+/// push. The safe `set` is used (not `set_unchecked`) so no `unsafe` lands
+/// inside the user's `Columnar::columnar_from_refs` impl method — that
+/// would trip `clippy::unsafe_derive_deserialize` downstream.
+///
+/// The pre-fill+set scheme dominates the symmetric `validity.push(true/false)`
+/// alternative because most rows in real data are `Some`, so the common case
+/// becomes zero validity work per row. The finisher attaches the bitmap via
+/// `Utf8ViewArray::with_validity` — `Option<Bitmap>::from(MutableBitmap)`
+/// collapses to `None` when no bits are unset, preserving the no-null fast
+/// path.
+pub(super) const fn is_direct_view_option_string_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none() && matches!(base, BaseType::String) && matches!(wrappers, [Wrapper::Option])
 }
 
 /// Top-level `as_string` leaf (`#[df_derive(as_string)]`) with bare or
@@ -313,6 +340,116 @@ fn gen_option_numeric_direct_array_expr(base: &BaseType, idx: usize) -> TokenStr
     }
 }
 
+/// Buffer-pair declarations for the `Option<String>` direct fast path: a
+/// `MutableBinaryViewArray<str>` for values and a `MutableBitmap` for
+/// validity, both pre-sized to `items.len()`. The validity bitmap is
+/// pre-filled with `true` so the per-row hot path only needs to flip
+/// individual bits to `false` for `None` rows — most rows in real data are
+/// `Some`, so the common case is zero validity work per row. Caller must
+/// gate on `is_direct_view_option_string_leaf`.
+fn gen_option_string_direct_decls(idx: usize) -> Vec<TokenStream> {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let row_idx = PopulatorIdents::primitive_row_idx(idx);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    vec![
+        quote! {
+            let mut #buf_ident: #pa_root::array::MutableBinaryViewArray<str> =
+                #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
+        },
+        quote! {
+            let mut #validity_ident: #pa_root::bitmap::MutableBitmap = {
+                let mut __df_derive_b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+                __df_derive_b.extend_constant(items.len(), true);
+                __df_derive_b
+            };
+        },
+        quote! {
+            let mut #row_idx: usize = 0;
+        },
+    ]
+}
+
+/// Per-row push tokens for the `Option<String>` direct fast path. Caller
+/// must gate on `is_direct_view_option_string_leaf`. The `Some` branch is
+/// the common case and only pushes the value's `&str` to the view array;
+/// the validity bitmap was pre-filled with `true` at decl time, so no
+/// validity-side work is needed. The `None` branch pushes an empty
+/// placeholder string (`push_value_into_buffer` resolves it to an inline
+/// zero-length `View` — no buffer allocation, no copy) and unsets the
+/// pre-filled validity bit at the row's index via the safe `set` (a
+/// bounds-checked single byte write, cheaper than the per-row
+/// `MutableBitmap::push`'s `is_multiple_of(8)` check + `Vec::push`). The
+/// safe variant is used so no `unsafe` block lands inside the user's
+/// `Columnar::columnar_from_refs` impl method, which would trip
+/// `clippy::unsafe_derive_deserialize` for any downstream struct that pairs
+/// `#[derive(ToDataFrame, Deserialize)]`. The bounds check is a single
+/// well-predicted compare against a loop-invariant length, so it doesn't
+/// disturb the inner-loop throughput in practice.
+///
+/// Matches on `&(#access)` so the `Some` arm binds `__df_derive_v: &String`
+/// and reaches the value-push directly — one branch, no detour through
+/// `Option::as_deref`.
+fn gen_option_string_direct_push(access: &TokenStream, idx: usize) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let row_idx = PopulatorIdents::primitive_row_idx(idx);
+    quote! {
+        match &(#access) {
+            ::std::option::Option::Some(__df_derive_v) => {
+                #buf_ident.push_value(__df_derive_v.as_str());
+            }
+            ::std::option::Option::None => {
+                #buf_ident.push_value("");
+                #validity_ident.set(#row_idx, false);
+            }
+        }
+        #row_idx += 1;
+    }
+}
+
+/// Build a `Utf8ViewArray` from the values buffer and `MutableBitmap`
+/// validity buffer for the `Option<String>` fast path. Caller must gate on
+/// `is_direct_view_option_string_leaf`. Conversion via
+/// `Option<Bitmap>::from(MutableBitmap)` collapses to `None` when no bits
+/// are unset, preserving the no-null fast path; `Utf8ViewArray::with_validity`
+/// then attaches the validity to the frozen array in place.
+fn gen_option_string_direct_array_expr(idx: usize) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    quote! {
+        #buf_ident.freeze().with_validity(
+            ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                #validity_ident,
+            ),
+        )
+    }
+}
+
+/// Columnar finish tokens for the `Option<String>` direct fast path.
+/// Returns `None` for any shape that doesn't match the carve-out. Caller
+/// pushes the produced statement onto the per-derive `columns` vec.
+pub(super) fn gen_option_string_direct_columnar_finish(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+    name: &str,
+) -> Option<TokenStream> {
+    if !is_direct_view_option_string_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let arr_expr = gen_option_string_direct_array_expr(idx);
+    Some(quote! {{
+        let s = #pp::IntoSeries::into_series(
+            #pp::StringChunked::with_chunk(#name.into(), { #arr_expr }),
+        );
+        columns.push(s.into());
+    }})
+}
+
 /// Columnar finish tokens for the bare and `Option<numeric>` direct fast
 /// paths. Returns `None` for any shape that doesn't match either carve-out.
 ///
@@ -581,6 +718,19 @@ pub fn generate_primitive_for_columnar_push(
         return quote! { #buf_ident.push_value((#access).as_str()); };
     }
 
+    // Direct `MutableBinaryViewArray<str>` + pre-filled `MutableBitmap`
+    // accumulation for top-level `Option<String>` (no transform). Splits
+    // values vs validity into separate buffers — same shape as the
+    // `Option<numeric>` fast path — and the bitmap is pre-filled to all-
+    // `true` at decl time so `Some` rows do zero validity work and `None`
+    // rows just flip a single bit via the safe `MutableBitmap::set`.
+    // Avoids the per-row `validity.is_some()` branch
+    // `MutableBinaryViewArray::push_value` would do internally, which a
+    // single-buffer `push_value`/`push_null` attempt regressed by ~7-8% on.
+    if is_direct_view_option_string_leaf(base_type, transform, wrappers) {
+        return gen_option_string_direct_push(access, idx);
+    }
+
     // Direct `MutableBinaryViewArray<str>` accumulation for top-level
     // `as_string` leaves: clear the reused `String` scratch, run
     // `Display::fmt` into it, then push the resulting `&str` (the view
@@ -778,6 +928,15 @@ pub fn primitive_decls(
         return decls;
     }
 
+    // Direct fast path for top-level `Option<String>` (see
+    // `is_direct_view_option_string_leaf`): split-buffer pair —
+    // `MutableBinaryViewArray<str>` for values + `MutableBitmap` for
+    // validity. Finalized via `Utf8ViewArray::with_validity`.
+    if is_direct_view_option_string_leaf(base_type, transform, wrappers) {
+        decls.extend(gen_option_string_direct_decls(idx));
+        return decls;
+    }
+
     // Direct fast path for top-level `as_string` leaves (see
     // `is_direct_view_to_string_leaf`): accumulate into a view array, with a
     // reused `String` scratch that each row clears and writes Display::fmt
@@ -969,6 +1128,21 @@ pub fn primitive_finishers_for_vec_anyvalues(
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #pp::StringChunked::with_chunk("".into(), #buf_ident.freeze()),
+            );
+            out_values.push(#pp::AnyValue::List(inner));
+        }
+    } else if is_direct_view_option_string_leaf(base_type, transform, wrappers) {
+        // `Option<String>` direct fast path: the buffer is a
+        // `MutableBinaryViewArray<str>` with parallel `MutableBitmap`
+        // validity. Freeze the values, attach the bitmap via
+        // `Utf8ViewArray::with_validity` (collapsing to `None` if no unset
+        // bits), wrap in `StringChunked::with_chunk` — same column dtype as
+        // the `Series::new(&Vec<Option<&str>>)` slow path, minus the second
+        // walk and the per-row validity branch.
+        let arr_expr = gen_option_string_direct_array_expr(idx);
+        quote! {
+            let inner = #pp::IntoSeries::into_series(
+                #pp::StringChunked::with_chunk("".into(), { #arr_expr }),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }

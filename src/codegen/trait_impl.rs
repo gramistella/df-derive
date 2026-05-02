@@ -35,12 +35,10 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     let strategies = super::strategy::build_strategies(ir, config);
     let empty_series_creations: Vec<TokenStream> = strategies
         .iter()
-        .map(super::strategy::Strategy::gen_empty_series_creation)
+        .map(|s| s.gen_empty_series_creation())
         .collect();
-    let schema_entries: Vec<TokenStream> = strategies
-        .iter()
-        .map(super::strategy::Strategy::gen_schema_entries)
-        .collect();
+    let schema_entries: Vec<TokenStream> =
+        strategies.iter().map(|s| s.gen_schema_entries()).collect();
 
     let single_it_ident = format_ident!("__df_derive_self_it");
     let out_values_ident = format_ident!("__df_derive_out");

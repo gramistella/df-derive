@@ -43,184 +43,89 @@ pub(super) struct NestedIR {
     is_generic: bool,
 }
 
-pub enum Strategy {
-    Primitive(PrimitiveStrategy),
-    Nested(NestedStructStrategy),
-}
-
-impl Strategy {
-    pub fn gen_schema_entries(&self) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_schema_entries(),
-            Self::Nested(s) => s.gen_schema_entries(),
-        }
-    }
-
-    pub fn gen_empty_series_creation(&self) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_empty_series_creation(),
-            Self::Nested(s) => s.gen_empty_series_creation(),
-        }
-    }
-
-    pub fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        match self {
-            Self::Primitive(s) => s.gen_populator_inits(idx),
-            Self::Nested(s) => s.gen_populator_inits(idx),
-        }
-    }
-
-    pub fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_populator_push(it_ident, idx),
-            Self::Nested(s) => s.gen_populator_push(it_ident, idx),
-        }
-    }
-
-    pub fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_vec_values_finishers(idx),
-            Self::Nested(s) => s.gen_vec_values_finishers(idx),
-        }
-    }
-
-    pub fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
-        match self {
-            Self::Primitive(s) => s.gen_columnar_builders(idx),
-            Self::Nested(s) => s.gen_columnar_builders(idx),
-        }
-    }
-
+/// Sealed internal trait the per-field codegen routines call against. Both
+/// `PrimitiveStrategy` and `NestedStructStrategy` implement it. The public
+/// `Strategy` alias is `Box<dyn StrategyVariant>`, so callers see a uniform
+/// trait-object surface and `Box`'s `Deref` impl turns each method call
+/// site into a single virtual dispatch — no per-method `match` ladder.
+pub trait StrategyVariant {
+    fn gen_schema_entries(&self) -> TokenStream;
+    fn gen_empty_series_creation(&self) -> TokenStream;
+    fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream>;
+    fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream;
+    fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream;
+    fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream>;
     /// Per-field codegen that pushes one `AnyValue` per inner schema column
     /// onto `values_vec_ident` for a single instance bound to `it_ident`.
     /// Used by the `to_inner_values(&self)` trait override to bypass the
-    /// `to_dataframe()` round-trip: the outer struct's override invokes this
-    /// per field, and the nested `on_leaf` recursively calls the inner
-    /// type's `to_inner_values()` instead of constructing a one-row
+    /// `to_dataframe()` round-trip: the outer struct's override invokes
+    /// this per field, and the nested `on_leaf` recursively calls the
+    /// inner type's `to_inner_values()` instead of constructing a one-row
     /// `DataFrame`.
-    pub fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
-        match self {
-            Self::Primitive(s) => s.gen_for_anyvalue(it_ident, values_vec_ident),
-            Self::Nested(s) => s.gen_for_anyvalue(it_ident, values_vec_ident),
-        }
-    }
-
-    /// Returns `Some` when this field can bypass the per-row decls/push/builders
-    /// triple in the columnar path and emit a single bulk builder. Used by
-    /// generic-leaf fields where calling `T::columnar_to_dataframe` once on a
-    /// collected slice is dramatically faster than building one tiny `DataFrame`
-    /// per item, and by `Vec<Vec<#native>>` primitive fields where flattening
-    /// straight into a `LargeListArray<LargeListArray<PrimitiveArray>>` skips
-    /// the per-parent-row `Box<dyn ListBuilderTrait>::append_series` round-trip.
-    ///
-    /// `pa_root` is the cached `polars-arrow` crate-root token stream from
-    /// the per-derive entry point; bulk emitters use it to reach
-    /// `OffsetsBuffer`, `LargeListArray`, and `PrimitiveArray`. Pass it down
-    /// so each per-field codegen call doesn't re-run
-    /// `proc_macro_crate::crate_name`.
-    pub fn gen_bulk_columnar_emit(
-        &self,
-        pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        match self {
-            Self::Primitive(s) => s.gen_bulk_columnar_emit(pa_root, idx),
-            Self::Nested(s) => s.gen_bulk_columnar_emit(pa_root, idx),
-        }
-    }
-
+    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream;
+    /// Returns `Some` when this field can bypass the per-row
+    /// decls/push/builders triple in the columnar path and emit a single
+    /// bulk builder. `pa_root` is the cached `polars-arrow` crate-root
+    /// token stream threaded down from the per-derive entry point so each
+    /// call doesn't re-run `proc_macro_crate::crate_name`.
+    fn gen_bulk_columnar_emit(&self, pa_root: &TokenStream, idx: usize)
+    -> Option<Vec<TokenStream>>;
     /// Mirror of `gen_bulk_columnar_emit` for the
-    /// `__df_derive_vec_to_inner_list_values` helper path: when a strategy can
-    /// produce its `AnyValue::List` entries in bulk (without a per-row push),
-    /// returns `Some`. Primitive fields return `Some` only for the
-    /// `Vec<Vec<#native>>` shape over a bare numeric primitive base.
-    pub fn gen_bulk_vec_anyvalues_emit(
+    /// `__df_derive_vec_to_inner_list_values` helper path: when a strategy
+    /// can produce its `AnyValue::List` entries in bulk (without a per-row
+    /// push), returns `Some`.
+    fn gen_bulk_vec_anyvalues_emit(
         &self,
         pa_root: &TokenStream,
         idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        match self {
-            Self::Primitive(s) => s.gen_bulk_vec_anyvalues_emit(pa_root, idx),
-            Self::Nested(s) => s.gen_bulk_vec_anyvalues_emit(pa_root, idx),
-        }
-    }
+    ) -> Option<Vec<TokenStream>>;
 }
+
+pub type Strategy = Box<dyn StrategyVariant>;
 
 pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strategy> {
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
     let decimal_encode = &config.decimal128_encode_trait_path;
+    let stringy = |t: &Option<PrimitiveTransform>| {
+        matches!(
+            t,
+            Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
+        )
+    };
+    let primitive = |f: &crate::ir::FieldIR| -> Strategy {
+        Box::new(PrimitiveStrategy::new(
+            f.name.clone(),
+            f.field_index,
+            f.wrappers.clone(),
+            PrimitiveIR {
+                base_type: f.base_type.clone(),
+                transform: f.transform.clone(),
+                decimal128_encode_trait: decimal_encode.clone(),
+            },
+        ))
+    };
+    let nested = |f: &crate::ir::FieldIR, type_path: TokenStream, is_generic: bool| -> Strategy {
+        Box::new(NestedStructStrategy::new(
+            f.name.clone(),
+            f.field_index,
+            f.wrappers.clone(),
+            NestedIR {
+                type_path,
+                columnar_trait: columnar_trait.clone(),
+                to_df_trait: to_df_trait.clone(),
+                is_generic,
+            },
+        ))
+    };
     ir.fields
         .iter()
         .map(|f| match &f.base_type {
-            BaseType::Struct(type_ident, type_args) => {
-                if matches!(
-                    f.transform,
-                    Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
-                ) {
-                    Strategy::Primitive(PrimitiveStrategy::new(
-                        f.name.clone(),
-                        f.field_index,
-                        f.wrappers.clone(),
-                        PrimitiveIR {
-                            base_type: f.base_type.clone(),
-                            transform: f.transform.clone(),
-                            decimal128_encode_trait: decimal_encode.clone(),
-                        },
-                    ))
-                } else {
-                    Strategy::Nested(NestedStructStrategy::new(
-                        f.name.clone(),
-                        f.field_index,
-                        f.wrappers.clone(),
-                        NestedIR {
-                            type_path: build_type_path(type_ident, type_args.as_ref()),
-                            columnar_trait: columnar_trait.clone(),
-                            to_df_trait: to_df_trait.clone(),
-                            is_generic: false,
-                        },
-                    ))
-                }
+            BaseType::Struct(id, args) if !stringy(&f.transform) => {
+                nested(f, build_type_path(id, args.as_ref()), false)
             }
-            BaseType::Generic(type_ident) => {
-                if matches!(
-                    f.transform,
-                    Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
-                ) {
-                    Strategy::Primitive(PrimitiveStrategy::new(
-                        f.name.clone(),
-                        f.field_index,
-                        f.wrappers.clone(),
-                        PrimitiveIR {
-                            base_type: f.base_type.clone(),
-                            transform: f.transform.clone(),
-                            decimal128_encode_trait: decimal_encode.clone(),
-                        },
-                    ))
-                } else {
-                    Strategy::Nested(NestedStructStrategy::new(
-                        f.name.clone(),
-                        f.field_index,
-                        f.wrappers.clone(),
-                        NestedIR {
-                            type_path: quote! { #type_ident },
-                            columnar_trait: columnar_trait.clone(),
-                            to_df_trait: to_df_trait.clone(),
-                            is_generic: true,
-                        },
-                    ))
-                }
-            }
-            _ => Strategy::Primitive(PrimitiveStrategy::new(
-                f.name.clone(),
-                f.field_index,
-                f.wrappers.clone(),
-                PrimitiveIR {
-                    base_type: f.base_type.clone(),
-                    transform: f.transform.clone(),
-                    decimal128_encode_trait: decimal_encode.clone(),
-                },
-            )),
+            BaseType::Generic(id) if !stringy(&f.transform) => nested(f, quote! { #id }, true),
+            _ => primitive(f),
         })
         .collect()
 }
@@ -269,6 +174,58 @@ impl PrimitiveStrategy {
         }
     }
 
+    /// Field-access expression rooted at the columnar/anyvalues bulk-loop
+    /// iterator (`__df_derive_it`). Mirrors the helper of the same name on
+    /// `NestedStructStrategy` so the bulk-emit path can build its own loop
+    /// without referencing the per-row `gen_populator_push` access.
+    fn it_access(&self) -> TokenStream {
+        self.field_index.map_or_else(
+            || {
+                let id = &self.field_ident;
+                quote! { __df_derive_it.#id }
+            },
+            |i| {
+                let li = syn::Index::from(i);
+                quote! { __df_derive_it.#li }
+            },
+        )
+    }
+
+    /// Try each direct-finish helper for the non-`Vec` primitive shapes that
+    /// have a fast path: bare-`String`/`as_string`, `Option<String>`/
+    /// `Option<as_string>`, bare numeric / `Option<numeric>`, and
+    /// `Option<bool>`. Each helper returns `None` for shapes outside its
+    /// carve-out, so the first `Some` wins. Same column dtype as the
+    /// `Series::new(name, &Vec<…>)` slow path in every case, minus the
+    /// second walk (and per-row validity branch where applicable). Returns
+    /// `None` only when no fast path applies — caller falls through to the
+    /// generic owning-buffer finisher.
+    fn gen_columnar_direct_fast_path_finish(&self, idx: usize, name: &str) -> Option<TokenStream> {
+        let base = &self.p.base_type;
+        let transform = self.p.transform.as_ref();
+        let wrappers = &self.wrappers;
+        super::primitive::gen_bare_view_string_direct_columnar_finish(
+            base, transform, wrappers, idx, name,
+        )
+        .or_else(|| {
+            super::primitive::gen_option_string_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
+        .or_else(|| {
+            super::primitive::gen_numeric_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
+        .or_else(|| {
+            super::primitive::gen_option_bool_direct_columnar_finish(
+                base, transform, wrappers, idx, name,
+            )
+        })
+    }
+}
+
+impl StrategyVariant for PrimitiveStrategy {
     fn gen_schema_entries(&self) -> TokenStream {
         let mapping = crate::codegen::type_registry::compute_mapping(
             &self.p.base_type,
@@ -349,23 +306,6 @@ impl PrimitiveStrategy {
             self.p.transform.as_ref(),
             &self.wrappers,
             &self.p.decimal128_encode_trait,
-        )
-    }
-
-    /// Field-access expression rooted at the columnar/anyvalues bulk-loop
-    /// iterator (`__df_derive_it`). Mirrors the helper of the same name on
-    /// `NestedStructStrategy` so the bulk-emit path can build its own loop
-    /// without referencing the per-row `gen_populator_push` access.
-    fn it_access(&self) -> TokenStream {
-        self.field_index.map_or_else(
-            || {
-                let id = &self.field_ident;
-                quote! { __df_derive_it.#id }
-            },
-            |i| {
-                let li = syn::Index::from(i);
-                quote! { __df_derive_it.#li }
-            },
         )
     }
 
@@ -656,39 +596,6 @@ impl PrimitiveStrategy {
             columns.push(s.into());
         }}]
     }
-
-    /// Try each direct-finish helper for the non-`Vec` primitive shapes that
-    /// have a fast path: bare-`String`/`as_string`, `Option<String>`/
-    /// `Option<as_string>`, bare numeric / `Option<numeric>`, and
-    /// `Option<bool>`. Each helper returns `None` for shapes outside its
-    /// carve-out, so the first `Some` wins. Same column dtype as the
-    /// `Series::new(name, &Vec<…>)` slow path in every case, minus the
-    /// second walk (and per-row validity branch where applicable). Returns
-    /// `None` only when no fast path applies — caller falls through to the
-    /// generic owning-buffer finisher.
-    fn gen_columnar_direct_fast_path_finish(&self, idx: usize, name: &str) -> Option<TokenStream> {
-        let base = &self.p.base_type;
-        let transform = self.p.transform.as_ref();
-        let wrappers = &self.wrappers;
-        super::primitive::gen_bare_view_string_direct_columnar_finish(
-            base, transform, wrappers, idx, name,
-        )
-        .or_else(|| {
-            super::primitive::gen_option_string_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::gen_numeric_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::gen_option_bool_direct_columnar_finish(
-                base, transform, wrappers, idx, name,
-            )
-        })
-    }
 }
 
 pub struct NestedStructStrategy {
@@ -714,72 +621,6 @@ impl NestedStructStrategy {
             wrappers,
             n,
         }
-    }
-
-    fn gen_schema_entries(&self) -> TokenStream {
-        let name = &self.field_name;
-        super::nested::generate_schema_entries_for_struct(
-            &self.n.type_path,
-            name,
-            has_vec(&self.wrappers),
-        )
-    }
-
-    fn gen_empty_series_creation(&self) -> TokenStream {
-        let name = &self.field_name;
-        super::nested::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
-    }
-
-    fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        super::nested::nested_decls(&self.wrappers, &self.n.type_path, idx)
-    }
-
-    fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { #it_ident.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { #it_ident.#index_lit }
-            },
-        );
-        super::nested::generate_nested_for_columnar_push(
-            &self.n.type_path,
-            &access,
-            &self.wrappers,
-            idx,
-            self.n.is_generic,
-        )
-    }
-
-    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { #it_ident.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { #it_ident.#index_lit }
-            },
-        );
-        super::nested::generate_nested_for_anyvalue(
-            &self.n.type_path,
-            values_vec_ident,
-            &access,
-            &self.wrappers,
-            self.n.is_generic,
-        )
-    }
-
-    fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        super::nested::nested_finishers_for_vec_anyvalues(&self.wrappers, idx)
-    }
-
-    fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
-        super::nested::nested_columnar_builders(&self.wrappers, idx, &self.field_name)
     }
 
     /// Field-access expression rooted at the columnar-loop iterator
@@ -878,6 +719,74 @@ impl NestedStructStrategy {
             _ => return None,
         };
         Some(vec![emit])
+    }
+}
+
+impl StrategyVariant for NestedStructStrategy {
+    fn gen_schema_entries(&self) -> TokenStream {
+        let name = &self.field_name;
+        super::nested::generate_schema_entries_for_struct(
+            &self.n.type_path,
+            name,
+            has_vec(&self.wrappers),
+        )
+    }
+
+    fn gen_empty_series_creation(&self) -> TokenStream {
+        let name = &self.field_name;
+        super::nested::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
+    }
+
+    fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
+        super::nested::nested_decls(&self.wrappers, &self.n.type_path, idx)
+    }
+
+    fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
+        let access = self.field_index.map_or_else(
+            || {
+                let field_ident = &self.field_ident;
+                quote! { #it_ident.#field_ident }
+            },
+            |index| {
+                let index_lit = syn::Index::from(index);
+                quote! { #it_ident.#index_lit }
+            },
+        );
+        super::nested::generate_nested_for_columnar_push(
+            &self.n.type_path,
+            &access,
+            &self.wrappers,
+            idx,
+            self.n.is_generic,
+        )
+    }
+
+    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
+        let access = self.field_index.map_or_else(
+            || {
+                let field_ident = &self.field_ident;
+                quote! { #it_ident.#field_ident }
+            },
+            |index| {
+                let index_lit = syn::Index::from(index);
+                quote! { #it_ident.#index_lit }
+            },
+        );
+        super::nested::generate_nested_for_anyvalue(
+            &self.n.type_path,
+            values_vec_ident,
+            &access,
+            &self.wrappers,
+            self.n.is_generic,
+        )
+    }
+
+    fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
+        super::nested::nested_finishers_for_vec_anyvalues(&self.wrappers, idx)
+    }
+
+    fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
+        super::nested::nested_columnar_builders(&self.wrappers, idx, &self.field_name)
     }
 
     fn gen_bulk_columnar_emit(

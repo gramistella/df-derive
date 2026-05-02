@@ -387,6 +387,14 @@ fn gen_option_string_direct_decls(idx: usize) -> Vec<TokenStream> {
 /// well-predicted compare against a loop-invariant length, so it doesn't
 /// disturb the inner-loop throughput in practice.
 ///
+/// Both pushes use `push_value_ignore_validity`, which skips the per-row
+/// `if let Some(validity) ... validity.push(true)` branch `push_value`
+/// would otherwise do. The view array's internal validity is never
+/// initialized on this path (we track validity externally via the
+/// `MutableBitmap`, never calling `push_null` / `init_validity`), so the
+/// branch would always take the `None` arm anyway — eliminating it
+/// roughly doubles the gain over the `Vec<Option<&str>>` slow path.
+///
 /// Matches on `&(#access)` so the `Some` arm binds `__df_derive_v: &String`
 /// and reaches the value-push directly — one branch, no detour through
 /// `Option::as_deref`.
@@ -397,10 +405,10 @@ fn gen_option_string_direct_push(access: &TokenStream, idx: usize) -> TokenStrea
     quote! {
         match &(#access) {
             ::std::option::Option::Some(__df_derive_v) => {
-                #buf_ident.push_value(__df_derive_v.as_str());
+                #buf_ident.push_value_ignore_validity(__df_derive_v.as_str());
             }
             ::std::option::Option::None => {
-                #buf_ident.push_value("");
+                #buf_ident.push_value_ignore_validity("");
                 #validity_ident.set(#row_idx, false);
             }
         }
@@ -713,9 +721,14 @@ pub fn generate_primitive_for_columnar_push(
     // (non-Option) `String`: the buffer copies each row's bytes straight
     // into the view array, skipping a `Vec<&str>` round-trip and the second
     // walk `Series::new(&Vec<&str>)` would do via `from_slice_values`.
+    //
+    // `push_value_ignore_validity` skips the per-row `if let Some(validity)`
+    // branch `push_value` does internally; the buffer's internal validity is
+    // never initialized on this path (no `push_null` / `init_validity`), so
+    // the branch would always take the `None` arm anyway.
     if is_direct_view_string_leaf(base_type, transform, wrappers) {
         let buf_ident = PopulatorIdents::primitive_buf(idx);
-        return quote! { #buf_ident.push_value((#access).as_str()); };
+        return quote! { #buf_ident.push_value_ignore_validity((#access).as_str()); };
     }
 
     // Direct `MutableBinaryViewArray<str>` + pre-filled `MutableBitmap`

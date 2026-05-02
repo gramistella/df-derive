@@ -396,6 +396,7 @@ pub fn gen_bulk_vec(
     let offsets_buf_ident = format_ident!("__df_derive_gen_offsets_buf_{}", idx);
     let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let total_ident = format_ident!("__df_derive_gen_total_{}", idx);
     let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
     let no_validity = quote! { ::std::option::Option::None };
     let consume_filled = bulk_vec_consume_inner_columns(
@@ -421,7 +422,12 @@ pub fn gen_bulk_vec(
     };
 
     quote! {{
-        let mut #flat_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #total_ident: usize = 0;
+        for __df_derive_it in items {
+            #total_ident += (&(#access)).len();
+        }
+        let mut #flat_ident: ::std::vec::Vec<&#ty> =
+            ::std::vec::Vec::with_capacity(#total_ident);
         let mut #offsets_ident: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         #offsets_ident.push(0);
@@ -466,6 +472,7 @@ pub fn gen_bulk_option_vec(
     let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
     let validity_bitmap_ident = format_ident!("__df_derive_gen_validity_bm_{}", idx);
     let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let total_ident = format_ident!("__df_derive_gen_total_{}", idx);
     let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
     // Each inner-column iteration clones the bitmap into the
     // `LargeListArray`; `Bitmap` is `Arc`-shared so this is cheap.
@@ -497,7 +504,14 @@ pub fn gen_bulk_option_vec(
     // via `From<MutableBitmap> for Bitmap`. Pre-sizing with
     // `with_capacity(items.len())` skips the otherwise-amortized regrowth.
     quote! {{
-        let mut #flat_ident: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #total_ident: usize = 0;
+        for __df_derive_it in items {
+            if let ::std::option::Option::Some(__df_derive_inner_vec) = &(#access) {
+                #total_ident += __df_derive_inner_vec.len();
+            }
+        }
+        let mut #flat_ident: ::std::vec::Vec<&#ty> =
+            ::std::vec::Vec::with_capacity(#total_ident);
         let mut #offsets_ident: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         #offsets_ident.push(0);

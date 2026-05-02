@@ -1801,6 +1801,142 @@ pub(super) fn try_gen_vec_option_numeric_emit(
     Some(emit)
 }
 
+/// Eligible-shape probe for the bulk `Vec<Option<String>>` emit. Returns
+/// `true` only when wrappers are exactly `[Vec, Option]`, the base is
+/// `String`, and there is no transform.
+///
+/// Excludes the transform-bearing siblings (`Vec<Option<DateTime>>` and
+/// `Vec<Option<Decimal>>`), the no-Option sibling (`Vec<String>`), the
+/// different-base siblings (`Vec<Option<bool>>` and `Vec<Option<numeric>>`),
+/// and deeper nestings such as `Option<Vec<Option<String>>>` whose
+/// flattening invariants this emitter doesn't model.
+pub(super) const fn is_direct_vec_option_string_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none()
+        && matches!(base, BaseType::String)
+        && matches!(wrappers, [Wrapper::Vec, Wrapper::Option])
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Option<String>>` (wrappers exactly `[Vec, Option]`, base `String`,
+/// no transform). `None` for any other shape — caller falls back to the
+/// typed `ListStringChunkedBuilder::append_trusted_len_iter` per-row path.
+///
+/// The block scans `items` once, computing the total leaf count, then
+/// allocates a `MutableBinaryViewArray<str>` for values and a parallel
+/// `MutableBitmap` pre-filled with `true` at that capacity. Each `Some(s)`
+/// row pushes the borrowed `&str` via `push_value_ignore_validity` — the
+/// view array is built without an inner validity bitmap of its own, so the
+/// `_ignore_validity` variant skips the per-element `if validity.is_some()`
+/// branch `push_value` would otherwise do; each `None` row pushes an empty
+/// placeholder string the same way and flips the corresponding bit on our
+/// external validity bitmap via the safe `MutableBitmap::set` (a bounds-
+/// checked single-byte write — cheaper than the typed builder's per-element
+/// `MutableBinaryViewArray::push` branching on the validity-active flag).
+/// The split-buffer layout also skips the per-parent-row `append_iter`
+/// setup the typed `ListStringChunkedBuilder` does. The finisher freezes
+/// the view buffer into a `Utf8ViewArray`, attaches the bitmap via
+/// `with_validity` (`Option<Bitmap>::from(MutableBitmap)` collapses to
+/// `None` when no bits were unset, preserving the no-null fast path),
+/// wraps in a `LargeListArray` partitioned by the per-row offsets, and
+/// consumes the array via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` so the resulting Series's
+/// dtype is `List<String>` exactly (no post-finish cast).
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_option_string_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !is_direct_vec_option_string_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::String };
+    let series_block = quote! {{
+        let mut __df_derive_total: usize = 0;
+        for __df_derive_it in items {
+            __df_derive_total += (&(#access)).len();
+        }
+        let mut __df_derive_view_buf: #pa_root::array::MutableBinaryViewArray<str> =
+            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(__df_derive_total);
+        let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
+            let mut __df_derive_b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(__df_derive_total);
+            __df_derive_b.extend_constant(__df_derive_total, true);
+            __df_derive_b
+        };
+        let mut __df_derive_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_offsets.push(0);
+        let mut __df_derive_row_idx: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_opt in (&(#access)).iter() {
+                match __df_derive_opt {
+                    ::std::option::Option::Some(__df_derive_v) => {
+                        __df_derive_view_buf
+                            .push_value_ignore_validity(__df_derive_v.as_str());
+                    }
+                    ::std::option::Option::None => {
+                        __df_derive_view_buf.push_value_ignore_validity("");
+                        __df_derive_validity.set(__df_derive_row_idx, false);
+                    }
+                }
+                __df_derive_row_idx += 1;
+            }
+            __df_derive_offsets.push(__df_derive_row_idx as i64);
+        }
+        let __df_derive_arr: #pa_root::array::Utf8ViewArray = __df_derive_view_buf
+            .freeze()
+            .with_validity(
+                ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                    __df_derive_validity,
+                ),
+            );
+        let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_offsets)?;
+        let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_arr).clone(),
+            ),
+            __df_derive_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            #leaf_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}
+
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
 /// `Vec<bool>` (wrappers exactly `[Vec]`, base `Bool`, no transform). `None`
 /// for any other shape — caller falls back to the boxed-dyn

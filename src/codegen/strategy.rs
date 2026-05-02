@@ -385,6 +385,16 @@ impl PrimitiveStrategy {
             parent_name,
         )
         .or_else(|| {
+            super::primitive::try_gen_vec_option_string_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                parent_name,
+            )
+        })
+        .or_else(|| {
             super::primitive::try_gen_nested_primitive_vec_emit(
                 pa_root,
                 &access,
@@ -421,6 +431,16 @@ impl PrimitiveStrategy {
             &self.wrappers,
             None,
         )
+        .or_else(|| {
+            super::primitive::try_gen_vec_option_string_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                None,
+            )
+        })
         .or_else(|| {
             super::primitive::try_gen_nested_primitive_vec_emit(
                 pa_root,

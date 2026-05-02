@@ -160,87 +160,7 @@ pub(super) const fn is_direct_primitive_array_numeric_leaf(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> bool {
-    if transform.is_some() || !wrappers.is_empty() {
-        return false;
-    }
-    matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-    )
-}
-
-/// Polars chunked-array type token for the bare-numeric direct-finish path.
-/// Returns the prelude path to the `*Chunked` alias for each eligible
-/// `BaseType` — `Int64Chunked` etc. — paired with the same prelude root.
-/// Caller should only invoke after `is_direct_primitive_array_numeric_leaf`
-/// or `is_direct_primitive_array_option_numeric_leaf` returns `true`, which
-/// restricts inputs to the bases enumerated here.
-pub(super) fn numeric_chunked_type(base: &BaseType) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    match base {
-        BaseType::I8 => quote! { #pp::Int8Chunked },
-        BaseType::I16 => quote! { #pp::Int16Chunked },
-        BaseType::I32 => quote! { #pp::Int32Chunked },
-        BaseType::I64 => quote! { #pp::Int64Chunked },
-        BaseType::U8 => quote! { #pp::UInt8Chunked },
-        BaseType::U16 => quote! { #pp::UInt16Chunked },
-        BaseType::U32 => quote! { #pp::UInt32Chunked },
-        BaseType::U64 => quote! { #pp::UInt64Chunked },
-        BaseType::F32 => quote! { #pp::Float32Chunked },
-        BaseType::F64 => quote! { #pp::Float64Chunked },
-        BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => unreachable!(
-            "numeric_chunked_type called for non-numeric base; \
-             callers must gate on is_direct_primitive_array_numeric_leaf"
-        ),
-    }
-}
-
-/// Native Rust type token for the bare-numeric direct-finish path. Used by
-/// the `Option<numeric>` direct-`PrimitiveArray::new` fast path to type the
-/// `Vec<#native>` values buffer (the `MutableBitmap` carries validity
-/// separately so the buffer holds the value-or-default placeholder
-/// directly). Caller must gate on `is_direct_primitive_array_numeric_leaf`
-/// or `is_direct_primitive_array_option_numeric_leaf`.
-pub(super) fn numeric_native_rust_type(base: &BaseType) -> TokenStream {
-    match base {
-        BaseType::I8 => quote! { i8 },
-        BaseType::I16 => quote! { i16 },
-        BaseType::I32 => quote! { i32 },
-        BaseType::I64 => quote! { i64 },
-        BaseType::U8 => quote! { u8 },
-        BaseType::U16 => quote! { u16 },
-        BaseType::U32 => quote! { u32 },
-        BaseType::U64 => quote! { u64 },
-        BaseType::F32 => quote! { f32 },
-        BaseType::F64 => quote! { f64 },
-        BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => unreachable!(
-            "numeric_native_rust_type called for non-numeric base; \
-             callers must gate on is_direct_primitive_array_(option_)numeric_leaf"
-        ),
-    }
+    transform.is_none() && wrappers.is_empty() && super::type_registry::is_numeric_base(base)
 }
 
 /// Top-level `Option<numeric>` leaf (no transform, exactly `[Option]`).
@@ -259,22 +179,9 @@ pub(super) const fn is_direct_primitive_array_option_numeric_leaf(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> bool {
-    if transform.is_some() || !matches!(wrappers, [Wrapper::Option]) {
-        return false;
-    }
-    matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-    )
+    transform.is_none()
+        && matches!(wrappers, [Wrapper::Option])
+        && super::type_registry::is_numeric_base(base)
 }
 
 /// Buffer-pair declarations for the `Option<numeric>` direct fast path: a
@@ -284,7 +191,9 @@ pub(super) const fn is_direct_primitive_array_option_numeric_leaf(
 fn gen_option_numeric_direct_decls(base: &BaseType, idx: usize) -> Vec<TokenStream> {
     let buf_ident = PopulatorIdents::primitive_buf(idx);
     let validity_ident = PopulatorIdents::primitive_validity(idx);
-    let native = numeric_native_rust_type(base);
+    let native = super::type_registry::numeric_info(base)
+        .expect("caller must gate on is_direct_primitive_array_option_numeric_leaf")
+        .native;
     let pa_root = super::polars_paths::polars_arrow_root();
     vec![
         quote! {
@@ -312,7 +221,9 @@ pub(super) fn gen_option_numeric_direct_push(
 ) -> TokenStream {
     let buf_ident = PopulatorIdents::primitive_buf(idx);
     let validity_ident = PopulatorIdents::primitive_validity(idx);
-    let native = numeric_native_rust_type(base);
+    let native = super::type_registry::numeric_info(base)
+        .expect("caller must gate on is_direct_primitive_array_option_numeric_leaf")
+        .native;
     quote! {
         match #access {
             ::std::option::Option::Some(__df_derive_v) => {
@@ -340,7 +251,9 @@ pub(super) fn gen_option_numeric_direct_push(
 fn gen_option_numeric_direct_array_expr(base: &BaseType, idx: usize) -> TokenStream {
     let buf_ident = PopulatorIdents::primitive_buf(idx);
     let validity_ident = PopulatorIdents::primitive_validity(idx);
-    let native = numeric_native_rust_type(base);
+    let native = super::type_registry::numeric_info(base)
+        .expect("caller must gate on is_direct_primitive_array_option_numeric_leaf")
+        .native;
     let pa_root = super::polars_paths::polars_arrow_root();
     quote! {
         #pa_root::array::PrimitiveArray::<#native>::new(
@@ -662,7 +575,9 @@ pub(super) fn gen_numeric_direct_columnar_finish(
     let chunked = if is_direct_primitive_array_numeric_leaf(base, transform, wrappers)
         || is_direct_primitive_array_option_numeric_leaf(base, transform, wrappers)
     {
-        numeric_chunked_type(base)
+        super::type_registry::numeric_info(base)
+            .expect("predicates above gate on is_numeric_base")
+            .chunked
     } else {
         return None;
     };
@@ -1391,7 +1306,9 @@ pub fn primitive_finishers_for_vec_anyvalues(
         // `from_slice` + `memcpy`. Same dtype — the `*Chunked` alias's
         // static dtype matches the schema's leaf dtype, no cast needed.
         let buf_ident = PopulatorIdents::primitive_buf(idx);
-        let chunked = numeric_chunked_type(base_type);
+        let chunked = super::type_registry::numeric_info(base_type)
+            .expect("is_direct_primitive_array_numeric_leaf gates on is_numeric_base")
+            .chunked;
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #chunked::from_vec("".into(), #buf_ident),
@@ -1407,7 +1324,9 @@ pub fn primitive_finishers_for_vec_anyvalues(
         // dtype as the `Series::new(&Vec<Option<T>>)` slow path, minus the
         // second walk and the per-row validity branch.
         let arr_expr = gen_option_numeric_direct_array_expr(base_type, idx);
-        let chunked = numeric_chunked_type(base_type);
+        let chunked = super::type_registry::numeric_info(base_type)
+            .expect("is_direct_primitive_array_option_numeric_leaf gates on is_numeric_base")
+            .chunked;
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #chunked::with_chunk("".into(), { #arr_expr }),
@@ -1518,9 +1437,11 @@ pub(super) fn typed_primitive_list_info(
             }),
         })
     };
-    let numeric = |native_type: TokenStream, native_rust: TokenStream| {
-        primitive(native_type, native_rust, false, false)
-    };
+    if transform.is_none()
+        && let Some(n) = super::type_registry::numeric_info(base)
+    {
+        return primitive(n.builder_type, n.native, false, false);
+    }
     match (base, transform) {
         (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { .. })) => {
             primitive(quote! { #pp::Int128Type }, quote! { i128 }, true, true)
@@ -1531,16 +1452,6 @@ pub(super) fn typed_primitive_list_info(
             matches!(unit, DateTimeUnit::Nanoseconds),
             false,
         ),
-        (BaseType::I8, None) => numeric(quote! { #pp::Int8Type }, quote! { i8 }),
-        (BaseType::I16, None) => numeric(quote! { #pp::Int16Type }, quote! { i16 }),
-        (BaseType::I32, None) => numeric(quote! { #pp::Int32Type }, quote! { i32 }),
-        (BaseType::I64, None) => numeric(quote! { #pp::Int64Type }, quote! { i64 }),
-        (BaseType::U8, None) => numeric(quote! { #pp::UInt8Type }, quote! { u8 }),
-        (BaseType::U16, None) => numeric(quote! { #pp::UInt16Type }, quote! { u16 }),
-        (BaseType::U32, None) => numeric(quote! { #pp::UInt32Type }, quote! { u32 }),
-        (BaseType::U64, None) => numeric(quote! { #pp::UInt64Type }, quote! { u64 }),
-        (BaseType::F32, None) => numeric(quote! { #pp::Float32Type }, quote! { f32 }),
-        (BaseType::F64, None) => numeric(quote! { #pp::Float64Type }, quote! { f64 }),
         // `Vec<String>` / `Vec<Option<String>>` go through
         // `ListStringChunkedBuilder::append_trusted_len_iter`. The `as_str`
         // transform path is handled separately via `classify_borrow` and the
@@ -1711,62 +1622,26 @@ fn gen_typed_string_list_append(
     }}
 }
 
-/// Native rust + leaf `polars::prelude::DataType` token tree for the
-/// `Vec<Vec<T>>` numeric-primitive fast path. Returned together because
-/// every emit site needs both: the native splices into
-/// `PrimitiveArray::<T>::from_vec` and the flat `Vec<T>` decl, and the leaf
-/// dtype splices into the outer Series's logical `List<leaf>` wrap.
-struct NestedNumericPrimitive {
-    native_rust: TokenStream,
-    leaf_dtype: TokenStream,
-}
-
 /// Eligible-shape probe for the bulk `Vec<Vec<T>>` numeric-primitive emit.
-/// Returns `Some` only when:
+/// Returns `Some(numeric_info)` only when:
 /// - Wrappers exactly `[Vec, Vec]` (no Option layers, no transform).
 /// - Base is a bare numeric primitive
 ///   (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`).
 ///
 /// Other shapes — `Vec<Vec<Option<T>>>`, `Option`-wrapped variants, strings,
 /// datetimes, decimals, bool, isize/usize, anything with a transform — keep
-/// the existing typed-`ListBuilder` per-row push.
+/// the existing typed-`ListBuilder` per-row push. Bool is excluded because
+/// its validity bit semantics differ from numeric leaves and the all-non-null
+/// case would still need a separate path; `numeric_info` enforces that.
 fn nested_numeric_primitive(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
-) -> Option<NestedNumericPrimitive> {
+) -> Option<super::type_registry::NumericInfo> {
     if !matches!(wrappers, [Wrapper::Vec, Wrapper::Vec]) || transform.is_some() {
         return None;
     }
-    let pp = super::polars_paths::prelude();
-    let (native_rust, leaf_dtype) = match base {
-        BaseType::I8 => (quote! { i8 }, quote! { #pp::DataType::Int8 }),
-        BaseType::I16 => (quote! { i16 }, quote! { #pp::DataType::Int16 }),
-        BaseType::I32 => (quote! { i32 }, quote! { #pp::DataType::Int32 }),
-        BaseType::I64 => (quote! { i64 }, quote! { #pp::DataType::Int64 }),
-        BaseType::U8 => (quote! { u8 }, quote! { #pp::DataType::UInt8 }),
-        BaseType::U16 => (quote! { u16 }, quote! { #pp::DataType::UInt16 }),
-        BaseType::U32 => (quote! { u32 }, quote! { #pp::DataType::UInt32 }),
-        BaseType::U64 => (quote! { u64 }, quote! { #pp::DataType::UInt64 }),
-        BaseType::F32 => (quote! { f32 }, quote! { #pp::DataType::Float32 }),
-        BaseType::F64 => (quote! { f64 }, quote! { #pp::DataType::Float64 }),
-        // Bool is excluded: validity bit semantics differ from numeric leaves
-        // and the all-non-null case would still need a separate path. Other
-        // bases (String, DateTime, Decimal, ISize/USize, Struct/Generic) keep
-        // the per-row typed-`ListBuilder` path.
-        BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => return None,
-    };
-    Some(NestedNumericPrimitive {
-        native_rust,
-        leaf_dtype,
-    })
+    super::type_registry::numeric_info(base)
 }
 
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
@@ -1799,8 +1674,8 @@ pub(super) fn try_gen_nested_primitive_vec_emit(
 ) -> Option<TokenStream> {
     let info = nested_numeric_primitive(base, transform, wrappers)?;
     let pp = super::polars_paths::prelude();
-    let native = &info.native_rust;
-    let leaf_dtype = &info.leaf_dtype;
+    let native = &info.native;
+    let leaf_dtype = &info.dtype;
     // The outer Series's logical inner dtype is `List<leaf>`; the
     // `__df_derive_assemble_list_series_unchecked` helper wraps it in another
     // `List<>` so the runtime dtype is `List<List<leaf>>` — same as the
@@ -1922,57 +1797,16 @@ pub(super) fn vec_option_leaf_emit_info(
         return None;
     }
     let pp = super::polars_paths::prelude();
+    if transform.is_none()
+        && let Some(n) = super::type_registry::numeric_info(base)
+    {
+        return Some(VecOptionLeafEmitInfo {
+            native: n.native,
+            leaf_dtype: n.dtype,
+            needs_decimal_import: false,
+        });
+    }
     match (base, transform) {
-        (BaseType::I8, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { i8 },
-            leaf_dtype: quote! { #pp::DataType::Int8 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::I16, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { i16 },
-            leaf_dtype: quote! { #pp::DataType::Int16 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::I32, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { i32 },
-            leaf_dtype: quote! { #pp::DataType::Int32 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::I64, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { i64 },
-            leaf_dtype: quote! { #pp::DataType::Int64 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::U8, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { u8 },
-            leaf_dtype: quote! { #pp::DataType::UInt8 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::U16, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { u16 },
-            leaf_dtype: quote! { #pp::DataType::UInt16 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::U32, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { u32 },
-            leaf_dtype: quote! { #pp::DataType::UInt32 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::U64, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { u64 },
-            leaf_dtype: quote! { #pp::DataType::UInt64 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::F32, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { f32 },
-            leaf_dtype: quote! { #pp::DataType::Float32 },
-            needs_decimal_import: false,
-        }),
-        (BaseType::F64, None) => Some(VecOptionLeafEmitInfo {
-            native: quote! { f64 },
-            leaf_dtype: quote! { #pp::DataType::Float64 },
-            needs_decimal_import: false,
-        }),
         (BaseType::DateTimeUtc, Some(PrimitiveTransform::DateTimeToInt(unit))) => {
             let unit_tokens = match unit {
                 DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
@@ -1997,41 +1831,6 @@ pub(super) fn vec_option_leaf_emit_info(
             })
         }
         _ => None,
-    }
-}
-
-/// Native rust + leaf `polars::prelude::DataType` token tree for the bare-
-/// numeric variants used by emitters that operate on no-transform numeric
-/// shapes (e.g. the `Vec<Vec<Option<#native>>>` emitter, where transform-
-/// bearing shapes still keep the typed `ListPrimitiveChunkedBuilder` per-row
-/// path because flattening twin offset stacks alongside fallible per-element
-/// transforms isn't currently worth the codegen complexity). Caller must
-/// gate on a predicate that excludes transform-bearing bases (e.g.
-/// `is_direct_vec_vec_option_numeric_leaf`).
-fn vec_option_numeric_leaf_types(base: &BaseType) -> (TokenStream, TokenStream) {
-    let pp = super::polars_paths::prelude();
-    match base {
-        BaseType::I8 => (quote! { i8 }, quote! { #pp::DataType::Int8 }),
-        BaseType::I16 => (quote! { i16 }, quote! { #pp::DataType::Int16 }),
-        BaseType::I32 => (quote! { i32 }, quote! { #pp::DataType::Int32 }),
-        BaseType::I64 => (quote! { i64 }, quote! { #pp::DataType::Int64 }),
-        BaseType::U8 => (quote! { u8 }, quote! { #pp::DataType::UInt8 }),
-        BaseType::U16 => (quote! { u16 }, quote! { #pp::DataType::UInt16 }),
-        BaseType::U32 => (quote! { u32 }, quote! { #pp::DataType::UInt32 }),
-        BaseType::U64 => (quote! { u64 }, quote! { #pp::DataType::UInt64 }),
-        BaseType::F32 => (quote! { f32 }, quote! { #pp::DataType::Float32 }),
-        BaseType::F64 => (quote! { f64 }, quote! { #pp::DataType::Float64 }),
-        BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => unreachable!(
-            "vec_option_numeric_leaf_types called for non-numeric base; \
-             callers must gate on a no-transform numeric-only predicate"
-        ),
     }
 }
 
@@ -2575,22 +2374,9 @@ pub(super) const fn is_direct_vec_vec_option_numeric_leaf(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
 ) -> bool {
-    if transform.is_some() || !matches!(wrappers, [Wrapper::Vec, Wrapper::Vec, Wrapper::Option]) {
-        return false;
-    }
-    matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-    )
+    transform.is_none()
+        && matches!(wrappers, [Wrapper::Vec, Wrapper::Vec, Wrapper::Option])
+        && super::type_registry::is_numeric_base(base)
 }
 
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
@@ -2634,7 +2420,10 @@ pub(super) fn try_gen_vec_vec_option_numeric_emit(
         return None;
     }
     let pp = super::polars_paths::prelude();
-    let (native, leaf_dtype) = vec_option_numeric_leaf_types(base);
+    let info = super::type_registry::numeric_info(base)
+        .expect("is_direct_vec_vec_option_numeric_leaf gates on is_numeric_base");
+    let native = info.native;
+    let leaf_dtype = info.dtype;
     let inner_logical_dtype = quote! {
         #pp::DataType::List(::std::boxed::Box::new(#leaf_dtype))
     };

@@ -3,7 +3,85 @@ use crate::type_analysis::{
     DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
 };
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
+
+/// True for the bare numeric primitive bases that flow through the macro's
+/// columnar fast paths (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`). Excludes
+/// `ISize`/`USize` (their materialized buffer type is `i64`/`u64` so they
+/// would mismatch the field's native type on the typed-builder path) and
+/// `Bool` (validity-bit semantics differ from numeric primitives, see the
+/// extended note on `typed_primitive_list_info`). Used as the single
+/// gate for every numeric-leaf predicate in `primitive.rs`, plus the
+/// shape filter for `numeric_info`.
+pub(super) const fn is_numeric_base(base: &BaseType) -> bool {
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+    )
+}
+
+/// Token bundle for one bare numeric primitive base. Every fast-path emitter
+/// consumes some subset of these — collected here so the 10-arm match per
+/// metadata kind doesn't have to be repeated at every call site.
+pub(super) struct NumericInfo {
+    /// Native Rust type token, e.g. `i8`, `f64`.
+    pub native: TokenStream,
+    /// `#pp::DataType::<Variant>` for the leaf, e.g. `#pp::DataType::Int8`.
+    pub dtype: TokenStream,
+    /// `#pp::<Variant>Chunked` alias, e.g. `#pp::Int8Chunked`.
+    pub chunked: TokenStream,
+    /// `#pp::<Variant>Type` builder type witness, e.g. `#pp::Int8Type`.
+    pub builder_type: TokenStream,
+}
+
+/// Returns `Some(NumericInfo)` for the bare numeric bases enumerated by
+/// `is_numeric_base`. `None` for everything else (`Bool`, `String`,
+/// `ISize`/`USize`, `DateTime`, `Decimal`, `Struct`, `Generic`). Caller-side
+/// gating on a numeric-only predicate is fine: the helper fully encapsulates
+/// the 10-arm dispatch.
+pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
+    let pp = super::polars_paths::prelude();
+    let info = |native: TokenStream, variant: &str| {
+        let chunked_ident = format_ident!("{}Chunked", variant);
+        let type_ident = format_ident!("{}Type", variant);
+        let dtype_ident = format_ident!("{}", variant);
+        NumericInfo {
+            native,
+            dtype: quote! { #pp::DataType::#dtype_ident },
+            chunked: quote! { #pp::#chunked_ident },
+            builder_type: quote! { #pp::#type_ident },
+        }
+    };
+    Some(match base {
+        BaseType::I8 => info(quote! { i8 }, "Int8"),
+        BaseType::I16 => info(quote! { i16 }, "Int16"),
+        BaseType::I32 => info(quote! { i32 }, "Int32"),
+        BaseType::I64 => info(quote! { i64 }, "Int64"),
+        BaseType::U8 => info(quote! { u8 }, "UInt8"),
+        BaseType::U16 => info(quote! { u16 }, "UInt16"),
+        BaseType::U32 => info(quote! { u32 }, "UInt32"),
+        BaseType::U64 => info(quote! { u64 }, "UInt64"),
+        BaseType::F32 => info(quote! { f32 }, "Float32"),
+        BaseType::F64 => info(quote! { f64 }, "Float64"),
+        BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => return None,
+    })
+}
 
 /// Pull the chosen `Datetime` time unit out of a `DateTimeToInt(_)` transform.
 /// Falls back to the crate default for unrelated transforms — relevant code

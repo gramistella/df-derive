@@ -38,6 +38,75 @@ pub(super) const fn is_direct_view_string_leaf(
     transform.is_none() && matches!(base, BaseType::String) && wrappers.is_empty()
 }
 
+/// Top-level bare-numeric leaf (no transform, no `Vec<…>`, no `Option<…>`).
+/// The buffer is already `Vec<Native>`; the finisher swaps the
+/// `Series::new(&Vec<Native>)` path — which dispatches to `from_slice` and
+/// internally `memcpy`s the slice into a fresh `PrimitiveArray::from_slice` —
+/// for `<Chunked>::from_vec(name, buf).into_series()`, which consumes the Vec
+/// without copying via `to_primitive`.
+///
+/// `ISize`/`USize` are excluded conservatively: their buffer element type
+/// is `i64`/`u64` (chosen by `compute_mapping`) so they would work fine on
+/// this path, but no bench currently exercises them and we'd rather measure
+/// before extending. `Bool` is excluded because the validity-bit semantics
+/// of `BooleanChunked` differ from numeric primitives and the bool slow
+/// path is already a tight `from_slice`. Decimal/DateTime are transforms,
+/// hence ruled out by the transform check.
+pub(super) const fn is_direct_primitive_array_numeric_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    if transform.is_some() || !wrappers.is_empty() {
+        return false;
+    }
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+    )
+}
+
+/// Polars chunked-array type token for the bare-numeric direct-finish path.
+/// Returns the prelude path to the `*Chunked` alias for each eligible
+/// `BaseType` — `Int64Chunked` etc. — paired with the same prelude root.
+/// Caller should only invoke after `is_direct_primitive_array_numeric_leaf`
+/// returns `true`, which restricts inputs to the bases enumerated here.
+pub(super) fn numeric_chunked_type(base: &BaseType) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    match base {
+        BaseType::I8 => quote! { #pp::Int8Chunked },
+        BaseType::I16 => quote! { #pp::Int16Chunked },
+        BaseType::I32 => quote! { #pp::Int32Chunked },
+        BaseType::I64 => quote! { #pp::Int64Chunked },
+        BaseType::U8 => quote! { #pp::UInt8Chunked },
+        BaseType::U16 => quote! { #pp::UInt16Chunked },
+        BaseType::U32 => quote! { #pp::UInt32Chunked },
+        BaseType::U64 => quote! { #pp::UInt64Chunked },
+        BaseType::F32 => quote! { #pp::Float32Chunked },
+        BaseType::F64 => quote! { #pp::Float64Chunked },
+        BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => unreachable!(
+            "numeric_chunked_type called for non-numeric base; \
+             callers must gate on is_direct_primitive_array_numeric_leaf"
+        ),
+    }
+}
+
 /// Borrow strategy for a leaf that can populate the `Vec<&str>` /
 /// `Vec<Option<&str>>` columnar buffer instead of an owning `Vec<String>`.
 /// Only the bare leaf and bare `Option<…>` shapes flatten into one of these
@@ -609,6 +678,20 @@ pub fn primitive_finishers_for_vec_anyvalues(
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #pp::StringChunked::with_chunk("".into(), #buf_ident.freeze()),
+            );
+            out_values.push(#pp::AnyValue::List(inner));
+        }
+    } else if is_direct_primitive_array_numeric_leaf(base_type, transform, wrappers) {
+        // Bare numeric primitive (no transform, no wrappers): the buffer is
+        // `Vec<Native>`. Consume it via `<*Chunked>::from_vec` (zero-copy
+        // through `to_primitive`) instead of `Series::new(&buf)`'s
+        // `from_slice` + `memcpy`. Same dtype — the `*Chunked` alias's
+        // static dtype matches the schema's leaf dtype, no cast needed.
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        let chunked = numeric_chunked_type(base_type);
+        quote! {
+            let inner = #pp::IntoSeries::into_series(
+                #chunked::from_vec("".into(), #buf_ident),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }

@@ -476,6 +476,28 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
+        // Top-level (non-Option, non-Vec) bare numeric primitive (no
+        // transform): the buffer is already `Vec<Native>` (e.g. `Vec<i64>`),
+        // so consume it via `<Int64Chunked>::from_vec(name, buf)` —
+        // zero-copy through `to_primitive` — instead of
+        // `Series::new(name, &buf)` which dispatches to `from_slice` and
+        // memcpies the slice into a fresh `PrimitiveArray`. Same column dtype
+        // (the `*Chunked` alias's static dtype matches the numeric leaf's
+        // schema dtype with no cast needed).
+        if super::primitive::is_direct_primitive_array_numeric_leaf(
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+        ) {
+            let buf_ident = PopulatorIdents::primitive_buf(idx);
+            let chunked = super::primitive::numeric_chunked_type(&self.p.base_type);
+            return vec![quote! {{
+                let s = #pp::IntoSeries::into_series(
+                    #chunked::from_vec(#name.into(), #buf_ident),
+                );
+                columns.push(s.into());
+            }}];
+        }
 
         // Decimal: the buffer is `Vec<i128>` / `Vec<Option<i128>>` already
         // rescaled to the schema scale. Build the `DecimalChunked` directly

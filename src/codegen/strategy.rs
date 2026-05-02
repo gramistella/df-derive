@@ -109,19 +109,22 @@ impl Strategy {
     /// triple in the columnar path and emit a single bulk builder. Used by
     /// generic-leaf fields where calling `T::columnar_to_dataframe` once on a
     /// collected slice is dramatically faster than building one tiny `DataFrame`
-    /// per item. Primitive fields always return `None`.
+    /// per item, and by `Vec<Vec<#native>>` primitive fields where flattening
+    /// straight into a `LargeListArray<LargeListArray<PrimitiveArray>>` skips
+    /// the per-parent-row `Box<dyn ListBuilderTrait>::append_series` round-trip.
     ///
     /// `pa_root` is the cached `polars-arrow` crate-root token stream from
-    /// the per-derive entry point; the `Vec<T>` bulk emitter uses it to
-    /// reach `OffsetsBuffer` and `LargeListArray`. Pass it down so each
-    /// per-field codegen call doesn't re-run `proc_macro_crate::crate_name`.
+    /// the per-derive entry point; bulk emitters use it to reach
+    /// `OffsetsBuffer`, `LargeListArray`, and `PrimitiveArray`. Pass it down
+    /// so each per-field codegen call doesn't re-run
+    /// `proc_macro_crate::crate_name`.
     pub fn gen_bulk_columnar_emit(
         &self,
         pa_root: &TokenStream,
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
         match self {
-            Self::Primitive(_) => None,
+            Self::Primitive(s) => s.gen_bulk_columnar_emit(pa_root, idx),
             Self::Nested(s) => s.gen_bulk_columnar_emit(pa_root, idx),
         }
     }
@@ -129,14 +132,15 @@ impl Strategy {
     /// Mirror of `gen_bulk_columnar_emit` for the
     /// `__df_derive_vec_to_inner_list_values` helper path: when a strategy can
     /// produce its `AnyValue::List` entries in bulk (without a per-row push),
-    /// returns `Some`. Primitive fields always return `None`.
+    /// returns `Some`. Primitive fields return `Some` only for the
+    /// `Vec<Vec<#native>>` shape over a bare numeric primitive base.
     pub fn gen_bulk_vec_anyvalues_emit(
         &self,
         pa_root: &TokenStream,
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
         match self {
-            Self::Primitive(_) => None,
+            Self::Primitive(s) => s.gen_bulk_vec_anyvalues_emit(pa_root, idx),
             Self::Nested(s) => s.gen_bulk_vec_anyvalues_emit(pa_root, idx),
         }
     }
@@ -346,6 +350,57 @@ impl PrimitiveStrategy {
             &self.wrappers,
             &self.p.decimal128_encode_trait,
         )
+    }
+
+    /// Field-access expression rooted at the columnar/anyvalues bulk-loop
+    /// iterator (`__df_derive_it`). Mirrors the helper of the same name on
+    /// `NestedStructStrategy` so the bulk-emit path can build its own loop
+    /// without referencing the per-row `gen_populator_push` access.
+    fn it_access(&self) -> TokenStream {
+        self.field_index.map_or_else(
+            || {
+                let id = &self.field_ident;
+                quote! { __df_derive_it.#id }
+            },
+            |i| {
+                let li = syn::Index::from(i);
+                quote! { __df_derive_it.#li }
+            },
+        )
+    }
+
+    fn gen_bulk_columnar_emit(
+        &self,
+        pa_root: &TokenStream,
+        _idx: usize,
+    ) -> Option<Vec<TokenStream>> {
+        let access = self.it_access();
+        super::primitive::try_gen_nested_primitive_vec_emit(
+            pa_root,
+            &access,
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+            Some(self.field_name.as_str()),
+        )
+        .map(|emit| vec![emit])
+    }
+
+    fn gen_bulk_vec_anyvalues_emit(
+        &self,
+        pa_root: &TokenStream,
+        _idx: usize,
+    ) -> Option<Vec<TokenStream>> {
+        let access = self.it_access();
+        super::primitive::try_gen_nested_primitive_vec_emit(
+            pa_root,
+            &access,
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+            None,
+        )
+        .map(|emit| vec![emit])
     }
 
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {

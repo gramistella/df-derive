@@ -832,3 +832,162 @@ fn gen_typed_string_list_append(
         #builder_ident.append_trusted_len_iter((#vec_access).iter() #map_expr);
     }}
 }
+
+/// Native rust + leaf `polars::prelude::DataType` token tree for the
+/// `Vec<Vec<T>>` numeric-primitive fast path. Returned together because
+/// every emit site needs both: the native splices into
+/// `PrimitiveArray::<T>::from_vec` and the flat `Vec<T>` decl, and the leaf
+/// dtype splices into the outer Series's logical `List<leaf>` wrap.
+struct NestedNumericPrimitive {
+    native_rust: TokenStream,
+    leaf_dtype: TokenStream,
+}
+
+/// Eligible-shape probe for the bulk `Vec<Vec<T>>` numeric-primitive emit.
+/// Returns `Some` only when:
+/// - Wrappers exactly `[Vec, Vec]` (no Option layers, no transform).
+/// - Base is a bare numeric primitive
+///   (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`).
+///
+/// Other shapes — `Vec<Vec<Option<T>>>`, `Option`-wrapped variants, strings,
+/// datetimes, decimals, bool, isize/usize, anything with a transform — keep
+/// the existing typed-`ListBuilder` per-row push.
+fn nested_numeric_primitive(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> Option<NestedNumericPrimitive> {
+    if !matches!(wrappers, [Wrapper::Vec, Wrapper::Vec]) || transform.is_some() {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let (native_rust, leaf_dtype) = match base {
+        BaseType::I8 => (quote! { i8 }, quote! { #pp::DataType::Int8 }),
+        BaseType::I16 => (quote! { i16 }, quote! { #pp::DataType::Int16 }),
+        BaseType::I32 => (quote! { i32 }, quote! { #pp::DataType::Int32 }),
+        BaseType::I64 => (quote! { i64 }, quote! { #pp::DataType::Int64 }),
+        BaseType::U8 => (quote! { u8 }, quote! { #pp::DataType::UInt8 }),
+        BaseType::U16 => (quote! { u16 }, quote! { #pp::DataType::UInt16 }),
+        BaseType::U32 => (quote! { u32 }, quote! { #pp::DataType::UInt32 }),
+        BaseType::U64 => (quote! { u64 }, quote! { #pp::DataType::UInt64 }),
+        BaseType::F32 => (quote! { f32 }, quote! { #pp::DataType::Float32 }),
+        BaseType::F64 => (quote! { f64 }, quote! { #pp::DataType::Float64 }),
+        // Bool is excluded: validity bit semantics differ from numeric leaves
+        // and the all-non-null case would still need a separate path. Other
+        // bases (String, DateTime, Decimal, ISize/USize, Struct/Generic) keep
+        // the per-row typed-`ListBuilder` path.
+        BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => return None,
+    };
+    Some(NestedNumericPrimitive {
+        native_rust,
+        leaf_dtype,
+    })
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Vec<#native>>` over a bare numeric primitive base. `None` for any
+/// other shape — caller falls back to the per-row decls/push/builders triple.
+///
+/// The block scans `items` once, flattening every inner element into a
+/// single `Vec<Native>` while recording per-inner-vec offsets and per-outer-
+/// vec offsets. It then constructs a `PrimitiveArray<Native>::from_vec(flat)`,
+/// wraps it in a `LargeListArray` partitioned by the inner offsets, and
+/// wraps that in a second `LargeListArray` partitioned by the outer offsets.
+/// Finally it consumes the outer array via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` (defined at the top of the
+/// per-derive `const _: () = { ... };` scope) — same plumbing the nested-
+/// struct bulk emitter uses to keep `unsafe` outside any `Self` impl method
+/// and silence `clippy::unsafe_derive_deserialize`.
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_nested_primitive_vec_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    let info = nested_numeric_primitive(base, transform, wrappers)?;
+    let pp = super::polars_paths::prelude();
+    let native = &info.native_rust;
+    let leaf_dtype = &info.leaf_dtype;
+    // The outer Series's logical inner dtype is `List<leaf>`; the
+    // `__df_derive_assemble_list_series_unchecked` helper wraps it in another
+    // `List<>` so the runtime dtype is `List<List<leaf>>` — same as the
+    // typed-inner / boxed-outer path produces.
+    let inner_logical_dtype = quote! {
+        #pp::DataType::List(::std::boxed::Box::new(#leaf_dtype))
+    };
+    let series_block = quote! {{
+        let mut __df_derive_flat: ::std::vec::Vec<#native> = ::std::vec::Vec::new();
+        let mut __df_derive_inner_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_inner_offsets.push(0);
+        let mut __df_derive_outer_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_outer_offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                for __df_derive_e in __df_derive_inner.iter() {
+                    __df_derive_flat.push(::std::clone::Clone::clone(__df_derive_e));
+                }
+                __df_derive_inner_offsets.push(__df_derive_flat.len() as i64);
+            }
+            __df_derive_outer_offsets.push((__df_derive_inner_offsets.len() - 1) as i64);
+        }
+        let __df_derive_inner_arr: #pa_root::array::PrimitiveArray<#native> =
+            #pa_root::array::PrimitiveArray::<#native>::from_vec(__df_derive_flat);
+        let __df_derive_inner_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_inner_offsets)?;
+        let __df_derive_inner_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_inner_arr).clone(),
+            ),
+            __df_derive_inner_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_inner_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        let __df_derive_outer_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_outer_offsets)?;
+        let __df_derive_outer_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_inner_list_arr).clone(),
+            ),
+            __df_derive_outer_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_inner_list_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_outer_list_arr,
+            #inner_logical_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}

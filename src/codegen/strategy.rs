@@ -375,14 +375,25 @@ impl PrimitiveStrategy {
         _idx: usize,
     ) -> Option<Vec<TokenStream>> {
         let access = self.it_access();
+        let parent_name = Some(self.field_name.as_str());
         super::primitive::try_gen_nested_primitive_vec_emit(
             pa_root,
             &access,
             &self.p.base_type,
             self.p.transform.as_ref(),
             &self.wrappers,
-            Some(self.field_name.as_str()),
+            parent_name,
         )
+        .or_else(|| {
+            super::primitive::try_gen_vec_bool_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                parent_name,
+            )
+        })
         .map(|emit| vec![emit])
     }
 
@@ -400,6 +411,16 @@ impl PrimitiveStrategy {
             &self.wrappers,
             None,
         )
+        .or_else(|| {
+            super::primitive::try_gen_vec_bool_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                None,
+            )
+        })
         .map(|emit| vec![emit])
     }
 

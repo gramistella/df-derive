@@ -991,3 +991,86 @@ pub(super) fn try_gen_nested_primitive_vec_emit(
     );
     Some(emit)
 }
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<bool>` (wrappers exactly `[Vec]`, base `Bool`, no transform). `None`
+/// for any other shape — caller falls back to the boxed-dyn
+/// `ListBuilderTrait::append_series` per-row path.
+///
+/// Sibling shapes (`Vec<Option<bool>>`, `Option<Vec<bool>>`, `Vec<Vec<bool>>`)
+/// keep the existing path: the `[Vec, Option]` and `[Option, Vec]` cases
+/// would need a validity bitmap that this emitter intentionally omits, and
+/// the numeric `Vec<Vec<T>>` fast path explicitly excludes Bool because of
+/// the validity-bit cost it would re-introduce there.
+///
+/// The block scans `items` once, extending a flat `Vec<bool>` from each
+/// row's inner Vec while recording per-row offsets. It then constructs a
+/// `BooleanArray::from_slice(&flat)` (no validity — bool leaves are
+/// non-null), wraps it in a `LargeListArray` partitioned by the offsets,
+/// and consumes the array via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` — same plumbing the
+/// `Vec<Vec<numeric>>` and nested-struct bulk emitters use to keep
+/// `unsafe` outside any `Self` impl method.
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_bool_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !matches!(wrappers, [Wrapper::Vec]) || transform.is_some() || !matches!(base, BaseType::Bool)
+    {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::Boolean };
+    let series_block = quote! {{
+        let mut __df_derive_flat: ::std::vec::Vec<bool> = ::std::vec::Vec::new();
+        let mut __df_derive_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_offsets.push(0);
+        for __df_derive_it in items {
+            __df_derive_flat.extend((&(#access)).iter().copied());
+            __df_derive_offsets.push(__df_derive_flat.len() as i64);
+        }
+        let __df_derive_bool_arr: #pa_root::array::BooleanArray =
+            #pa_root::array::BooleanArray::from_slice(&__df_derive_flat);
+        let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_offsets)?;
+        let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_bool_arr).clone(),
+            ),
+            __df_derive_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_bool_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            #leaf_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}

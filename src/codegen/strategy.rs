@@ -395,6 +395,26 @@ impl PrimitiveStrategy {
             )
         })
         .or_else(|| {
+            super::primitive::try_gen_vec_vec_option_string_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                parent_name,
+            )
+        })
+        .or_else(|| {
+            super::primitive::try_gen_vec_vec_bool_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                parent_name,
+            )
+        })
+        .or_else(|| {
             super::primitive::try_gen_vec_option_numeric_emit(
                 pa_root,
                 &access,
@@ -463,6 +483,26 @@ impl PrimitiveStrategy {
         )
         .or_else(|| {
             super::primitive::try_gen_vec_vec_option_numeric_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                None,
+            )
+        })
+        .or_else(|| {
+            super::primitive::try_gen_vec_vec_option_string_emit(
+                pa_root,
+                &access,
+                &self.p.base_type,
+                self.p.transform.as_ref(),
+                &self.wrappers,
+                None,
+            )
+        })
+        .or_else(|| {
+            super::primitive::try_gen_vec_vec_bool_emit(
                 pa_root,
                 &access,
                 &self.p.base_type,

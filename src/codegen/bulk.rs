@@ -8,12 +8,13 @@
 // once. From there each schema column of `T` is sliced/scattered into the
 // parent's columns or `AnyValue::List` entries.
 //
-// Six wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
-// `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, `Vec<Option<T>>`, and
-// `Option<Vec<Option<T>>>`. The remaining nestings (`Vec<Vec<T>>`,
-// `Option<Option<T>>`, etc.) keep using the per-row trait-only paths
-// defined elsewhere; those are rarer and the bulk variants would need
-// additional position bookkeeping that isn't worth the added complexity.
+// Seven wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
+// `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, `Vec<Option<T>>`,
+// `Option<Vec<Option<T>>>`, and `Vec<Vec<T>>`. The remaining nestings
+// (`Option<Option<T>>`, deeper triple-Vec shapes, etc.) keep using the
+// per-row trait-only paths defined elsewhere; those are rarer and the bulk
+// variants would need additional position bookkeeping that isn't worth the
+// added complexity.
 //
 // Generic and concrete shapes share the same emitter — the trait method
 // `Columnar::columnar_from_refs(&[&Self])` is the one entry point for both,
@@ -256,6 +257,56 @@ fn bulk_vec_emit_list_series(
         __df_derive_assemble_list_series_unchecked(
             __df_derive_list_arr,
             #logical_inner_dtype_expr,
+        )
+    }}
+}
+
+/// Build a `Series` expression that wraps `inner_col_expr` under **two**
+/// stacked `LargeListArray` layers: the inner partitions leaf values into
+/// per-inner-list slices via `inner_offsets_buf_expr`, and the outer groups
+/// inner lists into per-outer-row slices via `outer_offsets_buf_expr`.
+///
+/// Used by the `[Vec, Vec]` bulk emitter for nested-struct/generic shapes —
+/// the runtime dtype of the resulting Series is `List<List<leaf>>` even
+/// though the schema entry only reports `List<leaf>` (a pre-existing
+/// limitation of `generate_schema_entries_for_struct` shared with the slow
+/// path; see the assertion in `tests/pass/20-generics.rs`).
+///
+/// `logical_inner_leaf_dtype_expr` is the leaf dtype (e.g. `DataType::Int64`).
+/// The free helper `__df_derive_assemble_list_series_unchecked` wraps it in
+/// one more `List<>` layer for the final Series's logical dtype.
+fn bulk_vec_emit_double_list_series(
+    inner_col_expr: &TokenStream,
+    inner_offsets_buf_expr: &TokenStream,
+    outer_offsets_buf_expr: &TokenStream,
+    logical_inner_leaf_dtype_expr: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    quote! {{
+        let __df_derive_inner_col: #pp::Series = #inner_col_expr;
+        let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
+        let __df_derive_inner_chunk: #pp::ArrayRef =
+            __df_derive_inner_rech.chunks()[0].clone();
+        let __df_derive_inner_arrow_dt = __df_derive_inner_chunk.dtype().clone();
+        let __df_derive_inner_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_arrow_dt),
+            #inner_offsets_buf_expr,
+            __df_derive_inner_chunk,
+            ::std::option::Option::None,
+        );
+        let __df_derive_inner_list_chunk: #pp::ArrayRef =
+            ::std::boxed::Box::new(__df_derive_inner_list_arr) as #pp::ArrayRef;
+        let __df_derive_inner_list_arrow_dt =
+            __df_derive_inner_list_chunk.dtype().clone();
+        let __df_derive_outer_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_list_arrow_dt),
+            #outer_offsets_buf_expr,
+            __df_derive_inner_list_chunk,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_outer_list_arr,
+            #pp::DataType::List(::std::boxed::Box::new(#logical_inner_leaf_dtype_expr)),
         )
     }}
 }
@@ -871,6 +922,181 @@ pub fn gen_bulk_option_vec_option(
                     #pos_ident.iter().copied(),
                 );
             #filled_buf_setup
+            #consume_filled
+        }
+    }}
+}
+
+/// Build the per-inner-column emit for the populated `[Vec, Vec]` bulk
+/// path: pull each inner schema column out of the inner `DataFrame` and
+/// stack two `LargeListArray` layers (inner partitions leaves into per-
+/// inner-list slices, outer groups inner lists into per-outer-row slices).
+///
+/// Unlike `bulk_vec_consume_inner_columns`, this builds a `List<List<…>>`
+/// runtime Series; the schema entry only declares `List<…>` (the existing
+/// limitation matched by the slow path), so the assemble helper's outer
+/// `List<>` wrap surfaces only at runtime.
+fn bulk_vec_vec_consume_inner_columns(
+    ctx: BulkContext<'_>,
+    df_ident: &Ident,
+    inner_offsets_buf_ident: &Ident,
+    outer_offsets_buf_ident: &Ident,
+    schema_iter_ts: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+    let inner_col_expr = quote! {
+        #df_ident
+            .column(#col_name_var)?
+            .as_materialized_series()
+            .clone()
+    };
+    let inner_offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#inner_offsets_buf_ident) };
+    let outer_offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#outer_offsets_buf_ident) };
+    let logical_inner_leaf_dtype_expr = quote! { (*#dtype_var).clone() };
+    let series_expr = bulk_vec_emit_double_list_series(
+        &inner_col_expr,
+        &inner_offsets_buf_expr,
+        &outer_offsets_buf_expr,
+        &logical_inner_leaf_dtype_expr,
+    );
+    let consume = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
+    quote! {
+        for (#col_name_var, #dtype_var) in #schema_iter_ts {
+            let #col_name_var: &str = #col_name_var.as_str();
+            let #dtype_var: &#pp::DataType = &#dtype_var;
+            #consume
+        }
+    }
+}
+
+/// Build the empty-flat emit for the `[Vec, Vec]` bulk path: when no leaves
+/// exist (every inner Vec is empty across every outer row), still produce
+/// one outer-list column per inner schema entry. Each Series uses the real
+/// `inner_offsets_buf` and `outer_offsets_buf` (so the per-row inner-list
+/// counts and per-inner-list zero leaf counts are preserved) plus an empty
+/// inner Series of the leaf dtype.
+fn bulk_vec_vec_consume_empty_columns(
+    ctx: BulkContext<'_>,
+    inner_offsets_buf_ident: &Ident,
+    outer_offsets_buf_ident: &Ident,
+    schema_iter_ts: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let dtype_var = quote! { __df_derive_dtype };
+    let col_name_var = quote! { __df_derive_col_name };
+    let inner_col_expr = quote! {
+        #pp::Series::new_empty("".into(), #dtype_var)
+    };
+    let inner_offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#inner_offsets_buf_ident) };
+    let outer_offsets_buf_expr = quote! { ::std::clone::Clone::clone(&#outer_offsets_buf_ident) };
+    let logical_inner_leaf_dtype_expr = quote! { (*#dtype_var).clone() };
+    let series_expr = bulk_vec_emit_double_list_series(
+        &inner_col_expr,
+        &inner_offsets_buf_expr,
+        &outer_offsets_buf_expr,
+        &logical_inner_leaf_dtype_expr,
+    );
+    let consume = bulk_consume_inner_series(ctx, &col_name_var, &series_expr);
+    quote! {
+        for (#col_name_var, #dtype_var) in #schema_iter_ts {
+            let #col_name_var: &str = #col_name_var.as_str();
+            let #dtype_var: &#pp::DataType = &#dtype_var;
+            #consume
+        }
+    }
+}
+
+/// Bulk emit for `payload: Vec<Vec<T>>` over a nested struct or generic base.
+/// Mirrors `gen_bulk_vec` but stacks two `LargeListArray`s: leaves are
+/// flattened across both axes, with `inner_offsets` recording per-inner-list
+/// leaf counts and `outer_offsets` recording per-outer-row inner-list counts.
+/// `Inner::columnar_from_refs` runs exactly once on the flat leaf slice; each
+/// inner schema column is then wrapped twice (inner-list partition + outer-
+/// list group) before shipping to `ctx`.
+///
+/// The runtime Series carries dtype `List<List<leaf>>` while the schema
+/// entry declares only `List<leaf>` — same convention as the slow path
+/// (see `tests/pass/20-generics.rs` line 826).
+///
+/// `pa_root` is the cached token stream for the `polars-arrow` crate root.
+pub fn gen_bulk_vec_vec(
+    pa_root: &TokenStream,
+    ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let inner_offsets_ident = format_ident!("__df_derive_gen_inner_offsets_{}", idx);
+    let outer_offsets_ident = format_ident!("__df_derive_gen_outer_offsets_{}", idx);
+    let inner_offsets_buf_ident = format_ident!("__df_derive_gen_inner_offsets_buf_{}", idx);
+    let outer_offsets_buf_ident = format_ident!("__df_derive_gen_outer_offsets_buf_{}", idx);
+    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
+    let total_inners_ident = format_ident!("__df_derive_gen_total_inners_{}", idx);
+    let total_leaves_ident = format_ident!("__df_derive_gen_total_leaves_{}", idx);
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    let consume_filled = bulk_vec_vec_consume_inner_columns(
+        ctx,
+        &df_ident,
+        &inner_offsets_buf_ident,
+        &outer_offsets_buf_ident,
+        &schema_iter,
+    );
+    let consume_empty = bulk_vec_vec_consume_empty_columns(
+        ctx,
+        &inner_offsets_buf_ident,
+        &outer_offsets_buf_ident,
+        &schema_iter,
+    );
+
+    // The inner and outer offsets buffers are shared across the schema
+    // iteration (cloned per inner column; `OffsetsBuffer` wraps an
+    // `Arc`-shared `Buffer`). Both branches need both buffers — the empty
+    // branch skips the `columnar_from_refs` call but still wraps an empty
+    // inner Series under the same outer-list shape.
+    let buf_setup = quote! {
+        let #inner_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#inner_offsets_ident)?;
+        let #outer_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#outer_offsets_ident)?;
+    };
+
+    quote! {{
+        let mut #total_inners_ident: usize = 0;
+        let mut #total_leaves_ident: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_inner_vec in (&(#access)).iter() {
+                #total_inners_ident += 1;
+                #total_leaves_ident += __df_derive_inner_vec.len();
+            }
+        }
+        let mut #flat_ident: ::std::vec::Vec<&#ty> =
+            ::std::vec::Vec::with_capacity(#total_leaves_ident);
+        let mut #inner_offsets_ident: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(#total_inners_ident + 1);
+        #inner_offsets_ident.push(0);
+        let mut #outer_offsets_ident: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #outer_offsets_ident.push(0);
+        for __df_derive_it in items {
+            for __df_derive_inner_vec in (&(#access)).iter() {
+                for __df_derive_v in __df_derive_inner_vec.iter() {
+                    #flat_ident.push(__df_derive_v);
+                }
+                #inner_offsets_ident.push(#flat_ident.len() as i64);
+            }
+            #outer_offsets_ident.push((#inner_offsets_ident.len() - 1) as i64);
+        }
+        if #flat_ident.is_empty() {
+            #buf_setup
+            #consume_empty
+        } else {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #buf_setup
             #consume_filled
         }
     }}

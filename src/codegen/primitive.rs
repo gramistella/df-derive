@@ -1879,43 +1879,135 @@ pub(super) fn try_gen_nested_primitive_vec_emit(
     Some(emit)
 }
 
-/// Eligible-shape probe for the bulk `Vec<Option<T>>` numeric-primitive
-/// emit. Returns `true` only when wrappers are exactly `[Vec, Option]`, the
-/// base is a bare numeric primitive (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`),
-/// and there is no transform. Other shapes — `Vec<Option<bool>>`,
-/// `Vec<Option<String>>`, `Vec<Option<DateTime>>`, `Vec<Option<Decimal>>`,
-/// `Option<Vec<Option<T>>>`, `Vec<Vec<Option<T>>>` — keep the typed-
-/// `ListPrimitiveChunkedBuilder` per-row path: bool would need a validity
-/// bit per element regardless, the string / datetime / decimal shapes need
-/// transforms or different storage, and any extra wrapper level changes the
-/// flattening invariants this emitter relies on.
-pub(super) const fn is_direct_vec_option_numeric_leaf(
+/// Per-element emission info for the bulk `Vec<Option<T>>` direct
+/// `LargeListArray` fast path: native rust storage type, leaf logical
+/// `DataType` token, whether the per-element transform is fallible (embeds
+/// `?` and may early-return a `PolarsError`), and whether the
+/// `Decimal128Encode` trait must be imported anonymously into the emitted
+/// block so dot-syntax method resolution finds `try_to_i128_mantissa` on the
+/// `&Decimal` receiver.
+///
+/// Returns `Some(...)` only for shapes the fast path supports:
+/// - Bare numeric primitive (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`), no
+///   transform → native = base, leaf = matching `DataType::Int*/UInt*/
+///   Float*`, non-fallible, no trait import. The hot per-element store is
+///   a plain copy (the value is already the storage type).
+/// - `DateTime<Utc>` + `DateTimeToInt(unit)` → native `i64`, leaf
+///   `DataType::Datetime(unit, None)`, fallible only for nanosecond unit
+///   (`timestamp_nanos_opt` returns `None` outside chrono's representable
+///   range), no trait import. The mapped expression dispatches per unit
+///   (`timestamp_millis` / `timestamp_micros` / `timestamp_nanos_opt?`).
+/// - `Decimal` + `DecimalToInt128 { precision, scale }` → native `i128`,
+///   leaf `DataType::Decimal(precision, scale)`, always fallible (rescale
+///   may overflow), trait import required. The mapped expression calls
+///   `try_to_i128_mantissa(scale)` via the user-pluggable
+///   `Decimal128Encode` trait.
+///
+/// Other shapes — `Vec<Option<bool>>`, `Vec<Option<String>>`,
+/// `Option<Vec<Option<T>>>`, `Vec<Vec<Option<T>>>`, ISize/USize bases —
+/// return `None` and keep the typed-`ListPrimitiveChunkedBuilder` /
+/// `ListStringChunkedBuilder` / boxed-dyn per-row path.
+pub(super) struct VecOptionLeafEmitInfo {
+    pub native: TokenStream,
+    pub leaf_dtype: TokenStream,
+    pub needs_decimal_import: bool,
+}
+
+pub(super) fn vec_option_leaf_emit_info(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
-) -> bool {
-    if transform.is_some() || !matches!(wrappers, [Wrapper::Vec, Wrapper::Option]) {
-        return false;
+) -> Option<VecOptionLeafEmitInfo> {
+    if !matches!(wrappers, [Wrapper::Vec, Wrapper::Option]) {
+        return None;
     }
-    matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-    )
+    let pp = super::polars_paths::prelude();
+    match (base, transform) {
+        (BaseType::I8, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { i8 },
+            leaf_dtype: quote! { #pp::DataType::Int8 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::I16, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { i16 },
+            leaf_dtype: quote! { #pp::DataType::Int16 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::I32, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { i32 },
+            leaf_dtype: quote! { #pp::DataType::Int32 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::I64, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { i64 },
+            leaf_dtype: quote! { #pp::DataType::Int64 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::U8, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { u8 },
+            leaf_dtype: quote! { #pp::DataType::UInt8 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::U16, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { u16 },
+            leaf_dtype: quote! { #pp::DataType::UInt16 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::U32, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { u32 },
+            leaf_dtype: quote! { #pp::DataType::UInt32 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::U64, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { u64 },
+            leaf_dtype: quote! { #pp::DataType::UInt64 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::F32, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { f32 },
+            leaf_dtype: quote! { #pp::DataType::Float32 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::F64, None) => Some(VecOptionLeafEmitInfo {
+            native: quote! { f64 },
+            leaf_dtype: quote! { #pp::DataType::Float64 },
+            needs_decimal_import: false,
+        }),
+        (BaseType::DateTimeUtc, Some(PrimitiveTransform::DateTimeToInt(unit))) => {
+            let unit_tokens = match unit {
+                DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
+                DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
+                DateTimeUnit::Nanoseconds => quote! { #pp::TimeUnit::Nanoseconds },
+            };
+            Some(VecOptionLeafEmitInfo {
+                native: quote! { i64 },
+                leaf_dtype: quote! {
+                    #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
+                },
+                needs_decimal_import: false,
+            })
+        }
+        (BaseType::Decimal, Some(PrimitiveTransform::DecimalToInt128 { precision, scale })) => {
+            let p = *precision as usize;
+            let s = *scale as usize;
+            Some(VecOptionLeafEmitInfo {
+                native: quote! { i128 },
+                leaf_dtype: quote! { #pp::DataType::Decimal(#p, #s) },
+                needs_decimal_import: true,
+            })
+        }
+        _ => None,
+    }
 }
 
-/// Native rust + leaf `polars::prelude::DataType` token tree for the
-/// `Vec<Option<T>>` numeric-primitive fast path. Caller must gate on
-/// `is_direct_vec_option_numeric_leaf` so the non-numeric arms are
-/// statically unreachable.
+/// Native rust + leaf `polars::prelude::DataType` token tree for the bare-
+/// numeric variants used by emitters that operate on no-transform numeric
+/// shapes (e.g. the `Vec<Vec<Option<#native>>>` emitter, where transform-
+/// bearing shapes still keep the typed `ListPrimitiveChunkedBuilder` per-row
+/// path because flattening twin offset stacks alongside fallible per-element
+/// transforms isn't currently worth the codegen complexity). Caller must
+/// gate on a predicate that excludes transform-bearing bases (e.g.
+/// `is_direct_vec_vec_option_numeric_leaf`).
 fn vec_option_numeric_leaf_types(base: &BaseType) -> (TokenStream, TokenStream) {
     let pp = super::polars_paths::prelude();
     match base {
@@ -1938,32 +2030,53 @@ fn vec_option_numeric_leaf_types(base: &BaseType) -> (TokenStream, TokenStream) 
         | BaseType::Struct(..)
         | BaseType::Generic(_) => unreachable!(
             "vec_option_numeric_leaf_types called for non-numeric base; \
-             callers must gate on is_direct_vec_option_numeric_leaf"
+             callers must gate on a no-transform numeric-only predicate"
         ),
     }
 }
 
 /// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
-/// `Vec<Option<T>>` over a bare numeric primitive base (no transform).
-/// `None` for any other shape — caller falls through to the typed
-/// `ListPrimitiveChunkedBuilder<Native>::append_iter` per-row path.
+/// `Vec<Option<T>>` over the shapes enumerated by `vec_option_leaf_emit_info`
+/// — bare numerics with no transform, `DateTime<Utc>` with `DateTimeToInt`,
+/// and `Decimal` with `DecimalToInt128`. `None` for any other shape — caller
+/// falls through to the typed `ListPrimitiveChunkedBuilder<Native>::append_iter`
+/// per-row path.
 ///
 /// The block scans `items` once, computing the total leaf count, then
 /// allocates a flat `Vec<Native>` and a parallel `MutableBitmap` pre-filled
-/// with `true` at that capacity. Each `Some(v)` row pushes the value (the
-/// validity bit is already set); each `None` row pushes `<Native>::default()`
-/// as a placeholder and flips the corresponding bit via the safe
-/// `MutableBitmap::set` (a bounds-checked single-byte write — cheaper than
-/// the typed-builder's per-element `MutablePrimitiveArray::push(Option<T>)`
-/// branching on the validity-active flag and the discriminant). The
-/// finisher builds a `PrimitiveArray::<Native>::new(dtype, flat.into(),
+/// with `true` at that capacity. Each `Some(v)` row materializes the
+/// transformed value (a copy for bare numerics; `timestamp_*` for `DateTime`;
+/// `try_to_i128_mantissa` for `Decimal`) and pushes it (the validity bit is
+/// already set); each `None` row pushes `<Native>::default()` as a placeholder
+/// and flips the corresponding bit via the safe `MutableBitmap::set` (a
+/// bounds-checked single-byte write — cheaper than the typed-builder's
+/// per-element `MutablePrimitiveArray::push(Option<T>)` branching on the
+/// validity-active flag and the discriminant).
+///
+/// For the fallible transforms (`DateTime<Utc>` at nanosecond precision, all
+/// `Decimal` rescales) the per-element conversion embeds `?` directly inside
+/// the loop body; failure short-circuits out of the surrounding emit block,
+/// then out of the `Columnar::columnar_from_refs` /
+/// `__df_derive_vec_to_inner_list_values` method via the same `?` propagation
+/// the typed-builder fallible path uses (see
+/// `gen_typed_primitive_list_append`'s `info.fallible` branch). Errors
+/// preserve the same `polars_err!(ComputeError: ...)` text the typed path
+/// produces because the per-element expression is built by
+/// `generate_primitive_access_expr`, which routes through `map_primitive_expr`.
+///
+/// The finisher builds a `PrimitiveArray::<Native>::new(dtype, flat.into(),
 /// Some(validity.into()))` — both conversions are zero-copy: `Vec<T> ->
 /// Buffer<T>` and `MutableBitmap -> Option<Bitmap>` (the latter collapses
 /// to `None` when no bits were unset, preserving the no-null fast path) —
 /// wraps it in a `LargeListArray` partitioned by the per-row offsets, and
 /// consumes the array via the in-scope free helper
 /// `__df_derive_assemble_list_series_unchecked` so the resulting Series's
-/// dtype is `List<leaf>` exactly (no post-finish cast).
+/// dtype is `List<leaf>` exactly (no post-finish cast). `leaf` is the
+/// schema's logical dtype (`Datetime(unit, None)` / `Decimal(p, s)` / bare
+/// numeric), which is mismatched physically against the inner i64/i128
+/// `PrimitiveArray` for the transform-bearing arms — `unchecked` accepts
+/// this exactly the way the typed `ListPrimitiveChunkedBuilder<Int128Type>`
+/// + `Decimal(p, s)` logical dtype path does.
 ///
 /// `parent_name`:
 /// - `Some(name)` for the columnar context: the resulting Series is renamed
@@ -1977,13 +2090,40 @@ pub(super) fn try_gen_vec_option_numeric_emit(
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
     parent_name: Option<&str>,
+    decimal128_encode_trait: &TokenStream,
 ) -> Option<TokenStream> {
-    if !is_direct_vec_option_numeric_leaf(base, transform, wrappers) {
-        return None;
-    }
+    let info = vec_option_leaf_emit_info(base, transform, wrappers)?;
     let pp = super::polars_paths::prelude();
-    let (native, leaf_dtype) = vec_option_numeric_leaf_types(base);
+    let VecOptionLeafEmitInfo {
+        native,
+        leaf_dtype,
+        needs_decimal_import,
+    } = &info;
+    let elem_ident = quote! { __df_derive_v };
+    // Per-element value materialization. For the no-transform numeric case we
+    // keep the original `*v` copy: it's identical machine code to
+    // `<T as Clone>::clone(&v)` for Copy primitives but compiles slightly
+    // faster and matches the established baseline byte-for-byte. Transform-
+    // bearing arms route through `generate_primitive_access_expr`, which
+    // dispatches per-transform — `timestamp_millis()` / `timestamp_micros()`
+    // / `timestamp_nanos_opt()?` for DateTime, and the `Decimal128Encode`-
+    // backed `try_to_i128_mantissa(scale)?` for Decimal.
+    let value_expr = if transform.is_some() {
+        super::common::generate_primitive_access_expr(
+            &elem_ident,
+            transform,
+            decimal128_encode_trait,
+        )
+    } else {
+        quote! { *#elem_ident }
+    };
+    let import_trait = if *needs_decimal_import {
+        quote! { use #decimal128_encode_trait as _; }
+    } else {
+        quote! {}
+    };
     let series_block = quote! {{
+        #import_trait
         let mut __df_derive_total: usize = 0;
         for __df_derive_it in items {
             __df_derive_total += (&(#access)).len();
@@ -2003,7 +2143,7 @@ pub(super) fn try_gen_vec_option_numeric_emit(
             for __df_derive_opt in (&(#access)).iter() {
                 match __df_derive_opt {
                     ::std::option::Option::Some(__df_derive_v) => {
-                        __df_derive_flat.push(*__df_derive_v);
+                        __df_derive_flat.push({ #value_expr });
                     }
                     ::std::option::Option::None => {
                         __df_derive_flat.push(<#native as ::std::default::Default>::default());

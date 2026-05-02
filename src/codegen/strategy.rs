@@ -422,6 +422,7 @@ impl PrimitiveStrategy {
                 self.p.transform.as_ref(),
                 &self.wrappers,
                 parent_name,
+                &self.p.decimal128_encode_trait,
             )
         })
         .or_else(|| {
@@ -519,6 +520,7 @@ impl PrimitiveStrategy {
                 self.p.transform.as_ref(),
                 &self.wrappers,
                 None,
+                &self.p.decimal128_encode_trait,
             )
         })
         .or_else(|| {

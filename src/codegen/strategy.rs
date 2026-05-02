@@ -249,11 +249,19 @@ impl StrategyVariant for PrimitiveStrategy {
     }
 
     fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        // Encoder IR for `[]`/`[Option]` shapes wraps the same Series
-        // expression in `AnyValue::List(...)` — same emission as the prior
-        // `primitive_finishers_for_vec_anyvalues` direct fast paths, just
-        // routed through the IR.
-        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, "") {
+        // Encoder IR covers `[]`, `[Option]`, and the `[Vec, ...]` shapes
+        // added in Step 2. For the `[Vec, ...]` shapes the bulk emit lives
+        // in `gen_populator_inits` (consumed by the populator decls block);
+        // the finisher just wraps the encoder's `finish_series` in
+        // `AnyValue::List(...)`. For `[]`/`[Option]` shapes the finisher
+        // does the same with the leaf-buffer Series. The access expression
+        // is required when the encoder builds its bulk decls; threading
+        // `it_access()` keeps the precount loops over the real field
+        // even though this method is the finisher (the access doesn't
+        // appear in `finish_series` itself; it only matters because
+        // `try_build_encoder` is shape-conditional).
+        let access = self.it_access();
+        if let Some(enc) = self.try_build_encoder(&access, idx, "") {
             let series = enc.finish_series;
             let pp = super::polars_paths::prelude();
             return quote! {
@@ -270,11 +278,16 @@ impl StrategyVariant for PrimitiveStrategy {
     }
 
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        // Encoder IR covers the `[]` and `[Option]` primitive shapes —
-        // `try_build_encoder` returns `None` for everything else (Vec layers,
-        // unsupported leaf carve-outs), and we fall through to the legacy
-        // `primitive_decls` for those.
-        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, &self.field_name) {
+        // Encoder IR covers `[]`, `[Option]`, and the `[Vec, ...]` shapes
+        // added in Step 2. For the `[Vec, ...]` shapes the precount loops
+        // and the bulk per-leaf push live inside the encoder's `decls`,
+        // so the access must be the real field expression — pass
+        // `it_access()` even though the leaf-shape encoders ignore it for
+        // `decls`. Falls through to the legacy `primitive_decls` for the
+        // few shapes the encoder doesn't yet cover (notably bare
+        // `ISize`/`USize`).
+        let access = self.it_access();
+        if let Some(enc) = self.try_build_encoder(&access, idx, &self.field_name) {
             return enc.decls;
         }
         super::primitive::primitive_decls(
@@ -332,209 +345,87 @@ impl StrategyVariant for PrimitiveStrategy {
 
     fn gen_bulk_columnar_emit(
         &self,
-        pa_root: &TokenStream,
-        _idx: usize,
+        _pa_root: &TokenStream,
+        idx: usize,
     ) -> Option<Vec<TokenStream>> {
+        // For `[Vec, ...]` shapes the encoder packs the entire emit (precount,
+        // buffers, fill loop, leaf array, list array stacking) into one block.
+        // Routing that block through the bulk-emit channel — instead of the
+        // decls/push/builders triple — keeps it AFTER the per-row iteration
+        // over `items`. That ordering matches the legacy direct-fast-path
+        // emitters and preserves their cache locality (the per-row buffers
+        // for non-vec fields finish populating before the vec fields touch
+        // memory). See bench `vec_vec_i32` / `vec_opt_datetime`: emitting in
+        // decls regresses ~4% relative to placing the same work post-loop.
+        if !has_vec(&self.wrappers) {
+            return None;
+        }
         let access = self.it_access();
-        let parent_name = Some(self.field_name.as_str());
-        super::primitive::try_gen_vec_vec_string_emit(
-            pa_root,
-            &access,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            parent_name,
-        )
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_option_numeric_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_option_string_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_numeric_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-                &self.p.decimal128_encode_trait,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_string_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_nested_primitive_vec_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                parent_name,
-            )
-        })
-        .map(|emit| vec![emit])
+        let enc = self.try_build_encoder(&access, idx, &self.field_name)?;
+        let pp = super::polars_paths::prelude();
+        let decls = enc.decls;
+        let series = enc.finish_series;
+        Some(vec![quote! {
+            #(#decls)*
+            {
+                let s: #pp::Series = { #series };
+                columns.push(s.into());
+            }
+        }])
     }
 
     fn gen_bulk_vec_anyvalues_emit(
         &self,
-        pa_root: &TokenStream,
-        _idx: usize,
+        _pa_root: &TokenStream,
+        idx: usize,
     ) -> Option<Vec<TokenStream>> {
+        // Mirror of `gen_bulk_columnar_emit` for the vec-anyvalues helper:
+        // wrap the encoder's `finish_series` in `AnyValue::List(...)` and
+        // emit the whole block as a bulk operation. Same ordering rationale
+        // as the columnar path.
+        if !has_vec(&self.wrappers) {
+            return None;
+        }
         let access = self.it_access();
-        super::primitive::try_gen_vec_vec_string_emit(
-            pa_root,
-            &access,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            None,
-        )
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_option_numeric_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_option_string_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_vec_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_numeric_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-                &self.p.decimal128_encode_trait,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_string_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_option_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_nested_primitive_vec_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .or_else(|| {
-            super::primitive::try_gen_vec_bool_emit(
-                pa_root,
-                &access,
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-                None,
-            )
-        })
-        .map(|emit| vec![emit])
+        let enc = self.try_build_encoder(&access, idx, "")?;
+        let pp = super::polars_paths::prelude();
+        let decls = enc.decls;
+        let series = enc.finish_series;
+        Some(vec![quote! {
+            #(#decls)*
+            {
+                let inner: #pp::Series = { #series };
+                out_values.push(#pp::AnyValue::List(inner));
+            }
+        }])
     }
 
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
         let name = &self.field_name;
         let pp = super::polars_paths::prelude();
+        // Encoder IR covers `[]`, `[Option]`, `[Vec]`, `[Vec, Option]`,
+        // `[Vec, Vec]`, and `[Vec, Vec, Option]` for primitive shapes.
+        // For these the encoder already has the right dtype baked in; we
+        // just splice the finish expression into a `columns.push` block.
+        // The access is irrelevant to the finisher itself, but consistency
+        // with `gen_populator_inits` (which threads the real access
+        // through) keeps `try_build_encoder` shape-checked under the same
+        // arguments.
+        let access = self.it_access();
+        if let Some(enc) = self.try_build_encoder(&access, idx, name) {
+            let series = enc.finish_series;
+            return vec![quote! {{
+                let s = { #series };
+                columns.push(s.into());
+            }}];
+        }
         if has_vec(&self.wrappers) {
-            // The list builder was constructed with the correct inner dtype
-            // (`outer_list_inner_dtype` / `inner_logical`), so the finished
-            // series already has the schema-declared dtype — no cast needed
-            // here. Typed `ListPrimitiveChunkedBuilder<Native>` finishers call
+            // Legacy path for `[Option, Vec]`, `[Option, Vec, Option]`,
+            // `[Vec, Option, Vec]`, deeper nestings, and any vec-bearing
+            // shape over `ISize`/`USize`. The list builder was constructed
+            // in `primitive_decls` with the correct inner dtype, so the
+            // finished Series already has the schema dtype. Typed
+            // `ListPrimitiveChunkedBuilder<Native>` finishers call
             // `ListBuilderTrait::finish(&mut self)` directly; the boxed-dyn
             // path needs the `&mut *` deref through the Box.
             let lb_ident = PopulatorIdents::primitive_list_builder(idx);
@@ -554,16 +445,6 @@ impl StrategyVariant for PrimitiveStrategy {
                     #pp::ListBuilderTrait::finish(#builder_ref),
                 )
                 .with_name(#name.into());
-                columns.push(s.into());
-            }}];
-        }
-        // Encoder IR covers the `[]` and `[Option]` primitive shapes; falls
-        // through to the legacy ISize/USize generic finisher when
-        // `try_build_encoder` returns `None`.
-        if let Some(enc) = self.try_build_encoder(&quote! {}, idx, name) {
-            let series = enc.finish_series;
-            return vec![quote! {{
-                let s = { #series };
                 columns.push(s.into());
             }}];
         }

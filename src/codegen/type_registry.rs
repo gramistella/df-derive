@@ -5,30 +5,6 @@ use crate::type_analysis::{
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-/// True for the bare numeric primitive bases that flow through the macro's
-/// columnar fast paths (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`). Excludes
-/// `ISize`/`USize` (their materialized buffer type is `i64`/`u64` so they
-/// would mismatch the field's native type on the typed-builder path) and
-/// `Bool` (validity-bit semantics differ from numeric primitives, see the
-/// extended note on `typed_primitive_list_info`). Used as the single
-/// gate for every numeric-leaf predicate in `primitive.rs`, plus the
-/// shape filter for `numeric_info`.
-pub(super) const fn is_numeric_base(base: &BaseType) -> bool {
-    matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-    )
-}
-
 /// Token bundle for one bare numeric primitive base. Every fast-path emitter
 /// consumes some subset of these — collected here so the 10-arm match per
 /// metadata kind doesn't have to be repeated at every call site.
@@ -43,11 +19,14 @@ pub(super) struct NumericInfo {
     pub builder_type: TokenStream,
 }
 
-/// Returns `Some(NumericInfo)` for the bare numeric bases enumerated by
-/// `is_numeric_base`. `None` for everything else (`Bool`, `String`,
-/// `ISize`/`USize`, `DateTime`, `Decimal`, `Struct`, `Generic`). Caller-side
-/// gating on a numeric-only predicate is fine: the helper fully encapsulates
-/// the 10-arm dispatch.
+/// Returns `Some(NumericInfo)` for the bare numeric bases (`i8/i16/i32/i64/
+/// u8/u16/u32/u64/f32/f64`). `None` for everything else (`Bool`, `String`,
+/// `ISize`/`USize`, `DateTime`, `Decimal`, `Struct`, `Generic`).
+///
+/// `ISize`/`USize` are excluded because their materialized buffer type is
+/// `i64`/`u64`, which would mismatch the field's native type on the typed-
+/// builder path. `Bool` is excluded because its validity-bit semantics
+/// differ — see the extended note on `typed_primitive_list_info`.
 pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
     let pp = super::polars_paths::prelude();
     let info = |native: TokenStream, variant: &str| {

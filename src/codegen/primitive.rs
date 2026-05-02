@@ -2277,3 +2277,176 @@ pub(super) fn try_gen_vec_bool_emit(
     );
     Some(emit)
 }
+
+/// Eligible-shape probe for the bulk `Vec<Vec<Option<T>>>` numeric-primitive
+/// emit. Returns `true` only when wrappers are exactly `[Vec, Vec, Option]`,
+/// the base is a bare numeric primitive
+/// (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64`), and there is no transform.
+///
+/// Excludes:
+/// - `Vec<Vec<Option<bool>>>` / `Vec<Vec<Option<String>>>` — different leaf
+///   storage; bool would also need a per-element validity bit on the leaf.
+/// - `Vec<Vec<T>>` (no Option) — handled by `try_gen_nested_primitive_vec_emit`.
+/// - `Vec<Option<T>>` — handled by `try_gen_vec_option_numeric_emit`.
+/// - Any extra `Option` layer (e.g. `Option<Vec<Vec<Option<T>>>>`,
+///   `Vec<Option<Vec<Option<T>>>>`) — flattening invariants this emitter
+///   relies on don't model an outer/middle Option layer.
+/// - Transforms (`DateTime`, `Decimal`, `as_str`, `as_string`).
+pub(super) const fn is_direct_vec_vec_option_numeric_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    if transform.is_some() || !matches!(wrappers, [Wrapper::Vec, Wrapper::Vec, Wrapper::Option]) {
+        return false;
+    }
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+    )
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Vec<Option<T>>>` over a bare numeric primitive base (no transform).
+/// `None` for any other shape — caller falls through to the slower
+/// per-row typed-`ListBuilder` path.
+///
+/// Combines the two-level offset stacking from the `Vec<Vec<numeric>>`
+/// emitter (`try_gen_nested_primitive_vec_emit`) with the inner-Option
+/// split-buffer from the `Vec<Option<numeric>>` emitter
+/// (`try_gen_vec_option_numeric_emit`). The block scans `items` once to
+/// compute total inner-vec count and total leaf count, then allocates a
+/// flat `Vec<Native>` and a parallel `MutableBitmap` pre-filled with `true`
+/// at that capacity. Each `Some(v)` leaf pushes the value and advances the
+/// bitmap index; each `None` leaf pushes `<Native>::default()` as a
+/// placeholder and flips the corresponding bit via the safe
+/// `MutableBitmap::set`. Per-inner-vec offsets and per-outer-vec offsets
+/// are accumulated alongside.
+///
+/// The finisher builds a `PrimitiveArray::<Native>::new(dtype, flat.into(),
+/// Some(validity.into()))`, wraps it in a `LargeListArray` partitioned by
+/// the inner offsets, wraps that in a second `LargeListArray` partitioned
+/// by the outer offsets, and consumes the result via the in-scope free
+/// helper `__df_derive_assemble_list_series_unchecked` so the resulting
+/// Series's dtype is `List<List<leaf>>` exactly (no post-finish cast).
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_vec_option_numeric_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !is_direct_vec_vec_option_numeric_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let (native, leaf_dtype) = vec_option_numeric_leaf_types(base);
+    let inner_logical_dtype = quote! {
+        #pp::DataType::List(::std::boxed::Box::new(#leaf_dtype))
+    };
+    let series_block = quote! {{
+        let mut __df_derive_total_leaves: usize = 0;
+        let mut __df_derive_total_inners: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                __df_derive_total_leaves += __df_derive_inner.len();
+                __df_derive_total_inners += 1;
+            }
+        }
+        let mut __df_derive_flat: ::std::vec::Vec<#native> =
+            ::std::vec::Vec::with_capacity(__df_derive_total_leaves);
+        let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
+            let mut __df_derive_b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(__df_derive_total_leaves);
+            __df_derive_b.extend_constant(__df_derive_total_leaves, true);
+            __df_derive_b
+        };
+        let mut __df_derive_inner_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(__df_derive_total_inners + 1);
+        __df_derive_inner_offsets.push(0);
+        let mut __df_derive_outer_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_outer_offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                for __df_derive_opt in __df_derive_inner.iter() {
+                    match __df_derive_opt {
+                        ::std::option::Option::Some(__df_derive_v) => {
+                            __df_derive_flat.push(*__df_derive_v);
+                        }
+                        ::std::option::Option::None => {
+                            __df_derive_flat.push(<#native as ::std::default::Default>::default());
+                            __df_derive_validity.set(__df_derive_flat.len() - 1, false);
+                        }
+                    }
+                }
+                __df_derive_inner_offsets.push(__df_derive_flat.len() as i64);
+            }
+            __df_derive_outer_offsets.push((__df_derive_inner_offsets.len() - 1) as i64);
+        }
+        let __df_derive_leaf_arr: #pa_root::array::PrimitiveArray<#native> =
+            #pa_root::array::PrimitiveArray::<#native>::new(
+                <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
+                __df_derive_flat.into(),
+                ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                    __df_derive_validity,
+                ),
+            );
+        let __df_derive_inner_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_inner_offsets)?;
+        let __df_derive_inner_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_leaf_arr).clone(),
+            ),
+            __df_derive_inner_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_leaf_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        let __df_derive_outer_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_outer_offsets)?;
+        let __df_derive_outer_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_inner_list_arr).clone(),
+            ),
+            __df_derive_outer_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_inner_list_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_outer_list_arr,
+            #inner_logical_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}

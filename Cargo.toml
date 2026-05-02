@@ -100,3 +100,7 @@ harness = false
 [[bench]]
 name = "16_option_vec_option_struct"
 harness = false
+
+[[bench]]
+name = "17_vec_vec_struct"
+harness = false

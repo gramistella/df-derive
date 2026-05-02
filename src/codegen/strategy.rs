@@ -454,6 +454,29 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
+        // Top-level (non-Option) `String` (no transform): the buffer is a
+        // `MutableBinaryViewArray<str>` accumulated row-by-row in the items
+        // loop (see `primitive_decls`). Freeze it into a `Utf8ViewArray`,
+        // wrap in `StringChunked::with_chunk`, and convert to a Series —
+        // same `Utf8ViewArray`-backed column the `Series::new(&Vec<&str>)`
+        // path produces, minus the second walk through the intermediate
+        // `Vec<&str>`. `Option<String>` keeps the `Vec<Option<&str>>`
+        // borrowing buffer (see `is_direct_view_string_leaf` for the carve-out
+        // rationale).
+        if super::primitive::is_direct_view_string_leaf(
+            &self.p.base_type,
+            self.p.transform.as_ref(),
+            &self.wrappers,
+        ) {
+            let buf_ident = PopulatorIdents::primitive_buf(idx);
+            return vec![quote! {{
+                let s = #pp::IntoSeries::into_series(
+                    #pp::StringChunked::with_chunk(#name.into(), #buf_ident.freeze()),
+                );
+                columns.push(s.into());
+            }}];
+        }
+
         // Decimal: the buffer is `Vec<i128>` / `Vec<Option<i128>>` already
         // rescaled to the schema scale. Build the `DecimalChunked` directly
         // via `Int128Chunked::into_decimal_unchecked` — skips the

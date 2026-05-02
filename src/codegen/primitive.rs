@@ -14,6 +14,30 @@ use syn::Ident;
 
 use super::populator_idents::PopulatorIdents;
 
+/// Top-level `String` (no transform, no `Vec<…>`, no `Option<…>`) bypasses
+/// the `Vec<&str>` intermediate buffer entirely and accumulates straight
+/// into a `MutableBinaryViewArray<str>` during the items loop. The finisher
+/// then wraps it in `StringChunked::with_chunk` — same `Utf8ViewArray`-backed
+/// column the `Series::new(&Vec<&str>)` path produces, minus the second walk
+/// that `from_slice_values` would do.
+///
+/// `Option<String>` is intentionally excluded: the per-row `match` +
+/// `push_value`/`push_null` (or generic `push(Option<V>)`) carries enough
+/// extra work in the items loop to overshoot the second-walk savings on this
+/// polars version — measured a ~7-8% regression on `string_columns_optional`
+/// when both branches were routed through this fast path. The existing
+/// `Vec<Option<&str>>` path stays cheap because its per-row push is a fat
+/// pointer memcpy, and the second walk it pays for is amortized inside
+/// polars' tight `extend` body. Only the required (non-Option) branch
+/// captures the saving cleanly.
+pub(super) const fn is_direct_view_string_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none() && matches!(base, BaseType::String) && wrappers.is_empty()
+}
+
 /// Borrow strategy for a leaf that can populate the `Vec<&str>` /
 /// `Vec<Option<&str>>` columnar buffer instead of an owning `Vec<String>`.
 /// Only the bare leaf and bare `Option<…>` shapes flatten into one of these
@@ -230,6 +254,15 @@ pub fn generate_primitive_for_columnar_push(
     idx: usize,
     decimal128_encode_trait: &TokenStream,
 ) -> TokenStream {
+    // Direct `MutableBinaryViewArray<str>` accumulation for top-level
+    // (non-Option) `String`: the buffer copies each row's bytes straight
+    // into the view array, skipping a `Vec<&str>` round-trip and the second
+    // walk `Series::new(&Vec<&str>)` would do via `from_slice_values`.
+    if is_direct_view_string_leaf(base_type, transform, wrappers) {
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        return quote! { #buf_ident.push_value((#access).as_str()); };
+    }
+
     // Borrowing fast path: the buffer is declared as `Vec<&str>` /
     // `Vec<Option<&str>>` by `primitive_decls`, so we push borrows of the
     // field instead of cloning each row's `String` into an owned buffer.
@@ -396,12 +429,27 @@ pub fn primitive_decls(
     let opt = has_option(wrappers);
     let vec = has_vec(wrappers);
 
-    // Borrowing fast path for `String` / `Option<String>` and any base type
-    // with `as_str` (`AsRef<str>` impl): a `Vec<&str>` (or
-    // `Vec<Option<&str>>`) buffer borrows from `items` instead of cloning each
-    // row's `String`. `Series::new(name, &Vec<&str>)` dispatches to
-    // `StringChunked::from_slice` and produces the same `Utf8ViewArray`-backed
-    // column the owning path produces.
+    // Direct accumulation fast path for top-level (non-Option) `String`:
+    // build the `MutableBinaryViewArray<str>` in place during the items loop,
+    // skipping the `Vec<&str>` -> `from_slice_values` intermediate that
+    // `Series::new(&Vec<&str>)` would walk. The finisher freezes the buffer
+    // into a `Utf8ViewArray` and wraps it in a `StringChunked` directly —
+    // same column shape the `Vec<&str>` path produces, minus the second pass.
+    if is_direct_view_string_leaf(base_type, transform, wrappers) {
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        let pa_root = super::polars_paths::polars_arrow_root();
+        decls.push(quote! {
+            let mut #buf_ident: #pa_root::array::MutableBinaryViewArray<str> =
+                #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
+        });
+        return decls;
+    }
+
+    // Borrowing fast path for any base type with `as_str` (`AsRef<str>` impl):
+    // a `Vec<&str>` (or `Vec<Option<&str>>`) buffer borrows from `items`
+    // instead of cloning each row's `String`. `Series::new(name, &Vec<&str>)`
+    // dispatches to `StringChunked::from_slice` and produces the same
+    // `Utf8ViewArray`-backed column the owning path produces.
     if classify_borrow(base_type, transform, wrappers).is_some() {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
         if opt {
@@ -548,6 +596,19 @@ pub fn primitive_finishers_for_vec_anyvalues(
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #pp::ListBuilderTrait::finish(#builder_ref),
+            );
+            out_values.push(#pp::AnyValue::List(inner));
+        }
+    } else if is_direct_view_string_leaf(base_type, transform, wrappers) {
+        // Direct `MutableBinaryViewArray<str>` accumulation (see
+        // `primitive_decls`): freeze into a `Utf8ViewArray`, wrap as a
+        // `StringChunked`, convert to Series — same dtype as the
+        // `Series::new(&Vec<&str>)` path, minus the second walk through the
+        // intermediate `Vec<&str>`.
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        quote! {
+            let inner = #pp::IntoSeries::into_series(
+                #pp::StringChunked::with_chunk("".into(), #buf_ident.freeze()),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }

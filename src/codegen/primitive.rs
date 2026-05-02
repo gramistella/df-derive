@@ -79,7 +79,8 @@ pub(super) const fn is_direct_primitive_array_numeric_leaf(
 /// Returns the prelude path to the `*Chunked` alias for each eligible
 /// `BaseType` — `Int64Chunked` etc. — paired with the same prelude root.
 /// Caller should only invoke after `is_direct_primitive_array_numeric_leaf`
-/// returns `true`, which restricts inputs to the bases enumerated here.
+/// or `is_direct_primitive_array_option_numeric_leaf` returns `true`, which
+/// restricts inputs to the bases enumerated here.
 pub(super) fn numeric_chunked_type(base: &BaseType) -> TokenStream {
     let pp = super::polars_paths::prelude();
     match base {
@@ -105,6 +106,191 @@ pub(super) fn numeric_chunked_type(base: &BaseType) -> TokenStream {
              callers must gate on is_direct_primitive_array_numeric_leaf"
         ),
     }
+}
+
+/// Native Rust type token for the bare-numeric direct-finish path. Used by
+/// the `Option<numeric>` direct-`PrimitiveArray::new` fast path to type the
+/// `Vec<#native>` values buffer (the `MutableBitmap` carries validity
+/// separately so the buffer holds the value-or-default placeholder
+/// directly). Caller must gate on `is_direct_primitive_array_numeric_leaf`
+/// or `is_direct_primitive_array_option_numeric_leaf`.
+pub(super) fn numeric_native_rust_type(base: &BaseType) -> TokenStream {
+    match base {
+        BaseType::I8 => quote! { i8 },
+        BaseType::I16 => quote! { i16 },
+        BaseType::I32 => quote! { i32 },
+        BaseType::I64 => quote! { i64 },
+        BaseType::U8 => quote! { u8 },
+        BaseType::U16 => quote! { u16 },
+        BaseType::U32 => quote! { u32 },
+        BaseType::U64 => quote! { u64 },
+        BaseType::F32 => quote! { f32 },
+        BaseType::F64 => quote! { f64 },
+        BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => unreachable!(
+            "numeric_native_rust_type called for non-numeric base; \
+             callers must gate on is_direct_primitive_array_(option_)numeric_leaf"
+        ),
+    }
+}
+
+/// Top-level `Option<numeric>` leaf (no transform, exactly `[Option]`).
+/// Same numeric bases as `is_direct_primitive_array_numeric_leaf`. The fast
+/// path declares `Vec<#native>` + `MutableBitmap` instead of
+/// `Vec<Option<#native>>` and accumulates value+validity separately during
+/// the items loop. The finisher then builds a `PrimitiveArray::new(dtype,
+/// values.into(), Some(validity.into()))` and wraps it in
+/// `<*Chunked>::with_chunk(name, arr).into_series()` — same column the
+/// `Series::new(&Vec<Option<T>>) -> from_slice_options ->
+/// PrimitiveChunkedBuilder` slow path produces, but skips the second walk
+/// over the `Vec<Option<T>>` and the per-row "is validity active?" branch
+/// inside `MutablePrimitiveArray::push(Option<T>)`.
+pub(super) const fn is_direct_primitive_array_option_numeric_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    if transform.is_some() || !matches!(wrappers, [Wrapper::Option]) {
+        return false;
+    }
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+    )
+}
+
+/// Buffer-pair declarations for the `Option<numeric>` direct fast path: a
+/// `Vec<#native>` for values and a `MutableBitmap` for validity, both
+/// pre-sized to `items.len()`. Caller must gate on
+/// `is_direct_primitive_array_option_numeric_leaf`.
+fn gen_option_numeric_direct_decls(base: &BaseType, idx: usize) -> Vec<TokenStream> {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let native = numeric_native_rust_type(base);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    vec![
+        quote! {
+            let mut #buf_ident: ::std::vec::Vec<#native> =
+                ::std::vec::Vec::with_capacity(items.len());
+        },
+        quote! {
+            let mut #validity_ident: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+        },
+    ]
+}
+
+/// Per-row push tokens for the `Option<numeric>` direct fast path. Caller
+/// must gate on `is_direct_primitive_array_option_numeric_leaf`. Splits
+/// value vs validity into two independent pushes (`Vec::push` for the value,
+/// `MutableBitmap::push` for the bit) so the compiler can vectorize the
+/// no-null fast path cleanly across rows. The None branch pushes
+/// `<#native>::default()` as a placeholder — the bitmap records the row as
+/// invalid, so the placeholder is never observed downstream.
+pub(super) fn gen_option_numeric_direct_push(
+    access: &TokenStream,
+    base: &BaseType,
+    idx: usize,
+) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let native = numeric_native_rust_type(base);
+    quote! {
+        match #access {
+            ::std::option::Option::Some(__df_derive_v) => {
+                #buf_ident.push(__df_derive_v);
+                #validity_ident.push(true);
+            }
+            ::std::option::Option::None => {
+                #buf_ident.push(<#native as ::std::default::Default>::default());
+                #validity_ident.push(false);
+            }
+        }
+    }
+}
+
+/// Build a `PrimitiveArray<#native>` from the `Vec<#native>` values buffer
+/// and `MutableBitmap` validity buffer for the `Option<numeric>` fast path.
+/// Caller must gate on `is_direct_primitive_array_option_numeric_leaf`. The
+/// dtype is reconstructed via `<#native as NativeType>::PRIMITIVE.into()`
+/// (matching what `MutablePrimitiveArray::with_capacity` does internally),
+/// so the produced `PrimitiveArray`'s dtype matches the schema's leaf dtype
+/// exactly without a post-finish cast. Conversion is zero-copy on values
+/// (`Vec<T>` -> `Buffer<T>`) and on validity (`MutableBitmap` ->
+/// `Option<Bitmap>` collapses to `None` when no unset bits, preserving the
+/// no-null fast path).
+fn gen_option_numeric_direct_array_expr(base: &BaseType, idx: usize) -> TokenStream {
+    let buf_ident = PopulatorIdents::primitive_buf(idx);
+    let validity_ident = PopulatorIdents::primitive_validity(idx);
+    let native = numeric_native_rust_type(base);
+    let pa_root = super::polars_paths::polars_arrow_root();
+    quote! {
+        #pa_root::array::PrimitiveArray::<#native>::new(
+            <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
+            #buf_ident.into(),
+            ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
+                #validity_ident,
+            ),
+        )
+    }
+}
+
+/// Columnar finish tokens for the bare and `Option<numeric>` direct fast
+/// paths. Returns `None` for any shape that doesn't match either carve-out.
+///
+/// - Bare numeric (no Option, no Vec, no transform): consume the
+///   `Vec<#native>` zero-copy via `<*Chunked>::from_vec(name, buf)`. See
+///   `is_direct_primitive_array_numeric_leaf`.
+/// - `Option<numeric>` (exactly `[Option]`, no transform): build a
+///   `PrimitiveArray::new` from the `Vec<#native>` + `MutableBitmap` pair
+///   and wrap in `<*Chunked>::with_chunk(name, arr)`. See
+///   `is_direct_primitive_array_option_numeric_leaf`.
+pub(super) fn gen_numeric_direct_columnar_finish(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+    name: &str,
+) -> Option<TokenStream> {
+    let pp = super::polars_paths::prelude();
+    let chunked = if is_direct_primitive_array_numeric_leaf(base, transform, wrappers)
+        || is_direct_primitive_array_option_numeric_leaf(base, transform, wrappers)
+    {
+        numeric_chunked_type(base)
+    } else {
+        return None;
+    };
+    if is_direct_primitive_array_numeric_leaf(base, transform, wrappers) {
+        let buf_ident = PopulatorIdents::primitive_buf(idx);
+        return Some(quote! {{
+            let s = #pp::IntoSeries::into_series(
+                #chunked::from_vec(#name.into(), #buf_ident),
+            );
+            columns.push(s.into());
+        }});
+    }
+    let arr_expr = gen_option_numeric_direct_array_expr(base, idx);
+    Some(quote! {{
+        let s = #pp::IntoSeries::into_series(
+            #chunked::with_chunk(#name.into(), { #arr_expr }),
+        );
+        columns.push(s.into());
+    }})
 }
 
 /// Borrow strategy for a leaf that can populate the `Vec<&str>` /
@@ -332,6 +518,16 @@ pub fn generate_primitive_for_columnar_push(
         return quote! { #buf_ident.push_value((#access).as_str()); };
     }
 
+    // Direct `Vec<#native>` + `MutableBitmap` accumulation for top-level
+    // `Option<numeric>` (no transform): the buffer holds either the row's
+    // value (if Some) or `<#native>::default()` (if None), and the bitmap
+    // records validity. Splitting value vs validity into two independent
+    // pushes lets the compiler vectorize cleanly, and avoids the per-row
+    // "is validity active?" branch inside `MutablePrimitiveArray::push`.
+    if is_direct_primitive_array_option_numeric_leaf(base_type, transform, wrappers) {
+        return gen_option_numeric_direct_push(access, base_type, idx);
+    }
+
     // Borrowing fast path: the buffer is declared as `Vec<&str>` /
     // `Vec<Option<&str>>` by `primitive_decls`, so we push borrows of the
     // field instead of cloning each row's `String` into an owned buffer.
@@ -498,12 +694,8 @@ pub fn primitive_decls(
     let opt = has_option(wrappers);
     let vec = has_vec(wrappers);
 
-    // Direct accumulation fast path for top-level (non-Option) `String`:
-    // build the `MutableBinaryViewArray<str>` in place during the items loop,
-    // skipping the `Vec<&str>` -> `from_slice_values` intermediate that
-    // `Series::new(&Vec<&str>)` would walk. The finisher freezes the buffer
-    // into a `Utf8ViewArray` and wraps it in a `StringChunked` directly —
-    // same column shape the `Vec<&str>` path produces, minus the second pass.
+    // Direct fast path for top-level (non-Option) `String` (see
+    // `is_direct_view_string_leaf`): accumulate straight into the view array.
     if is_direct_view_string_leaf(base_type, transform, wrappers) {
         let buf_ident = PopulatorIdents::primitive_buf(idx);
         let pa_root = super::polars_paths::polars_arrow_root();
@@ -511,6 +703,13 @@ pub fn primitive_decls(
             let mut #buf_ident: #pa_root::array::MutableBinaryViewArray<str> =
                 #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
         });
+        return decls;
+    }
+
+    // Direct fast path for top-level `Option<numeric>` (see
+    // `is_direct_primitive_array_option_numeric_leaf`).
+    if is_direct_primitive_array_option_numeric_leaf(base_type, transform, wrappers) {
+        decls.extend(gen_option_numeric_direct_decls(base_type, idx));
         return decls;
     }
 
@@ -538,100 +737,9 @@ pub fn primitive_decls(
     let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
     let elem_rust_ty = mapping.rust_element_type;
     if vec {
-        // The outer column is `List<inner_dtype>`. Push per-row inner Series
-        // through `ListBuilderTrait::append_series` rather than collecting
-        // `Vec<AnyValue::List>` and rebuilding via `Series::new` — that
-        // intermediate paid for an inferring scan over the AnyValue vec plus a
-        // `cast(inner_type)` per row inside Polars' `any_values_to_list`.
-        // `get_list_builder` returns a typed builder
-        // (`ListPrimitiveChunkedBuilder` for numeric, `ListStringChunkedBuilder`
-        // for strings, etc.) so the inner buffer stays typed end-to-end.
-        //
-        // For nested-Vec shapes (`Vec<Vec<T>>`, `Vec<Vec<Vec<T>>>`, …) the
-        // per-row inner Series is itself `List<…>`-shaped, so the builder's
-        // expected inner dtype must include those extra list layers — see
-        // `outer_list_inner_dtype`. Using `element_dtype` here would
-        // wrong-foot the strict-typed builder (`ListPrimitiveChunkedBuilder`
-        // unpacks via the inner Native type and rejects a `list[…]` slice).
-        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-        let pp = super::polars_paths::prelude();
-        // Single-`Vec` shapes covered by `typed_primitive_list_info` use a
-        // concrete typed builder so the per-parent-row push site can call
-        // `append_iter` directly — bypassing `Series::new` + cast +
-        // `append_series`'s `to_physical_repr` round-trip. Other primitive
-        // shapes (e.g. nested `Vec<Vec<…>>`, `Vec<String>`, `Vec<bool>`,
-        // struct-based leaves) keep using the `Box<dyn>` path because their
-        // Native types don't match what `ListPrimitiveChunkedBuilder` accepts
-        // or because the typed route was measured slower for them.
-        if let Some(info) = typed_primitive_list_info(base_type, transform, wrappers) {
-            match &info.kind {
-                BuilderKind::Primitive(p) => {
-                    let native = &p.native_type;
-                    let mapping_inner =
-                        crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
-                    let inner_logical = mapping_inner.element_dtype;
-                    let constructor = if p.needs_values_type {
-                        // Decimal: physical `Int128` differs from logical `Decimal(p, s)`.
-                        // `new_with_values_type` gives the chunked array its physical
-                        // storage type while the field carries the logical dtype, so
-                        // the finished `ListChunked`'s schema matches `T::schema()`
-                        // exactly without a post-finish cast.
-                        quote! {
-                            #pp::ListPrimitiveChunkedBuilder::<#native>::new_with_values_type(
-                                "".into(),
-                                items.len(),
-                                items.len() * 4,
-                                #pp::DataType::Int128,
-                                #inner_logical,
-                            )
-                        }
-                    } else {
-                        // DateTime / bare numerics: physical matches what the buffer
-                        // stores; the field dtype is the schema's logical dtype
-                        // directly.
-                        quote! {
-                            #pp::ListPrimitiveChunkedBuilder::<#native>::new(
-                                "".into(),
-                                items.len(),
-                                items.len() * 4,
-                                #inner_logical,
-                            )
-                        }
-                    };
-                    decls.push(quote! {
-                        let mut #lb_ident: #pp::ListPrimitiveChunkedBuilder<#native> = #constructor;
-                    });
-                }
-                BuilderKind::String => {
-                    // `value_capacity` is the inner-builder's `MutableBinaryViewArray`
-                    // pre-allocation. `items.len() * 4` matches the heuristic the
-                    // `Box<dyn>` path's `get_list_builder` uses for strings (5x
-                    // value_capacity at the call site, divided through), and the
-                    // builder reallocates as needed regardless.
-                    decls.push(quote! {
-                        let mut #lb_ident: #pp::ListStringChunkedBuilder = #pp::ListStringChunkedBuilder::new(
-                            "".into(),
-                            items.len(),
-                            items.len() * 4,
-                        );
-                    });
-                }
-            }
-        } else {
-            let inner_dtype = crate::codegen::type_registry::outer_list_inner_dtype(
-                base_type, transform, wrappers,
-            );
-            let cab = super::polars_paths::chunked_array_builder();
-            decls.push(quote! {
-                let mut #lb_ident: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
-                    #cab::get_list_builder(
-                        &#inner_dtype,
-                        items.len() * 4,
-                        items.len(),
-                        "".into(),
-                    );
-            });
-        }
+        decls.push(gen_vec_list_builder_decl(
+            base_type, transform, wrappers, idx,
+        ));
     } else {
         let vec_ident = PopulatorIdents::primitive_buf(idx);
         if opt {
@@ -641,6 +749,92 @@ pub fn primitive_decls(
         }
     }
     decls
+}
+
+/// List-builder declaration for the `Vec<…>` branch of `primitive_decls`.
+/// Either:
+/// - A concrete typed `ListPrimitiveChunkedBuilder<Native>` /
+///   `ListStringChunkedBuilder` (when `typed_primitive_list_info` matches),
+///   so the per-parent-row push site reaches `append_iter` /
+///   `append_trusted_len_iter` inherently — bypassing `Series::new` + cast +
+///   `append_series`'s `to_physical_repr` round-trip.
+/// - A `Box<dyn ListBuilderTrait>` from `get_list_builder` for shapes the
+///   typed route doesn't cover (nested `Vec<Vec<…>>`, struct-based leaves,
+///   bool, etc.) or where the typed route was measured slower.
+///
+/// For nested-Vec shapes (`Vec<Vec<T>>`, …) `outer_list_inner_dtype` wraps
+/// the leaf dtype in extra `List<>` layers so the builder's expected inner
+/// dtype matches the per-row inner Series's runtime dtype.
+fn gen_vec_list_builder_decl(
+    base_type: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+) -> TokenStream {
+    let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+    let pp = super::polars_paths::prelude();
+    if let Some(info) = typed_primitive_list_info(base_type, transform, wrappers) {
+        match &info.kind {
+            BuilderKind::Primitive(p) => {
+                let native = &p.native_type;
+                let mapping_inner =
+                    crate::codegen::type_registry::compute_mapping(base_type, transform, &[]);
+                let inner_logical = mapping_inner.element_dtype;
+                let constructor = if p.needs_values_type {
+                    // Decimal: physical `Int128` differs from logical `Decimal(p, s)`;
+                    // `new_with_values_type` carries both so the finished `ListChunked`
+                    // matches `T::schema()` exactly without a post-finish cast.
+                    quote! {
+                        #pp::ListPrimitiveChunkedBuilder::<#native>::new_with_values_type(
+                            "".into(),
+                            items.len(),
+                            items.len() * 4,
+                            #pp::DataType::Int128,
+                            #inner_logical,
+                        )
+                    }
+                } else {
+                    // DateTime / bare numerics: physical matches the buffer's storage;
+                    // the field dtype is the schema's logical dtype directly.
+                    quote! {
+                        #pp::ListPrimitiveChunkedBuilder::<#native>::new(
+                            "".into(),
+                            items.len(),
+                            items.len() * 4,
+                            #inner_logical,
+                        )
+                    }
+                };
+                quote! {
+                    let mut #lb_ident: #pp::ListPrimitiveChunkedBuilder<#native> = #constructor;
+                }
+            }
+            BuilderKind::String => {
+                // `items.len() * 4` matches the `Box<dyn>` path's `get_list_builder`
+                // string heuristic; the builder reallocates as needed regardless.
+                quote! {
+                    let mut #lb_ident: #pp::ListStringChunkedBuilder = #pp::ListStringChunkedBuilder::new(
+                        "".into(),
+                        items.len(),
+                        items.len() * 4,
+                    );
+                }
+            }
+        }
+    } else {
+        let inner_dtype =
+            crate::codegen::type_registry::outer_list_inner_dtype(base_type, transform, wrappers);
+        let cab = super::polars_paths::chunked_array_builder();
+        quote! {
+            let mut #lb_ident: ::std::boxed::Box<dyn #pp::ListBuilderTrait> =
+                #cab::get_list_builder(
+                    &#inner_dtype,
+                    items.len() * 4,
+                    items.len(),
+                    "".into(),
+                );
+        }
+    }
 }
 
 pub fn primitive_finishers_for_vec_anyvalues(
@@ -692,6 +886,22 @@ pub fn primitive_finishers_for_vec_anyvalues(
         quote! {
             let inner = #pp::IntoSeries::into_series(
                 #chunked::from_vec("".into(), #buf_ident),
+            );
+            out_values.push(#pp::AnyValue::List(inner));
+        }
+    } else if is_direct_primitive_array_option_numeric_leaf(base_type, transform, wrappers) {
+        // `Option<numeric>` direct fast path: the buffer is `Vec<#native>`
+        // with parallel `MutableBitmap` validity. Build a `PrimitiveArray`
+        // directly (zero-copy via `Buffer<T>::from(Vec<T>)` and `Option<
+        // Bitmap>::from(MutableBitmap)`, which collapses to `None` if no
+        // unset bits) and wrap in `<*Chunked>::with_chunk` — same column
+        // dtype as the `Series::new(&Vec<Option<T>>)` slow path, minus the
+        // second walk and the per-row validity branch.
+        let arr_expr = gen_option_numeric_direct_array_expr(base_type, idx);
+        let chunked = numeric_chunked_type(base_type);
+        quote! {
+            let inner = #pp::IntoSeries::into_series(
+                #chunked::with_chunk("".into(), { #arr_expr }),
             );
             out_values.push(#pp::AnyValue::List(inner));
         }

@@ -476,27 +476,20 @@ impl PrimitiveStrategy {
                 columns.push(s.into());
             }}];
         }
-        // Top-level (non-Option, non-Vec) bare numeric primitive (no
-        // transform): the buffer is already `Vec<Native>` (e.g. `Vec<i64>`),
-        // so consume it via `<Int64Chunked>::from_vec(name, buf)` —
-        // zero-copy through `to_primitive` — instead of
-        // `Series::new(name, &buf)` which dispatches to `from_slice` and
-        // memcpies the slice into a fresh `PrimitiveArray`. Same column dtype
-        // (the `*Chunked` alias's static dtype matches the numeric leaf's
-        // schema dtype with no cast needed).
-        if super::primitive::is_direct_primitive_array_numeric_leaf(
+        // Numeric direct fast paths: `i*/u*/f*` bare and `Option<…>` of those.
+        // Both bypass `Series::new(name, &buf)` — bare consumes the
+        // `Vec<Native>` zero-copy via `<*Chunked>::from_vec`, and Option uses
+        // a `PrimitiveArray::new` built from a `Vec<#native>` + `MutableBitmap`
+        // pair (see `primitive_decls` and the corresponding direct-finish
+        // helper). Same column dtype as the slow path, minus the second walk.
+        if let Some(emit) = super::primitive::gen_numeric_direct_columnar_finish(
             &self.p.base_type,
             self.p.transform.as_ref(),
             &self.wrappers,
+            idx,
+            name,
         ) {
-            let buf_ident = PopulatorIdents::primitive_buf(idx);
-            let chunked = super::primitive::numeric_chunked_type(&self.p.base_type);
-            return vec![quote! {{
-                let s = #pp::IntoSeries::into_series(
-                    #chunked::from_vec(#name.into(), #buf_ident),
-                );
-                columns.push(s.into());
-            }}];
+            return vec![emit];
         }
 
         // Decimal: the buffer is `Vec<i128>` / `Vec<Option<i128>>` already

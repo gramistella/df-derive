@@ -24,6 +24,15 @@ impl PopulatorIdents {
         format_ident!("__df_derive_buf_{}", idx)
     }
 
+    /// `MutableBitmap` validity buffer for the
+    /// `is_direct_primitive_array_option_numeric_leaf` fast path. Paired
+    /// with `primitive_buf` (which holds `Vec<#native>` on that path) so the
+    /// finisher can build a `PrimitiveArray::new(dtype, vals, validity)`
+    /// directly without a `Vec<Option<T>>` second walk.
+    pub(super) fn primitive_validity(idx: usize) -> Ident {
+        format_ident!("__df_derive_val_{}", idx)
+    }
+
     /// `Box<dyn ListBuilderTrait>` for `Vec<primitive>` shapes — the typed
     /// list builder that keeps the inner buffer typed end-to-end.
     pub(super) fn primitive_list_builder(idx: usize) -> Ident {

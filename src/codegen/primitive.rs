@@ -1556,9 +1556,18 @@ pub(super) fn try_gen_nested_primitive_vec_emit(
         #pp::DataType::List(::std::boxed::Box::new(#leaf_dtype))
     };
     let series_block = quote! {{
-        let mut __df_derive_flat: ::std::vec::Vec<#native> = ::std::vec::Vec::new();
+        let mut __df_derive_total_leaves: usize = 0;
+        let mut __df_derive_total_inners: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                __df_derive_total_leaves += __df_derive_inner.len();
+                __df_derive_total_inners += 1;
+            }
+        }
+        let mut __df_derive_flat: ::std::vec::Vec<#native> =
+            ::std::vec::Vec::with_capacity(__df_derive_total_leaves);
         let mut __df_derive_inner_offsets: ::std::vec::Vec<i64> =
-            ::std::vec::Vec::with_capacity(items.len() + 1);
+            ::std::vec::Vec::with_capacity(__df_derive_total_inners + 1);
         __df_derive_inner_offsets.push(0);
         let mut __df_derive_outer_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
@@ -1657,7 +1666,12 @@ pub(super) fn try_gen_vec_bool_emit(
     let pp = super::polars_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
     let series_block = quote! {{
-        let mut __df_derive_flat: ::std::vec::Vec<bool> = ::std::vec::Vec::new();
+        let mut __df_derive_total: usize = 0;
+        for __df_derive_it in items {
+            __df_derive_total += (&(#access)).len();
+        }
+        let mut __df_derive_flat: ::std::vec::Vec<bool> =
+            ::std::vec::Vec::with_capacity(__df_derive_total);
         let mut __df_derive_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         __df_derive_offsets.push(0);

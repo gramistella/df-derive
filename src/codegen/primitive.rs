@@ -2450,3 +2450,142 @@ pub(super) fn try_gen_vec_vec_option_numeric_emit(
     );
     Some(emit)
 }
+
+/// Eligible-shape probe for the bulk `Vec<Vec<String>>` emit. Returns `true`
+/// only when wrappers are exactly `[Vec, Vec]`, the base is `String`, and
+/// there is no transform.
+///
+/// Excludes:
+/// - `Vec<Vec<Option<String>>>` — needs a leaf-level validity bitmap.
+/// - `Vec<Vec<numeric>>` — handled by `try_gen_nested_primitive_vec_emit`.
+/// - `Vec<String>` — handled by `is_direct_view_string_leaf` finishers.
+/// - Any extra `Option` layer (e.g. `Option<Vec<Vec<String>>>`) — flattening
+///   invariants this emitter relies on don't model an outer Option layer.
+/// - Transforms (`as_str`, `as_string`).
+pub(super) const fn is_direct_vec_vec_string_leaf(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+) -> bool {
+    transform.is_none()
+        && matches!(base, BaseType::String)
+        && matches!(wrappers, [Wrapper::Vec, Wrapper::Vec])
+}
+
+/// Returns `Some(emit)` for the columnar / vec-anyvalues bulk fast path on
+/// `Vec<Vec<String>>` (wrappers exactly `[Vec, Vec]`, base `String`, no
+/// transform). `None` for any other shape — caller falls through to the
+/// slower per-row typed `ListBuilder` path.
+///
+/// Combines the two-level offset stacking from `Vec<Vec<numeric>>`
+/// (`try_gen_nested_primitive_vec_emit`) with the no-validity
+/// `MutableBinaryViewArray<str>` accumulation from the bare-`String` direct
+/// path (commit `2d9eeab`). The block scans `items` once to compute total
+/// inner-vec count and total leaf count, then allocates a
+/// `MutableBinaryViewArray<str>` at that capacity. Each leaf string is
+/// pushed via `push_value_ignore_validity` — the view array is built
+/// without an inner validity bitmap of its own, so the `_ignore_validity`
+/// variant skips the per-element `if validity.is_some()` branch
+/// `push_value` would otherwise do. Per-inner-vec offsets and per-outer-vec
+/// offsets are accumulated alongside; no validity bitmap is needed because
+/// `Vec<Vec<String>>` has no Option layer.
+///
+/// The finisher freezes the view buffer into a `Utf8ViewArray`, wraps it in
+/// a `LargeListArray` partitioned by the inner offsets, wraps that in a
+/// second `LargeListArray` partitioned by the outer offsets, and consumes
+/// the result via the in-scope free helper
+/// `__df_derive_assemble_list_series_unchecked` so the resulting Series's
+/// dtype is `List<List<String>>` exactly (no post-finish cast).
+///
+/// `parent_name`:
+/// - `Some(name)` for the columnar context: the resulting Series is renamed
+///   and pushed onto `columns`.
+/// - `None` for the vec-anyvalues context: the resulting Series is wrapped
+///   in `AnyValue::List(...)` and pushed onto `out_values`.
+pub(super) fn try_gen_vec_vec_string_emit(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    parent_name: Option<&str>,
+) -> Option<TokenStream> {
+    if !is_direct_vec_vec_string_leaf(base, transform, wrappers) {
+        return None;
+    }
+    let pp = super::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::String };
+    let inner_logical_dtype = quote! {
+        #pp::DataType::List(::std::boxed::Box::new(#leaf_dtype))
+    };
+    let series_block = quote! {{
+        let mut __df_derive_total_leaves: usize = 0;
+        let mut __df_derive_total_inners: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                __df_derive_total_leaves += __df_derive_inner.len();
+                __df_derive_total_inners += 1;
+            }
+        }
+        let mut __df_derive_view_buf: #pa_root::array::MutableBinaryViewArray<str> =
+            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(__df_derive_total_leaves);
+        let mut __df_derive_inner_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(__df_derive_total_inners + 1);
+        __df_derive_inner_offsets.push(0);
+        let mut __df_derive_outer_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        __df_derive_outer_offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_inner in (&(#access)).iter() {
+                for __df_derive_s in __df_derive_inner.iter() {
+                    __df_derive_view_buf
+                        .push_value_ignore_validity(__df_derive_s.as_str());
+                }
+                __df_derive_inner_offsets.push(__df_derive_view_buf.len() as i64);
+            }
+            __df_derive_outer_offsets.push((__df_derive_inner_offsets.len() - 1) as i64);
+        }
+        let __df_derive_leaf_arr: #pa_root::array::Utf8ViewArray =
+            __df_derive_view_buf.freeze();
+        let __df_derive_inner_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_inner_offsets)?;
+        let __df_derive_inner_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_leaf_arr).clone(),
+            ),
+            __df_derive_inner_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_leaf_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        let __df_derive_outer_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(__df_derive_outer_offsets)?;
+        let __df_derive_outer_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(
+                #pa_root::array::Array::dtype(&__df_derive_inner_list_arr).clone(),
+            ),
+            __df_derive_outer_offsets_buf,
+            ::std::boxed::Box::new(__df_derive_inner_list_arr) as #pp::ArrayRef,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_outer_list_arr,
+            #inner_logical_dtype,
+        )
+    }};
+    let emit = parent_name.map_or_else(
+        || {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                out_values.push(#pp::AnyValue::List(__df_derive_series));
+            }}
+        },
+        |name| {
+            quote! {{
+                let __df_derive_series: #pp::Series = #series_block;
+                let __df_derive_named = __df_derive_series.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }}
+        },
+    );
+    Some(emit)
+}

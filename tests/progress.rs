@@ -33,6 +33,7 @@ fn tests() {
     t.pass("tests/pass/28-option-vec-struct-validity.rs");
     t.pass("tests/pass/29-decimal128-encode-trait.rs");
     t.pass("tests/pass/30-vec-option-struct-bulk.rs");
+    t.pass("tests/pass/31-option-vec-option-struct-bulk.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

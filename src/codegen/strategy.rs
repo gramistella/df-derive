@@ -621,9 +621,9 @@ impl NestedStructStrategy {
 
     /// Returns `Some(emit)` when this strategy has a bulk implementation for
     /// the given context; `None` falls back to the per-row pipeline. Eligible
-    /// for the depth-1 and depth-2 wrapper shapes the bulk helpers support:
-    /// bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, and
-    /// `Vec<Option<T>>`.
+    /// for the depth-1, depth-2, and depth-3 wrapper shapes the bulk helpers
+    /// support: bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`,
+    /// `Vec<Option<T>>`, and `Option<Vec<Option<T>>>`.
     ///
     /// All bulk emitters route through the `Columnar::columnar_from_refs`
     /// trait method, which works uniformly for both generic-parameter and
@@ -676,6 +676,17 @@ impl NestedStructStrategy {
                 &access,
                 ctx,
             ),
+            [Wrapper::Option, Wrapper::Vec, Wrapper::Option] => {
+                super::bulk::gen_bulk_option_vec_option(
+                    pa_root,
+                    ty,
+                    columnar_trait,
+                    to_df_trait,
+                    idx,
+                    &access,
+                    ctx,
+                )
+            }
             _ => return None,
         };
         Some(vec![emit])

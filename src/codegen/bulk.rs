@@ -8,12 +8,12 @@
 // once. From there each schema column of `T` is sliced/scattered into the
 // parent's columns or `AnyValue::List` entries.
 //
-// Five wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
-// `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, and `Vec<Option<T>>`. The
-// remaining nestings (`Vec<Vec<T>>`, `Option<Option<T>>`, etc.) keep using
-// the per-row trait-only paths defined elsewhere; those are rarer and the
-// bulk variants would need additional position bookkeeping that isn't
-// worth the added complexity.
+// Six wrapper shapes are supported as bulk: the bare leaf (`payload: T`),
+// `Option<T>`, `Vec<T>`, `Option<Vec<T>>`, `Vec<Option<T>>`, and
+// `Option<Vec<Option<T>>>`. The remaining nestings (`Vec<Vec<T>>`,
+// `Option<Option<T>>`, etc.) keep using the per-row trait-only paths
+// defined elsewhere; those are rarer and the bulk variants would need
+// additional position bookkeeping that isn't worth the added complexity.
 //
 // Generic and concrete shapes share the same emitter — the trait method
 // `Columnar::columnar_from_refs(&[&Self])` is the one entry point for both,
@@ -546,9 +546,9 @@ pub fn gen_bulk_option_vec(
     }}
 }
 
-/// Bundle of per-branch consume tokens for `gen_bulk_vec_option`. Pre-built
-/// before the `quote!` body so the main function stays focused on the
-/// outer-row scan and branch dispatch.
+/// Bundle of per-branch consume tokens for `gen_bulk_vec_option` and
+/// `gen_bulk_option_vec_option`. Pre-built before the `quote!` body so the
+/// main function stays focused on the outer-row scan and branch dispatch.
 struct VecOptionConsumes {
     direct: TokenStream,
     filled: TokenStream,
@@ -556,19 +556,51 @@ struct VecOptionConsumes {
     empty: TokenStream,
 }
 
+/// Identifiers shared between the consume-token builder and the emitted
+/// outer-row scan. Bundled into a struct so `build_vec_option_consumes` and
+/// `gen_bulk_option_vec_option` (which both reference all five) keep their
+/// argument counts under the clippy limit.
+struct VecOptionIdents {
+    df: Ident,
+    offsets_buf: Ident,
+    empty_offsets_buf: Ident,
+    take: Ident,
+    total: Ident,
+}
+
+impl VecOptionIdents {
+    fn new(idx: usize) -> Self {
+        Self {
+            df: format_ident!("__df_derive_gen_df_{}", idx),
+            offsets_buf: format_ident!("__df_derive_gen_offsets_buf_{}", idx),
+            empty_offsets_buf: format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx),
+            take: format_ident!("__df_derive_gen_take_{}", idx),
+            total: format_ident!("__df_derive_gen_total_{}", idx),
+        }
+    }
+}
+
 fn build_vec_option_consumes(
     ctx: BulkContext<'_>,
-    df_ident: &Ident,
-    offsets_buf_ident: &Ident,
-    empty_offsets_buf_ident: &Ident,
-    take_ident: &Ident,
-    total_ident: &Ident,
+    idents: &VecOptionIdents,
     schema_iter: &TokenStream,
+    validity_expr: &TokenStream,
 ) -> VecOptionConsumes {
     let pp = super::polars_paths::prelude();
-    let no_validity = quote! { ::std::option::Option::None };
-    let direct =
-        bulk_vec_consume_inner_columns(ctx, df_ident, offsets_buf_ident, schema_iter, &no_validity);
+    let VecOptionIdents {
+        df: df_ident,
+        offsets_buf: offsets_buf_ident,
+        empty_offsets_buf: empty_offsets_buf_ident,
+        take: take_ident,
+        total: total_ident,
+    } = idents;
+    let direct = bulk_vec_consume_inner_columns(
+        ctx,
+        df_ident,
+        offsets_buf_ident,
+        schema_iter,
+        validity_expr,
+    );
     let take_expr = quote! {{
         let __df_derive_inner_full = #df_ident
             .column(__df_derive_col_name)?
@@ -579,7 +611,7 @@ fn build_vec_option_consumes(
         ctx,
         offsets_buf_ident,
         schema_iter,
-        &no_validity,
+        validity_expr,
         &take_expr,
     );
     let null_expr = quote! {
@@ -590,17 +622,39 @@ fn build_vec_option_consumes(
         ctx,
         offsets_buf_ident,
         schema_iter,
-        &no_validity,
+        validity_expr,
         &null_expr,
     );
     let empty =
-        bulk_vec_consume_empty_columns(ctx, empty_offsets_buf_ident, schema_iter, &no_validity);
+        bulk_vec_consume_empty_columns(ctx, empty_offsets_buf_ident, schema_iter, validity_expr);
     VecOptionConsumes {
         direct,
         filled,
         all_absent,
         empty,
     }
+}
+
+/// Emits the two `OffsetsBuffer` setup statements (filled + empty) shared by
+/// the `[Vec, Option]` and `[Option, Vec, Option]` paths. The filled buffer
+/// consumes a pre-built `Vec<i64>`; the empty buffer is `vec![0; n+1]` so the
+/// `total == 0` branch can still wrap empty inner Series under
+/// `LargeListArray` with the correct outer-row count.
+fn vec_option_buf_setups(
+    pa_root: &TokenStream,
+    offsets_ident: &Ident,
+    offsets_buf_ident: &Ident,
+    empty_offsets_buf_ident: &Ident,
+) -> (TokenStream, TokenStream) {
+    let filled = quote! {
+        let #offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#offsets_ident)?;
+    };
+    let empty = quote! {
+        let #empty_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
+    };
+    (filled, empty)
 }
 
 /// Bulk emit for `payload: Vec<Option<T>>`. Inverse of `gen_bulk_option_vec`:
@@ -645,36 +699,28 @@ pub fn gen_bulk_vec_option(
     let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
     let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
     let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
-    let offsets_buf_ident = format_ident!("__df_derive_gen_offsets_buf_{}", idx);
-    let empty_offsets_buf_ident = format_ident!("__df_derive_gen_empty_offsets_buf_{}", idx);
-    let take_ident = format_ident!("__df_derive_gen_take_{}", idx);
-    let df_ident = format_ident!("__df_derive_gen_df_{}", idx);
-    let total_ident = format_ident!("__df_derive_gen_total_{}", idx);
+    let idents = VecOptionIdents::new(idx);
+    let VecOptionIdents {
+        df: df_ident,
+        offsets_buf: offsets_buf_ident,
+        empty_offsets_buf: empty_offsets_buf_ident,
+        take: take_ident,
+        total: total_ident,
+    } = &idents;
     let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
-    let consumes = build_vec_option_consumes(
-        ctx,
-        &df_ident,
-        &offsets_buf_ident,
-        &empty_offsets_buf_ident,
-        &take_ident,
-        &total_ident,
-        &schema_iter,
-    );
+    let no_validity = quote! { ::std::option::Option::None };
     let VecOptionConsumes {
         direct: consume_direct,
         filled: consume_filled,
         all_absent: consume_all_absent,
         empty: consume_empty,
-    } = consumes;
-
-    let filled_buf_setup = quote! {
-        let #offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
-            #pa_root::offset::OffsetsBuffer::try_from(#offsets_ident)?;
-    };
-    let empty_buf_setup = quote! {
-        let #empty_offsets_buf_ident: #pa_root::offset::OffsetsBuffer<i64> =
-            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
-    };
+    } = build_vec_option_consumes(ctx, &idents, &schema_iter, &no_validity);
+    let (filled_buf_setup, empty_buf_setup) = vec_option_buf_setups(
+        pa_root,
+        &offsets_ident,
+        offsets_buf_ident,
+        empty_offsets_buf_ident,
+    );
 
     quote! {{
         let mut #total_ident: usize = 0;
@@ -725,4 +771,178 @@ pub fn gen_bulk_vec_option(
             #consume_filled
         }
     }}
+}
+
+/// Bulk emit for `payload: Option<Vec<Option<T>>>`. Fuses the validity-bitmap
+/// outer-list pattern from `gen_bulk_option_vec` with the per-element scatter
+/// from `gen_bulk_vec_option`. Per parent row the outer scan branches on the
+/// outer `Option`:
+/// - `Some(inner_vec)`: walk `inner_vec`, splitting `Some(v)` references into
+///   `flat` (with an `IdxSize` position appended to `pos`) or pushing
+///   `pos.push(None)` for null inner elements; the outer validity bit is
+///   `true` and the offset advances by `inner_vec.len()`.
+/// - `None`: outer validity bit is `false`, the offset repeats the previous
+///   value (delta = 0), `pos`/`flat` are untouched.
+///
+/// The bitmap is frozen once and `Arc`-shared across every inner schema
+/// column. The same four-branch dispatch as `gen_bulk_vec_option` applies,
+/// just with the bitmap threaded through the `validity_expr`:
+/// - `total == 0`: every Some inner Vec was empty (or every parent was
+///   None) — empty offsets buffer + zero-length inner Series + bitmap.
+/// - `flat.is_empty() && total > 0`: every inner element was None — null
+///   inner Series of length `total` + actual offsets + bitmap.
+/// - `flat.len() == total`: no inner nulls — direct gather + actual offsets
+///   + bitmap, skipping the `IdxCa` scatter.
+/// - mixed: gather + `IdxCa` scatter per inner column + bitmap.
+pub fn gen_bulk_option_vec_option(
+    pa_root: &TokenStream,
+    ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    to_df_trait: &TokenStream,
+    idx: usize,
+    access: &TokenStream,
+    ctx: BulkContext<'_>,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let flat_ident = format_ident!("__df_derive_gen_flat_{}", idx);
+    let pos_ident = format_ident!("__df_derive_gen_pos_{}", idx);
+    let offsets_ident = format_ident!("__df_derive_gen_offsets_{}", idx);
+    let validity_bitmap_ident = format_ident!("__df_derive_gen_validity_bm_{}", idx);
+    let idents = VecOptionIdents::new(idx);
+    let VecOptionIdents {
+        df: df_ident,
+        offsets_buf: offsets_buf_ident,
+        empty_offsets_buf: empty_offsets_buf_ident,
+        take: take_ident,
+        total: total_ident,
+    } = &idents;
+    let schema_iter = quote! { <#ty as #to_df_trait>::schema()? };
+    let validity_expr = quote! {
+        ::std::option::Option::Some(::std::clone::Clone::clone(&#validity_bitmap_ident))
+    };
+    let VecOptionConsumes {
+        direct: consume_direct,
+        filled: consume_filled,
+        all_absent: consume_all_absent,
+        empty: consume_empty,
+    } = build_vec_option_consumes(ctx, &idents, &schema_iter, &validity_expr);
+    let (filled_buf_setup, empty_buf_setup) = vec_option_buf_setups(
+        pa_root,
+        &offsets_ident,
+        offsets_buf_ident,
+        empty_offsets_buf_ident,
+    );
+    let scan = option_vec_option_scan(
+        pa_root,
+        access,
+        ScanIdents {
+            flat: &flat_ident,
+            pos: &pos_ident,
+            offsets: &offsets_ident,
+            total: total_ident,
+            validity_bitmap: &validity_bitmap_ident,
+        },
+        ty,
+    );
+
+    quote! {{
+        let mut #total_ident: usize = 0;
+        for __df_derive_it in items {
+            if let ::std::option::Option::Some(__df_derive_inner_vec) = &(#access) {
+                #total_ident += __df_derive_inner_vec.len();
+            }
+        }
+        #scan
+        if #total_ident == 0 {
+            #empty_buf_setup
+            #consume_empty
+        } else if #flat_ident.is_empty() {
+            #filled_buf_setup
+            #consume_all_absent
+        } else if #flat_ident.len() == #total_ident {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            #filled_buf_setup
+            #consume_direct
+        } else {
+            let #df_ident = <#ty as #columnar_trait>::columnar_from_refs(&#flat_ident)?;
+            let #take_ident: #pp::IdxCa =
+                <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #pos_ident.iter().copied(),
+                );
+            #filled_buf_setup
+            #consume_filled
+        }
+    }}
+}
+
+/// Identifiers used by `option_vec_option_scan`. Bundled to keep the
+/// argument count under the clippy limit.
+#[derive(Clone, Copy)]
+struct ScanIdents<'a> {
+    flat: &'a Ident,
+    pos: &'a Ident,
+    offsets: &'a Ident,
+    total: &'a Ident,
+    validity_bitmap: &'a Ident,
+}
+
+/// Single-pass outer-row scan for `gen_bulk_option_vec_option`. Walks each
+/// parent row's `Option<Vec<Option<T>>>`, populating `flat`, `pos`, the
+/// per-row offset deltas, and the outer-list `MutableBitmap` (frozen at the
+/// end of the scan into a shared `Bitmap`). `total` is computed in a
+/// separate prior pass so `flat`/`pos` can be `with_capacity`-pre-sized.
+fn option_vec_option_scan(
+    pa_root: &TokenStream,
+    access: &TokenStream,
+    idents: ScanIdents<'_>,
+    ty: &TokenStream,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let ScanIdents {
+        flat: flat_ident,
+        pos: pos_ident,
+        offsets: offsets_ident,
+        total: total_ident,
+        validity_bitmap: validity_bitmap_ident,
+    } = idents;
+    quote! {
+        let mut #flat_ident: ::std::vec::Vec<&#ty> =
+            ::std::vec::Vec::with_capacity(#total_ident);
+        let mut #pos_ident: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(#total_ident);
+        let mut #offsets_ident: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets_ident.push(0);
+        let mut __df_derive_validity_mb: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_inner_vec) => {
+                    for __df_derive_maybe in __df_derive_inner_vec.iter() {
+                        match __df_derive_maybe {
+                            ::std::option::Option::Some(__df_derive_v) => {
+                                #pos_ident.push(::std::option::Option::Some(
+                                    #flat_ident.len() as #pp::IdxSize,
+                                ));
+                                #flat_ident.push(__df_derive_v);
+                            }
+                            ::std::option::Option::None => {
+                                #pos_ident.push(::std::option::Option::None);
+                            }
+                        }
+                    }
+                    __df_derive_validity_mb.push(true);
+                }
+                ::std::option::Option::None => {
+                    __df_derive_validity_mb.push(false);
+                }
+            }
+            #offsets_ident.push(#pos_ident.len() as i64);
+        }
+        let #validity_bitmap_ident: #pa_root::bitmap::Bitmap =
+            <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                #pa_root::bitmap::MutableBitmap,
+            >>::from(__df_derive_validity_mb);
+    }
 }

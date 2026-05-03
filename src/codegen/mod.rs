@@ -77,7 +77,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     // is dominated by the `Series::from_chunks_and_dtype_unchecked` call
     // and a non-collapsed call frame is observable. Its signature is fully
     // concrete (no generics) so a single instantiation per derive serves
-    // both `gen_bulk_vec` and `gen_bulk_option_vec` call sites.
+    // every nested-`Vec` bulk emitter site.
     quote! {
         const _: () = {
             #[inline(always)]

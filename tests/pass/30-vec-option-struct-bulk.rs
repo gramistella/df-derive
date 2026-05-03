@@ -2,14 +2,13 @@
 // `None` as strict `AnyValue::Null` per inner schema column, while the
 // outer list itself stays non-null even for empty Vecs.
 //
-// The bulk emitter for this shape (`gen_bulk_vec_option`) gathers `&Inner`
-// references for each `Some(v)` element, calls `Inner::columnar_from_refs`
-// once on the gathered slice, then expands each inner schema column via
-// `Series::take(&IdxCa)` over a per-element position vector. A regression
-// that flipped the per-element bit logic (treating `None` as `Some` or
-// vice versa), or that swapped `validity = None` for the outer list, would
-// either drop nulls or wreck offsets — both surface here as failed
-// `AnyValue::Null` assertions.
+// The bulk emitter for this shape gathers `&Inner` references for each
+// `Some(v)` element, calls `Inner::columnar_from_refs` once on the gathered
+// slice, then expands each inner schema column via `Series::take(&IdxCa)`
+// over a per-element position vector. A regression that flipped the
+// per-element bit logic (treating `None` as `Some` or vice versa), or that
+// swapped `validity = None` for the outer list, would either drop nulls or
+// wreck offsets — both surface here as failed `AnyValue::Null` assertions.
 //
 // We use `Columnar::columnar_to_dataframe` directly because the bulk
 // emitters are invoked from that path; the per-row pipeline takes a

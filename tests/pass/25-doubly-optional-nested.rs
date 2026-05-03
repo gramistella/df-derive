@@ -1,13 +1,12 @@
 // Concrete-struct `Option<Option<Inner>>` coverage.
 //
-// `[]`, `[Option]`, and `[Vec]` shapes around a nested struct are all served
-// by bulk emitters in `bulk.rs`. The remaining wrapper shapes — including
-// `Option<Option<Inner>>` — fall through to the per-row push pipeline in
-// `generate_nested_for_columnar_push`. The on-leaf branch there is the only
-// path that exercises the trait `to_dataframe()` indirection across struct
-// boundaries for a concrete inner struct, so the shape is worth a dedicated
-// regression test. The generic equivalent already lives in `20-generics.rs`
-// (`OptOptWrapper<T>`); this file is the non-generic mirror.
+// `[]`, `[Option]`, and `[Vec]` shapes around a nested struct are served by
+// the bulk encoder fast paths. `Option<Option<Inner>>` falls through to the
+// per-row push pipeline, which is the only path that exercises the trait
+// `to_dataframe()` indirection across struct boundaries for a concrete inner
+// struct, so the shape is worth a dedicated regression test. The generic
+// equivalent already lives in `20-generics.rs` (`OptOptWrapper<T>`); this
+// file is the non-generic mirror.
 //
 // Polars cannot represent two distinct null states (the outer `None` and the
 // inner `None`), so `Some(None)` and `None` collapse to the same `AnyValue::Null`

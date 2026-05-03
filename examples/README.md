@@ -61,6 +61,20 @@ Demonstrates generic struct support added in v0.3.0: type-parametric structs, de
 cargo run --example generics
 ```
 
+### `nested_options.rs`
+Demonstrates `Option<Option<Struct>>` field handling, including how `Some(None)` and `None` collapse to the same null in the output frame.
+
+```bash
+cargo run --example nested_options
+```
+
+### `deep_vec.rs`
+Demonstrates deep `Vec<Vec<Vec<T>>>` nesting and how each `Vec` layer becomes a nested `List` in the output schema.
+
+```bash
+cargo run --example deep_vec
+```
+
 ## What Each Example Shows
 
 - **DataFrame output**: The actual Polars DataFrame structure

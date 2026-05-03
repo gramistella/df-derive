@@ -183,6 +183,9 @@
 //! - `tuple` — Tuple structs with `field_0`, `field_1` naming
 //! - `datetime_decimal` — `DateTime` and `Decimal` type support
 //! - `as_string` — `#[df_derive(as_string)]` attribute for enum conversion
+//! - `generics` — Generic struct support with type parameters
+//! - `nested_options` — `Option<Option<Struct>>` field handling
+//! - `deep_vec` — Deep `Vec<Vec<Vec<T>>>` nesting
 //!
 //! ## Limitations and guidance
 //!
@@ -198,6 +201,51 @@
 //! The derive implements an internal `Columnar` path used by runtimes to convert slices efficiently,
 //! avoiding per-row `DataFrame` builds. Criterion benches in `benches/` exercise wide, deep, and
 //! nested-Vec shapes (100k+ rows), demonstrating consistent performance across shapes.
+//!
+//! ## Architecture (encoder IR)
+//!
+//! Code generation flows through a compositional encoder IR rather than per-shape bespoke
+//! emitters. Each field's parsed type is normalized into a wrapper stack
+//! (`Option`/`Vec` layers) sitting above a base type, then folded into an encoder that
+//! emits three slots: top-of-function declarations, per-row push tokens, and a
+//! finishing block that yields the field's `Series` (or, for nested structs, multiple
+//! Series — one per inner schema column).
+//!
+//! Each leaf advertises one of two kinds. *Per-element-push* leaves (numerics, strings,
+//! decimals, dates) consume one value at a time inside the columnar populator's per-row
+//! loop. *Collect-then-bulk* leaves (nested user structs, generic parameters) gather
+//! references to inner values across all rows and dispatch a single
+//! `<T as Columnar>::columnar_from_refs(&refs)` call, so nested derives compose without
+//! per-row trait indirection. Both kinds are needed because the trade-off flips at the
+//! base type: primitives lose to call-frame overhead from a per-row trait call, while
+//! nested structs gain by amortizing the inner derive's setup once.
+//!
+//! Consecutive `Vec` layers are fused. For a `Vec<Vec<…<Vec<T>>>>` field the encoder
+//! emits one flat values buffer at the deepest layer plus one pair of offsets per `Vec`
+//! layer, all stacked into nested `LargeListArray`s in a single block. The bulk-fusion
+//! invariant — that `vec(...)` collapses across consecutive layers rather than
+//! emitting one populator per layer — is what makes deep-list shapes O(total leaf
+//! count) instead of O(layer count × leaf count).
+//!
+//! `unsafe` is localized: the only call to
+//! `Series::from_chunks_and_dtype_unchecked` lives in a free helper named
+//! `__df_derive_assemble_list_series_unchecked`, hidden inside the per-derive
+//! anonymous-`const` scope. Since no impl method on `Self` contains `unsafe`,
+//! `clippy::unsafe_derive_deserialize` does not fire on user types that combine
+//! `#[derive(ToDataFrame, Deserialize)]`.
+//!
+//! Several shapes use direct polars-arrow array construction in place of
+//! `Series::new` or typed builders. Bypassing the typed-builder layer for
+//! `Vec<numeric>`, `Vec<Option<numeric>>`, and the nested-`Vec<Struct>` family
+//! consistently wins large multiples on bench shapes; the encoder routes those
+//! cases to the direct-array path automatically.
+//!
+//! A few wrapper-shape combinations stay on a legacy emitter path because the
+//! encoder doesn't model them: a typed-builder carve-out for `[Option, Vec, …]`
+//! over primitives (numeric, `String`, `Decimal`, `DateTime`), `isize`/`usize`
+//! base types (and any vec-bearing shape over them), and the rare
+//! multi-`Option` primitive shapes. These compose cleanly and don't block the
+//! encoder; they are kept for coverage parity.
 //!
 //! ## Compatibility
 //!

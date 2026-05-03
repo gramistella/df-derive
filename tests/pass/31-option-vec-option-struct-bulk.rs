@@ -2,12 +2,11 @@
 // outer states (None / Some(empty) / Some(non-empty)) AND surface inner
 // `None` elements as strict `AnyValue::Null` per inner schema column.
 //
-// The bulk emitter for this shape (`gen_bulk_option_vec_option`) fuses two
-// patterns:
-//   - the validity-bitmap outer-list pattern from `gen_bulk_option_vec`,
-//     which makes `None` outer rows distinct from `Some(vec![])`,
-//   - the per-element `IdxCa` scatter from `gen_bulk_vec_option`, which
-//     materializes inner `None` slots as null inside present outer lists.
+// The bulk emitter for this shape fuses two patterns:
+//   - the validity-bitmap outer-list pattern, which makes `None` outer rows
+//     distinct from `Some(vec![])`,
+//   - the per-element `IdxCa` scatter, which materializes inner `None` slots
+//     as null inside present outer lists.
 //
 // A regression in either half (dropped/inverted bitmap bits, mis-ordered
 // `pos` pushes, swapped offset deltas) collapses cases that must stay

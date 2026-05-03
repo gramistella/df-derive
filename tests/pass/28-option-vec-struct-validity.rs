@@ -1,13 +1,13 @@
 // Regression: `Option<Vec<DerivedStruct>>` None-rows must surface as
 // `AnyValue::Null`, not as an empty list.
 //
-// The bulk emitter for this shape (`gen_bulk_option_vec`) builds a
-// `LargeListArray` with a validity bitmap so that a `None` outer row is
-// distinct from `Some(vec![])`. A regression that pushed `true` into the
-// bitmap for `None` rows — or dropped the bitmap entirely — would collapse
-// both cases to an empty list. The two existing checks at higher levels are
-// too lenient (`AnyValue::Null | AnyValue::List(_)` is allowed for None
-// rows), so this file pins the strict semantics: `None` ⇒ `AnyValue::Null`,
+// The bulk emitter for this shape builds a `LargeListArray` with a validity
+// bitmap so that a `None` outer row is distinct from `Some(vec![])`. A
+// regression that pushed `true` into the bitmap for `None` rows — or dropped
+// the bitmap entirely — would collapse both cases to an empty list. The two
+// existing checks at higher levels are too lenient
+// (`AnyValue::Null | AnyValue::List(_)` is allowed for None rows), so this
+// file pins the strict semantics: `None` ⇒ `AnyValue::Null`,
 // `Some(vec![])` ⇒ `AnyValue::List(empty)`.
 //
 // We use `Columnar::columnar_to_dataframe` directly because the bulk

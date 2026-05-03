@@ -1,4 +1,3 @@
-mod bulk;
 mod columnar_impl;
 mod common;
 mod encoder;

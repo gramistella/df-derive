@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
-use super::encoder::{self, Encoder, LeafCtx};
+use super::encoder::{self, Encoder, EncoderFinish, LeafCtx, NestedLeafCtx};
 use super::populator_idents::PopulatorIdents;
 
 // Recreate light-weight IR mirrors for internal use to avoid coupling to old FieldKind
@@ -198,9 +198,9 @@ impl PrimitiveStrategy {
     /// doesn't yet cover (notably bare `ISize`/`USize`).
     ///
     /// `access` is only meaningful for the encoder's `push` field; the `decls`
-    /// and `finish_series` fields are independent of it (modulo `name`, which
-    /// is baked into `finish_series`). Callers that only consume
-    /// `decls`/`finish_series` may pass any well-formed expression — the
+    /// and `finish` fields are independent of it (modulo `name`, which is
+    /// baked into the finish expression). Callers that only consume
+    /// `decls`/`finish` may pass any well-formed expression — the
     /// `gen_populator_inits`, `gen_columnar_builders`, and
     /// `gen_vec_values_finishers` paths do this with `quote! {}`.
     ///
@@ -252,17 +252,17 @@ impl StrategyVariant for PrimitiveStrategy {
         // Encoder IR covers `[]`, `[Option]`, and the `[Vec, ...]` shapes
         // added in Step 2. For the `[Vec, ...]` shapes the bulk emit lives
         // in `gen_populator_inits` (consumed by the populator decls block);
-        // the finisher just wraps the encoder's `finish_series` in
+        // the finisher just wraps the encoder's finish expression in
         // `AnyValue::List(...)`. For `[]`/`[Option]` shapes the finisher
         // does the same with the leaf-buffer Series. The access expression
         // is required when the encoder builds its bulk decls; threading
         // `it_access()` keeps the precount loops over the real field
         // even though this method is the finisher (the access doesn't
-        // appear in `finish_series` itself; it only matters because
+        // appear in the finish expression itself; it only matters because
         // `try_build_encoder` is shape-conditional).
         let access = self.it_access();
         if let Some(enc) = self.try_build_encoder(&access, idx, "") {
-            let series = enc.finish_series;
+            let series = enc.into_series_finish();
             let pp = super::polars_paths::prelude();
             return quote! {
                 let inner = { #series };
@@ -363,8 +363,8 @@ impl StrategyVariant for PrimitiveStrategy {
         let access = self.it_access();
         let enc = self.try_build_encoder(&access, idx, &self.field_name)?;
         let pp = super::polars_paths::prelude();
-        let decls = enc.decls;
-        let series = enc.finish_series;
+        let decls = enc.decls.clone();
+        let series = enc.into_series_finish();
         Some(vec![quote! {
             #(#decls)*
             {
@@ -380,7 +380,7 @@ impl StrategyVariant for PrimitiveStrategy {
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
         // Mirror of `gen_bulk_columnar_emit` for the vec-anyvalues helper:
-        // wrap the encoder's `finish_series` in `AnyValue::List(...)` and
+        // wrap the encoder's finish expression in `AnyValue::List(...)` and
         // emit the whole block as a bulk operation. Same ordering rationale
         // as the columnar path.
         if !has_vec(&self.wrappers) {
@@ -389,8 +389,8 @@ impl StrategyVariant for PrimitiveStrategy {
         let access = self.it_access();
         let enc = self.try_build_encoder(&access, idx, "")?;
         let pp = super::polars_paths::prelude();
-        let decls = enc.decls;
-        let series = enc.finish_series;
+        let decls = enc.decls.clone();
+        let series = enc.into_series_finish();
         Some(vec![quote! {
             #(#decls)*
             {
@@ -413,7 +413,7 @@ impl StrategyVariant for PrimitiveStrategy {
         // arguments.
         let access = self.it_access();
         if let Some(enc) = self.try_build_encoder(&access, idx, name) {
-            let series = enc.finish_series;
+            let series = enc.into_series_finish();
             return vec![quote! {{
                 let s = { #series };
                 columns.push(s.into());
@@ -513,11 +513,11 @@ impl NestedStructStrategy {
 
     /// Returns `Some(emit)` when this strategy has a bulk implementation for
     /// the given context; `None` falls back to the per-row pipeline. Eligible
-    /// for the depth-1, depth-2, and depth-3 wrapper shapes the bulk helpers
-    /// support: bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`,
+    /// for the depth-1, depth-2, and depth-3 wrapper shapes the encoder IR
+    /// supports: bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`,
     /// `Vec<Option<T>>`, `Option<Vec<Option<T>>>`, and `Vec<Vec<T>>`.
     ///
-    /// All bulk emitters route through the `Columnar::columnar_from_refs`
+    /// All nested encoder paths route through the `Columnar::columnar_from_refs`
     /// trait method, which works uniformly for both generic-parameter and
     /// concrete-struct base types — no per-element clone required.
     ///
@@ -526,71 +526,18 @@ impl NestedStructStrategy {
     /// `Vec<AnyValue>` aggregation through
     /// `__df_derive_vec_to_inner_list_values`, so the added bulk machinery
     /// isn't worth the complexity.
-    fn try_bulk_emit(
-        &self,
-        pa_root: &TokenStream,
-        idx: usize,
-        ctx: super::bulk::BulkContext<'_>,
-    ) -> Option<Vec<TokenStream>> {
-        let ty = &self.n.type_path;
-        let columnar_trait = &self.n.columnar_trait;
-        let to_df_trait = &self.n.to_df_trait;
+    fn try_build_nested(&self, pa_root: &TokenStream, idx: usize) -> Option<Encoder> {
         let access = self.it_access();
-        let emit = match self.wrappers.as_slice() {
-            [] => super::bulk::gen_bulk_leaf(ty, columnar_trait, to_df_trait, idx, &access, ctx),
-            [Wrapper::Option] => {
-                super::bulk::gen_bulk_option(ty, columnar_trait, to_df_trait, idx, &access, ctx)
-            }
-            [Wrapper::Vec] => super::bulk::gen_bulk_vec(
-                pa_root,
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
-            [Wrapper::Option, Wrapper::Vec] => super::bulk::gen_bulk_option_vec(
-                pa_root,
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
-            [Wrapper::Vec, Wrapper::Option] => super::bulk::gen_bulk_vec_option(
-                pa_root,
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
-            [Wrapper::Option, Wrapper::Vec, Wrapper::Option] => {
-                super::bulk::gen_bulk_option_vec_option(
-                    pa_root,
-                    ty,
-                    columnar_trait,
-                    to_df_trait,
-                    idx,
-                    &access,
-                    ctx,
-                )
-            }
-            [Wrapper::Vec, Wrapper::Vec] => super::bulk::gen_bulk_vec_vec(
-                pa_root,
-                ty,
-                columnar_trait,
-                to_df_trait,
-                idx,
-                &access,
-                ctx,
-            ),
-            _ => return None,
+        let ctx = NestedLeafCtx {
+            access: &access,
+            idx,
+            parent_name: self.field_name.as_str(),
+            ty: &self.n.type_path,
+            columnar_trait: &self.n.columnar_trait,
+            to_df_trait: &self.n.to_df_trait,
+            pa_root,
         };
-        Some(vec![emit])
+        encoder::try_build_nested_encoder(&self.wrappers, &ctx)
     }
 }
 
@@ -666,12 +613,11 @@ impl StrategyVariant for NestedStructStrategy {
         pa_root: &TokenStream,
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
-        let parent_name = self.field_name.as_str();
-        self.try_bulk_emit(
-            pa_root,
-            idx,
-            super::bulk::BulkContext::Columnar { parent_name },
-        )
+        let enc = self.try_build_nested(pa_root, idx)?;
+        let EncoderFinish::Multi { columnar, .. } = enc.finish else {
+            unreachable!("nested encoder must produce a multi-column finish")
+        };
+        Some(vec![columnar])
     }
 
     fn gen_bulk_vec_anyvalues_emit(
@@ -679,6 +625,10 @@ impl StrategyVariant for NestedStructStrategy {
         pa_root: &TokenStream,
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
-        self.try_bulk_emit(pa_root, idx, super::bulk::BulkContext::VecAnyvalues)
+        let enc = self.try_build_nested(pa_root, idx)?;
+        let EncoderFinish::Multi { vec_anyvalues, .. } = enc.finish else {
+            unreachable!("nested encoder must produce a multi-column finish")
+        };
+        Some(vec![vec_anyvalues])
     }
 }

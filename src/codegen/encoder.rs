@@ -3,8 +3,10 @@
 //! Each leaf encoder knows how to emit (decls, push, finish) for one base type.
 //! The `option(inner)` combinator wraps a leaf to add `Option<...>` semantics.
 //! Per-field codegen folds the wrapper stack right-to-left over the leaf to
-//! assemble the final emission. Step 1 covers leaves and `option(inner)`;
-//! `vec(inner)` is added in Step 2.
+//! assemble the final emission. Step 1 covers leaves and `option(inner)`,
+//! `vec(inner)` is added in Step 2, and Step 3 adds nested-struct/generic
+//! `CollectThenBulk` leaves (multi-column finish) plus their seven supported
+//! wrapper shapes.
 //!
 //! Each leaf carries two push token streams: `bare_push` for the unwrapped
 //! shape, and `option_push` for the `[Option]` shape. The split lets the
@@ -17,27 +19,45 @@ use quote::{format_ident, quote};
 
 use super::populator_idents::PopulatorIdents;
 
-/// How a leaf consumes values. Step 1 only emits `PerElementPush` leaves.
-/// `CollectThenBulk` is reserved for nested struct leaves added in Step 3.
+/// How a leaf consumes values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeafKind {
     /// Leaf consumes one value at a time via a `push` token stream.
     PerElementPush,
     /// Leaf collects refs across all rows then performs one bulk encode call.
+    /// Used for nested-struct/generic base types that route through
+    /// `<T as Columnar>::columnar_from_refs(&refs)`.
     #[allow(dead_code)]
     CollectThenBulk,
 }
 
-/// Per-field encoder state. `decls` and `finish_series` are emitted once at the
-/// top/bottom of the columnar populator pipeline; `push` is spliced inside the
-/// per-row loop.
+/// What an `Encoder`'s finish step produces.
 ///
-/// `finish_series` is a token expression that evaluates to a
-/// `polars::prelude::Series`. Outer call sites — the columnar pipeline (which
-/// pushes columns onto `columns`) and the vec-anyvalues pipeline (which wraps
-/// each Series in `AnyValue::List(...)`) — apply their own wrap to the same
-/// expression. Keeping the wrap out of the encoder lets one builder serve both
-/// contexts without duplicating per-shape finish logic.
+/// Primitive leaves materialize a single `Series` (the field's column).
+/// Nested-struct/generic leaves materialize **multiple** Series, one per
+/// inner schema column of the nested type — so they are emitted as a block
+/// that pushes directly onto the call site's `columns` vec (columnar
+/// context) or `out_values` vec (vec-anyvalues context).
+pub enum EncoderFinish {
+    /// Single-Series finish: an expression that evaluates to a
+    /// `polars::prelude::Series`. Outer call sites wrap as
+    /// `columns.push(s.into())` (columnar) or `AnyValue::List(s)` (vec).
+    Series(TokenStream),
+    /// Multi-column finish: pre-built blocks for the two contexts.
+    /// `columnar` pushes one Series per inner schema column onto `columns`.
+    /// `vec_anyvalues` pushes one `AnyValue::List(inner_series)` per inner
+    /// schema column onto `out_values`. Both blocks are produced from the
+    /// same gather/scatter setup; only the one matching the current context
+    /// is spliced.
+    Multi {
+        columnar: TokenStream,
+        vec_anyvalues: TokenStream,
+    },
+}
+
+/// Per-field encoder state. `decls` and `finish` are emitted once at the
+/// top/bottom of the columnar populator pipeline; `push` is spliced inside
+/// the per-row loop.
 pub struct Encoder {
     pub decls: Vec<TokenStream>,
     /// Push tokens used when this encoder is the top of the wrapper stack.
@@ -45,11 +65,30 @@ pub struct Encoder {
     /// Push tokens specifically for an outer `option(...)` wrapper. `None`
     /// makes the option combinator generate a generic 2-arm match.
     pub option_push: Option<TokenStream>,
-    pub finish_series: TokenStream,
+    pub finish: EncoderFinish,
     pub kind: LeafKind,
     /// 0 for leaves, +1 per `vec` layer. Used by Step 2.
     #[allow(dead_code)]
     pub offset_depth: usize,
+}
+
+impl Encoder {
+    /// Convenience: wrap a `Series`-valued token expression as `Encoder.finish`.
+    const fn series_finish(expr: TokenStream) -> EncoderFinish {
+        EncoderFinish::Series(expr)
+    }
+
+    /// Consume the encoder and extract its `EncoderFinish::Series` payload.
+    /// Panics if the encoder produces multi-column output — primitive call
+    /// sites only ever build single-Series encoders, so this is invariant.
+    pub fn into_series_finish(self) -> TokenStream {
+        match self.finish {
+            EncoderFinish::Series(ts) => ts,
+            EncoderFinish::Multi { .. } => {
+                unreachable!("into_series_finish called on a multi-column encoder")
+            }
+        }
+    }
 }
 
 /// Per-leaf metadata threaded into the leaf builders.
@@ -170,7 +209,7 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
         decls: vec![vec_decl(&buf, &native)],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -202,7 +241,7 @@ fn option_for_numeric(ctx: &LeafCtx<'_>, base: &BaseType, inner: Encoder) -> Enc
         decls: vec![vec_decl(&buf, &native), mb_decl(&validity)],
         push: inner.option_push.unwrap_or(inner.push),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -239,7 +278,7 @@ fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         decls: vec![mbva_decl(&buf)],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -270,7 +309,7 @@ fn option_for_string_like(
             .option_push
             .expect("string-like leaf must supply option_push"),
         option_push: None,
-        finish_series: string_chunked_series(name, &arr_expr),
+        finish: Encoder::series_finish(string_chunked_series(name, &arr_expr)),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -306,7 +345,7 @@ fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         decls: vec![vec_decl(&buf, &quote! { bool })],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -343,7 +382,7 @@ fn option_for_bool(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
             .option_push
             .expect("bool_leaf must supply option_push"),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -400,7 +439,7 @@ fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encoder {
         decls: vec![vec_decl(&buf, &quote! { i128 })],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -428,7 +467,7 @@ fn option_for_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, inner: Encode
             .option_push
             .expect("decimal_leaf must supply option_push"),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -455,7 +494,7 @@ fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
         decls: vec![vec_decl(&buf, &quote! { i64 })],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -463,7 +502,7 @@ fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
 
 /// Option combinator for `DateTime`: switches to `Vec<Option<i64>>`. The
 /// finish path is identical structurally (`Series::new` + cast); only the
-/// element type changes — so we can reuse the inner `finish_series`.
+/// element type changes — so we can reuse the inner finish.
 fn option_for_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, inner: Encoder) -> Encoder {
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let name = ctx.name;
@@ -485,7 +524,7 @@ fn option_for_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, inner: Encoder) ->
             .option_push
             .expect("datetime_leaf must supply option_push"),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -533,7 +572,7 @@ fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         ],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -571,7 +610,7 @@ fn as_str_leaf(ctx: &LeafCtx<'_>, ty_path: &TokenStream, base: &BaseType) -> Enc
         decls: vec![vec_decl(&buf, &quote! { &str })],
         push: bare_push,
         option_push: Some(option_push),
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
     }
@@ -590,7 +629,7 @@ fn option_for_as_str(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
             .option_push
             .expect("as_str_leaf must supply option_push"),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: inner.kind,
         offset_depth: inner.offset_depth,
     }
@@ -1163,8 +1202,8 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 
 /// Build the encoder for a `[Vec, ...]` shape: a single `decls` statement
 /// declaring `let series_local = { ... };`, an empty `push`, and a
-/// `finish_series` that just references the local (with the columnar-context
-/// rename applied via `with_name(name)` — the vec-anyvalues context passes
+/// finish that just references the local (with the columnar-context rename
+/// applied via `with_name(name)` — the vec-anyvalues context passes
 /// `name = ""`, so the rename is a no-op there).
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
@@ -1181,7 +1220,7 @@ fn vec_encoder(
         decls: vec![decl],
         push: TokenStream::new(),
         option_push: None,
-        finish_series,
+        finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: depth,
     }
@@ -1209,7 +1248,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, depth: usize) -> Encoder {
         decls: vec![decl],
         push: TokenStream::new(),
         option_push: None,
-        finish_series: quote! { #series_local.with_name(#name.into()) },
+        finish: Encoder::series_finish(quote! { #series_local.with_name(#name.into()) }),
         kind: LeafKind::PerElementPush,
         offset_depth: depth,
     }
@@ -1712,5 +1751,899 @@ fn wrap_option(
             option_for_string_like(ctx, extra, inner)
         }
         Some(PrimitiveTransform::AsStr) => option_for_as_str(ctx, inner),
+    }
+}
+
+// --- Nested-struct/generic encoder paths (CollectThenBulk leaves) ---
+//
+// Step 3 ports the seven nested-struct/generic shapes (`[]`, `[Option]`,
+// `[Vec]`, `[Option, Vec]`, `[Vec, Option]`, `[Option, Vec, Option]`,
+// `[Vec, Vec]`) into the encoder IR. Each shape is built up from a single
+// `CollectThenBulk` leaf (which knows how to call
+// `<T as Columnar>::columnar_from_refs(&refs)`) plus the wrapper-stack-shaped
+// gather/scatter machinery in this section.
+//
+// The invariant: every `LargeListArray::new` routes through the in-scope free
+// helper `__df_derive_assemble_list_series_unchecked` (defined at the top of
+// each derive's `const _: () = { ... };` scope), keeping `unsafe` out of any
+// `Self`-bearing impl method so `clippy::unsafe_derive_deserialize` stays
+// silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
+//
+// Every shape produces an `EncoderFinish::Multi { columnar, vec_anyvalues }`
+// because the inner `DataFrame` carries one column per inner schema entry of
+// `T`. The two blocks share the same gather/scatter setup and only differ in
+// how they emit the per-column Series at the end (parent column with prefixed
+// name vs. `AnyValue::List(inner_series)`).
+
+/// Per-call-site context for nested-struct/generic encoders. Carries the
+/// `polars-arrow` crate root (so the combinators don't re-resolve it per
+/// call) plus the type-as-path expression and the fully-qualified trait
+/// paths used in UFCS calls (`<#ty as #columnar_trait>::columnar_from_refs`,
+/// `<#ty as #to_df_trait>::schema`).
+pub struct NestedLeafCtx<'a> {
+    pub access: &'a TokenStream,
+    pub idx: usize,
+    pub parent_name: &'a str,
+    pub ty: &'a TokenStream,
+    pub columnar_trait: &'a TokenStream,
+    pub to_df_trait: &'a TokenStream,
+    pub pa_root: &'a TokenStream,
+}
+
+/// Per-shape identifier bundle for the nested encoder paths. Computing these
+/// once at the top of each shape builder keeps the per-shape body focused on
+/// the gather/scatter logic.
+struct NestedIdents {
+    /// `Vec<&T>` flat ref accumulator.
+    flat: syn::Ident,
+    /// `Vec<i64>` outer-list offsets (or inner-list offsets for `[Vec, Vec]`).
+    offsets: syn::Ident,
+    /// Outer-list offsets for the `[Vec, Vec]` shape. Unused otherwise.
+    outer_offsets: syn::Ident,
+    /// `Vec<Option<IdxSize>>` per-element positions for the scatter shapes
+    /// (`[Vec, Option]`, `[Option, Vec, Option]`).
+    positions: syn::Ident,
+    /// Frozen `Bitmap` for the outer-list validity (used by `[Option, Vec]`,
+    /// `[Option, Vec, Option]`).
+    validity: syn::Ident,
+    /// Inner `DataFrame` returned by `columnar_from_refs`.
+    df: syn::Ident,
+    /// `IdxCa` built from `positions` for the scatter shapes.
+    take: syn::Ident,
+    /// Total inner-element count (used by precount).
+    total: syn::Ident,
+    /// Per-shape precount auxiliary (e.g. total inner-list count for `[Vec, Vec]`).
+    total_inners: syn::Ident,
+    /// Shared `OffsetsBuffer` instances built from `offsets` /
+    /// `outer_offsets`. Cloned per inner column when wrapping each Series.
+    offsets_buf: syn::Ident,
+    outer_offsets_buf: syn::Ident,
+}
+
+impl NestedIdents {
+    fn new(idx: usize) -> Self {
+        Self {
+            flat: format_ident!("__df_derive_gen_flat_{}", idx),
+            offsets: format_ident!("__df_derive_gen_offsets_{}", idx),
+            outer_offsets: format_ident!("__df_derive_gen_outer_offsets_{}", idx),
+            positions: format_ident!("__df_derive_gen_pos_{}", idx),
+            validity: format_ident!("__df_derive_gen_validity_bm_{}", idx),
+            df: format_ident!("__df_derive_gen_df_{}", idx),
+            take: format_ident!("__df_derive_gen_take_{}", idx),
+            total: format_ident!("__df_derive_gen_total_{}", idx),
+            total_inners: format_ident!("__df_derive_gen_total_inners_{}", idx),
+            offsets_buf: format_ident!("__df_derive_gen_offsets_buf_{}", idx),
+            outer_offsets_buf: format_ident!("__df_derive_gen_outer_offsets_buf_{}", idx),
+        }
+    }
+}
+
+/// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
+/// and pushes each inner-Series-yielding expression onto the right context
+/// vec. The schema name is exposed as `__df_derive_col_name: &str` and the
+/// dtype as `__df_derive_dtype: &polars::DataType` so per-column expressions
+/// can reference both.
+fn nested_consume_columns(
+    parent_name: &str,
+    to_df_trait: &TokenStream,
+    ty: &TokenStream,
+    series_expr: &TokenStream,
+    columnar: bool,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    let body = if columnar {
+        quote! {{
+            let __df_derive_prefixed = ::std::format!(
+                "{}.{}", #parent_name, __df_derive_col_name,
+            );
+            let __df_derive_inner: #pp::Series = { #series_expr };
+            let __df_derive_named = __df_derive_inner
+                .with_name(__df_derive_prefixed.as_str().into());
+            columns.push(__df_derive_named.into());
+        }}
+    } else {
+        quote! {{
+            let __df_derive_inner: #pp::Series = { #series_expr };
+            out_values.push(#pp::AnyValue::List(__df_derive_inner));
+        }}
+    };
+    quote! {
+        for (__df_derive_col_name, __df_derive_dtype) in
+            <#ty as #to_df_trait>::schema()?
+        {
+            let __df_derive_col_name: &str = __df_derive_col_name.as_str();
+            let __df_derive_dtype: &#pp::DataType = &__df_derive_dtype;
+            #body
+        }
+    }
+}
+
+/// Wrap an `inner_col_expr` (a single-chunk `Series` of inner values) under a
+/// `LargeListArray` partitioned by `offsets_buf_ident`, with optional outer
+/// validity bitmap. Routes through `__df_derive_assemble_list_series_unchecked`
+/// so the `unsafe` call stays out of `Self`-bearing impls.
+fn nested_wrap_list_series(
+    pa_root: &TokenStream,
+    inner_col_expr: &TokenStream,
+    offsets_buf_ident: &syn::Ident,
+    validity_expr: &TokenStream,
+) -> TokenStream {
+    let _ = pa_root;
+    let pp = super::polars_paths::prelude();
+    quote! {{
+        let __df_derive_inner_col: #pp::Series = #inner_col_expr;
+        let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
+        let __df_derive_inner_chunk: #pp::ArrayRef =
+            __df_derive_inner_rech.chunks()[0].clone();
+        let __df_derive_inner_arrow_dt = __df_derive_inner_chunk.dtype().clone();
+        let __df_derive_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_arrow_dt),
+            ::std::clone::Clone::clone(&#offsets_buf_ident),
+            __df_derive_inner_chunk,
+            #validity_expr,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_list_arr,
+            (*__df_derive_dtype).clone(),
+        )
+    }}
+}
+
+/// Build the bare-leaf nested encoder (`payload: T`). Gathers refs into
+/// `Vec<&T>`, calls `columnar_from_refs` once, and per inner schema column
+/// pulls the materialized `Series` straight out of the resulting `DataFrame`
+/// (no list-array wrapping; the parent column is the inner column).
+fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root: _,
+    } = *ctx;
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let df = &ids.df;
+    let inner_expr = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let columnar = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr, true);
+    let vec_anyvalues = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr, false);
+    let setup = quote! {
+        let #flat: ::std::vec::Vec<&#ty> = items
+            .iter()
+            .map(|__df_derive_it| &(#access))
+            .collect();
+        let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+    };
+    let columnar_block = quote! {{ #setup #columnar }};
+    let vec_anyvalues_block = quote! {{ #setup #vec_anyvalues }};
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar: columnar_block,
+            vec_anyvalues: vec_anyvalues_block,
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 0,
+    }
+}
+
+/// `option(nested_leaf)` — `[Option]` over a struct/generic. Splits each
+/// row's `Option<T>` into a flat ref slice plus a `Vec<Option<IdxSize>>` of
+/// positions. Three runtime branches:
+/// - all None: emit one typed-null Series of length `items.len()` per inner
+///   schema column.
+/// - all Some (no scatter needed): pull each column straight from the inner
+///   `DataFrame`, no `take`.
+/// - mixed: build an `IdxCa` over positions and `take` per inner column to
+///   scatter values back over the original row positions.
+fn nested_option_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root: _,
+    } = *ctx;
+    let pp = super::polars_paths::prelude();
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let positions = &ids.positions;
+    let df = &ids.df;
+    let take = &ids.take;
+
+    let direct_inner = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let take_inner = quote! {{
+        let __df_derive_inner_full = #df
+            .column(__df_derive_col_name)?
+            .as_materialized_series();
+        __df_derive_inner_full.take(&#take)?
+    }};
+    let null_inner = quote! {
+        #pp::Series::new_empty("".into(), __df_derive_dtype)
+            .extend_constant(#pp::AnyValue::Null, items.len())?
+    };
+
+    let scan = quote! {
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_v) => {
+                    #positions.push(::std::option::Option::Some(
+                        #flat.len() as #pp::IdxSize,
+                    ));
+                    #flat.push(__df_derive_v);
+                }
+                ::std::option::Option::None => {
+                    #positions.push(::std::option::Option::None);
+                }
+            }
+        }
+    };
+    let make_block = |columnar: bool| -> TokenStream {
+        let consume_direct =
+            nested_consume_columns(parent_name, to_df_trait, ty, &direct_inner, columnar);
+        let consume_take =
+            nested_consume_columns(parent_name, to_df_trait, ty, &take_inner, columnar);
+        let consume_null =
+            nested_consume_columns(parent_name, to_df_trait, ty, &null_inner, columnar);
+        quote! {{
+            #scan
+            if #flat.is_empty() {
+                #consume_null
+            } else if #flat.len() == items.len() {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_direct
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                let #take: #pp::IdxCa =
+                    <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                        "".into(),
+                        #positions.iter().copied(),
+                    );
+                #consume_take
+            }
+        }}
+    };
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar: make_block(true),
+            vec_anyvalues: make_block(false),
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 0,
+    }
+}
+
+/// `vec(nested_leaf)` — `[Vec]` over a struct/generic. Flattens refs in row
+/// order, builds offsets into the flat slice, calls `columnar_from_refs`
+/// once, and wraps each inner column under one `LargeListArray` per outer
+/// row's slice.
+fn nested_vec_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root,
+    } = *ctx;
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let offsets = &ids.offsets;
+    let offsets_buf = &ids.offsets_buf;
+    let df = &ids.df;
+    let total = &ids.total;
+
+    let no_validity = quote! { ::std::option::Option::None };
+    let inner_col_filled = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let inner_col_empty = {
+        let pp = super::polars_paths::prelude();
+        quote! { #pp::Series::new_empty("".into(), __df_derive_dtype) }
+    };
+    let series_filled =
+        nested_wrap_list_series(pa_root, &inner_col_filled, offsets_buf, &no_validity);
+    let series_empty =
+        nested_wrap_list_series(pa_root, &inner_col_empty, offsets_buf, &no_validity);
+
+    let scan = quote! {
+        let mut #total: usize = 0;
+        for __df_derive_it in items {
+            #total += (&(#access)).len();
+        }
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
+        let mut #offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_v in (&(#access)).iter() {
+                #flat.push(__df_derive_v);
+            }
+            #offsets.push(#flat.len() as i64);
+        }
+        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(
+                if #flat.is_empty() {
+                    ::std::vec![0i64; items.len() + 1]
+                } else {
+                    ::std::clone::Clone::clone(&#offsets)
+                },
+            )?;
+    };
+    let make_block = |columnar: bool| -> TokenStream {
+        let consume_filled =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_filled, columnar);
+        let consume_empty =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_empty, columnar);
+        quote! {{
+            #scan
+            if #flat.is_empty() {
+                #consume_empty
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_filled
+            }
+        }}
+    };
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar: make_block(true),
+            vec_anyvalues: make_block(false),
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 1,
+    }
+}
+
+/// `option(vec(nested_leaf))` — `[Option, Vec]` over a struct/generic.
+/// Outer-list rows can be null; the bitmap rides under each per-column
+/// `LargeListArray`. Per row: `Some(inner_vec)` flattens refs and pushes the
+/// new offset; `None` repeats the previous offset (empty inner list) and
+/// flips the outer validity bit.
+fn nested_option_vec_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root,
+    } = *ctx;
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let offsets = &ids.offsets;
+    let offsets_buf = &ids.offsets_buf;
+    let validity_bm = &ids.validity;
+    let df = &ids.df;
+    let total = &ids.total;
+    let validity_expr = quote! {
+        ::std::option::Option::Some(::std::clone::Clone::clone(&#validity_bm))
+    };
+    let inner_col_filled = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let inner_col_empty = {
+        let pp = super::polars_paths::prelude();
+        quote! { #pp::Series::new_empty("".into(), __df_derive_dtype) }
+    };
+    let series_filled =
+        nested_wrap_list_series(pa_root, &inner_col_filled, offsets_buf, &validity_expr);
+    let series_empty =
+        nested_wrap_list_series(pa_root, &inner_col_empty, offsets_buf, &validity_expr);
+    let scan = quote! {
+        let mut #total: usize = 0;
+        for __df_derive_it in items {
+            if let ::std::option::Option::Some(__df_derive_inner_vec) = &(#access) {
+                #total += __df_derive_inner_vec.len();
+            }
+        }
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
+        let mut #offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets.push(0);
+        let mut __df_derive_validity_mb: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_inner_vec) => {
+                    for __df_derive_v in __df_derive_inner_vec.iter() {
+                        #flat.push(__df_derive_v);
+                    }
+                    __df_derive_validity_mb.push(true);
+                }
+                ::std::option::Option::None => {
+                    __df_derive_validity_mb.push(false);
+                }
+            }
+            #offsets.push(#flat.len() as i64);
+        }
+        let #validity_bm: #pa_root::bitmap::Bitmap =
+            <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                #pa_root::bitmap::MutableBitmap,
+            >>::from(__df_derive_validity_mb);
+        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(
+                if #flat.is_empty() {
+                    ::std::vec![0i64; items.len() + 1]
+                } else {
+                    ::std::clone::Clone::clone(&#offsets)
+                },
+            )?;
+    };
+    let make_block = |columnar: bool| -> TokenStream {
+        let consume_filled =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_filled, columnar);
+        let consume_empty =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_empty, columnar);
+        quote! {{
+            #scan
+            if #flat.is_empty() {
+                #consume_empty
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_filled
+            }
+        }}
+    };
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar: make_block(true),
+            vec_anyvalues: make_block(false),
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 1,
+    }
+}
+
+/// Bundle of pieces shared by the two scatter shapes (`[Vec, Option]` and
+/// `[Option, Vec, Option]`). The `validity_expr` differs (no outer validity
+/// for `[Vec, Option]`, `Some(bitmap.clone())` for `[Option, Vec, Option]`),
+/// and the scan body differs (single inner-Option pass vs. nested
+/// outer-Option / inner-Option). Everything else — the four-branch dispatch,
+/// the `IdxCa` build, the per-column wrap — is identical.
+fn nested_scatter_blocks(
+    ctx: &NestedLeafCtx<'_>,
+    ids: &NestedIdents,
+    scan: &TokenStream,
+    validity_expr: &TokenStream,
+) -> (TokenStream, TokenStream) {
+    let NestedLeafCtx {
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root,
+        ..
+    } = *ctx;
+    let pp = super::polars_paths::prelude();
+    let flat = &ids.flat;
+    let positions = &ids.positions;
+    let offsets = &ids.offsets;
+    let offsets_buf = &ids.offsets_buf;
+    let total = &ids.total;
+    let df = &ids.df;
+    let take = &ids.take;
+
+    let inner_col_direct = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let inner_col_take = quote! {{
+        let __df_derive_inner_full = #df
+            .column(__df_derive_col_name)?
+            .as_materialized_series();
+        __df_derive_inner_full.take(&#take)?
+    }};
+    let inner_col_null = quote! {
+        #pp::Series::new_empty("".into(), __df_derive_dtype)
+            .extend_constant(#pp::AnyValue::Null, #total)?
+    };
+    let inner_col_empty = quote! {
+        #pp::Series::new_empty("".into(), __df_derive_dtype)
+    };
+
+    let series_direct =
+        nested_wrap_list_series(pa_root, &inner_col_direct, offsets_buf, validity_expr);
+    let series_take = nested_wrap_list_series(pa_root, &inner_col_take, offsets_buf, validity_expr);
+    let series_all_absent =
+        nested_wrap_list_series(pa_root, &inner_col_null, offsets_buf, validity_expr);
+    let series_empty =
+        nested_wrap_list_series(pa_root, &inner_col_empty, offsets_buf, validity_expr);
+
+    // The filled offsets buffer is built from the actual offsets vec; the
+    // empty buffer (when total == 0) just uses zeros across the outer-row
+    // count so each outer row is a present-but-empty inner list.
+    let filled_buf_setup = quote! {
+        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::clone::Clone::clone(&#offsets))?;
+    };
+    let empty_buf_setup = quote! {
+        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::vec![0i64; items.len() + 1])?;
+    };
+    let make_block = |columnar: bool| -> TokenStream {
+        let consume_direct =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_direct, columnar);
+        let consume_take =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_take, columnar);
+        let consume_all_absent =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_all_absent, columnar);
+        let consume_empty =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_empty, columnar);
+        quote! {{
+            #scan
+            if #total == 0 {
+                #empty_buf_setup
+                #consume_empty
+            } else if #flat.is_empty() {
+                #filled_buf_setup
+                #consume_all_absent
+            } else if #flat.len() == #total {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #filled_buf_setup
+                #consume_direct
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                let #take: #pp::IdxCa =
+                    <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                        "".into(),
+                        #positions.iter().copied(),
+                    );
+                #filled_buf_setup
+                #consume_take
+            }
+        }}
+    };
+    (make_block(true), make_block(false))
+}
+
+/// `vec(option(nested_leaf))` — `[Vec, Option]`. Outer list always present,
+/// per-element nullability inside. Builds positions during scan; the four
+/// runtime branches in `nested_scatter_blocks` keep the no-null and
+/// all-null fast paths.
+fn nested_vec_option_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        ty,
+        pa_root: _,
+        ..
+    } = *ctx;
+    let pp = super::polars_paths::prelude();
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let positions = &ids.positions;
+    let offsets = &ids.offsets;
+    let total = &ids.total;
+    let scan = quote! {
+        let mut #total: usize = 0;
+        for __df_derive_it in items {
+            #total += (&(#access)).len();
+        }
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
+        let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(#total);
+        let mut #offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_maybe in (&(#access)).iter() {
+                match __df_derive_maybe {
+                    ::std::option::Option::Some(__df_derive_v) => {
+                        #positions.push(::std::option::Option::Some(
+                            #flat.len() as #pp::IdxSize,
+                        ));
+                        #flat.push(__df_derive_v);
+                    }
+                    ::std::option::Option::None => {
+                        #positions.push(::std::option::Option::None);
+                    }
+                }
+            }
+            #offsets.push(#positions.len() as i64);
+        }
+    };
+    let no_validity = quote! { ::std::option::Option::None };
+    let (columnar, vec_anyvalues) = nested_scatter_blocks(ctx, &ids, &scan, &no_validity);
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar,
+            vec_anyvalues,
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 1,
+    }
+}
+
+/// `option(vec(option(nested_leaf)))` — `[Option, Vec, Option]`. Fuses the
+/// outer-list validity bitmap with per-element scatter. The four runtime
+/// branches in `nested_scatter_blocks` apply, with the bitmap threaded
+/// through the `validity_expr`.
+fn nested_option_vec_option_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        ty,
+        pa_root,
+        ..
+    } = *ctx;
+    let pp = super::polars_paths::prelude();
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let positions = &ids.positions;
+    let offsets = &ids.offsets;
+    let validity_bm = &ids.validity;
+    let total = &ids.total;
+    let scan = quote! {
+        let mut #total: usize = 0;
+        for __df_derive_it in items {
+            if let ::std::option::Option::Some(__df_derive_inner_vec) = &(#access) {
+                #total += __df_derive_inner_vec.len();
+            }
+        }
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
+        let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
+            ::std::vec::Vec::with_capacity(#total);
+        let mut #offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #offsets.push(0);
+        let mut __df_derive_validity_mb: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+        for __df_derive_it in items {
+            match &(#access) {
+                ::std::option::Option::Some(__df_derive_inner_vec) => {
+                    for __df_derive_maybe in __df_derive_inner_vec.iter() {
+                        match __df_derive_maybe {
+                            ::std::option::Option::Some(__df_derive_v) => {
+                                #positions.push(::std::option::Option::Some(
+                                    #flat.len() as #pp::IdxSize,
+                                ));
+                                #flat.push(__df_derive_v);
+                            }
+                            ::std::option::Option::None => {
+                                #positions.push(::std::option::Option::None);
+                            }
+                        }
+                    }
+                    __df_derive_validity_mb.push(true);
+                }
+                ::std::option::Option::None => {
+                    __df_derive_validity_mb.push(false);
+                }
+            }
+            #offsets.push(#positions.len() as i64);
+        }
+        let #validity_bm: #pa_root::bitmap::Bitmap =
+            <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                #pa_root::bitmap::MutableBitmap,
+            >>::from(__df_derive_validity_mb);
+    };
+    let validity_expr = quote! {
+        ::std::option::Option::Some(::std::clone::Clone::clone(&#validity_bm))
+    };
+    let (columnar, vec_anyvalues) = nested_scatter_blocks(ctx, &ids, &scan, &validity_expr);
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar,
+            vec_anyvalues,
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 1,
+    }
+}
+
+/// Build a `List<List<inner>>` Series expression for one inner column of
+/// the `[Vec, Vec]` shape. The chunk's arrow dtype after the inner stacking
+/// is `List<leaf>`; the assemble helper wraps the supplied logical dtype in
+/// one more `List<>` layer so the runtime dtype matches.
+fn nested_vec_vec_series_expr(
+    inner_col_expr: &TokenStream,
+    inner_offsets_buf: &syn::Ident,
+    outer_offsets_buf: &syn::Ident,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    quote! {{
+        let __df_derive_inner_col: #pp::Series = #inner_col_expr;
+        let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
+        let __df_derive_inner_chunk: #pp::ArrayRef =
+            __df_derive_inner_rech.chunks()[0].clone();
+        let __df_derive_inner_arrow_dt = __df_derive_inner_chunk.dtype().clone();
+        let __df_derive_inner_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_arrow_dt),
+            ::std::clone::Clone::clone(&#inner_offsets_buf),
+            __df_derive_inner_chunk,
+            ::std::option::Option::None,
+        );
+        let __df_derive_inner_list_chunk: #pp::ArrayRef =
+            ::std::boxed::Box::new(__df_derive_inner_list_arr) as #pp::ArrayRef;
+        let __df_derive_inner_list_arrow_dt =
+            __df_derive_inner_list_chunk.dtype().clone();
+        let __df_derive_outer_list_arr = #pp::LargeListArray::new(
+            #pp::LargeListArray::default_datatype(__df_derive_inner_list_arrow_dt),
+            ::std::clone::Clone::clone(&#outer_offsets_buf),
+            __df_derive_inner_list_chunk,
+            ::std::option::Option::None,
+        );
+        __df_derive_assemble_list_series_unchecked(
+            __df_derive_outer_list_arr,
+            #pp::DataType::List(::std::boxed::Box::new(
+                (*__df_derive_dtype).clone(),
+            )),
+        )
+    }}
+}
+
+/// `vec(vec(nested_leaf))` — `[Vec, Vec]`. Stacks two `LargeListArray` layers
+/// per inner column: inner partitions leaves into per-inner-list slices,
+/// outer groups inner lists into per-outer-row slices. The schema entry
+/// declares only `List<inner>` (a long-standing limitation matched by the
+/// slow path); the runtime Series carries `List<List<inner>>`.
+fn nested_vec_vec_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
+    let NestedLeafCtx {
+        access,
+        idx,
+        parent_name,
+        ty,
+        columnar_trait,
+        to_df_trait,
+        pa_root,
+    } = *ctx;
+    let pp = super::polars_paths::prelude();
+    let ids = NestedIdents::new(idx);
+    let flat = &ids.flat;
+    let inner_offsets = &ids.offsets;
+    let outer_offsets = &ids.outer_offsets;
+    let inner_offsets_buf = &ids.offsets_buf;
+    let outer_offsets_buf = &ids.outer_offsets_buf;
+    let df = &ids.df;
+    let total_inners = &ids.total_inners;
+    let total_leaves = &ids.total;
+
+    let inner_col_filled = quote! {
+        #df.column(__df_derive_col_name)?
+            .as_materialized_series()
+            .clone()
+    };
+    let inner_col_empty = quote! {
+        #pp::Series::new_empty("".into(), __df_derive_dtype)
+    };
+    let series_filled =
+        nested_vec_vec_series_expr(&inner_col_filled, inner_offsets_buf, outer_offsets_buf);
+    let series_empty =
+        nested_vec_vec_series_expr(&inner_col_empty, inner_offsets_buf, outer_offsets_buf);
+
+    let scan = quote! {
+        let mut #total_inners: usize = 0;
+        let mut #total_leaves: usize = 0;
+        for __df_derive_it in items {
+            for __df_derive_inner_vec in (&(#access)).iter() {
+                #total_inners += 1;
+                #total_leaves += __df_derive_inner_vec.len();
+            }
+        }
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total_leaves);
+        let mut #inner_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(#total_inners + 1);
+        #inner_offsets.push(0);
+        let mut #outer_offsets: ::std::vec::Vec<i64> =
+            ::std::vec::Vec::with_capacity(items.len() + 1);
+        #outer_offsets.push(0);
+        for __df_derive_it in items {
+            for __df_derive_inner_vec in (&(#access)).iter() {
+                for __df_derive_v in __df_derive_inner_vec.iter() {
+                    #flat.push(__df_derive_v);
+                }
+                #inner_offsets.push(#flat.len() as i64);
+            }
+            #outer_offsets.push((#inner_offsets.len() - 1) as i64);
+        }
+        let #inner_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::clone::Clone::clone(&#inner_offsets))?;
+        let #outer_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(::std::clone::Clone::clone(&#outer_offsets))?;
+    };
+    let make_block = |columnar: bool| -> TokenStream {
+        let consume_filled =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_filled, columnar);
+        let consume_empty =
+            nested_consume_columns(parent_name, to_df_trait, ty, &series_empty, columnar);
+        quote! {{
+            #scan
+            if #flat.is_empty() {
+                #consume_empty
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_filled
+            }
+        }}
+    };
+    Encoder {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        option_push: None,
+        finish: EncoderFinish::Multi {
+            columnar: make_block(true),
+            vec_anyvalues: make_block(false),
+        },
+        kind: LeafKind::CollectThenBulk,
+        offset_depth: 2,
+    }
+}
+
+/// Top-level dispatcher for the nested-struct/generic encoder paths.
+/// Returns `Some(encoder)` for the seven supported wrapper shapes; deeper
+/// nestings (`Option<Option<T>>`, `Vec<Option<Vec<T>>>`, etc.) fall through
+/// to the per-row trait path in `nested.rs`.
+pub fn try_build_nested_encoder(wrappers: &[Wrapper], ctx: &NestedLeafCtx<'_>) -> Option<Encoder> {
+    match wrappers {
+        [] => Some(nested_leaf_encoder(ctx)),
+        [Wrapper::Option] => Some(nested_option_encoder(ctx)),
+        [Wrapper::Vec] => Some(nested_vec_encoder(ctx)),
+        [Wrapper::Option, Wrapper::Vec] => Some(nested_option_vec_encoder(ctx)),
+        [Wrapper::Vec, Wrapper::Option] => Some(nested_vec_option_encoder(ctx)),
+        [Wrapper::Option, Wrapper::Vec, Wrapper::Option] => {
+            Some(nested_option_vec_option_encoder(ctx))
+        }
+        [Wrapper::Vec, Wrapper::Vec] => Some(nested_vec_vec_encoder(ctx)),
+        _ => None,
     }
 }

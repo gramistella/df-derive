@@ -23,10 +23,11 @@ pub(super) struct NumericInfo {
 /// u8/u16/u32/u64/f32/f64`). `None` for everything else (`Bool`, `String`,
 /// `ISize`/`USize`, `DateTime`, `Decimal`, `Struct`, `Generic`).
 ///
-/// `ISize`/`USize` are excluded because their materialized buffer type is
-/// `i64`/`u64`, which would mismatch the field's native type on the typed-
-/// builder path. `Bool` is excluded because its validity-bit semantics
-/// differ — see the extended note on `typed_primitive_list_info`.
+/// `ISize`/`USize` are excluded because the encoder widens them to
+/// `i64`/`u64` at the codegen boundary; they reach the numeric vec-emit
+/// path through the i64/u64 register entry, not through their own.
+/// `Bool` is excluded because the encoder uses a dedicated boolean
+/// builder rather than a numeric `PrimitiveArray`.
 pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
     let pp = super::polars_paths::prelude();
     let info = |native: TokenStream, variant: &str| {

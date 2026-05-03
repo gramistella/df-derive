@@ -3,13 +3,10 @@
 //! empty-series rows, columnar populator decls/pushes/finishes.
 //!
 //! The columnar path routes through the encoder IR in
-//! [`super::encoder`] when the encoder covers the shape. The lone remaining
-//! carve-out kept on the legacy primitive path in [`super::primitive`] is
-//! the depth-1 typed-builder fast path for `[Option, Vec]` over numerics /
-//! `String` / `Decimal` / `DateTime` (the `gen_typed_list_append`
-//! `append_iter` route is tighter than the encoder's general `flat.push +
-//! validity.set` shape; bench `08_complex_wrappers` regresses ~10% when
-//! that shape goes through the encoder, so it stays on the legacy emitter).
+//! [`super::encoder`] for every primitive shape. The legacy primitive
+//! emitter in [`super::primitive`] is preserved as fallback but is no
+//! longer reached at codegen time (pending a follow-up cleanup that
+//! removes the dead code).
 
 use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec};
 use proc_macro2::TokenStream;
@@ -267,12 +264,15 @@ fn primitive_emit_from_encoder(
     }
 }
 
-/// Legacy primitive path: only the `[Option, Vec]` typed-builder carve-out
-/// (depth-1 list builder over numeric / `String` / `Decimal` / `DateTime`)
-/// reaches this function. The encoder IR covers every other primitive
-/// shape — including `ISize`/`USize` (widened to `i64`/`u64` at the
-/// codegen boundary), every vec-bearing shape over them, and arbitrary
-/// `Option<…<Option<T>>>` stacks.
+/// Legacy primitive path: unreachable in practice. The encoder IR now
+/// covers every primitive shape — bare numerics, `ISize`/`USize` (widened
+/// to `i64`/`u64` at the codegen boundary), every vec-bearing shape over
+/// them, arbitrary `Option<…<Option<T>>>` stacks, and the
+/// `[Option, Vec, ...]` shapes that previously routed through the typed
+/// `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder`. This
+/// function is preserved as a coverage fallback but has no live callers;
+/// it (and its companions in `super::primitive`) are slated for removal in
+/// a follow-up cleanup.
 fn primitive_emit_legacy(
     field: &FieldIR,
     config: &super::MacroConfig,

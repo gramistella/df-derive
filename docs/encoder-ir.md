@@ -125,30 +125,27 @@ encoder keeps the collection for shapes where benches show it helps.
 
 ## Legacy fallback shapes
 
-A handful of wrapper-shape combinations don't (yet) compose through the
-encoder and stay on a separate emitter path:
+Earlier revisions kept several wrapper-shape combinations on a separate
+emitter path. The encoder now covers every primitive vec-bearing shape and
+every multi-`Option` primitive shape, so the legacy primitive emitter is
+unreachable in practice. The legacy code in the primitive path remains
+compiled but uncalled, pending a follow-up cleanup.
 
-- **Multi-`Option` primitives.** Shapes like `Option<Option<numeric>>`
-  (a primitive base under two or more consecutive `Option`s, no `Vec`
-  involved) fall through to the legacy primitive emitter. Polars collapses
-  the consecutive `Option`s into one validity bit anyway, so the runtime
-  semantics are identical; the encoder simply doesn't model the shape yet.
-- **`isize`/`usize` base types.** Because their width is platform-dependent,
-  the encoder doesn't have a leaf for them; vec-bearing shapes over `isize`
-  / `usize` also fall through. The legacy emitter widens to `i64`/`u64` and
-  handles the shape as a plain integer.
-- **`[Option, Vec, ...]` typed-builder carve-out.** A small number of
-  shapes that lead with `Option<Vec<...>>` over a primitive
-  (numeric, `String`, `Decimal`, or `DateTime`) use a typed list builder
-  because the `Option` outside the `Vec` interacts with list-level validity
-  in a way the typed builder handles cleanly. Bench numbers show no benefit
-  from forcing them through the direct-array path; keeping them on the
-  typed builder costs nothing.
+Two implementation notes worth recording for future reference:
 
-These carve-outs survived because they are coverage-correct, perf-neutral,
-and the encoder's job is to subsume bespoke emitters where the
-generalization pays off — not to absorb every corner case for its own
-sake. The legacy paths are small, isolated, and tested.
+- **`[Option, Vec, ...]` over typed-builder primitives.** Shapes that lead
+  with `Option<Vec<...>>` over a primitive (numeric, `String`, `Decimal`,
+  or `DateTime`) used to route through the typed
+  `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder` because
+  `append_iter`'s `extend_trusted_len_unchecked` was tighter than the
+  encoder's per-element `flat.push + validity.set` loop. The encoder is now
+  faster on virtually every shape — particularly `Decimal` shapes, where
+  the typed-builder route collected through a fallible scratch `Vec` — so
+  the carve-out was retired. A small `Option<Vec<DateTime>>` regression
+  (~8-12%) was accepted in exchange for the much larger speedups elsewhere.
+- **`isize`/`usize` base types.** The encoder widens these to `i64`/`u64`
+  at the codegen boundary so they reuse the i64/u64 vec-emit path; there is
+  no special legacy fallback for them.
 
 ## Invariants
 

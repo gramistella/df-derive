@@ -1862,10 +1862,10 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &BaseType) -> E
 /// `DateTime`, `as_str`, `to_string`, plus `Option<…<Option<T>>>` stacks of
 /// arbitrary depth (Polars folds consecutive `Option`s into a single
 /// validity bit, so the encoder collapses the access expression to a
-/// single `Option<&T>` before invoking the option-leaf push). The lone
-/// remaining return-`None` case is the typed-builder carve-out for
-/// `[Option, Vec]`-over-primitive shapes that benefit from
-/// `gen_typed_list_append`.
+/// single `Option<&T>` before invoking the option-leaf push). The encoder
+/// covers every primitive vec-bearing shape; the only legacy primitive
+/// fallback now is the `_ => None` arm of `build_leaf` for combinations the
+/// parser cannot construct, which is unreachable in practice.
 pub fn try_build_encoder(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -1887,27 +1887,7 @@ pub fn try_build_encoder(
         WrapperKind::Leaf {
             option_layers: layers,
         } => wrap_multi_option_primitive(base, transform, ctx, layers),
-        WrapperKind::Vec(shape) => {
-            // `[Option, Vec, ...]` (outer-Option above a single-Vec stack)
-            // over a primitive that has a typed `ListPrimitiveChunkedBuilder` /
-            // `ListStringChunkedBuilder` match keeps the legacy
-            // `gen_typed_list_append` fast path. The typed builder's
-            // `append_iter` runs `extend_trusted_len_unchecked` over the
-            // inner-Option iterator and `append_null` for outer-None, both
-            // tighter than the general encoder's per-element `flat.push +
-            // validity.set` plus an explicit outer validity bitmap. Bench
-            // `08_complex_wrappers` measures ~10% regression when this
-            // shape goes through the general path; routing back to the
-            // typed builder restores baseline. The general encoder still
-            // owns deeper-Vec, struct/generic, and bool/ISize/USize shapes.
-            if shape.depth() == 1
-                && shape.layers[0].has_outer_validity()
-                && super::primitive::typed_primitive_list_info(base, transform, wrappers).is_some()
-            {
-                return None;
-            }
-            try_build_vec_encoder(base, transform, ctx, &shape)
-        }
+        WrapperKind::Vec(shape) => try_build_vec_encoder(base, transform, ctx, &shape),
     }
 }
 

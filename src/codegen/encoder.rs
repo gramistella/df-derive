@@ -107,9 +107,12 @@ fn normalize_wrappers(wrappers: &[Wrapper]) -> WrapperKind {
             }
             Wrapper::Vec => {
                 saw_vec = true;
-                inner_option_layers = 0;
+                // Options accumulated since the last Vec wrap THIS Vec from
+                // the previous Vec's element perspective: from the new Vec's
+                // POV they sit immediately above it as list-level validity.
+                // Drop them into the new layer instead of discarding.
                 layers.push(VecLayer {
-                    option_layers: pending_options,
+                    option_layers: pending_options + std::mem::take(&mut inner_option_layers),
                 });
                 pending_options = 0;
             }

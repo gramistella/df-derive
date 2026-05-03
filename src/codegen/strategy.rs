@@ -41,7 +41,6 @@ pub(super) struct NestedIR {
     /// problem as `columnar_trait`: bulk-emit tokens are inlined into bodies
     /// where `ToDataFrame` may not be in scope.
     to_df_trait: TokenStream,
-    is_generic: bool,
 }
 
 /// Sealed internal trait the per-field codegen routines call against. Both
@@ -54,16 +53,7 @@ pub trait StrategyVariant {
     fn gen_empty_series_creation(&self) -> TokenStream;
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream>;
     fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream;
-    fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream;
     fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream>;
-    /// Per-field codegen that pushes one `AnyValue` per inner schema column
-    /// onto `values_vec_ident` for a single instance bound to `it_ident`.
-    /// Used by the `to_inner_values(&self)` trait override to bypass the
-    /// `to_dataframe()` round-trip: the outer struct's override invokes
-    /// this per field, and the nested `on_leaf` recursively calls the
-    /// inner type's `to_inner_values()` instead of constructing a one-row
-    /// `DataFrame`.
-    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream;
     /// Returns `Some` when this field can bypass the per-row
     /// decls/push/builders triple in the columnar path and emit a single
     /// bulk builder. `pa_root` is the cached `polars-arrow` crate-root
@@ -71,15 +61,6 @@ pub trait StrategyVariant {
     /// call doesn't re-run `proc_macro_crate::crate_name`.
     fn gen_bulk_columnar_emit(&self, pa_root: &TokenStream, idx: usize)
     -> Option<Vec<TokenStream>>;
-    /// Mirror of `gen_bulk_columnar_emit` for the
-    /// `__df_derive_vec_to_inner_list_values` helper path: when a strategy
-    /// can produce its `AnyValue::List` entries in bulk (without a per-row
-    /// push), returns `Some`.
-    fn gen_bulk_vec_anyvalues_emit(
-        &self,
-        pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>>;
 }
 
 pub type Strategy = Box<dyn StrategyVariant>;
@@ -106,7 +87,7 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
             },
         ))
     };
-    let nested = |f: &crate::ir::FieldIR, type_path: TokenStream, is_generic: bool| -> Strategy {
+    let nested = |f: &crate::ir::FieldIR, type_path: TokenStream| -> Strategy {
         Box::new(NestedStructStrategy::new(
             f.name.clone(),
             f.field_index,
@@ -115,7 +96,6 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
                 type_path,
                 columnar_trait: columnar_trait.clone(),
                 to_df_trait: to_df_trait.clone(),
-                is_generic,
             },
         ))
     };
@@ -123,9 +103,9 @@ pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strat
         .iter()
         .map(|f| match &f.base_type {
             BaseType::Struct(id, args) if !stringy(&f.transform) => {
-                nested(f, build_type_path(id, args.as_ref()), false)
+                nested(f, build_type_path(id, args.as_ref()))
             }
-            BaseType::Generic(id) if !stringy(&f.transform) => nested(f, quote! { #id }, true),
+            BaseType::Generic(id) if !stringy(&f.transform) => nested(f, quote! { #id }),
             _ => primitive(f),
         })
         .collect()
@@ -201,13 +181,11 @@ impl PrimitiveStrategy {
     /// and `finish` fields are independent of it (modulo `name`, which is
     /// baked into the finish expression). Callers that only consume
     /// `decls`/`finish` may pass any well-formed expression — the
-    /// `gen_populator_inits`, `gen_columnar_builders`, and
-    /// `gen_vec_values_finishers` paths do this with `quote! {}`.
+    /// `gen_populator_inits` and `gen_columnar_builders` paths do this with
+    /// `quote! {}`.
     ///
-    /// `name` is the column name baked into the produced Series. Pass the
-    /// field name for the columnar context; pass `""` for the vec-anyvalues
-    /// context (matching the prior `primitive_finishers_for_vec_anyvalues`
-    /// behavior — the rename happens implicitly through `AnyValue::List`).
+    /// `name` is the column name baked into the produced Series — the field
+    /// name in the columnar context.
     fn try_build_encoder(&self, access: &TokenStream, idx: usize, name: &str) -> Option<Encoder> {
         let ctx = LeafCtx {
             access,
@@ -246,35 +224,6 @@ impl StrategyVariant for PrimitiveStrategy {
         let name = &self.field_name;
         let pp = super::polars_paths::prelude();
         quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
-    }
-
-    fn gen_vec_values_finishers(&self, idx: usize) -> TokenStream {
-        // Encoder IR covers `[]`, `[Option]`, and the `[Vec, ...]` shapes
-        // added in Step 2. For the `[Vec, ...]` shapes the bulk emit lives
-        // in `gen_populator_inits` (consumed by the populator decls block);
-        // the finisher just wraps the encoder's finish expression in
-        // `AnyValue::List(...)`. For `[]`/`[Option]` shapes the finisher
-        // does the same with the leaf-buffer Series. The access expression
-        // is required when the encoder builds its bulk decls; threading
-        // `it_access()` keeps the precount loops over the real field
-        // even though this method is the finisher (the access doesn't
-        // appear in the finish expression itself; it only matters because
-        // `try_build_encoder` is shape-conditional).
-        let access = self.it_access();
-        if let Some(enc) = self.try_build_encoder(&access, idx, "") {
-            let series = enc.into_series_finish();
-            let pp = super::polars_paths::prelude();
-            return quote! {
-                let inner = #series;
-                out_values.push(#pp::AnyValue::List(inner));
-            };
-        }
-        super::primitive::primitive_finishers_for_vec_anyvalues(
-            &self.wrappers,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            idx,
-        )
     }
 
     fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
@@ -322,27 +271,6 @@ impl StrategyVariant for PrimitiveStrategy {
         )
     }
 
-    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { #it_ident.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { #it_ident.#index_lit }
-            },
-        );
-        super::primitive::generate_primitive_for_anyvalue(
-            values_vec_ident,
-            &access,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            &self.p.decimal128_encode_trait,
-        )
-    }
-
     fn gen_bulk_columnar_emit(
         &self,
         _pa_root: &TokenStream,
@@ -375,31 +303,6 @@ impl StrategyVariant for PrimitiveStrategy {
                 #(#decls)*
                 let __df_derive_named = #series.with_name(#name.into());
                 columns.push(__df_derive_named.into());
-            }
-        }])
-    }
-
-    fn gen_bulk_vec_anyvalues_emit(
-        &self,
-        _pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        // Mirror of `gen_bulk_columnar_emit` for the vec-anyvalues helper:
-        // wrap the encoder's finish expression in `AnyValue::List(...)` and
-        // emit the whole block as a bulk operation. Same ordering rationale
-        // as the columnar path.
-        if !has_vec(&self.wrappers) {
-            return None;
-        }
-        let access = self.it_access();
-        let enc = self.try_build_encoder(&access, idx, "")?;
-        let pp = super::polars_paths::prelude();
-        let decls = enc.decls.clone();
-        let series = enc.into_series_finish();
-        Some(vec![quote! {
-            {
-                #(#decls)*
-                out_values.push(#pp::AnyValue::List(#series));
             }
         }])
     }
@@ -515,21 +418,12 @@ impl NestedStructStrategy {
         )
     }
 
-    /// Returns `Some(emit)` when this strategy has a bulk implementation for
-    /// the given context; `None` falls back to the per-row pipeline. Eligible
-    /// for the depth-1, depth-2, and depth-3 wrapper shapes the encoder IR
-    /// supports: bare leaf, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`,
-    /// `Vec<Option<T>>`, `Option<Vec<Option<T>>>`, and `Vec<Vec<T>>`.
-    ///
+    /// Build the nested encoder for this field's wrapper stack. The encoder
+    /// covers every wrapper shape after step 4: bare leaf, `Option<T>`,
+    /// `Vec<T>`, and the depth-N general encoder for any vec-bearing nesting.
     /// All nested encoder paths route through the `Columnar::columnar_from_refs`
     /// trait method, which works uniformly for both generic-parameter and
     /// concrete-struct base types — no per-element clone required.
-    ///
-    /// Remaining nestings (`Option<Option<T>>`, deeper triple-Vec shapes,
-    /// etc.) fall through to the per-row pipeline; those paths already drive
-    /// `Vec<AnyValue>` aggregation through
-    /// `__df_derive_vec_to_inner_list_values`, so the added bulk machinery
-    /// isn't worth the complexity.
     fn build_nested(&self, pa_root: &TokenStream, idx: usize) -> Encoder {
         let access = self.it_access();
         let ctx = NestedLeafCtx {
@@ -561,13 +455,11 @@ impl StrategyVariant for NestedStructStrategy {
     }
 
     // The per-row populator methods (`gen_populator_inits`,
-    // `gen_populator_push`, `gen_columnar_builders`,
-    // `gen_vec_values_finishers`) are unreachable for nested fields after
-    // Step 4 — `gen_bulk_columnar_emit` and `gen_bulk_vec_anyvalues_emit`
-    // both return `Some(...)` for every wrapper shape now, so the
-    // per-row branches in `prepare_columnar_parts` /
-    // `prepare_vec_anyvalues_parts` never fire on nested. The trait
-    // methods stay (Step 6 collapses the trait and removes them); the
+    // `gen_populator_push`, `gen_columnar_builders`) are unreachable for
+    // nested fields after Step 4 — `gen_bulk_columnar_emit` returns
+    // `Some(...)` for every wrapper shape now, so the per-row branch in
+    // `prepare_columnar_parts` never fires on nested. The trait methods
+    // stay (a future step collapses the trait and removes them); the
     // bodies emit empty tokens so the unreachable codegen path produces
     // no output.
     fn gen_populator_inits(&self, _idx: usize) -> Vec<TokenStream> {
@@ -575,30 +467,6 @@ impl StrategyVariant for NestedStructStrategy {
     }
 
     fn gen_populator_push(&self, _it_ident: &Ident, _idx: usize) -> TokenStream {
-        TokenStream::new()
-    }
-
-    fn gen_for_anyvalue(&self, it_ident: &Ident, values_vec_ident: &Ident) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { #it_ident.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { #it_ident.#index_lit }
-            },
-        );
-        super::nested::generate_nested_for_anyvalue(
-            &self.n.type_path,
-            values_vec_ident,
-            &access,
-            &self.wrappers,
-            self.n.is_generic,
-        )
-    }
-
-    fn gen_vec_values_finishers(&self, _idx: usize) -> TokenStream {
         TokenStream::new()
     }
 
@@ -612,21 +480,9 @@ impl StrategyVariant for NestedStructStrategy {
         idx: usize,
     ) -> Option<Vec<TokenStream>> {
         let enc = self.build_nested(pa_root, idx);
-        let EncoderFinish::Multi { columnar, .. } = enc.finish else {
+        let EncoderFinish::Multi { columnar } = enc.finish else {
             unreachable!("nested encoder must produce a multi-column finish")
         };
         Some(vec![columnar])
-    }
-
-    fn gen_bulk_vec_anyvalues_emit(
-        &self,
-        pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        let enc = self.build_nested(pa_root, idx);
-        let EncoderFinish::Multi { vec_anyvalues, .. } = enc.finish else {
-            unreachable!("nested encoder must produce a multi-column finish")
-        };
-        Some(vec![vec_anyvalues])
     }
 }

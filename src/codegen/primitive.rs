@@ -2,10 +2,9 @@
 // String, DateTime, Decimal) or a struct/generic routed through a
 // `to_string`/`as_str` transform. The `[]` and `[Option]` shapes are
 // served by the encoder IR in `super::encoder`; `Vec<...>`-bearing shapes
-// flow through `generate_primitive_for_columnar_push` /
-// `primitive_finishers_for_vec_anyvalues` here, sharing the wrapper
-// traversal in `super::wrapper_processor::process_wrappers` and the
-// borrow-classification logic in `classify_borrow`.
+// flow through `generate_primitive_for_columnar_push` here, sharing the
+// wrapper traversal in `super::wrapper_processor::process_wrappers` and
+// the borrow-classification logic in `classify_borrow`.
 
 use crate::ir::{
     BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count,
@@ -192,13 +191,13 @@ fn gen_primitive_vec_inner_series(
     // enclosing struct — overly restrictive when only this fallback path
     // (deeper-than-`Vec<T>` shapes with a transform) ever needs the borrow.
     //
-    // `generate_primitive_for_anyvalue` always emits exactly one `AnyValue`
+    // `generate_primitive_recur_anyvalue` always emits exactly one `AnyValue`
     // push per call (one per `Vec` element), so route those pushes straight
     // into the outer list buffer instead of paying for a per-element scratch
     // `Vec` + `pop()` round-trip. That also drops a runtime `polars_err!`
     // branch from the generated code that statically cannot fire.
     let elem_access = quote! { #elem_ident };
-    let recur_elem_tokens_ts = generate_primitive_for_anyvalue(
+    let recur_elem_tokens_ts = generate_primitive_recur_anyvalue(
         &list_vals_ident,
         &elem_access,
         base_type,
@@ -304,7 +303,13 @@ pub fn generate_primitive_for_columnar_push(
     super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
 }
 
-pub fn generate_primitive_for_anyvalue(
+/// Internal helper that emits per-element `AnyValue` pushes for one access
+/// expression and wrapper stack. Used only by the recursive fallback inside
+/// `gen_primitive_vec_inner_series` for deep-Vec primitive shapes
+/// (`Vec<Option<Vec<T>>>`, `Vec<Option<Option<T>>>`, etc.) where no typed
+/// list-builder fast path applies. Each emit pushes exactly one `AnyValue`
+/// per outer element.
+fn generate_primitive_recur_anyvalue(
     values_vec_ident: &Ident,
     access: &TokenStream,
     base_type: &BaseType,
@@ -315,9 +320,6 @@ pub fn generate_primitive_for_anyvalue(
     let pp = super::polars_paths::prelude();
 
     let on_leaf = |acc: &TokenStream| {
-        // Direct AnyValue construction — one push per leaf, no detour through
-        // a 1-element `Series` + `get(0)?.into_static()`. At ~10M leaves for a
-        // 10-field × 1M-row aggregation that's a measurable saving.
         let av = match classify_borrow(base_type, transform, wrappers) {
             Some(BorrowKind::StringLeaf) => {
                 quote! { #pp::AnyValue::StringOwned((#acc).clone().into()) }
@@ -475,47 +477,6 @@ fn gen_vec_list_builder_decl(
                     items.len(),
                     "".into(),
                 );
-        }
-    }
-}
-
-/// Vec-anyvalues finisher for primitive shapes that aren't covered by the
-/// encoder IR — `Vec<...>`-bearing wrappers (and the few non-encoder leaf
-/// carve-outs the encoder IR doesn't yet cover, currently bare ISize/USize).
-/// The `[]` and `[Option]` shapes are intercepted by the encoder IR in
-/// `strategy.rs::gen_vec_values_finishers`.
-pub fn primitive_finishers_for_vec_anyvalues(
-    wrappers: &[Wrapper],
-    base_type: &BaseType,
-    transform: Option<&PrimitiveTransform>,
-    idx: usize,
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let vec = has_vec(wrappers);
-    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
-    let needs_cast = crate::codegen::type_registry::needs_cast(transform);
-    if vec {
-        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-        // Typed builder: call inherent `finish`-via-trait without `&mut *` deref.
-        // Boxed-dyn builder: dereference the Box first.
-        let builder_ref = if typed_primitive_list_info(base_type, transform, wrappers).is_some() {
-            quote! { &mut #lb_ident }
-        } else {
-            quote! { &mut *#lb_ident }
-        };
-        quote! {
-            let inner = #pp::IntoSeries::into_series(
-                #pp::ListBuilderTrait::finish(#builder_ref),
-            );
-            out_values.push(#pp::AnyValue::List(inner));
-        }
-    } else {
-        let dtype = mapping.full_dtype;
-        let vec_ident = PopulatorIdents::primitive_buf(idx);
-        quote! {
-            let mut inner = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &#vec_ident);
-            if #needs_cast { inner = inner.cast(&#dtype)?; }
-            out_values.push(#pp::AnyValue::List(inner));
         }
     }
 }

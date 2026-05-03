@@ -14,34 +14,7 @@ pub fn generate_primitive_access_expr(
 
 // generate_fast_path_primitives removed; logic is now handled in strategies
 
-// Unified collection iteration preparation helpers
-
-pub fn prepare_vec_anyvalues_parts(
-    ir: &StructIR,
-    config: &super::MacroConfig,
-    it_ident: &syn::Ident,
-) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    // Resolve the `polars-arrow` crate path once per macro invocation and
-    // thread it through the bulk-Vec emitter. The lookup goes through
-    // `proc_macro_crate::crate_name`, which reads/parses the downstream
-    // `Cargo.toml` — calling it per field would duplicate that work for
-    // every nested-Vec column.
-    let pa_root = super::polars_paths::polars_arrow_root();
-    let strategies = strategy::build_strategies(ir, config);
-    let mut decls: Vec<TokenStream> = Vec::new();
-    let mut pushes: Vec<TokenStream> = Vec::new();
-    let mut finishers: Vec<TokenStream> = Vec::new();
-    for (idx, s) in strategies.iter().enumerate() {
-        if let Some(bulk) = s.gen_bulk_vec_anyvalues_emit(&pa_root, idx) {
-            finishers.extend(bulk);
-        } else {
-            decls.extend(s.gen_populator_inits(idx));
-            pushes.push(s.gen_populator_push(it_ident, idx));
-            finishers.push(s.gen_vec_values_finishers(idx));
-        }
-    }
-    (decls, pushes, finishers)
-}
+// Unified collection iteration preparation helper
 
 pub fn prepare_columnar_parts(
     ir: &StructIR,

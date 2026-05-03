@@ -165,23 +165,15 @@ pub enum LeafKind {
 /// Primitive leaves materialize a single `Series` (the field's column).
 /// Nested-struct/generic leaves materialize **multiple** Series, one per
 /// inner schema column of the nested type — so they are emitted as a block
-/// that pushes directly onto the call site's `columns` vec (columnar
-/// context) or `out_values` vec (vec-anyvalues context).
+/// that pushes directly onto the call site's `columns` vec.
 pub enum EncoderFinish {
     /// Single-Series finish: an expression that evaluates to a
     /// `polars::prelude::Series`. Outer call sites wrap as
-    /// `columns.push(s.into())` (columnar) or `AnyValue::List(s)` (vec).
+    /// `columns.push(s.into())`.
     Series(TokenStream),
-    /// Multi-column finish: pre-built blocks for the two contexts.
-    /// `columnar` pushes one Series per inner schema column onto `columns`.
-    /// `vec_anyvalues` pushes one `AnyValue::List(inner_series)` per inner
-    /// schema column onto `out_values`. Both blocks are produced from the
-    /// same gather/scatter setup; only the one matching the current context
-    /// is spliced.
-    Multi {
-        columnar: TokenStream,
-        vec_anyvalues: TokenStream,
-    },
+    /// Multi-column finish: a pre-built block that pushes one Series per
+    /// inner schema column onto the call site's `columns` vec.
+    Multi { columnar: TokenStream },
 }
 
 /// Per-field encoder state. `decls` and `finish` are emitted once at the
@@ -2090,11 +2082,10 @@ fn wrap_option(
 // `Self`-bearing impl method so `clippy::unsafe_derive_deserialize` stays
 // silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
 //
-// Every shape produces an `EncoderFinish::Multi { columnar, vec_anyvalues }`
-// because the inner `DataFrame` carries one column per inner schema entry of
-// `T`. The two blocks share the same gather/scatter setup and only differ in
-// how they emit the per-column Series at the end (parent column with prefixed
-// name vs. `AnyValue::List(inner_series)`).
+// Every shape produces an `EncoderFinish::Multi { columnar }` because the
+// inner `DataFrame` carries one column per inner schema entry of `T`. The
+// block pushes one Series per inner schema column onto the call site's
+// `columns` vec, with the parent name prefixed onto each inner column name.
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// `polars-arrow` crate root (so the combinators don't re-resolve it per
@@ -2141,41 +2132,32 @@ impl NestedIdents {
 }
 
 /// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
-/// and pushes each inner-Series-yielding expression onto the right context
-/// vec. The schema name is exposed as `__df_derive_col_name: &str` and the
-/// dtype as `__df_derive_dtype: &polars::DataType` so per-column expressions
-/// can reference both.
+/// and pushes each inner-Series-yielding expression onto `columns` with the
+/// parent name prefixed. The schema name is exposed as `__df_derive_col_name:
+/// &str` and the dtype as `__df_derive_dtype: &polars::DataType` so per-column
+/// expressions can reference both.
 fn nested_consume_columns(
     parent_name: &str,
     to_df_trait: &TokenStream,
     ty: &TokenStream,
     series_expr: &TokenStream,
-    columnar: bool,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
-    let body = if columnar {
-        quote! {{
-            let __df_derive_prefixed = ::std::format!(
-                "{}.{}", #parent_name, __df_derive_col_name,
-            );
-            let __df_derive_inner: #pp::Series = #series_expr;
-            let __df_derive_named = __df_derive_inner
-                .with_name(__df_derive_prefixed.as_str().into());
-            columns.push(__df_derive_named.into());
-        }}
-    } else {
-        quote! {{
-            let __df_derive_inner: #pp::Series = #series_expr;
-            out_values.push(#pp::AnyValue::List(__df_derive_inner));
-        }}
-    };
     quote! {
         for (__df_derive_col_name, __df_derive_dtype) in
             <#ty as #to_df_trait>::schema()?
         {
             let __df_derive_col_name: &str = __df_derive_col_name.as_str();
             let __df_derive_dtype: &#pp::DataType = &__df_derive_dtype;
-            #body
+            {
+                let __df_derive_prefixed = ::std::format!(
+                    "{}.{}", #parent_name, __df_derive_col_name,
+                );
+                let __df_derive_inner: #pp::Series = #series_expr;
+                let __df_derive_named = __df_derive_inner
+                    .with_name(__df_derive_prefixed.as_str().into());
+                columns.push(__df_derive_named.into());
+            }
         }
     }
 }
@@ -2202,8 +2184,7 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
             .as_materialized_series()
             .clone()
     };
-    let columnar = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr, true);
-    let vec_anyvalues = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr, false);
+    let columnar = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr);
     let setup = quote! {
         let #flat: ::std::vec::Vec<&#ty> = items
             .iter()
@@ -2212,14 +2193,12 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
         let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
     };
     let columnar_block = quote! {{ #setup #columnar }};
-    let vec_anyvalues_block = quote! {{ #setup #vec_anyvalues }};
     Encoder {
         decls: Vec::new(),
         push: TokenStream::new(),
         option_push: None,
         finish: EncoderFinish::Multi {
             columnar: columnar_block,
-            vec_anyvalues: vec_anyvalues_block,
         },
         kind: LeafKind::CollectThenBulk,
         offset_depth: 0,
@@ -2307,38 +2286,32 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
             }
         }
     };
-    let make_block = |columnar: bool| -> TokenStream {
-        let consume_direct =
-            nested_consume_columns(parent_name, to_df_trait, ty, &direct_inner, columnar);
-        let consume_take =
-            nested_consume_columns(parent_name, to_df_trait, ty, &take_inner, columnar);
-        let consume_null =
-            nested_consume_columns(parent_name, to_df_trait, ty, &null_inner, columnar);
-        quote! {{
-            #scan
-            if #flat.is_empty() {
-                #consume_null
-            } else if #flat.len() == items.len() {
-                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                #consume_direct
-            } else {
-                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                let #take: #pp::IdxCa =
-                    <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                        "".into(),
-                        #positions.iter().copied(),
-                    );
-                #consume_take
-            }
-        }}
-    };
+    let consume_direct = nested_consume_columns(parent_name, to_df_trait, ty, &direct_inner);
+    let consume_take = nested_consume_columns(parent_name, to_df_trait, ty, &take_inner);
+    let consume_null = nested_consume_columns(parent_name, to_df_trait, ty, &null_inner);
+    let columnar_block = quote! {{
+        #scan
+        if #flat.is_empty() {
+            #consume_null
+        } else if #flat.len() == items.len() {
+            let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+            #consume_direct
+        } else {
+            let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+            let #take: #pp::IdxCa =
+                <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                    "".into(),
+                    #positions.iter().copied(),
+                );
+            #consume_take
+        }
+    }};
     Encoder {
         decls: Vec::new(),
         push: TokenStream::new(),
         option_push: None,
         finish: EncoderFinish::Multi {
-            columnar: make_block(true),
-            vec_anyvalues: make_block(false),
+            columnar: columnar_block,
         },
         kind: LeafKind::CollectThenBulk,
         offset_depth: 0,
@@ -2439,67 +2412,61 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
     let series_empty = build_nested_layer_wrap(&layers, shape, &inner_col_empty, &pp);
     let series_all_absent = build_nested_layer_wrap(&layers, shape, &inner_col_all_absent, &pp);
 
-    let make_block = |columnar: bool| -> TokenStream {
-        let consume_direct =
-            nested_consume_columns(parent_name, to_df_trait, ty, &series_direct, columnar);
-        let consume_take =
-            nested_consume_columns(parent_name, to_df_trait, ty, &series_take, columnar);
-        let consume_empty =
-            nested_consume_columns(parent_name, to_df_trait, ty, &series_empty, columnar);
-        let consume_all_absent =
-            nested_consume_columns(parent_name, to_df_trait, ty, &series_all_absent, columnar);
-        if shape.has_inner_option() {
-            // 4-branch dispatch for the inner-Option case:
-            // - total == 0: no leaf slots at all (every outer Vec was empty
-            //   or every outer Option was None) → empty inner Series.
-            // - flat.is_empty() (but total > 0): every leaf slot was None →
-            //   typed-null Series of length total, offsets reference it.
-            // - flat.len() == total: every leaf slot was Some → direct.
-            // - else: mixed → take.
-            quote! {{
-                #scan_body
-                #validity_freeze
-                #offsets_freeze
-                if #total == 0 {
-                    #consume_empty
-                } else if #flat.is_empty() {
-                    #consume_all_absent
-                } else if #flat.len() == #total {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                    #consume_direct
-                } else {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                    let #take: #pp::IdxCa =
-                        <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                            "".into(),
-                            #positions.iter().copied(),
-                        );
-                    #consume_take
-                }
-            }}
-        } else {
-            // No inner-Option: total == flat.len(). Two branches: empty
-            // when flat is empty (no leaves), direct otherwise.
-            quote! {{
-                #scan_body
-                #validity_freeze
-                #offsets_freeze
-                if #flat.is_empty() {
-                    #consume_empty
-                } else {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                    #consume_direct
-                }
-            }}
-        }
+    let consume_direct = nested_consume_columns(parent_name, to_df_trait, ty, &series_direct);
+    let consume_take = nested_consume_columns(parent_name, to_df_trait, ty, &series_take);
+    let consume_empty = nested_consume_columns(parent_name, to_df_trait, ty, &series_empty);
+    let consume_all_absent =
+        nested_consume_columns(parent_name, to_df_trait, ty, &series_all_absent);
+    let columnar_block = if shape.has_inner_option() {
+        // 4-branch dispatch for the inner-Option case:
+        // - total == 0: no leaf slots at all (every outer Vec was empty
+        //   or every outer Option was None) → empty inner Series.
+        // - flat.is_empty() (but total > 0): every leaf slot was None →
+        //   typed-null Series of length total, offsets reference it.
+        // - flat.len() == total: every leaf slot was Some → direct.
+        // - else: mixed → take.
+        quote! {{
+            #scan_body
+            #validity_freeze
+            #offsets_freeze
+            if #total == 0 {
+                #consume_empty
+            } else if #flat.is_empty() {
+                #consume_all_absent
+            } else if #flat.len() == #total {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_direct
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                let #take: #pp::IdxCa =
+                    <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                        "".into(),
+                        #positions.iter().copied(),
+                    );
+                #consume_take
+            }
+        }}
+    } else {
+        // No inner-Option: total == flat.len(). Two branches: empty
+        // when flat is empty (no leaves), direct otherwise.
+        quote! {{
+            #scan_body
+            #validity_freeze
+            #offsets_freeze
+            if #flat.is_empty() {
+                #consume_empty
+            } else {
+                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #consume_direct
+            }
+        }}
     };
     Encoder {
         decls: Vec::new(),
         push: TokenStream::new(),
         option_push: None,
         finish: EncoderFinish::Multi {
-            columnar: make_block(true),
-            vec_anyvalues: make_block(false),
+            columnar: columnar_block,
         },
         kind: LeafKind::CollectThenBulk,
         offset_depth: depth,

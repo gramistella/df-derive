@@ -131,12 +131,12 @@ pub fn impl_parts_with_bounds(
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
-    // `Columnar::columnar_from_refs`, the nested path uses `to_inner_values`
-    // and `Vec<&Self>`, and the only primitive-vec branch that previously
-    // cloned (`gen_primitive_vec_inner_series`'s deep-fallback) now borrows
-    // from the for-loop binding directly. A user with a non-`Clone` payload
-    // (e.g. `T: ToDataFrame + Columnar` only) can derive `ToDataFrame` on a
-    // struct holding `T` without that bound leaking from the macro.
+    // `Columnar::columnar_from_refs`, and the only primitive-vec branch that
+    // previously cloned (`gen_primitive_vec_inner_series`'s deep-fallback)
+    // now borrows from the for-loop binding directly. A user with a
+    // non-`Clone` payload (e.g. `T: ToDataFrame + Columnar` only) can derive
+    // `ToDataFrame` on a struct holding `T` without that bound leaking from
+    // the macro.
     for tp in generics.type_params_mut() {
         tp.bounds.push(to_df_bound.clone());
         tp.bounds.push(columnar_bound.clone());

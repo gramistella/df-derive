@@ -60,56 +60,6 @@ impl Columnar for f64 {
     }
 }
 
-// Hand-rolled per-row equivalent of `__df_derive_vec_to_inner_list_values`
-// for `Wrapper<T>`. Mirrors what the macro emits for the per-row generic-leaf
-// path (one tmp DataFrame per item, AnyValues accumulated per column). Used as
-// the A/B baseline against the new bulk override.
-fn wrapper_vec_to_inner_list_values_per_row<T>(
-    items: &[Wrapper<T>],
-) -> PolarsResult<Vec<AnyValue<'static>>>
-where
-    T: Clone + ToDataFrame + Columnar,
-{
-    if items.is_empty() {
-        let mut out = Vec::new();
-        for (_, dtype) in <Wrapper<T> as ToDataFrame>::schema()? {
-            let inner = Series::new_empty("".into(), &dtype);
-            out.push(AnyValue::List(inner));
-        }
-        return Ok(out);
-    }
-
-    let mut id_buf: Vec<u32> = Vec::with_capacity(items.len());
-    let mut price_buf: Vec<f64> = Vec::with_capacity(items.len());
-    let payload_schema = <T as ToDataFrame>::schema()?;
-    let mut payload_cols: Vec<Vec<AnyValue<'static>>> = payload_schema
-        .iter()
-        .map(|_| Vec::with_capacity(items.len()))
-        .collect();
-
-    for it in items {
-        id_buf.push(it.id);
-        price_buf.push(it.price);
-        let tmp = it.payload.to_dataframe()?;
-        let names: Vec<String> = tmp
-            .get_column_names()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        for (j, name) in names.iter().enumerate() {
-            payload_cols[j].push(tmp.column(name.as_str())?.get(0)?.into_static());
-        }
-    }
-
-    let mut out = Vec::with_capacity(2 + payload_schema.len());
-    out.push(AnyValue::List(Series::new("".into(), &id_buf)));
-    out.push(AnyValue::List(Series::new("".into(), &price_buf)));
-    for col in payload_cols {
-        out.push(AnyValue::List(Series::new("".into(), &col)));
-    }
-    Ok(out)
-}
-
 // Hand-rolled per-row implementation that mirrors the previous generic-leaf
 // codegen: for every item we call `payload.to_dataframe()` and accumulate
 // AnyValues per column. This is what the macro used to do before the bulk
@@ -389,43 +339,6 @@ fn benchmark_generics(c: &mut Criterion) {
             ))
             .unwrap();
             std::hint::black_box(df)
-        });
-    });
-
-    // Helpers' vec-anyvalues path (used by outer structs that hold
-    // `Vec<Wrapper<T>>`). Compares the new bulk override against a hand-rolled
-    // per-row equivalent.
-    c.bench_function("helpers_struct_per_row", |b| {
-        b.iter(|| {
-            let v = wrapper_vec_to_inner_list_values_per_row(std::hint::black_box(&struct_data))
-                .unwrap();
-            std::hint::black_box(v)
-        });
-    });
-    c.bench_function("helpers_struct_bulk", |b| {
-        b.iter(|| {
-            let v = Wrapper::<Meta>::__df_derive_vec_to_inner_list_values(std::hint::black_box(
-                &struct_data,
-            ))
-            .unwrap();
-            std::hint::black_box(v)
-        });
-    });
-
-    c.bench_function("helpers_primitive_per_row", |b| {
-        b.iter(|| {
-            let v =
-                wrapper_vec_to_inner_list_values_per_row(std::hint::black_box(&prim_data)).unwrap();
-            std::hint::black_box(v)
-        });
-    });
-    c.bench_function("helpers_primitive_bulk", |b| {
-        b.iter(|| {
-            let v = Wrapper::<f64>::__df_derive_vec_to_inner_list_values(std::hint::black_box(
-                &prim_data,
-            ))
-            .unwrap();
-            std::hint::black_box(v)
         });
     });
 

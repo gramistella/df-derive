@@ -246,9 +246,9 @@ pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> b
 
 /// Build the `AnyValue::<Variant>(…)` constructor expression for one already-
 /// mapped primitive value (the result of `map_primitive_expr`). Used by the
-/// `to_inner_values(&self)` per-row path to materialize each leaf without
-/// going through a 1-element Series + `get(0)?.into_static()` round-trip —
-/// at scale that's ~N-fields × N-rows throwaway Series allocations.
+/// recursive deep-Vec primitive fallback in `gen_primitive_vec_inner_series`
+/// to materialize each leaf without going through a 1-element Series +
+/// `get(0)?.into_static()` round-trip.
 pub fn anyvalue_static_expr(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,

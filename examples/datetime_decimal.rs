@@ -4,17 +4,12 @@ use rust_decimal::Decimal;
 
 #[allow(dead_code)]
 mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
 
     pub trait ToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
         fn empty_dataframe() -> PolarsResult<DataFrame>;
         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-        fn to_inner_values(&self) -> PolarsResult<Vec<AnyValue<'static>>> {
-            let df = self.to_dataframe()?;
-            let row = df.get(0).unwrap_or_default();
-            Ok(row.into_iter().map(AnyValue::into_static).collect())
-        }
     }
 
     pub trait Columnar: Sized {

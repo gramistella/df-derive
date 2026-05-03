@@ -4,9 +4,8 @@ use syn::Ident;
 /// Per-strategy identifier convention for the primitive populator
 /// pipeline. Names declared here in `primitive_decls` are referenced by
 /// the per-row push helpers (`generate_primitive_for_columnar_push`) and
-/// the finisher (`primitive_finishers_for_vec_anyvalues`). Funneling every
-/// site through this struct turns rename mistakes into a compile error at
-/// the helper itself.
+/// the columnar builders. Funneling every site through this struct turns
+/// rename mistakes into a compile error at the helper itself.
 ///
 /// The nested-struct identifier set was retired in Step 4: every
 /// nested-struct/generic shape now routes through `encoder.rs`'s depth-N

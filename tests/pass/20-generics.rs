@@ -63,10 +63,9 @@ where
     payload: Vec<T>,
 }
 
-// Doubly-wrapped Option (depth-2). This exercises the per-row trait-only
-// fallback in `generate_nested_for_columnar_push`'s `on_leaf` is_generic
-// branch — the depth-1 bulk overrides don't fire here, so we must verify the
-// recursive Some/Some path still produces correct output.
+// Doubly-wrapped Option (depth-2). Polars Some(None) and None both surface
+// as AnyValue::Null; this verifies the encoder's two-Option collapse over
+// generic payloads still produces correct output.
 #[derive(ToDataFrame, Clone)]
 struct OptOptWrapper<T>
 where

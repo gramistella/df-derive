@@ -35,9 +35,6 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
 
 pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
-    let to_df_trait = &config.to_dataframe_trait_path;
-    let pp = super::polars_paths::prelude();
-    let it_ident = format_ident!("__df_derive_it");
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
 
@@ -66,40 +63,13 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
         })
         .collect();
 
-    let (vec_values_decls, vec_values_per_item, vec_values_finishers) =
-        super::common::prepare_vec_anyvalues_parts(ir, config, &it_ident);
+    if as_ref_str_asserts.is_empty() {
+        return TokenStream::new();
+    }
 
-    // The single body lives on the borrowed-slice helper. The owned-slice
-    // helper is a thin shim that collects refs and delegates — same one-alloc
-    // pattern `Columnar::columnar_to_dataframe`'s default delegation uses
-    // (see codegen/columnar_impl.rs). Per-item field access in
-    // `vec_values_per_item` is `__df_derive_it.field`, which auto-derefs
-    // through `&&Self` to reach the struct fields, so the body type-checks
-    // against `&[&Self]` without changes.
     quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #(#as_ref_str_asserts)*
-            #[doc(hidden)]
-            pub fn __df_derive_vec_to_inner_list_values(items: &[Self]) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue<'static>>> {
-                let __df_derive_refs: ::std::vec::Vec<&Self> = items.iter().collect();
-                Self::__df_derive_refs_to_inner_list_values(&__df_derive_refs)
-            }
-            #[doc(hidden)]
-            pub fn __df_derive_refs_to_inner_list_values(items: &[&Self]) -> #pp::PolarsResult<::std::vec::Vec<#pp::AnyValue<'static>>> {
-                if items.is_empty() {
-                    let mut out_values: ::std::vec::Vec<#pp::AnyValue<'static>> = ::std::vec::Vec::new();
-                    for (_inner_name, inner_dtype) in <Self as #to_df_trait>::schema()? {
-                        let inner_empty = #pp::Series::new_empty("".into(), &inner_dtype);
-                        out_values.push(#pp::AnyValue::List(inner_empty));
-                    }
-                    return ::std::result::Result::Ok(out_values);
-                }
-                #(#vec_values_decls)*
-                for #it_ident in items { #(#vec_values_per_item)* }
-                let mut out_values: ::std::vec::Vec<#pp::AnyValue<'static>> = ::std::vec::Vec::new();
-                #(#vec_values_finishers)*
-                ::std::result::Result::Ok(out_values)
-            }
         }
     }
 }

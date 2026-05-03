@@ -26,8 +26,51 @@
 use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use syn::Ident;
 
-use super::populator_idents::PopulatorIdents;
+/// Per-field identifier convention for the encoder IR's primitive leaves.
+/// Funneling every declaration site through this struct turns rename
+/// mistakes into a compile error at the helper itself.
+///
+/// Nested-struct/generic encoders manage their own per-shape ident
+/// bundles (`NestedIdents` / `NestedLayerIdents`).
+struct PopulatorIdents;
+
+impl PopulatorIdents {
+    /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar
+    /// field. Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast
+    /// path.
+    fn primitive_buf(idx: usize) -> Ident {
+        format_ident!("__df_derive_buf_{}", idx)
+    }
+
+    /// `MutableBitmap` validity buffer for the
+    /// `is_direct_primitive_array_option_numeric_leaf` fast path. Paired
+    /// with `primitive_buf` (which holds `Vec<#native>` on that path) so the
+    /// finisher can build a `PrimitiveArray::new(dtype, vals, validity)`
+    /// directly without a `Vec<Option<T>>` second walk.
+    fn primitive_validity(idx: usize) -> Ident {
+        format_ident!("__df_derive_val_{}", idx)
+    }
+
+    /// Row counter for the `is_direct_view_option_string_leaf` fast path.
+    /// Indexes the pre-filled `MutableBitmap` so the per-row push only
+    /// writes a single byte for `None` rows via `set_unchecked`, instead
+    /// of pushing both `true` and `false` bits unconditionally.
+    fn primitive_row_idx(idx: usize) -> Ident {
+        format_ident!("__df_derive_ri_{}", idx)
+    }
+
+    /// Reused `String` scratch buffer for the
+    /// `is_direct_view_to_string_leaf` fast path. Paired with `primitive_buf`
+    /// (which holds `MutableBinaryViewArray<str>` on that path) so each row
+    /// can clear-and-write into the scratch via `Display::fmt` and then push
+    /// the resulting `&str` into the view array (which copies the bytes),
+    /// avoiding a fresh per-row `String` allocation.
+    fn primitive_str_scratch(idx: usize) -> Ident {
+        format_ident!("__df_derive_str_{}", idx)
+    }
+}
 
 /// One `Vec` layer in a normalized wrapper stack. Outermost layer first.
 #[derive(Clone, Copy, Debug)]
@@ -666,8 +709,7 @@ fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
     let transform = PrimitiveTransform::DateTimeToInt(unit);
     let (bare_push, option_push) = mapped_push_pair(ctx, &transform);
     let dtype =
-        super::type_registry::compute_mapping(&BaseType::DateTimeUtc, Some(&transform), &[])
-            .full_dtype;
+        super::type_registry::compute_full_dtype(&BaseType::DateTimeUtc, Some(&transform), &[]);
     let finish_series = quote! {{
         let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
         s = s.cast(&#dtype)?;
@@ -690,12 +732,11 @@ fn option_for_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, inner: Encoder) ->
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = super::polars_paths::prelude();
-    let dtype = super::type_registry::compute_mapping(
+    let dtype = super::type_registry::compute_full_dtype(
         &BaseType::DateTimeUtc,
         Some(&PrimitiveTransform::DateTimeToInt(unit)),
         &[],
-    )
-    .full_dtype;
+    );
     let finish_series = quote! {{
         let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
         s = s.cast(&#dtype)?;
@@ -772,7 +813,7 @@ fn as_str_leaf(ctx: &LeafCtx<'_>, ty_path: &TokenStream, base: &BaseType) -> Enc
     // Bare `String` base (with redundant `as_str`) and `as_str` on a
     // non-string base have different push expressions: `String`'s `&String`
     // deref-coerces to `&str` so the plain `&` form works there; non-string
-    // bases need UFCS through the type path. Match `classify_borrow`'s split.
+    // bases need UFCS through the type path.
     let is_string = matches!(base, BaseType::String);
     let bare_push = if is_string {
         quote! { #buf.push(&(#access)); }
@@ -1862,21 +1903,20 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &BaseType) -> E
 /// `DateTime`, `as_str`, `to_string`, plus `Option<…<Option<T>>>` stacks of
 /// arbitrary depth (Polars folds consecutive `Option`s into a single
 /// validity bit, so the encoder collapses the access expression to a
-/// single `Option<&T>` before invoking the option-leaf push). The encoder
-/// covers every primitive vec-bearing shape; the only legacy primitive
-/// fallback now is the `_ => None` arm of `build_leaf` for combinations the
-/// parser cannot construct, which is unreachable in practice.
-pub fn try_build_encoder(
+/// single `Option<&T>` before invoking the option-leaf push) and every
+/// primitive vec-bearing shape. The function is total on parser-validated
+/// IR; combinations the parser cannot construct panic in `build_leaf`.
+pub fn build_encoder(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
     ctx: &LeafCtx<'_>,
-) -> Option<Encoder> {
+) -> Encoder {
     match normalize_wrappers(wrappers) {
         WrapperKind::Leaf { option_layers: 0 } => build_leaf(base, transform, ctx),
         WrapperKind::Leaf { option_layers: 1 } => {
-            let leaf = build_leaf(base, transform, ctx)?;
-            Some(wrap_option(base, transform, leaf, ctx))
+            let leaf = build_leaf(base, transform, ctx);
+            wrap_option(base, transform, leaf, ctx)
         }
         // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
         // `Option<Option<Option<T>>>`, …): pre-collapse the access to
@@ -1905,30 +1945,33 @@ fn try_build_vec_encoder(
     transform: Option<&PrimitiveTransform>,
     ctx: &LeafCtx<'_>,
     shape: &VecShape,
-) -> Option<Encoder> {
+) -> Encoder {
     match transform {
         None => try_build_vec_encoder_bare(base, ctx, shape),
+        // The parser injects `DateTimeToInt` only for `DateTimeUtc` bases
+        // and `DecimalToInt128` only for `Decimal` bases, so the
+        // mismatched arms below cannot be reached on a parser-validated IR.
         Some(PrimitiveTransform::DateTimeToInt(unit)) => match base {
-            BaseType::DateTimeUtc => Some(vec_encoder_datetime(ctx, *unit, shape)),
-            _ => None,
+            BaseType::DateTimeUtc => vec_encoder_datetime(ctx, *unit, shape),
+            _ => unreachable!(
+                "df-derive: DateTimeToInt transform reached vec encoder with non-DateTime base"
+            ),
         },
         Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => match base {
-            BaseType::Decimal => Some(vec_encoder_decimal(ctx, *precision, *scale, shape)),
-            _ => None,
+            BaseType::Decimal => vec_encoder_decimal(ctx, *precision, *scale, shape),
+            _ => unreachable!(
+                "df-derive: DecimalToInt128 transform reached vec encoder with non-Decimal base"
+            ),
         },
-        Some(PrimitiveTransform::ToString) => Some(vec_encoder_to_string(ctx, shape)),
+        Some(PrimitiveTransform::ToString) => vec_encoder_to_string(ctx, shape),
         // `as_str` borrow path: same MBVA-based encoder as `String`, but
         // the value expression goes through UFCS (`AsRef<str>`) instead of
         // `String::as_str`. Bytes are copied into the view array once.
-        Some(PrimitiveTransform::AsStr) => Some(vec_encoder_as_str(ctx, shape, base)),
+        Some(PrimitiveTransform::AsStr) => vec_encoder_as_str(ctx, shape, base),
     }
 }
 
-fn try_build_vec_encoder_bare(
-    base: &BaseType,
-    ctx: &LeafCtx<'_>,
-    shape: &VecShape,
-) -> Option<Encoder> {
+fn try_build_vec_encoder_bare(base: &BaseType, ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     match base {
         BaseType::I8
         | BaseType::I16
@@ -1940,7 +1983,8 @@ fn try_build_vec_encoder_bare(
         | BaseType::U64
         | BaseType::F32
         | BaseType::F64 => {
-            let info = super::type_registry::numeric_info(base)?;
+            let info = super::type_registry::numeric_info(base)
+                .expect("numeric_info covers every base reaching this arm");
             // The loop binding is `&T` for Copy primitives, so dereferencing
             // produces the storage value directly. Bare and inner-Option
             // arms share the same expression because `build_vec_leaf_pieces`
@@ -1951,20 +1995,21 @@ fn try_build_vec_encoder_bare(
                 value_expr: quote! { *__df_derive_v },
                 needs_decimal_import: false,
             };
-            Some(vec_encoder(ctx, &spec, shape, &info.dtype))
+            vec_encoder(ctx, &spec, shape, &info.dtype)
         }
         BaseType::ISize | BaseType::USize => {
             // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
             // The loop binding is `&isize`/`&usize`, so the cast reads the
             // pointed-to value first (`*v`) then widens to the target.
-            let info = super::type_registry::isize_usize_widened_info(base)?;
+            let info = super::type_registry::isize_usize_widened_info(base)
+                .expect("isize_usize_widened_info covers every base reaching this arm");
             let target = info.native.clone();
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
                 value_expr: quote! { (*__df_derive_v as #target) },
                 needs_decimal_import: false,
             };
-            Some(vec_encoder(ctx, &spec, shape, &info.dtype))
+            vec_encoder(ctx, &spec, shape, &info.dtype)
         }
         BaseType::String => {
             let pp = super::polars_paths::prelude();
@@ -1973,19 +2018,26 @@ fn try_build_vec_encoder_bare(
                 value_expr: quote! { __df_derive_v.as_str() },
                 extra_decls: Vec::new(),
             };
-            Some(vec_encoder(ctx, &spec, shape, &leaf_dtype))
+            vec_encoder(ctx, &spec, shape, &leaf_dtype)
         }
         BaseType::Bool => {
             if shape.has_inner_option() {
                 let pp = super::polars_paths::prelude();
                 let leaf_dtype = quote! { #pp::DataType::Boolean };
-                Some(vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype))
+                vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
             } else {
-                Some(vec_encoder_bool_bare(ctx, shape))
+                vec_encoder_bool_bare(ctx, shape)
             }
         }
+        // `DateTimeUtc` / `Decimal` always carry a `DateTimeToInt` /
+        // `DecimalToInt128` transform on a parser-validated IR, so the
+        // no-transform arm cannot reach them. `Struct` / `Generic` route
+        // through `build_nested_encoder` (or, with a stringy transform,
+        // the `AsStr` / `ToString` arms above).
         BaseType::DateTimeUtc | BaseType::Decimal | BaseType::Struct(..) | BaseType::Generic(_) => {
-            None
+            unreachable!(
+                "df-derive: vec encoder reached with no-transform DateTime/Decimal/Struct/Generic base"
+            )
         }
     }
 }
@@ -2054,11 +2106,18 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
+/// Build the leaf-encoder for a primitive `(base, transform)` pair. Every
+/// arm below corresponds to a parser-admissible combination — the parser
+/// injects `DateTimeToInt`/`DecimalToInt128` for `DateTime`/`Decimal`
+/// bases, rejects `as_str` on incompatible bases, and routes
+/// `Struct`/`Generic` through `build_nested_encoder` unless paired with a
+/// stringy transform. Combinations that cannot reach this function panic
+/// rather than silently returning `None`.
 fn build_leaf(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     ctx: &LeafCtx<'_>,
-) -> Option<Encoder> {
+) -> Encoder {
     match transform {
         None => match base {
             BaseType::I8
@@ -2070,24 +2129,30 @@ fn build_leaf(
             | BaseType::U32
             | BaseType::U64
             | BaseType::F32
-            | BaseType::F64 => Some(numeric_leaf(ctx, base)),
-            BaseType::ISize | BaseType::USize => Some(numeric_leaf_widened(ctx, base)),
-            BaseType::String => Some(string_leaf(ctx)),
-            BaseType::Bool => Some(bool_leaf(ctx)),
+            | BaseType::F64 => numeric_leaf(ctx, base),
+            BaseType::ISize | BaseType::USize => numeric_leaf_widened(ctx, base),
+            BaseType::String => string_leaf(ctx),
+            BaseType::Bool => bool_leaf(ctx),
             BaseType::DateTimeUtc
             | BaseType::Decimal
             | BaseType::Struct(..)
-            | BaseType::Generic(_) => None,
+            | BaseType::Generic(_) => unreachable!(
+                "df-derive: build_leaf reached with no-transform DateTime/Decimal/Struct/Generic base"
+            ),
         },
         Some(PrimitiveTransform::DateTimeToInt(unit)) => match base {
-            BaseType::DateTimeUtc => Some(datetime_leaf(ctx, *unit)),
-            _ => None,
+            BaseType::DateTimeUtc => datetime_leaf(ctx, *unit),
+            _ => unreachable!(
+                "df-derive: DateTimeToInt transform reached build_leaf with non-DateTime base"
+            ),
         },
         Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => match base {
-            BaseType::Decimal => Some(decimal_leaf(ctx, *precision, *scale)),
-            _ => None,
+            BaseType::Decimal => decimal_leaf(ctx, *precision, *scale),
+            _ => unreachable!(
+                "df-derive: DecimalToInt128 transform reached build_leaf with non-Decimal base"
+            ),
         },
-        Some(PrimitiveTransform::ToString) => Some(as_string_leaf(ctx)),
+        Some(PrimitiveTransform::ToString) => as_string_leaf(ctx),
         Some(PrimitiveTransform::AsStr) => {
             let ty_path = match base {
                 BaseType::String => quote! { ::std::string::String },
@@ -2095,9 +2160,26 @@ fn build_leaf(
                     super::strategy::build_type_path(ident, args.as_ref())
                 }
                 BaseType::Generic(ident) => quote! { #ident },
-                _ => return None,
+                BaseType::F64
+                | BaseType::F32
+                | BaseType::I64
+                | BaseType::U64
+                | BaseType::I32
+                | BaseType::U32
+                | BaseType::I16
+                | BaseType::U16
+                | BaseType::I8
+                | BaseType::U8
+                | BaseType::Bool
+                | BaseType::ISize
+                | BaseType::USize
+                | BaseType::DateTimeUtc
+                | BaseType::Decimal => unreachable!(
+                    "df-derive: as_str transform reached build_leaf on a non-stringy base \
+                     (parser rejects this case)"
+                ),
             };
-            Some(as_str_leaf(ctx, &ty_path, base))
+            as_str_leaf(ctx, &ty_path, base)
         }
     }
 }
@@ -2127,7 +2209,7 @@ fn wrap_option(
             | BaseType::Decimal
             | BaseType::Struct(..)
             | BaseType::Generic(_) => {
-                unreachable!("wrap_option reached for a leaf shape build_leaf returns None for")
+                unreachable!("df-derive: wrap_option reached for a leaf shape build_leaf rejects")
             }
         },
         Some(PrimitiveTransform::DateTimeToInt(unit)) => option_for_datetime(ctx, *unit, inner),
@@ -2169,7 +2251,7 @@ fn wrap_multi_option_primitive(
     transform: Option<&PrimitiveTransform>,
     ctx: &LeafCtx<'_>,
     layers: usize,
-) -> Option<Encoder> {
+) -> Encoder {
     debug_assert!(layers >= 2);
     if matches!(transform, Some(PrimitiveTransform::AsStr)) {
         return wrap_multi_option_as_str(base, ctx, layers);
@@ -2196,14 +2278,14 @@ fn wrap_multi_option_primitive(
         name: ctx.name,
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
-    let leaf = build_leaf(base, transform, &new_ctx)?;
+    let leaf = build_leaf(base, transform, &new_ctx);
     let mut wrapped = wrap_option(base, transform, leaf, &new_ctx);
     let original_push = wrapped.push.clone();
     wrapped.push = quote! {
         #setup
         #original_push
     };
-    Some(wrapped)
+    wrapped
 }
 
 /// `as_str`-specific multi-Option wrapper. Builds the same `Vec<Option<&str>>`
@@ -2211,7 +2293,7 @@ fn wrap_multi_option_primitive(
 /// stacked `Option`s into a single `Option<&str>` borrowed from the original
 /// field — the buffer's borrow needs to live for the whole pass, which a
 /// per-row local owning `String` cannot provide.
-fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -> Option<Encoder> {
+fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
     let ty_path = match base {
         BaseType::String => quote! { ::std::string::String },
         BaseType::Struct(ident, args) => super::strategy::build_type_path(ident, args.as_ref()),
@@ -2230,7 +2312,10 @@ fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -
         | BaseType::ISize
         | BaseType::USize
         | BaseType::DateTimeUtc
-        | BaseType::Decimal => return None,
+        | BaseType::Decimal => unreachable!(
+            "df-derive: wrap_multi_option_as_str reached on a non-stringy base \
+             (parser rejects `as_str` on these bases)"
+        ),
     };
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let name = ctx.name;
@@ -2249,14 +2334,14 @@ fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -
         }
     };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    Some(Encoder {
+    Encoder {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
         push,
         option_push: None,
         finish: Encoder::series_finish(finish_series),
         kind: LeafKind::PerElementPush,
         offset_depth: 0,
-    })
+    }
 }
 
 /// `Copy` primitive base test for the multi-Option per-row materializer.

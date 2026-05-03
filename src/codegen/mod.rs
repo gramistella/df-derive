@@ -1,11 +1,8 @@
 mod columnar_impl;
-mod common;
 mod encoder;
 mod helpers;
 mod nested;
 mod polars_paths;
-mod populator_idents;
-mod primitive;
 mod strategy;
 mod trait_impl;
 mod type_registry;
@@ -130,9 +127,8 @@ pub fn impl_parts_with_bounds(
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
-    // `Columnar::columnar_from_refs`, and the only primitive-vec branch that
-    // previously cloned (`gen_primitive_vec_inner_series`'s deep-fallback)
-    // now borrows from the for-loop binding directly. A user with a
+    // `Columnar::columnar_from_refs`, and every primitive-vec branch in the
+    // encoder IR borrows from the for-loop binding directly. A user with a
     // non-`Clone` payload (e.g. `T: ToDataFrame + Columnar` only) can derive
     // `ToDataFrame` on a struct holding `T` without that bound leaking from
     // the macro.

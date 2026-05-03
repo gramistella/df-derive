@@ -15,8 +15,6 @@ pub(super) struct NumericInfo {
     pub dtype: TokenStream,
     /// `#pp::<Variant>Chunked` alias, e.g. `#pp::Int8Chunked`.
     pub chunked: TokenStream,
-    /// `#pp::<Variant>Type` builder type witness, e.g. `#pp::Int8Type`.
-    pub builder_type: TokenStream,
 }
 
 /// Returns `Some(NumericInfo)` for the bare numeric bases (`i8/i16/i32/i64/
@@ -32,13 +30,11 @@ pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
     let pp = super::polars_paths::prelude();
     let info = |native: TokenStream, variant: &str| {
         let chunked_ident = format_ident!("{}Chunked", variant);
-        let type_ident = format_ident!("{}Type", variant);
         let dtype_ident = format_ident!("{}", variant);
         NumericInfo {
             native,
             dtype: quote! { #pp::DataType::#dtype_ident },
             chunked: quote! { #pp::#chunked_ident },
-            builder_type: quote! { #pp::#type_ident },
         }
     };
     Some(match base {
@@ -78,13 +74,11 @@ pub(super) fn isize_usize_widened_info(base: &BaseType) -> Option<NumericInfo> {
     let pp = super::polars_paths::prelude();
     let info = |native: TokenStream, variant: &str| {
         let chunked_ident = format_ident!("{}Chunked", variant);
-        let type_ident = format_ident!("{}Type", variant);
         let dtype_ident = format_ident!("{}", variant);
         NumericInfo {
             native,
             dtype: quote! { #pp::DataType::#dtype_ident },
             chunked: quote! { #pp::#chunked_ident },
-            builder_type: quote! { #pp::#type_ident },
         }
     };
     Some(match base {
@@ -140,24 +134,13 @@ const fn decimal_precision_scale(transform: Option<&PrimitiveTransform>) -> (u8,
     }
 }
 
-pub struct TypeMapping {
-    pub rust_element_type: TokenStream,
-    pub element_dtype: TokenStream,
-    pub full_dtype: TokenStream,
-}
-
-pub fn compute_mapping(
+pub fn compute_full_dtype(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
     wrappers: &[Wrapper],
-) -> TypeMapping {
-    let (rust_elem, elem_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
-    let full_dtype = wrap_dtype(&elem_dtype, wrappers);
-    TypeMapping {
-        rust_element_type: rust_elem,
-        element_dtype: elem_dtype,
-        full_dtype,
-    }
+) -> TokenStream {
+    let (_, elem_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
+    wrap_dtype(&elem_dtype, wrappers)
 }
 
 fn base_and_transform_to_rust_and_dtype(
@@ -226,122 +209,6 @@ fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream 
     dt
 }
 
-/// Dtype of one element of the *outermost* list in `wrappers`, used to
-/// construct the per-field `ListBuilder` for nested-Vec shapes. The inner
-/// Series fed to that builder has this dtype:
-///
-/// - `Vec<T>` → element dtype (the list contains `T` directly).
-/// - `Vec<Vec<T>>` → `List<element>` (each element is itself a list of `T`).
-/// - `Vec<Vec<Vec<T>>>` → `List<List<element>>`, etc.
-/// - `Option<Vec<T>>` / `Vec<Option<T>>` → element dtype (`Option` doesn't
-///   add a list layer; nullability is carried by the values, not a wrapper).
-///
-/// The macro's `schema()` reporting wraps `element` exactly once for any
-/// `Vec`-containing field (a known limitation), so the outer Series's
-/// runtime dtype can be deeper than the reported schema dtype. The list
-/// builder needs the runtime dtype of its appended Series, not the schema's
-/// flattened version, or strict-typed builders like
-/// `ListPrimitiveChunkedBuilder` reject the append with a `SchemaMismatch`.
-pub fn outer_list_inner_dtype(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
-    wrappers: &[Wrapper],
-) -> TokenStream {
-    let (_, element_dtype) = base_and_transform_to_rust_and_dtype(base, transform);
-    let extra_layers = vec_count(wrappers).saturating_sub(1);
-    let mut dt = element_dtype;
-    if extra_layers > 0 {
-        let pp = super::polars_paths::prelude();
-        for _ in 0..extra_layers {
-            dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
-        }
-    }
-    dt
-}
-
-pub fn needs_cast(transform: Option<&PrimitiveTransform>) -> bool {
-    transform.is_some_and(|t| match t {
-        PrimitiveTransform::DateTimeToInt(_) | PrimitiveTransform::DecimalToInt128 { .. } => true,
-        PrimitiveTransform::ToString | PrimitiveTransform::AsStr => false,
-    })
-}
-
-/// True for transforms whose value-mapping expression returns via `?` (i.e.
-/// the expression has type `PolarsResult<_>` and short-circuits on error).
-/// Two transforms are fallible:
-///
-/// - `DateTime<Utc> → i64` at nanosecond precision: `timestamp_nanos_opt`
-///   returns `None` for dates outside approximately [1677, 2262].
-/// - `Decimal → i128` rescale on scale-up: an i128 mantissa multiplied by
-///   `10^diff` for `diff` up to 38 can overflow for sufficiently large
-///   inputs. We surface the overflow as a `PolarsResult` error rather than
-///   panicking, matching the behavior of the historical `to_string + parse`
-///   path which raised a polars `ComputeError` on overflow.
-///
-/// Callers that splice the mapped expression into a closure (e.g.
-/// `.map(|e| { #mapped }).collect()`) need to switch to a `try_collect`-style
-/// pattern when this returns true.
-pub const fn is_fallible_conversion(transform: Option<&PrimitiveTransform>) -> bool {
-    matches!(
-        transform,
-        Some(
-            PrimitiveTransform::DateTimeToInt(DateTimeUnit::Nanoseconds)
-                | PrimitiveTransform::DecimalToInt128 { .. }
-        )
-    )
-}
-
-/// Build the `AnyValue::<Variant>(…)` constructor expression for one already-
-/// mapped primitive value (the result of `map_primitive_expr`). Used by the
-/// recursive deep-Vec primitive fallback in `gen_primitive_vec_inner_series`
-/// to materialize each leaf without going through a 1-element Series +
-/// `get(0)?.into_static()` round-trip.
-pub fn anyvalue_static_expr(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
-    mapped_var: &TokenStream,
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    if let Some(t) = transform {
-        match t {
-            PrimitiveTransform::DateTimeToInt(unit) => {
-                let unit_ts = time_unit_tokens(*unit);
-                return quote! {
-                    #pp::AnyValue::Datetime(#mapped_var, #unit_ts, ::std::option::Option::None)
-                };
-            }
-            PrimitiveTransform::DecimalToInt128 { precision, scale } => {
-                let p = *precision as usize;
-                let s = *scale as usize;
-                return quote! { #pp::AnyValue::Decimal(#mapped_var, #p, #s) };
-            }
-            PrimitiveTransform::ToString | PrimitiveTransform::AsStr => {
-                return quote! { #pp::AnyValue::StringOwned((#mapped_var).into()) };
-            }
-        }
-    }
-    match base {
-        BaseType::F64 => quote! { #pp::AnyValue::Float64(#mapped_var) },
-        BaseType::F32 => quote! { #pp::AnyValue::Float32(#mapped_var) },
-        BaseType::I64 | BaseType::ISize => quote! { #pp::AnyValue::Int64(#mapped_var) },
-        BaseType::U64 | BaseType::USize => quote! { #pp::AnyValue::UInt64(#mapped_var) },
-        BaseType::I32 => quote! { #pp::AnyValue::Int32(#mapped_var) },
-        BaseType::U32 => quote! { #pp::AnyValue::UInt32(#mapped_var) },
-        BaseType::I16 => quote! { #pp::AnyValue::Int16(#mapped_var) },
-        BaseType::U16 => quote! { #pp::AnyValue::UInt16(#mapped_var) },
-        BaseType::I8 => quote! { #pp::AnyValue::Int8(#mapped_var) },
-        BaseType::U8 => quote! { #pp::AnyValue::UInt8(#mapped_var) },
-        BaseType::Bool => quote! { #pp::AnyValue::Boolean(#mapped_var) },
-        BaseType::String => quote! { #pp::AnyValue::StringOwned((#mapped_var).into()) },
-        BaseType::DateTimeUtc | BaseType::Decimal => unreachable!(
-            "df-derive: DateTime/Decimal base reached anyvalue_static_expr without its mandatory transform (codegen invariant)"
-        ),
-        BaseType::Struct(..) | BaseType::Generic(_) => unreachable!(
-            "df-derive: nested struct/generic leaves do not flow through the primitive AnyValue helper"
-        ),
-    }
-}
-
 pub fn map_primitive_expr(
     var: &TokenStream,
     transform: Option<&PrimitiveTransform>,
@@ -405,16 +272,13 @@ pub fn map_primitive_expr(
             }
             PrimitiveTransform::AsStr => {
                 // Allocating fallback for codegen sites that can't use a
-                // `Vec<&str>` columnar buffer — in practice this is only
-                // hit at the leaf of stacked-Option shapes (e.g.
-                // `Option<Option<T>>`), where the buffer type
-                // `Vec<Option<String>>` flattens both layers anyway. All
-                // `Vec<…>` shapes route around this arm via
-                // `generate_inner_series_from_vec`, which builds a
-                // `Vec<&str>` directly. Emitting valid Rust here keeps the
+                // `Vec<&str>` columnar buffer. The encoder IR routes every
+                // `as_str` shape through borrowing buffers built directly by
+                // the leaf encoders, so this arm is currently unreachable on
+                // parser-validated input. Emitting valid Rust here keeps the
                 // per-field `AsRef<str>` const-fn assert as the canonical
                 // user-visible error rather than a proc-macro internal
-                // panic.
+                // panic, should a future caller route through this path.
                 quote! { <_ as ::core::convert::AsRef<str>>::as_ref(&(#var)).to_string() }
             }
         },

@@ -19,8 +19,8 @@ struct Container {
     custom_items: Vec<Option<Item>>,
     // An optional vec of optional primitives
     opt_vec_opt_primitive: Option<Vec<Option<i32>>>,
-    // A vec of vecs of primitives — exercises the typed `ListBuilder` path in
-    // `gen_primitive_vec_inner_series` for `tail = [Vec, ...]`.
+    // A vec of vecs of primitives — exercises the encoder IR's stacked
+    // `LargeListArray` path for two-deep `Vec` shapes.
     nested_primitive: Vec<Vec<i32>>,
     // A vec of vecs of vecs — locks the recursive `ListBuilder` nesting.
     triple_nested: Vec<Vec<Vec<i32>>>,

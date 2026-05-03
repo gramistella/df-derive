@@ -103,11 +103,6 @@ pub fn has_vec(wrappers: &[Wrapper]) -> bool {
     wrappers.iter().any(|w| matches!(w, Wrapper::Vec))
 }
 
-/// True if any wrapper layer is `Option<…>`.
-pub fn has_option(wrappers: &[Wrapper]) -> bool {
-    wrappers.iter().any(|w| matches!(w, Wrapper::Option))
-}
-
 /// Number of `Vec<…>` layers in the wrapper stack.
 pub fn vec_count(wrappers: &[Wrapper]) -> usize {
     wrappers

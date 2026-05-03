@@ -110,11 +110,11 @@ fn parse_attributes(
 }
 
 /// Reject `#[df_derive(as_str)]` on a base type that codegen knows cannot be
-/// `AsRef<str>`. Without this check, the silent fallback in
-/// `generate_inner_series_from_vec` would emit UFCS-against-`String` tokens
-/// and lean on the per-field `AsRef<str>` const-fn assert in `helpers.rs` to
-/// fail compilation. Surfacing the mistake at parse time yields a cleaner
-/// span and message at the user's attribute, not deep in macro expansion.
+/// `AsRef<str>`. Without this check, the codegen would emit UFCS-against-the-
+/// base-type tokens and lean on the per-field `AsRef<str>` const-fn assert in
+/// `helpers.rs` to fail compilation. Surfacing the mistake at parse time
+/// yields a cleaner span and message at the user's attribute, not deep in
+/// macro expansion.
 /// `Struct` / `Generic` / `String` bases are still allowed: the first two are
 /// validated by the runtime assert (the parser cannot know whether a user
 /// type implements `AsRef<str>`), and `String` itself implements it.

@@ -33,13 +33,6 @@ pub fn prelude() -> TokenStream {
     quote! { #root::prelude }
 }
 
-/// `polars::chunked_array::builder` — exists for `get_list_builder`, the
-/// only path the macro emits outside `prelude`.
-pub fn chunked_array_builder() -> TokenStream {
-    let root = root();
-    quote! { #root::chunked_array::builder }
-}
-
 /// `polars::prelude::Int128Chunked` — used by the Decimal columnar finisher
 /// to bypass the `Series::new(&Vec<i128>) + cast(Decimal)` round-trip and
 /// build the `DecimalChunked` directly via `into_decimal_unchecked`.

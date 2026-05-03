@@ -123,13 +123,15 @@ register state of the tight populator loop in a way LLVM optimizes well;
 removing it can move the iterator into a less friendly representation. The
 encoder keeps the collection for shapes where benches show it helps.
 
-## Legacy fallback shapes
+## Coverage
 
-Earlier revisions kept several wrapper-shape combinations on a separate
-emitter path. The encoder now covers every primitive vec-bearing shape and
-every multi-`Option` primitive shape, so the legacy primitive emitter is
-unreachable in practice. The legacy code in the primitive path remains
-compiled but uncalled, pending a follow-up cleanup.
+The encoder is total on parser-validated input: every primitive shape — bare
+numeric / `String` / `Bool` / `Decimal` / `DateTime` leaves, arbitrary
+`Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack including
+`[Option, Vec, ...]` and deeper nestings — flows through the encoder IR.
+Combinations the parser cannot construct (e.g. `DateTimeToInt` on a
+non-`DateTime` base, `as_str` on a non-stringy base) panic in `build_leaf`
+rather than returning `None`.
 
 Two implementation notes worth recording for future reference:
 
@@ -144,8 +146,8 @@ Two implementation notes worth recording for future reference:
   the carve-out was retired. A small `Option<Vec<DateTime>>` regression
   (~8-12%) was accepted in exchange for the much larger speedups elsewhere.
 - **`isize`/`usize` base types.** The encoder widens these to `i64`/`u64`
-  at the codegen boundary so they reuse the i64/u64 vec-emit path; there is
-  no special legacy fallback for them.
+  at the codegen boundary so they reuse the i64/u64 vec-emit path; the IR
+  carries no separate `isize`/`usize` storage type.
 
 ## Invariants
 

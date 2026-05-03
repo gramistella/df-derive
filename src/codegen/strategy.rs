@@ -3,10 +3,8 @@
 //! empty-series rows, columnar populator decls/pushes/finishes.
 //!
 //! The columnar path routes through the encoder IR in
-//! [`super::encoder`] for every primitive shape. The legacy primitive
-//! emitter in [`super::primitive`] is preserved as fallback but is no
-//! longer reached at codegen time (pending a follow-up cleanup that
-//! removes the dead code).
+//! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
+//! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
 
 use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec};
 use proc_macro2::TokenStream;
@@ -131,17 +129,15 @@ pub fn build_empty_series(field: &FieldIR) -> TokenStream {
 }
 
 fn field_full_dtype(field: &FieldIR) -> TokenStream {
-    super::type_registry::compute_mapping(
+    super::type_registry::compute_full_dtype(
         &field.base_type,
         field.transform.as_ref(),
         &field.wrappers,
     )
-    .full_dtype
 }
 
-/// Build the columnar emit pieces for one field. Routes through the
-/// encoder IR when it covers the shape; otherwise falls through to the
-/// legacy primitive path. Nested-struct/generic fields always route
+/// Build the columnar emit pieces for one field. Routes every primitive
+/// shape through the encoder IR, and every nested-struct/generic field
 /// through the encoder's nested path (which covers every wrapper stack).
 pub fn build_field_emit(
     field: &FieldIR,
@@ -205,16 +201,13 @@ fn build_primitive_emit(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
     };
 
-    if let Some(enc) = encoder::try_build_encoder(
+    let enc = encoder::build_encoder(
         &field.base_type,
         field.transform.as_ref(),
         &field.wrappers,
         &leaf_ctx,
-    ) {
-        return primitive_emit_from_encoder(field, &name, enc);
-    }
-
-    primitive_emit_legacy(field, config, idx, &access, &name)
+    );
+    primitive_emit_from_encoder(field, &name, enc)
 }
 
 /// Encoder-served primitive shapes. `[Vec, ...]` shapes route through the
@@ -257,51 +250,6 @@ fn primitive_emit_from_encoder(
         let s = #series;
         columns.push(s.into());
     }};
-    FieldEmit {
-        decls,
-        push,
-        builders: vec![builder],
-    }
-}
-
-/// Legacy primitive path: unreachable in practice. The encoder IR now
-/// covers every primitive shape — bare numerics, `ISize`/`USize` (widened
-/// to `i64`/`u64` at the codegen boundary), every vec-bearing shape over
-/// them, arbitrary `Option<…<Option<T>>>` stacks, and the
-/// `[Option, Vec, ...]` shapes that previously routed through the typed
-/// `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder`. This
-/// function is preserved as a coverage fallback but has no live callers;
-/// it (and its companions in `super::primitive`) are slated for removal in
-/// a follow-up cleanup.
-fn primitive_emit_legacy(
-    field: &FieldIR,
-    config: &super::MacroConfig,
-    idx: usize,
-    access: &TokenStream,
-    name: &str,
-) -> FieldEmit {
-    let decimal_trait = &config.decimal128_encode_trait_path;
-    let decls = super::primitive::primitive_decls(
-        &field.wrappers,
-        &field.base_type,
-        field.transform.as_ref(),
-        idx,
-    );
-    let push = super::primitive::generate_primitive_for_columnar_push(
-        access,
-        &field.base_type,
-        field.transform.as_ref(),
-        &field.wrappers,
-        idx,
-        decimal_trait,
-    );
-    let builder = super::primitive::primitive_builder(
-        &field.base_type,
-        field.transform.as_ref(),
-        &field.wrappers,
-        idx,
-        name,
-    );
     FieldEmit {
         decls,
         push,

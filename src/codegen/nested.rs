@@ -1,30 +1,14 @@
-// Codegen for fields whose base type is a derived struct or a generic type
-// parameter routed through `ToDataFrame` / `Columnar`. Two flavors live here:
-//
-//   - Concrete-struct (`is_generic == false`) calls the inherent
-//     `__df_derive_vec_to_inner_list_values` (owned slice) /
-//     `__df_derive_refs_to_inner_list_values` (borrowed slice) helpers for
-//     nested-Vec aggregation. The refs variant lets the
-//     `Vec<Option<Struct>>` path scatter into typed Series without cloning
-//     each `Some(v)` into an owned `Vec<Self>`.
-//   - Generic-parameter (`is_generic == true`) uses only the `ToDataFrame`
-//     and `Columnar` traits — nothing inherent — because the parameter type
-//     isn't known at macro-expansion time.
-//
-// The two flavors share `gen_recursive_per_element_to_list_anyvalues` for
-// deeper-nested vec shapes that fall outside the typed fast paths.
-//
-// Bare leaf, `Option<Inner>`, and `Vec<Inner>` shapes never reach this
-// module's per-row push code — they're served by bulk emitters in
-// `bulk.rs`. The on-leaf branch in `generate_nested_for_columnar_push`
-// only fires for the rare `Option<Option<Inner>>`-style shape.
+// Per-row Codegen scaffolding kept for the `to_inner_values(&self)` trait
+// override. After Step 4 every nested-struct/generic columnar/vec-anyvalues
+// path routes through the encoder fold; only the single-instance
+// `gen_for_anyvalue` driver still walks the wrapper stack here, plus the
+// schema/empty-frame helpers used by `to_dataframe::schema` /
+// `empty_dataframe`.
 
-use crate::ir::{Wrapper, has_vec, vec_count};
+use crate::ir::{Wrapper, vec_count};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
-
-use super::populator_idents::PopulatorIdents;
 
 /// Emit a runtime loop that wraps `__df_derive_wrapped: DataType` in `layers`
 /// `List<>` envelopes. Returns an empty token stream when `layers == 0` so the
@@ -220,98 +204,6 @@ fn gen_generic_vec_to_list_anyvalues(
     })
 }
 
-// --- Context-specific generators ---
-
-pub fn generate_nested_for_columnar_push(
-    type_path: &TokenStream,
-    access: &TokenStream,
-    wrappers: &[Wrapper],
-    idx: usize,
-    is_generic: bool,
-) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let ty = type_path.clone();
-    let vec = has_vec(wrappers);
-
-    // For non-vec shapes the populator is `Vec<Vec<AnyValue>>` (one inner
-    // Vec per inner schema column, accumulating one AnyValue per outer row).
-    // For vec shapes the populator is `Vec<Box<dyn ListBuilderTrait>>`
-    // (one builder per inner schema column, accumulating one outer-list
-    // entry per outer row). The on-leaf branch only runs for non-vec
-    // shapes — `process_wrappers` reaches the leaf only when no `Vec`
-    // wrapper is present.
-    //
-    // After unification, this on-leaf is only reached for the rare
-    // `Option<Option<T>>`-style shape (since `[]`, `[Option]`, and `[Vec]`
-    // are now all bulk-emitted). Both concrete and generic branches call
-    // `to_inner_values(&self)` on the `ToDataFrame` trait — for the derive's
-    // own impls, that's the optimized override that pushes column values
-    // directly; for foreign impls, it's the trait's default that round-trips
-    // through `to_dataframe()`.
-    let cols_ident = PopulatorIdents::nested_struct_cols(idx);
-    let lbs_ident = PopulatorIdents::nested_list_builders(idx);
-
-    let on_leaf = |acc: &TokenStream| {
-        let cols_ident = cols_ident.clone();
-        quote! {
-            let __df_derive_vs = (#acc).to_inner_values()?;
-            for (j, __df_derive_v) in __df_derive_vs.into_iter().enumerate() {
-                #cols_ident[j].push(__df_derive_v);
-            }
-        }
-    };
-
-    let on_option_none = |_tail: &[Wrapper]| {
-        if vec {
-            let lbs_ident = lbs_ident.clone();
-            quote! {
-                for j in 0..#lbs_ident.len() {
-                    #pp::ListBuilderTrait::append_null(&mut *#lbs_ident[j]);
-                }
-            }
-        } else {
-            let cols_ident = cols_ident.clone();
-            quote! {
-                for j in 0..#cols_ident.len() {
-                    #cols_ident[j].push(#pp::AnyValue::Null);
-                }
-            }
-        }
-    };
-
-    let on_vec = |acc: &TokenStream, tail: &[Wrapper]| {
-        let lbs_ident = lbs_ident.clone();
-        let list_vals_ts = if is_generic {
-            gen_generic_vec_to_list_anyvalues(&ty, acc, tail)
-        } else {
-            gen_nested_vec_to_list_anyvalues(&ty, acc, tail)
-        };
-        quote! {{
-            let __df_derive_vals: ::std::vec::Vec<#pp::AnyValue> = { #list_vals_ts };
-            for (j, __df_derive_v) in __df_derive_vals.into_iter().enumerate() {
-                match __df_derive_v {
-                    #pp::AnyValue::List(__df_derive_inner) => {
-                        #pp::ListBuilderTrait::append_series(
-                            &mut *#lbs_ident[j],
-                            &__df_derive_inner,
-                        )?;
-                    }
-                    #pp::AnyValue::Null => {
-                        #pp::ListBuilderTrait::append_null(&mut *#lbs_ident[j]);
-                    }
-                    _ => {
-                        return ::std::result::Result::Err(#pp::polars_err!(
-                            ComputeError: "df-derive: expected list or null AnyValue from nested vec helper (codegen invariant violation)"
-                        ));
-                    }
-                }
-            }
-        }}
-    };
-
-    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
-}
-
 pub fn generate_nested_for_anyvalue(
     type_path: &TokenStream,
     values_vec_ident: &Ident,
@@ -362,132 +254,7 @@ pub fn nested_empty_series_row(
     name: &str,
     wrappers: &[Wrapper],
 ) -> TokenStream {
-    generate_empty_series_for_struct(type_path, name, has_vec(wrappers))
-}
-
-pub fn nested_decls(wrappers: &[Wrapper], type_path: &TokenStream, idx: usize) -> Vec<TokenStream> {
-    let pp = super::polars_paths::prelude();
-    let mut decls: Vec<TokenStream> = Vec::new();
-    let vec = has_vec(wrappers);
-    if vec {
-        // Vec<Struct> shapes that didn't take the bulk-concrete fast path
-        // (i.e. `Vec<Option<Struct>>`, `Vec<Vec<Struct>>`, etc.). Per parent
-        // row we still call the inner helper to get one inner Series per
-        // schema column; instead of accumulating those into a
-        // `Vec<AnyValue::List>` and rebuilding the outer list series via
-        // `Series::new`, we feed each inner Series straight into a typed
-        // `ListBuilder` per inner column. Skips the AnyValue inference scan
-        // and per-row `cast(inner_type)` Polars does inside
-        // `any_values_to_list`.
-        //
-        // For nested-Vec shapes (`Vec<Vec<Struct>>`, …), the per-row inner
-        // Series feeding the builder is itself `List<…>`-shaped, so the
-        // builder's inner dtype must include `(vec_count - 1)` extra
-        // `List<>` layers around the inner-struct schema dtype — see the
-        // analogous wrap in `outer_list_inner_dtype` for primitives. Without
-        // this, `ListPrimitiveChunkedBuilder` rejects the deeper `list[…]`
-        // slice with a `SchemaMismatch`.
-        let schema_ident = PopulatorIdents::nested_vec_schema(idx);
-        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
-        let cab = super::polars_paths::chunked_array_builder();
-        let wrap_extra = gen_wrap_dtype_layers(vec_count(wrappers).saturating_sub(1));
-        decls.push(quote! { let #schema_ident = #type_path::schema()?; });
-        decls.push(quote! {
-            let mut #lbs_ident: ::std::vec::Vec<
-                ::std::boxed::Box<dyn #pp::ListBuilderTrait>,
-            > = #schema_ident
-                .iter()
-                .map(|(_, __df_derive_inner_dtype)| {
-                    let mut __df_derive_wrapped = __df_derive_inner_dtype.clone();
-                    #wrap_extra
-                    #cab::get_list_builder(
-                        &__df_derive_wrapped,
-                        items.len() * 4,
-                        items.len(),
-                        "".into(),
-                    )
-                })
-                .collect();
-        });
-    } else {
-        let schema_ident = PopulatorIdents::nested_struct_schema(idx);
-        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
-        decls.push(quote! { let #schema_ident = #type_path::schema()?; });
-        decls.push(quote! {
-            let mut #cols_ident: ::std::vec::Vec<::std::vec::Vec<#pp::AnyValue>> =
-                #schema_ident
-                    .iter()
-                    .map(|_| ::std::vec::Vec::with_capacity(items.len()))
-                    .collect();
-        });
-    }
-    decls
-}
-
-pub fn nested_finishers_for_vec_anyvalues(wrappers: &[Wrapper], idx: usize) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let vec = has_vec(wrappers);
-    let schema_ident = if vec {
-        PopulatorIdents::nested_vec_schema(idx)
-    } else {
-        PopulatorIdents::nested_struct_schema(idx)
-    };
-    if vec {
-        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
-        quote! {
-            for j in 0..#schema_ident.len() {
-                let inner = #pp::IntoSeries::into_series(
-                    #pp::ListBuilderTrait::finish(&mut *#lbs_ident[j]),
-                );
-                out_values.push(#pp::AnyValue::List(inner));
-            }
-        }
-    } else {
-        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
-        quote! {
-            for j in 0..#schema_ident.len() {
-                let inner = <#pp::Series as #pp::NamedFrom<_, _>>::new("".into(), &#cols_ident[j]);
-                out_values.push(#pp::AnyValue::List(inner));
-            }
-        }
-    }
-}
-
-pub fn nested_columnar_builders(
-    wrappers: &[Wrapper],
-    idx: usize,
-    field_name: &str,
-) -> Vec<TokenStream> {
-    let pp = super::polars_paths::prelude();
-    let vec = has_vec(wrappers);
-    let schema_ident = if vec {
-        PopulatorIdents::nested_vec_schema(idx)
-    } else {
-        PopulatorIdents::nested_struct_schema(idx)
-    };
-    let name = field_name;
-    if vec {
-        let lbs_ident = PopulatorIdents::nested_list_builders(idx);
-        vec![quote! {{
-            for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
-                let full_name = ::std::format!("{}.{}", #name, col_name);
-                let s = #pp::IntoSeries::into_series(
-                    #pp::ListBuilderTrait::finish(&mut *#lbs_ident[j]),
-                )
-                .with_name(full_name.as_str().into());
-                columns.push(s.into());
-            }
-        }}]
-    } else {
-        let cols_ident = PopulatorIdents::nested_struct_cols(idx);
-        vec![quote! {{
-            for (j, (col_name, _)) in #schema_ident.iter().enumerate() {
-                let full_name = ::std::format!("{}.{}", #name, col_name);
-                let s = <#pp::Series as #pp::NamedFrom<_, _>>::new(full_name.as_str().into(), &#cols_ident[j]);
-                columns.push(s.into());
-            }
-        }}]
-    }
+    generate_empty_series_for_struct(type_path, name, vec_count(wrappers))
 }
 
 // --- Schema and series-shape helpers ---
@@ -495,20 +262,18 @@ pub fn nested_columnar_builders(
 pub fn generate_schema_entries_for_struct(
     type_path: &TokenStream,
     column_name: &str,
-    as_list: bool,
+    list_layers: usize,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
+    let wrap_layers = gen_wrap_dtype_layers(list_layers);
     quote! {
         {
             let mut nested_fields: ::std::vec::Vec<(::std::string::String, #pp::DataType)> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
                 let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
-                let dtype = if #as_list {
-                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
-                } else {
-                    inner_dtype
-                };
-                nested_fields.push((prefixed_name, dtype));
+                let mut __df_derive_wrapped: #pp::DataType = inner_dtype;
+                #wrap_layers
+                nested_fields.push((prefixed_name, __df_derive_wrapped));
             }
             nested_fields
         }
@@ -518,20 +283,18 @@ pub fn generate_schema_entries_for_struct(
 fn generate_empty_series_for_struct(
     type_path: &TokenStream,
     column_name: &str,
-    as_list: bool,
+    list_layers: usize,
 ) -> TokenStream {
     let pp = super::polars_paths::prelude();
+    let wrap_layers = gen_wrap_dtype_layers(list_layers);
     quote! {
         {
             let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
             for (inner_name, inner_dtype) in #type_path::schema()? {
                 let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
-                let dtype = if #as_list {
-                    #pp::DataType::List(::std::boxed::Box::new(inner_dtype))
-                } else {
-                    inner_dtype
-                };
-                let empty_series = #pp::Series::new_empty(prefixed_name.as_str().into(), &dtype);
+                let mut __df_derive_wrapped: #pp::DataType = inner_dtype;
+                #wrap_layers
+                let empty_series = #pp::Series::new_empty(prefixed_name.as_str().into(), &__df_derive_wrapped);
                 nested_series.push(empty_series.into());
             }
             nested_series

@@ -1,4 +1,4 @@
-use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_vec, vec_count};
+use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, vec_count};
 use crate::type_analysis::{
     DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
 };
@@ -167,12 +167,16 @@ fn base_and_transform_to_rust_and_dtype(
 }
 
 fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream {
-    if has_vec(wrappers) {
-        let pp = super::polars_paths::prelude();
-        quote! { #pp::DataType::List(::std::boxed::Box::new(#element_dtype)) }
-    } else {
-        quote! { #element_dtype }
+    let layers = vec_count(wrappers);
+    if layers == 0 {
+        return quote! { #element_dtype };
     }
+    let pp = super::polars_paths::prelude();
+    let mut dt = element_dtype.clone();
+    for _ in 0..layers {
+        dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
+    }
+    dt
 }
 
 /// Dtype of one element of the *outermost* list in `wrappers`, used to

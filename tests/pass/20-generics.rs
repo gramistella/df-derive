@@ -823,15 +823,18 @@ fn test_depth2_combos() {
         panic!("expected List for Vec<Option<T>>");
     }
 
-    // Vec<Vec<T>> with T = f64. The macro's schema reporting only wraps one
-    // List layer regardless of Vec depth (a pre-existing limitation of
-    // generate_schema_entries_for_struct), so we check the column count and
-    // the per-row AnyValue::List shape rather than asserting the full
-    // multi-layer dtype.
+    // Vec<Vec<T>> with T = f64. The schema generator wraps once per `Vec`
+    // layer, so the declared dtype matches the runtime List<List<...>>.
     let schema_vv = VecVecWrapper::<f64>::schema().unwrap();
     assert_eq!(schema_vv.len(), 2);
     assert_eq!(schema_vv[0], ("id".into(), DataType::UInt32));
-    assert_eq!(schema_vv[1].0, "payload.value");
+    assert_eq!(
+        schema_vv[1],
+        (
+            "payload.value".into(),
+            DataType::List(Box::new(DataType::List(Box::new(DataType::Float64))))
+        )
+    );
     let items_vv = vec![
         VecVecWrapper {
             id: 1,

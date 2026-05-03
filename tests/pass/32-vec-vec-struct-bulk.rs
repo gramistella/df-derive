@@ -3,19 +3,17 @@
 // the inner-list partitions per-inner-Vec, with leaves drawn from the
 // nested struct's columns.
 //
-// The bulk emitter for this shape (`gen_bulk_vec_vec`) flattens leaves into
-// a single contiguous slice, calls `Inner::columnar_from_refs` exactly
-// once, then stacks two `LargeListArray`s (inner-list + outer-list) per
-// inner schema column. A regression in the offset bookkeeping would either
-// drop leaves, mis-partition them between inner lists, or shift them into
-// the wrong outer row — all surface here as failed `AnyValue` assertions
-// or wrong list lengths.
+// The bulk emitter for this shape flattens leaves into a single contiguous
+// slice, calls `Inner::columnar_from_refs` exactly once, then stacks two
+// `LargeListArray`s (inner-list + outer-list) per inner schema column. A
+// regression in the offset bookkeeping would either drop leaves,
+// mis-partition them between inner lists, or shift them into the wrong
+// outer row — all surface here as failed `AnyValue` assertions or wrong
+// list lengths.
 //
-// Schema parity: the schema entry only declares `List<inner_dtype>` even
-// though the runtime Series carries `List<List<inner_dtype>>`. This is a
-// pre-existing convention shared with the slow path
-// (`generate_schema_entries_for_struct` wraps once for `has_vec`, ignoring
-// nesting depth) — see also the assertion in `tests/pass/20-generics.rs`.
+// Schema parity: the declared schema and the runtime Series both carry
+// `List<List<inner_dtype>>` — the schema generator wraps once per `Vec`
+// wrapper depth (see also the assertion in `tests/pass/20-generics.rs`).
 //
 // We use `Columnar::columnar_to_dataframe` directly because the bulk
 // emitters are invoked from that path; the per-row pipeline takes a
@@ -40,26 +38,15 @@ struct Outer {
     payload: Vec<Vec<Inner>>,
 }
 
-// Runtime DataType: `List<List<leaf>>` for the populated path (the bulk
-// emitter wraps twice). The schema entry only declares `List<leaf>` (a
-// pre-existing limitation of `generate_schema_entries_for_struct` — see the
-// assertion in `tests/pass/20-generics.rs` line 826). For the
-// empty-parent-slice path the column dtype comes from `empty_dataframe()`
-// which uses the schema-derived `List<leaf>`.
+// Both the populated path (bulk emitter wraps twice) and the empty-parent
+// path (column dtype from `empty_dataframe()` which uses the schema-derived
+// dtype) carry `List<List<leaf>>`.
 fn nested_list_dtype_for_field_a() -> DataType {
     DataType::List(Box::new(DataType::List(Box::new(DataType::Int64))))
 }
 
 fn nested_list_dtype_for_field_b() -> DataType {
     DataType::List(Box::new(DataType::List(Box::new(DataType::Float64))))
-}
-
-fn schema_list_dtype_for_field_a() -> DataType {
-    DataType::List(Box::new(DataType::Int64))
-}
-
-fn schema_list_dtype_for_field_b() -> DataType {
-    DataType::List(Box::new(DataType::Float64))
 }
 
 fn assert_inner_columns_populated(df: &DataFrame, expected_height: usize) {
@@ -70,8 +57,8 @@ fn assert_inner_columns_populated(df: &DataFrame, expected_height: usize) {
 }
 
 fn assert_inner_columns_empty_path(df: &DataFrame, expected_height: usize) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &schema_list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &schema_list_dtype_for_field_b());
+    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &nested_list_dtype_for_field_a());
+    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &nested_list_dtype_for_field_b());
     assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
     assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
 }

@@ -1,123 +1,39 @@
-use crate::ir::{BaseType, PrimitiveTransform, StructIR, Wrapper, has_vec};
+//! Per-field codegen entry point. Translates a [`FieldIR`] into the four
+//! pieces of generated code each field contributes to: schema entries,
+//! empty-series rows, columnar populator decls/pushes/finishes.
+//!
+//! The columnar path routes through the encoder IR in
+//! [`super::encoder`] when the encoder covers the shape. The few
+//! shapes the encoder doesn't cover (bare `ISize`/`USize`, the
+//! depth-1 typed-builder carve-out for `[Option, Vec]` over numerics
+//! / `String` / `Decimal` / `DateTime`, and `Option<Option<...>>`
+//! over a primitive leaf) fall through to the legacy primitive path
+//! in [`super::primitive`].
+
+use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec};
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::Ident;
 
-use super::encoder::{self, Encoder, EncoderFinish, LeafCtx, NestedLeafCtx};
-use super::populator_idents::PopulatorIdents;
+use super::encoder::{self, EncoderFinish, LeafCtx, NestedLeafCtx};
 
-// Recreate light-weight IR mirrors for internal use to avoid coupling to old FieldKind
-#[derive(Clone)]
-pub(super) struct PrimitiveIR {
-    base_type: BaseType,
-    transform: Option<PrimitiveTransform>,
-    /// Fully-qualified path to the `Decimal128Encode` trait, prebuilt for
-    /// trait-method-call syntax inside emitted token streams. Only relevant
-    /// for `BaseType::Decimal` fields with a `DecimalToInt128` transform —
-    /// other base/transform combinations ignore the path. Stored on every
-    /// `PrimitiveIR` regardless because cloning a `TokenStream` is cheap and
-    /// it sidesteps an `Option<TokenStream>` everywhere downstream.
-    decimal128_encode_trait: TokenStream,
-}
-#[derive(Clone)]
-pub(super) struct NestedIR {
-    /// Fully-qualified call path for the field's base type, prebuilt to be
-    /// spliced into either expression position (`#type_path::method()`) or
-    /// type position (`Vec<#type_path>`). For a non-generic struct this is
-    /// just the bare ident; for a generic struct used at this field it
-    /// includes turbofish args, e.g. `Foo::<M>`. Generic type parameters
-    /// also use this form (just the param ident) since the macro injects
-    /// the trait bounds that make `T::method()` resolve.
-    type_path: TokenStream,
-    /// Fully-qualified path to the `Columnar` trait, prebuilt for UFCS calls
-    /// (`<#type_path as #columnar_trait>::columnar_from_refs(&refs)`). The
-    /// bulk emitters use this so they work for both generic-parameter base
-    /// types (where the trait is bound on the parameter) and concrete struct
-    /// base types (where the trait isn't necessarily in scope at the call
-    /// site).
-    columnar_trait: TokenStream,
-    /// Fully-qualified path to the `ToDataFrame` trait, prebuilt for UFCS
-    /// calls to `schema()` from inside bulk-emit token streams. Same scope
-    /// problem as `columnar_trait`: bulk-emit tokens are inlined into bodies
-    /// where `ToDataFrame` may not be in scope.
-    to_df_trait: TokenStream,
+/// Per-field columnar emit pieces. The columnar pipeline concatenates
+/// every field's `decls` ahead of the per-row push loop, splices every
+/// field's `push` inside the loop, and concatenates every field's
+/// `builders` after the loop to assemble the final `columns: Vec<Column>`.
+pub struct FieldEmit {
+    pub decls: Vec<TokenStream>,
+    pub push: TokenStream,
+    pub builders: Vec<TokenStream>,
 }
 
-/// Sealed internal trait the per-field codegen routines call against. Both
-/// `PrimitiveStrategy` and `NestedStructStrategy` implement it. The public
-/// `Strategy` alias is `Box<dyn StrategyVariant>`, so callers see a uniform
-/// trait-object surface and `Box`'s `Deref` impl turns each method call
-/// site into a single virtual dispatch — no per-method `match` ladder.
-pub trait StrategyVariant {
-    fn gen_schema_entries(&self) -> TokenStream;
-    fn gen_empty_series_creation(&self) -> TokenStream;
-    fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream>;
-    fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream;
-    fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream>;
-    /// Returns `Some` when this field can bypass the per-row
-    /// decls/push/builders triple in the columnar path and emit a single
-    /// bulk builder. `pa_root` is the cached `polars-arrow` crate-root
-    /// token stream threaded down from the per-derive entry point so each
-    /// call doesn't re-run `proc_macro_crate::crate_name`.
-    fn gen_bulk_columnar_emit(&self, pa_root: &TokenStream, idx: usize)
-    -> Option<Vec<TokenStream>>;
-}
-
-pub type Strategy = Box<dyn StrategyVariant>;
-
-pub fn build_strategies(ir: &StructIR, config: &super::MacroConfig) -> Vec<Strategy> {
-    let columnar_trait = &config.columnar_trait_path;
-    let to_df_trait = &config.to_dataframe_trait_path;
-    let decimal_encode = &config.decimal128_encode_trait_path;
-    let stringy = |t: &Option<PrimitiveTransform>| {
-        matches!(
-            t,
-            Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
-        )
-    };
-    let primitive = |f: &crate::ir::FieldIR| -> Strategy {
-        Box::new(PrimitiveStrategy::new(
-            f.name.clone(),
-            f.field_index,
-            f.wrappers.clone(),
-            PrimitiveIR {
-                base_type: f.base_type.clone(),
-                transform: f.transform.clone(),
-                decimal128_encode_trait: decimal_encode.clone(),
-            },
-        ))
-    };
-    let nested = |f: &crate::ir::FieldIR, type_path: TokenStream| -> Strategy {
-        Box::new(NestedStructStrategy::new(
-            f.name.clone(),
-            f.field_index,
-            f.wrappers.clone(),
-            NestedIR {
-                type_path,
-                columnar_trait: columnar_trait.clone(),
-                to_df_trait: to_df_trait.clone(),
-            },
-        ))
-    };
-    ir.fields
-        .iter()
-        .map(|f| match &f.base_type {
-            BaseType::Struct(id, args) if !stringy(&f.transform) => {
-                nested(f, build_type_path(id, args.as_ref()))
-            }
-            BaseType::Generic(id) if !stringy(&f.transform) => nested(f, quote! { #id }),
-            _ => primitive(f),
-        })
-        .collect()
-}
-
-/// Build the type-as-path token stream used by `NestedIR`. For a struct
-/// referenced without args (e.g. `Address`) this is just the bare ident; for
-/// a generic struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
-/// the turbofish form `Foo::<M, N>`, which is valid in both expression and
-/// type position in modern Rust. The turbofish is necessary in expression
-/// position (`Foo::<M>::schema()`) and accepted everywhere else.
-pub(super) fn build_type_path(
+/// Build the type-as-path token stream for a struct/generic field. For a
+/// struct referenced without args (e.g. `Address`) this is the bare ident;
+/// for a struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
+/// the turbofish form `Foo::<M, N>`, valid in both expression and type
+/// position. Generic type parameters use the bare ident (the macro injects
+/// the trait bounds that make `T::method()` resolve).
+pub fn build_type_path(
     ident: &Ident,
     args: Option<&syn::AngleBracketedGenericArguments>,
 ) -> TokenStream {
@@ -130,359 +46,262 @@ pub(super) fn build_type_path(
     )
 }
 
-pub struct PrimitiveStrategy {
-    field_ident: Ident,
-    field_index: Option<usize>,
-    field_name: String,
-    wrappers: Vec<Wrapper>,
-    p: PrimitiveIR,
+/// Whether a transform routes the field through the primitive path even
+/// when the base type is a struct/generic. `to_string`/`as_str` over a
+/// nested type produce a `String` column, not a nested struct column.
+const fn is_stringy(t: Option<&PrimitiveTransform>) -> bool {
+    matches!(
+        t,
+        Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
+    )
 }
 
-impl PrimitiveStrategy {
-    pub fn new(
-        field_ident: Ident,
-        field_index: Option<usize>,
-        wrappers: Vec<Wrapper>,
-        p: PrimitiveIR,
-    ) -> Self {
-        let field_name = field_ident.to_string();
-        Self {
-            field_ident,
-            field_index,
-            field_name,
-            wrappers,
-            p,
-        }
+/// Build the type path for a nested field. Returns `None` for primitive
+/// fields and for nested types routed through a stringy transform
+/// (`to_string`/`as_str` produce a single `String` column, not a nested
+/// struct column).
+fn nested_type_path(field: &FieldIR) -> Option<TokenStream> {
+    if is_stringy(field.transform.as_ref()) {
+        return None;
     }
-
-    /// Field-access expression rooted at the columnar/anyvalues bulk-loop
-    /// iterator (`__df_derive_it`). Mirrors the helper of the same name on
-    /// `NestedStructStrategy` so the bulk-emit path can build its own loop
-    /// without referencing the per-row `gen_populator_push` access.
-    fn it_access(&self) -> TokenStream {
-        self.field_index.map_or_else(
-            || {
-                let id = &self.field_ident;
-                quote! { __df_derive_it.#id }
-            },
-            |i| {
-                let li = syn::Index::from(i);
-                quote! { __df_derive_it.#li }
-            },
-        )
-    }
-
-    /// Build the per-field encoder when this shape (`[]` or `[Option]` over a
-    /// supported primitive leaf) is served by the encoder IR. Returns `None`
-    /// for `Vec<...>` shapes (Step 2) and for the few leaf carve-outs the IR
-    /// doesn't yet cover (notably bare `ISize`/`USize`).
-    ///
-    /// `access` is only meaningful for the encoder's `push` field; the `decls`
-    /// and `finish` fields are independent of it (modulo `name`, which is
-    /// baked into the finish expression). Callers that only consume
-    /// `decls`/`finish` may pass any well-formed expression — the
-    /// `gen_populator_inits` and `gen_columnar_builders` paths do this with
-    /// `quote! {}`.
-    ///
-    /// `name` is the column name baked into the produced Series — the field
-    /// name in the columnar context.
-    fn try_build_encoder(&self, access: &TokenStream, idx: usize, name: &str) -> Option<Encoder> {
-        let ctx = LeafCtx {
-            access,
-            idx,
-            name,
-            decimal128_encode_trait: &self.p.decimal128_encode_trait,
-        };
-        encoder::try_build_encoder(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            &ctx,
-        )
+    match &field.base_type {
+        BaseType::Struct(id, args) => Some(build_type_path(id, args.as_ref())),
+        BaseType::Generic(id) => Some(quote! { #id }),
+        BaseType::F64
+        | BaseType::F32
+        | BaseType::I64
+        | BaseType::U64
+        | BaseType::I32
+        | BaseType::U32
+        | BaseType::I16
+        | BaseType::U16
+        | BaseType::I8
+        | BaseType::U8
+        | BaseType::Bool
+        | BaseType::String
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal => None,
     }
 }
 
-impl StrategyVariant for PrimitiveStrategy {
-    fn gen_schema_entries(&self) -> TokenStream {
-        let mapping = crate::codegen::type_registry::compute_mapping(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
+/// `<it>.<field>` — the field-access expression rooted at a per-row
+/// iterator binding. Used by every emit path that needs to reach into
+/// the per-row item.
+fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
+    field.field_index.map_or_else(
+        || {
+            let id = &field.name;
+            quote! { #it_ident.#id }
+        },
+        |i| {
+            let li = syn::Index::from(i);
+            quote! { #it_ident.#li }
+        },
+    )
+}
+
+/// Build the schema entries token expression for one field. Evaluates to a
+/// `Vec<(String, DataType)>` at runtime — primitive fields return a
+/// one-element vec, nested fields return one entry per inner schema column
+/// (with the parent name prefixed).
+pub fn build_schema_entries(field: &FieldIR) -> TokenStream {
+    let name = field.name.to_string();
+    if let Some(type_path) = nested_type_path(field) {
+        return super::nested::generate_schema_entries_for_struct(
+            &type_path,
+            &name,
+            crate::ir::vec_count(&field.wrappers),
         );
-        let dtype = mapping.full_dtype;
-        let name = &self.field_name;
-        quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
+    }
+    let dtype = field_full_dtype(field);
+    quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
+}
+
+/// Build the empty-series token expression for one field. Evaluates to a
+/// `Vec<Column>` at runtime — primitive fields produce one empty Series,
+/// nested fields produce one empty Series per inner schema column.
+pub fn build_empty_series(field: &FieldIR) -> TokenStream {
+    let name = field.name.to_string();
+    if let Some(type_path) = nested_type_path(field) {
+        return super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers);
+    }
+    let dtype = field_full_dtype(field);
+    let pp = super::polars_paths::prelude();
+    quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
+}
+
+fn field_full_dtype(field: &FieldIR) -> TokenStream {
+    super::type_registry::compute_mapping(
+        &field.base_type,
+        field.transform.as_ref(),
+        &field.wrappers,
+    )
+    .full_dtype
+}
+
+/// Build the columnar emit pieces for one field. Routes through the
+/// encoder IR when it covers the shape; otherwise falls through to the
+/// legacy primitive path. Nested-struct/generic fields always route
+/// through the encoder's nested path (which covers every wrapper stack).
+pub fn build_field_emit(
+    field: &FieldIR,
+    config: &super::MacroConfig,
+    idx: usize,
+    it_ident: &Ident,
+) -> FieldEmit {
+    let pa_root = super::polars_paths::polars_arrow_root();
+    if let Some(type_path) = nested_type_path(field) {
+        return build_nested_emit(field, config, idx, &type_path, &pa_root);
+    }
+    build_primitive_emit(field, config, idx, it_ident)
+}
+
+fn build_nested_emit(
+    field: &FieldIR,
+    config: &super::MacroConfig,
+    idx: usize,
+    type_path: &TokenStream,
+    pa_root: &TokenStream,
+) -> FieldEmit {
+    // The nested encoder paths run their own `iter().map(|__df_derive_it| ...)`
+    // loops to build their flat ref vec, so the access expression is
+    // hard-rooted at `__df_derive_it` regardless of the call site's
+    // outer-loop binding.
+    let inner_it = format_ident!("__df_derive_it");
+    let access = it_access(field, &inner_it);
+    let name = field.name.to_string();
+    let ctx = NestedLeafCtx {
+        access: &access,
+        idx,
+        parent_name: &name,
+        ty: type_path,
+        columnar_trait: &config.columnar_trait_path,
+        to_df_trait: &config.to_dataframe_trait_path,
+        pa_root,
+    };
+    let enc = encoder::build_nested_encoder(&field.wrappers, &ctx);
+    let EncoderFinish::Multi { columnar } = enc.finish else {
+        unreachable!("nested encoder must produce a multi-column finish")
+    };
+    FieldEmit {
+        decls: Vec::new(),
+        push: TokenStream::new(),
+        builders: vec![columnar],
+    }
+}
+
+fn build_primitive_emit(
+    field: &FieldIR,
+    config: &super::MacroConfig,
+    idx: usize,
+    it_ident: &Ident,
+) -> FieldEmit {
+    let name = field.name.to_string();
+    let access = it_access(field, it_ident);
+    let leaf_ctx = LeafCtx {
+        access: &access,
+        idx,
+        name: &name,
+        decimal128_encode_trait: &config.decimal128_encode_trait_path,
+    };
+
+    if let Some(enc) = encoder::try_build_encoder(
+        &field.base_type,
+        field.transform.as_ref(),
+        &field.wrappers,
+        &leaf_ctx,
+    ) {
+        return primitive_emit_from_encoder(field, &name, enc);
     }
 
-    fn gen_empty_series_creation(&self) -> TokenStream {
-        let mapping = crate::codegen::type_registry::compute_mapping(
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-        );
-        let dtype = mapping.full_dtype;
-        let name = &self.field_name;
-        let pp = super::polars_paths::prelude();
-        quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
-    }
+    primitive_emit_legacy(field, config, idx, &access, &name)
+}
 
-    fn gen_populator_inits(&self, idx: usize) -> Vec<TokenStream> {
-        // Encoder IR covers `[]`, `[Option]`, and the `[Vec, ...]` shapes
-        // added in Step 2. For the `[Vec, ...]` shapes the precount loops
-        // and the bulk per-leaf push live inside the encoder's `decls`,
-        // so the access must be the real field expression — pass
-        // `it_access()` even though the leaf-shape encoders ignore it for
-        // `decls`. Falls through to the legacy `primitive_decls` for the
-        // few shapes the encoder doesn't yet cover (notably bare
-        // `ISize`/`USize`).
-        let access = self.it_access();
-        if let Some(enc) = self.try_build_encoder(&access, idx, &self.field_name) {
-            return enc.decls;
-        }
-        super::primitive::primitive_decls(
-            &self.wrappers,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            idx,
-        )
-    }
-
-    fn gen_populator_push(&self, it_ident: &Ident, idx: usize) -> TokenStream {
-        let access = self.field_index.map_or_else(
-            || {
-                let field_ident = &self.field_ident;
-                quote! { #it_ident.#field_ident }
-            },
-            |index| {
-                let index_lit = syn::Index::from(index);
-                quote! { #it_ident.#index_lit }
-            },
-        );
-        if let Some(enc) = self.try_build_encoder(&access, idx, &self.field_name) {
-            return enc.push;
-        }
-        super::primitive::generate_primitive_for_columnar_push(
-            &access,
-            &self.p.base_type,
-            self.p.transform.as_ref(),
-            &self.wrappers,
-            idx,
-            &self.p.decimal128_encode_trait,
-        )
-    }
-
-    fn gen_bulk_columnar_emit(
-        &self,
-        _pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        // For `[Vec, ...]` shapes the encoder packs the entire emit (precount,
-        // buffers, fill loop, leaf array, list array stacking) into one block.
-        // Routing that block through the bulk-emit channel — instead of the
-        // decls/push/builders triple — keeps it AFTER the per-row iteration
-        // over `items`. That ordering matches the legacy direct-fast-path
-        // emitters and preserves their cache locality (the per-row buffers
-        // for non-vec fields finish populating before the vec fields touch
-        // memory). See bench `vec_vec_i32` / `vec_opt_datetime`: emitting in
-        // decls regresses ~4% relative to placing the same work post-loop.
-        if !has_vec(&self.wrappers) {
-            return None;
-        }
-        let access = self.it_access();
-        let enc = self.try_build_encoder(&access, idx, &self.field_name)?;
+/// Encoder-served primitive shapes. `[Vec, ...]` shapes route through the
+/// bulk-emit channel (the encoder packs precount, buffers, fill loop, leaf
+/// array, and list stacking into one block placed AFTER the per-row loop —
+/// matches the legacy direct-fast-path emitters' cache locality, see
+/// `vec_vec_i32` / `vec_opt_datetime` benches: emitting in decls regresses
+/// ~4% relative to placing the same work post-loop). Bare and `[Option]`
+/// shapes get decls + push + finisher splayed across the three slots.
+fn primitive_emit_from_encoder(
+    field: &FieldIR,
+    name: &str,
+    enc: super::encoder::Encoder,
+) -> FieldEmit {
+    if has_vec(&field.wrappers) {
         let decls = enc.decls.clone();
         let series = enc.into_series_finish();
-        let name = &self.field_name;
         // Wrap the per-field series local in an inner block so it goes out
         // of scope as soon as we've pushed the column. Keeps the per-field
         // intermediate buffers (offsets vecs, validity bitmaps, the field
         // Series itself) confined to the field's scope, matching the
         // pre-Step-4 emission shape.
-        Some(vec![quote! {
+        let builder = quote! {
             {
                 #(#decls)*
                 let __df_derive_named = #series.with_name(#name.into());
                 columns.push(__df_derive_named.into());
             }
-        }])
-    }
-
-    fn gen_columnar_builders(&self, idx: usize) -> Vec<TokenStream> {
-        let name = &self.field_name;
-        let pp = super::polars_paths::prelude();
-        // Encoder IR covers `[]`, `[Option]`, `[Vec]`, `[Vec, Option]`,
-        // `[Vec, Vec]`, and `[Vec, Vec, Option]` for primitive shapes.
-        // For these the encoder already has the right dtype baked in; we
-        // just splice the finish expression into a `columns.push` block.
-        // The access is irrelevant to the finisher itself, but consistency
-        // with `gen_populator_inits` (which threads the real access
-        // through) keeps `try_build_encoder` shape-checked under the same
-        // arguments.
-        let access = self.it_access();
-        if let Some(enc) = self.try_build_encoder(&access, idx, name) {
-            let series = enc.into_series_finish();
-            return vec![quote! {{
-                let s = #series;
-                columns.push(s.into());
-            }}];
-        }
-        if has_vec(&self.wrappers) {
-            // Legacy path for `[Option, Vec]`, `[Option, Vec, Option]`,
-            // `[Vec, Option, Vec]`, deeper nestings, and any vec-bearing
-            // shape over `ISize`/`USize`. The list builder was constructed
-            // in `primitive_decls` with the correct inner dtype, so the
-            // finished Series already has the schema dtype. Typed
-            // `ListPrimitiveChunkedBuilder<Native>` finishers call
-            // `ListBuilderTrait::finish(&mut self)` directly; the boxed-dyn
-            // path needs the `&mut *` deref through the Box.
-            let lb_ident = PopulatorIdents::primitive_list_builder(idx);
-            let builder_ref = if super::primitive::typed_primitive_list_info(
-                &self.p.base_type,
-                self.p.transform.as_ref(),
-                &self.wrappers,
-            )
-            .is_some()
-            {
-                quote! { &mut #lb_ident }
-            } else {
-                quote! { &mut *#lb_ident }
-            };
-            return vec![quote! {{
-                let s = #pp::IntoSeries::into_series(
-                    #pp::ListBuilderTrait::finish(#builder_ref),
-                )
-                .with_name(#name.into());
-                columns.push(s.into());
-            }}];
-        }
-        // Non-Vec primitive (currently only ISize/USize bare and Option):
-        // the buffer holds the raw element type chosen by `compute_mapping`
-        // (e.g. `Vec<i64>` for `ISize`). The remaining cases need no cast
-        // (transform is `None` so `needs_cast` is false) — but we keep the
-        // gated `s.cast` to match the prior generic path's emission exactly.
-        let p = &self.p;
-        let mapping = crate::codegen::type_registry::compute_mapping(
-            &p.base_type,
-            p.transform.as_ref(),
-            &self.wrappers,
-        );
-        let dtype = mapping.full_dtype;
-        let do_cast = crate::codegen::type_registry::needs_cast(p.transform.as_ref());
-        let vec_ident = PopulatorIdents::primitive_buf(idx);
-        vec![quote! {{
-            let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
-            if #do_cast { s = s.cast(&#dtype)?; }
-            columns.push(s.into());
-        }}]
-    }
-}
-
-pub struct NestedStructStrategy {
-    field_ident: Ident,
-    field_index: Option<usize>,
-    field_name: String,
-    wrappers: Vec<Wrapper>,
-    n: NestedIR,
-}
-
-impl NestedStructStrategy {
-    pub fn new(
-        field_ident: Ident,
-        field_index: Option<usize>,
-        wrappers: Vec<Wrapper>,
-        n: NestedIR,
-    ) -> Self {
-        let field_name = field_ident.to_string();
-        Self {
-            field_ident,
-            field_index,
-            field_name,
-            wrappers,
-            n,
-        }
-    }
-
-    /// Field-access expression rooted at the columnar-loop iterator
-    /// (`__df_derive_it`). Hand-built here rather than reused from the per-row
-    /// generator because the bulk path emits its own loop closures.
-    fn it_access(&self) -> TokenStream {
-        self.field_index.map_or_else(
-            || {
-                let id = &self.field_ident;
-                quote! { __df_derive_it.#id }
-            },
-            |i| {
-                let li = syn::Index::from(i);
-                quote! { __df_derive_it.#li }
-            },
-        )
-    }
-
-    /// Build the nested encoder for this field's wrapper stack. The encoder
-    /// covers every wrapper shape after step 4: bare leaf, `Option<T>`,
-    /// `Vec<T>`, and the depth-N general encoder for any vec-bearing nesting.
-    /// All nested encoder paths route through the `Columnar::columnar_from_refs`
-    /// trait method, which works uniformly for both generic-parameter and
-    /// concrete-struct base types — no per-element clone required.
-    fn build_nested(&self, pa_root: &TokenStream, idx: usize) -> Encoder {
-        let access = self.it_access();
-        let ctx = NestedLeafCtx {
-            access: &access,
-            idx,
-            parent_name: self.field_name.as_str(),
-            ty: &self.n.type_path,
-            columnar_trait: &self.n.columnar_trait,
-            to_df_trait: &self.n.to_df_trait,
-            pa_root,
         };
-        encoder::build_nested_encoder(&self.wrappers, &ctx)
+        return FieldEmit {
+            decls: Vec::new(),
+            push: TokenStream::new(),
+            builders: vec![builder],
+        };
+    }
+    let push = enc.push.clone();
+    let decls = enc.decls.clone();
+    let series = enc.into_series_finish();
+    let builder = quote! {{
+        let s = #series;
+        columns.push(s.into());
+    }};
+    FieldEmit {
+        decls,
+        push,
+        builders: vec![builder],
     }
 }
 
-impl StrategyVariant for NestedStructStrategy {
-    fn gen_schema_entries(&self) -> TokenStream {
-        let name = &self.field_name;
-        super::nested::generate_schema_entries_for_struct(
-            &self.n.type_path,
-            name,
-            crate::ir::vec_count(&self.wrappers),
-        )
-    }
-
-    fn gen_empty_series_creation(&self) -> TokenStream {
-        let name = &self.field_name;
-        super::nested::nested_empty_series_row(&self.n.type_path, name, &self.wrappers)
-    }
-
-    // The per-row populator methods (`gen_populator_inits`,
-    // `gen_populator_push`, `gen_columnar_builders`) are unreachable for
-    // nested fields after Step 4 — `gen_bulk_columnar_emit` returns
-    // `Some(...)` for every wrapper shape now, so the per-row branch in
-    // `prepare_columnar_parts` never fires on nested. The trait methods
-    // stay (a future step collapses the trait and removes them); the
-    // bodies emit empty tokens so the unreachable codegen path produces
-    // no output.
-    fn gen_populator_inits(&self, _idx: usize) -> Vec<TokenStream> {
-        Vec::new()
-    }
-
-    fn gen_populator_push(&self, _it_ident: &Ident, _idx: usize) -> TokenStream {
-        TokenStream::new()
-    }
-
-    fn gen_columnar_builders(&self, _idx: usize) -> Vec<TokenStream> {
-        Vec::new()
-    }
-
-    fn gen_bulk_columnar_emit(
-        &self,
-        pa_root: &TokenStream,
-        idx: usize,
-    ) -> Option<Vec<TokenStream>> {
-        let enc = self.build_nested(pa_root, idx);
-        let EncoderFinish::Multi { columnar } = enc.finish else {
-            unreachable!("nested encoder must produce a multi-column finish")
-        };
-        Some(vec![columnar])
+/// Legacy primitive path: `[Option, Vec, ...]` typed-builder carve-out
+/// (depth-1 list builder over numeric / `String` / `Decimal` / `DateTime`),
+/// bare `ISize`/`USize` (and any vec-bearing shape over them), and the
+/// few `Option<Option<...>>` shapes the encoder doesn't yet model.
+fn primitive_emit_legacy(
+    field: &FieldIR,
+    config: &super::MacroConfig,
+    idx: usize,
+    access: &TokenStream,
+    name: &str,
+) -> FieldEmit {
+    let decimal_trait = &config.decimal128_encode_trait_path;
+    let decls = super::primitive::primitive_decls(
+        &field.wrappers,
+        &field.base_type,
+        field.transform.as_ref(),
+        idx,
+    );
+    let push = super::primitive::generate_primitive_for_columnar_push(
+        access,
+        &field.base_type,
+        field.transform.as_ref(),
+        &field.wrappers,
+        idx,
+        decimal_trait,
+    );
+    let builder = super::primitive::primitive_builder(
+        &field.base_type,
+        field.transform.as_ref(),
+        &field.wrappers,
+        idx,
+        name,
+    );
+    FieldEmit {
+        decls,
+        push,
+        builders: vec![builder],
     }
 }

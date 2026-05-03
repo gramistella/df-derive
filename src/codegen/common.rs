@@ -1,4 +1,3 @@
-use super::strategy;
 use crate::ir::{BaseType, PrimitiveTransform, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -12,28 +11,29 @@ pub fn generate_primitive_access_expr(
     crate::codegen::type_registry::map_primitive_expr(var, transform, decimal128_encode_trait)
 }
 
-// generate_fast_path_primitives removed; logic is now handled in strategies
-
-// Unified collection iteration preparation helper
-
+/// Walk every field, build its [`FieldEmit`](super::strategy::FieldEmit),
+/// and concatenate decls/pushes/builders into the three buckets the
+/// columnar pipeline splices into the generated impl. The bulk-vs-row
+/// split that used to live here is gone: each `FieldEmit` already
+/// places its work in the right slot — vec-bearing primitive fields
+/// and every nested-struct field route their entire emit through
+/// `builders` (post-loop), while leaf primitive fields contribute to
+/// all three slots. Concatenation is order-preserving.
 pub fn prepare_columnar_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
 ) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    let pa_root = super::polars_paths::polars_arrow_root();
-    let strategies = strategy::build_strategies(ir, config);
     let mut decls: Vec<TokenStream> = Vec::new();
     let mut pushes: Vec<TokenStream> = Vec::new();
     let mut builders: Vec<TokenStream> = Vec::new();
-    for (idx, s) in strategies.iter().enumerate() {
-        if let Some(bulk) = s.gen_bulk_columnar_emit(&pa_root, idx) {
-            builders.extend(bulk);
-        } else {
-            decls.extend(s.gen_populator_inits(idx));
-            pushes.push(s.gen_populator_push(it_ident, idx));
-            builders.extend(s.gen_columnar_builders(idx));
+    for (idx, f) in ir.fields.iter().enumerate() {
+        let emit = super::strategy::build_field_emit(f, config, idx, it_ident);
+        decls.extend(emit.decls);
+        if !emit.push.is_empty() {
+            pushes.push(emit.push);
         }
+        builders.extend(emit.builders);
     }
     (decls, pushes, builders)
 }
@@ -187,9 +187,3 @@ pub fn generate_inner_series_from_vec(
         }}
     }
 }
-
-// removed unused generate_anyvalue_from_scalar
-
-// moved to wrapping.rs and used via strategy
-
-// moved to wrapping.rs and used via strategy

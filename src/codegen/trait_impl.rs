@@ -28,13 +28,16 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
         };
     }
 
-    let strategies = super::strategy::build_strategies(ir, config);
-    let empty_series_creations: Vec<TokenStream> = strategies
+    let empty_series_creations: Vec<TokenStream> = ir
+        .fields
         .iter()
-        .map(|s| s.gen_empty_series_creation())
+        .map(super::strategy::build_empty_series)
         .collect();
-    let schema_entries: Vec<TokenStream> =
-        strategies.iter().map(|s| s.gen_schema_entries()).collect();
+    let schema_entries: Vec<TokenStream> = ir
+        .fields
+        .iter()
+        .map(super::strategy::build_schema_entries)
+        .collect();
 
     // `to_dataframe(&self)` delegates to the `Columnar::columnar_from_refs`
     // trait method with a single-element ref slice. There is no parallel

@@ -1,16 +1,14 @@
 use quote::format_ident;
 use syn::Ident;
 
-/// Per-strategy identifier convention for the primitive populator
-/// pipeline. Names declared here in `primitive_decls` are referenced by
-/// the per-row push helpers (`generate_primitive_for_columnar_push`) and
-/// the columnar builders. Funneling every site through this struct turns
-/// rename mistakes into a compile error at the helper itself.
+/// Per-field identifier convention shared between the encoder IR's
+/// primitive leaves (in `encoder.rs`) and the legacy primitive path
+/// (in `primitive.rs`). Funneling every declaration site through this
+/// struct turns rename mistakes into a compile error at the helper
+/// itself.
 ///
-/// The nested-struct identifier set was retired in Step 4: every
-/// nested-struct/generic shape now routes through `encoder.rs`'s depth-N
-/// vec encoder, which manages its own per-shape ident bundle
-/// (`NestedIdents` / `NestedLayerIdents`).
+/// Nested-struct/generic encoders manage their own per-shape ident
+/// bundles (`NestedIdents` / `NestedLayerIdents`) inside `encoder.rs`.
 pub(super) struct PopulatorIdents;
 
 impl PopulatorIdents {

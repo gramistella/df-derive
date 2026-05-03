@@ -9,7 +9,6 @@ mod primitive;
 mod strategy;
 mod trait_impl;
 mod type_registry;
-mod wrapper_processor;
 
 use crate::ir::StructIR;
 use proc_macro_crate::{FoundCrate, crate_name};

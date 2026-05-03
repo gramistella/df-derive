@@ -3,8 +3,8 @@
 // `to_string`/`as_str` transform. The `[]` and `[Option]` shapes are
 // served by the encoder IR in `super::encoder`; `Vec<...>`-bearing shapes
 // flow through `generate_primitive_for_columnar_push` here, sharing the
-// wrapper traversal in `super::wrapper_processor::process_wrappers` and
-// the borrow-classification logic in `classify_borrow`.
+// internal `walk_wrappers` traversal and the borrow-classification logic
+// in `classify_borrow`.
 
 use crate::ir::{
     BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count,
@@ -99,8 +99,8 @@ fn gen_primitive_vec_inner_series(
     // and hands it to `Series::new`, with an optional `cast` for transforms
     // that go through a stand-in dtype (i64 → Datetime, String → Decimal).
     // Struct/Generic bases only land here paired with an `AsStr`/`ToString`
-    // transform per `build_strategies`, so all reachable combinations are
-    // representable as one of the unified branches.
+    // transform per `build_field_emit`'s pre-filter, so all reachable
+    // combinations are representable as one of the unified branches.
     if (!base_is_struct || as_str_fast_ok)
         && let [Wrapper::Option] = tail
     {
@@ -223,6 +223,45 @@ fn gen_primitive_vec_inner_series(
 
 // --- Context-specific generators ---
 
+/// Walk a wrapper stack, dispatching to per-shape callbacks. Inlined here
+/// (rather than living in a shared module) because only the two recursive
+/// primitive emitters in this file need it. `on_leaf` runs at the bottom
+/// of the stack. `on_option_none` runs in the `None` arm of an `Option`
+/// match (the `Some` arm recurses on the tail). `on_vec` runs when a `Vec`
+/// is encountered (no recursion — the `Vec` body owns its own iteration).
+fn walk_wrappers<FL, FN, FV>(
+    access: &TokenStream,
+    wrappers: &[Wrapper],
+    on_leaf: &FL,
+    on_option_none: &FN,
+    on_vec: &FV,
+) -> TokenStream
+where
+    FL: Fn(&TokenStream) -> TokenStream,
+    FN: Fn(&[Wrapper]) -> TokenStream,
+    FV: Fn(&TokenStream, &[Wrapper]) -> TokenStream,
+{
+    let Some((head, tail)) = wrappers.split_first() else {
+        return on_leaf(access);
+    };
+    match head {
+        Wrapper::Option => {
+            let inner_ident =
+                syn::Ident::new("__df_derive_wrapper_inner", proc_macro2::Span::call_site());
+            let inner_access = quote! { #inner_ident };
+            let some_branch = walk_wrappers(&inner_access, tail, on_leaf, on_option_none, on_vec);
+            let none_branch = on_option_none(tail);
+            quote! {
+                match &(#access) {
+                    ::std::option::Option::Some(#inner_ident) => { #some_branch }
+                    ::std::option::Option::None => { #none_branch }
+                }
+            }
+        }
+        Wrapper::Vec => on_vec(access, tail),
+    }
+}
+
 /// Per-row push tokens for primitive fields whose shape contains a `Vec<...>`
 /// wrapper (or otherwise falls outside the encoder IR). The `[]` and `[Option]`
 /// shapes are intercepted by the encoder IR in `strategy.rs`, so this function
@@ -300,7 +339,7 @@ pub fn generate_primitive_for_columnar_push(
         }}
     };
 
-    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
+    walk_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
 }
 
 /// Internal helper that emits per-element `AnyValue` pushes for one access
@@ -359,10 +398,62 @@ fn generate_primitive_recur_anyvalue(
         }}
     };
 
-    super::wrapper_processor::process_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
+    walk_wrappers(access, wrappers, &on_leaf, &on_option_none, &on_vec)
 }
 
 // --- Columnar populator decls and finishers ---
+
+/// Finisher tokens for primitive shapes the encoder IR doesn't intercept:
+/// drains the typed/`Box<dyn>` list builder built in `primitive_decls`
+/// (vec-bearing shape) or the raw scalar buffer (`ISize`/`USize` and
+/// `Option` over them). Pairs with `primitive_decls` and
+/// `generate_primitive_for_columnar_push`.
+pub fn primitive_builder(
+    base_type: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    wrappers: &[Wrapper],
+    idx: usize,
+    name: &str,
+) -> TokenStream {
+    let pp = super::polars_paths::prelude();
+    if has_vec(wrappers) {
+        // Legacy path for `[Option, Vec]`, `[Option, Vec, Option]`,
+        // `[Vec, Option, Vec]`, deeper nestings, and any vec-bearing
+        // shape over `ISize`/`USize`. The list builder was constructed in
+        // `primitive_decls` with the correct inner dtype, so the finished
+        // Series already has the schema dtype. Typed
+        // `ListPrimitiveChunkedBuilder<Native>` finishers call
+        // `ListBuilderTrait::finish(&mut self)` directly; the boxed-dyn
+        // path needs the `&mut *` deref through the Box.
+        let lb_ident = PopulatorIdents::primitive_list_builder(idx);
+        let builder_ref = if typed_primitive_list_info(base_type, transform, wrappers).is_some() {
+            quote! { &mut #lb_ident }
+        } else {
+            quote! { &mut *#lb_ident }
+        };
+        return quote! {{
+            let s = #pp::IntoSeries::into_series(
+                #pp::ListBuilderTrait::finish(#builder_ref),
+            )
+            .with_name(#name.into());
+            columns.push(s.into());
+        }};
+    }
+    // Non-Vec primitive (currently only ISize/USize bare and Option):
+    // the buffer holds the raw element type chosen by `compute_mapping`
+    // (e.g. `Vec<i64>` for `ISize`). The remaining cases need no cast
+    // (transform is `None` so `needs_cast` is false) — but we keep the
+    // gated `s.cast` to match the prior generic path's emission exactly.
+    let mapping = crate::codegen::type_registry::compute_mapping(base_type, transform, wrappers);
+    let dtype = mapping.full_dtype;
+    let do_cast = crate::codegen::type_registry::needs_cast(transform);
+    let vec_ident = PopulatorIdents::primitive_buf(idx);
+    quote! {{
+        let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#vec_ident);
+        if #do_cast { s = s.cast(&#dtype)?; }
+        columns.push(s.into());
+    }}
+}
 
 /// Per-field decls for primitive shapes the encoder IR doesn't intercept:
 /// `Vec<...>`-bearing wrappers (and the few non-encoder leaf carve-outs

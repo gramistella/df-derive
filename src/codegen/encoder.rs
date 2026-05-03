@@ -1487,17 +1487,25 @@ fn numeric_leaf_pieces(
     // gets it from the `Some(v)` pattern. Sharing one `value_expr` avoids
     // two near-duplicate per-spec expressions.
     // Push expressions match the legacy `try_gen_*` emitters' exact token
-    // shape. The bare arm and inner-Option arms both bind the leaf as
-    // `__df_derive_v` (a `&T` reference for `Copy` primitives), so
-    // `*__df_derive_v` produces the storage value directly. Frozen never
-    // wrapped these in `{ ... }` and adding a wrap reproducibly regresses
-    // `vec_vec_i32` ~3-5% — the rustc/LLVM optimization shape is
-    // sensitive to the block wrap's MIR construction.
+    // shape. Two distinct shapes survive in the legacy emitters:
+    //
+    // - `try_gen_vec_option_numeric_emit` (depth-1 `Vec<Option<numeric>>`):
+    //   wraps the Some-arm value in `{ ... }`, e.g.
+    //   `flat.push({ *__df_derive_v });`. Bench `08_complex_wrappers`
+    //   reproducibly regresses ~5% when this wrap is dropped, even though
+    //   rustc should see equivalent MIR.
+    //
+    // - `try_gen_nested_primitive_vec_emit` (depth-2+ `Vec<Vec<numeric>>`,
+    //   no inner Option): no wrap; uses `flat.push(*v)` directly. Adding a
+    //   wrap here regresses `vec_vec_i32` ~3-5%.
+    //
+    // The split is by `has_inner_option`: Some-arm gets the wrap, bare arm
+    // does not. This locks in both bench-targeted shapes.
     let push = if has_inner_option {
         quote! {
             match __df_derive_v {
                 ::std::option::Option::Some(__df_derive_v) => {
-                    __df_derive_flat.push(#value_expr);
+                    __df_derive_flat.push({ #value_expr });
                 }
                 ::std::option::Option::None => {
                     __df_derive_flat.push(<#native as ::std::default::Default>::default());

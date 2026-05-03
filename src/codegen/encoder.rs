@@ -306,7 +306,15 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
     let name = ctx.name;
     let pp = super::polars_paths::prelude();
 
-    let bare_push = quote! { #buf.push((#access).clone()); };
+    // Wrap the cloned access expression in `{ ... }` to match the legacy
+    // primitive emitter's exact token shape. The block wrap is a syntactic
+    // no-op (the expression evaluates identically), but the legacy
+    // `try_gen_*` path emitted it and benches like `01_top_level_vec` and
+    // `vec_vec_i32` are sensitive to the resulting MIR shape — emitting
+    // `push(x.clone())` instead of `push({ x.clone() })` reproducibly
+    // regresses these tight loops by 5-12% even though rustc/LLVM should
+    // see equivalent MIR. Match the legacy shape exactly.
+    let bare_push = quote! { #buf.push({ (#access).clone() }); };
     let finish_series = quote! {
         #pp::IntoSeries::into_series(#chunked::from_vec(#name.into(), #buf))
     };
@@ -447,7 +455,7 @@ fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
     let name = ctx.name;
     let pp = super::polars_paths::prelude();
 
-    let bare_push = quote! { #buf.push((#access).clone()); };
+    let bare_push = quote! { #buf.push({ (#access).clone() }); };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
     // 3-arm form for the option case. The `option_for_bool` combinator
     // switches `decls` to the bitmap-pair layout so `#buf` is now a
@@ -1230,7 +1238,14 @@ fn vec_push_loops(
 fn vec_offsets_decls(shape: &VecShape, layers: &[VecLayerIdents]) -> TokenStream {
     let depth = shape.depth();
     let mut out: Vec<TokenStream> = Vec::with_capacity(depth);
-    for (i, layer) in layers.iter().enumerate() {
+    // Declare innermost-first: matches the legacy `try_gen_vec_vec_*_emit`
+    // emission order (inner-offsets before outer-offsets). Reordering to
+    // outermost-first reproducibly regresses `vec_vec_i32` ~9% on this
+    // machine, even though the populator loop body is byte-identical. The
+    // Vec backing buffers are allocated consecutively; inner-first puts the
+    // most-frequently-touched offsets vec at the lower address, which the
+    // hot loop's prefetcher seems to favor.
+    for (i, layer) in layers.iter().enumerate().rev() {
         let offsets = &layer.offsets;
         let cap = if i == 0 {
             quote! { items.len() + 1 }
@@ -1471,6 +1486,13 @@ fn numeric_leaf_pieces(
     // `vec_emit_decl` binds the leaf as `__df_derive_v`), the option arm
     // gets it from the `Some(v)` pattern. Sharing one `value_expr` avoids
     // two near-duplicate per-spec expressions.
+    // Push expressions match the legacy `try_gen_*` emitters' exact token
+    // shape. The bare arm and inner-Option arms both bind the leaf as
+    // `__df_derive_v` (a `&T` reference for `Copy` primitives), so
+    // `*__df_derive_v` produces the storage value directly. Frozen never
+    // wrapped these in `{ ... }` and adding a wrap reproducibly regresses
+    // `vec_vec_i32` ~3-5% — the rustc/LLVM optimization shape is
+    // sensitive to the block wrap's MIR construction.
     let push = if has_inner_option {
         quote! {
             match __df_derive_v {
@@ -1543,7 +1565,7 @@ fn string_like_leaf_pieces(
         quote! {
             match __df_derive_v {
                 ::std::option::Option::Some(__df_derive_v) => {
-                    __df_derive_view_buf.push_value_ignore_validity({ #value_expr });
+                    __df_derive_view_buf.push_value_ignore_validity(#value_expr);
                 }
                 ::std::option::Option::None => {
                     __df_derive_view_buf.push_value_ignore_validity("");

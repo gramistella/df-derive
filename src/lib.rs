@@ -240,12 +240,15 @@
 //! consistently wins large multiples on bench shapes; the encoder routes those
 //! cases to the direct-array path automatically.
 //!
-//! A few wrapper-shape combinations stay on a legacy emitter path because the
-//! encoder doesn't model them: a typed-builder carve-out for `[Option, Vec, …]`
-//! over primitives (numeric, `String`, `Decimal`, `DateTime`), `isize`/`usize`
-//! base types (and any vec-bearing shape over them), and the rare
-//! multi-`Option` primitive shapes. These compose cleanly and don't block the
-//! encoder; they are kept for coverage parity.
+//! One wrapper-shape combination stays on the legacy emitter path: the
+//! typed-builder carve-out for `[Option, Vec]` over primitives (numeric,
+//! `String`, `Decimal`, `DateTime`), where `gen_typed_list_append`'s tight
+//! `append_iter` route over the inner `Iter<Option<Native>>` is faster than
+//! the encoder's general `flat.push + validity.set` shape (bench
+//! `08_complex_wrappers` measures ~10% regression when that shape goes
+//! through the encoder). Every other primitive shape — including
+//! `isize`/`usize` (widened to `i64`/`u64` at the codegen boundary) and
+//! arbitrary `Option<…<Option<T>>>` stacks — flows through the encoder IR.
 //!
 //! ## Compatibility
 //!

@@ -3,12 +3,13 @@
 //! empty-series rows, columnar populator decls/pushes/finishes.
 //!
 //! The columnar path routes through the encoder IR in
-//! [`super::encoder`] when the encoder covers the shape. The few
-//! shapes the encoder doesn't cover (bare `ISize`/`USize`, the
-//! depth-1 typed-builder carve-out for `[Option, Vec]` over numerics
-//! / `String` / `Decimal` / `DateTime`, and `Option<Option<...>>`
-//! over a primitive leaf) fall through to the legacy primitive path
-//! in [`super::primitive`].
+//! [`super::encoder`] when the encoder covers the shape. The lone remaining
+//! carve-out kept on the legacy primitive path in [`super::primitive`] is
+//! the depth-1 typed-builder fast path for `[Option, Vec]` over numerics /
+//! `String` / `Decimal` / `DateTime` (the `gen_typed_list_append`
+//! `append_iter` route is tighter than the encoder's general `flat.push +
+//! validity.set` shape; bench `08_complex_wrappers` regresses ~10% when
+//! that shape goes through the encoder, so it stays on the legacy emitter).
 
 use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec};
 use proc_macro2::TokenStream;
@@ -266,10 +267,12 @@ fn primitive_emit_from_encoder(
     }
 }
 
-/// Legacy primitive path: `[Option, Vec, ...]` typed-builder carve-out
-/// (depth-1 list builder over numeric / `String` / `Decimal` / `DateTime`),
-/// bare `ISize`/`USize` (and any vec-bearing shape over them), and the
-/// few `Option<Option<...>>` shapes the encoder doesn't yet model.
+/// Legacy primitive path: only the `[Option, Vec]` typed-builder carve-out
+/// (depth-1 list builder over numeric / `String` / `Decimal` / `DateTime`)
+/// reaches this function. The encoder IR covers every other primitive
+/// shape — including `ISize`/`USize` (widened to `i64`/`u64` at the
+/// codegen boundary), every vec-bearing shape over them, and arbitrary
+/// `Option<…<Option<T>>>` stacks.
 fn primitive_emit_legacy(
     field: &FieldIR,
     config: &super::MacroConfig,

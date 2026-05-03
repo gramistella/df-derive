@@ -62,6 +62,52 @@ pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
     })
 }
 
+/// Returns the widened-storage `NumericInfo` for `ISize`/`USize` — the
+/// platform-sized integers polars cannot represent natively (Polars supports
+/// only fixed-width 8/16/32/64 lanes). The encoder leaf path widens reads
+/// to `i64`/`u64` at the codegen boundary via an `as` cast and stores into
+/// a `Vec<i64>` / `Vec<u64>` so the downstream chunked-array build matches
+/// the schema dtype directly.
+///
+/// Returns `None` for any base that is NOT `ISize`/`USize` — the caller
+/// dispatches `ISize`/`USize` separately from the bare-numeric path because
+/// the typed `ListPrimitiveChunkedBuilder` fast path requires the native
+/// element type to match the field type, which it cannot here.
+pub(super) fn isize_usize_widened_info(base: &BaseType) -> Option<NumericInfo> {
+    let pp = super::polars_paths::prelude();
+    let info = |native: TokenStream, variant: &str| {
+        let chunked_ident = format_ident!("{}Chunked", variant);
+        let type_ident = format_ident!("{}Type", variant);
+        let dtype_ident = format_ident!("{}", variant);
+        NumericInfo {
+            native,
+            dtype: quote! { #pp::DataType::#dtype_ident },
+            chunked: quote! { #pp::#chunked_ident },
+            builder_type: quote! { #pp::#type_ident },
+        }
+    };
+    Some(match base {
+        BaseType::ISize => info(quote! { i64 }, "Int64"),
+        BaseType::USize => info(quote! { u64 }, "UInt64"),
+        BaseType::I8
+        | BaseType::I16
+        | BaseType::I32
+        | BaseType::I64
+        | BaseType::U8
+        | BaseType::U16
+        | BaseType::U32
+        | BaseType::U64
+        | BaseType::F32
+        | BaseType::F64
+        | BaseType::Bool
+        | BaseType::String
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal
+        | BaseType::Struct(..)
+        | BaseType::Generic(_) => return None,
+    })
+}
+
 /// Pull the chosen `Datetime` time unit out of a `DateTimeToInt(_)` transform.
 /// Falls back to the crate default for unrelated transforms — relevant code
 /// paths only consult this when the base type is `DateTime<Utc>`, so the

@@ -1,10 +1,13 @@
-// Codegen for fields whose base type is a primitive scalar (numeric, bool,
-// String, DateTime, Decimal) or a struct/generic routed through a
-// `to_string`/`as_str` transform. The `[]` and `[Option]` shapes are
-// served by the encoder IR in `super::encoder`; `Vec<...>`-bearing shapes
-// flow through `generate_primitive_for_columnar_push` here, sharing the
-// internal `walk_wrappers` traversal and the borrow-classification logic
-// in `classify_borrow`.
+// Legacy primitive codegen — only the `[Option, Vec]` typed-builder
+// carve-out for numeric / `String` / `Decimal` / `DateTime` reaches this
+// module's `generate_primitive_for_columnar_push`. Every other primitive
+// shape (bare, `[Option]`, `[Vec, ...]` deeper, `[Option, Vec, ...]`
+// over `isize`/`usize`/bool, multi-`Option` stacks) routes through the
+// encoder IR in `super::encoder`. The remaining helpers here exist to
+// service the typed-builder carve-out: `walk_wrappers` walks the wrapper
+// stack, `classify_borrow` decides whether the leaf can use a borrowing
+// `Vec<&str>` buffer, and `gen_typed_list_append` emits the carve-out's
+// `ListPrimitiveChunkedBuilder` / `ListStringChunkedBuilder` push.
 
 use crate::ir::{
     BaseType, DateTimeUnit, PrimitiveTransform, Wrapper, has_option, has_vec, vec_count,

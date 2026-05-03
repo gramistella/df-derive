@@ -301,10 +301,36 @@ fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> TokenStream {
 fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
     let info = super::type_registry::numeric_info(base)
         .expect("numeric_leaf must be called with a numeric BaseType");
+    numeric_leaf_with_info(ctx, &info, None)
+}
+
+/// `ISize`/`USize` widened leaf — Polars cannot represent platform-sized
+/// integers natively, so the encoder widens reads to `i64`/`u64` via an
+/// `as` cast at every push site. Storage matches `compute_mapping`'s
+/// element dtype (`Int64`/`UInt64`) so the downstream chunked-array build
+/// produces the schema dtype with no post-finish cast.
+fn numeric_leaf_widened(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
+    let info = super::type_registry::isize_usize_widened_info(base)
+        .expect("numeric_leaf_widened requires an `ISize`/`USize` BaseType");
+    let cast_target = info.native.clone();
+    numeric_leaf_with_info(ctx, &info, Some(&cast_target))
+}
+
+/// Common builder for both `numeric_leaf` and `numeric_leaf_widened`. When
+/// `widen_to` is `Some(target)`, the per-row push reads the field as
+/// `(#access) as #target` and the validity-arm `Some` push extracts via
+/// `(*v) as #target`. The `None`-arm default and the finish pieces are
+/// identical to the bare-numeric path because the storage type already
+/// matches the target.
+fn numeric_leaf_with_info(
+    ctx: &LeafCtx<'_>,
+    info: &super::type_registry::NumericInfo,
+    widen_to: Option<&TokenStream>,
+) -> Encoder {
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let native = info.native;
-    let chunked = info.chunked;
+    let native = &info.native;
+    let chunked = &info.chunked;
     let access = ctx.access;
     let name = ctx.name;
     let pp = super::polars_paths::prelude();
@@ -317,7 +343,11 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
     // `push(x.clone())` instead of `push({ x.clone() })` reproducibly
     // regresses these tight loops by 5-12% even though rustc/LLVM should
     // see equivalent MIR. Match the legacy shape exactly.
-    let bare_push = quote! { #buf.push({ (#access).clone() }); };
+    let bare_value = widen_to.map_or_else(
+        || quote! { (#access).clone() },
+        |target| quote! { ((#access) as #target) },
+    );
+    let bare_push = quote! { #buf.push({ #bare_value }); };
     let finish_series = quote! {
         #pp::IntoSeries::into_series(#chunked::from_vec(#name.into(), #buf))
     };
@@ -325,10 +355,14 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
     // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
     // `<#native>::default()` and `validity.push(false)`. Splitting value vs
     // validity into independent pushes lets the compiler vectorize cleanly.
+    let some_push_value = widen_to.map_or_else(
+        || quote! { __df_derive_v },
+        |target| quote! { (__df_derive_v as #target) },
+    );
     let option_push = quote! {
         match #access {
             ::std::option::Option::Some(__df_derive_v) => {
-                #buf.push(__df_derive_v);
+                #buf.push(#some_push_value);
                 #validity.push(true);
             }
             ::std::option::Option::None => {
@@ -338,7 +372,7 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
         }
     };
     Encoder {
-        decls: vec![vec_decl(&buf, &native)],
+        decls: vec![vec_decl(&buf, native)],
         push: bare_push,
         option_push: Some(option_push),
         finish: Encoder::series_finish(finish_series),
@@ -353,11 +387,28 @@ fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
 fn option_for_numeric(ctx: &LeafCtx<'_>, base: &BaseType, inner: Encoder) -> Encoder {
     let info = super::type_registry::numeric_info(base)
         .expect("option_for_numeric requires a numeric BaseType");
+    option_for_numeric_with_info(ctx, &info, inner)
+}
+
+/// Option combinator for the `ISize`/`USize` widened leaves. Identical to
+/// `option_for_numeric` plumbing-wise — the only difference lives at the
+/// per-row push site, baked into `inner.option_push` by `numeric_leaf_widened`.
+fn option_for_numeric_widened(ctx: &LeafCtx<'_>, base: &BaseType, inner: Encoder) -> Encoder {
+    let info = super::type_registry::isize_usize_widened_info(base)
+        .expect("option_for_numeric_widened requires an `ISize`/`USize` BaseType");
+    option_for_numeric_with_info(ctx, &info, inner)
+}
+
+fn option_for_numeric_with_info(
+    ctx: &LeafCtx<'_>,
+    info: &super::type_registry::NumericInfo,
+    inner: Encoder,
+) -> Encoder {
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let validity = PopulatorIdents::primitive_validity(ctx.idx);
     let pa_root = super::polars_paths::polars_arrow_root();
-    let native = info.native;
-    let chunked = info.chunked;
+    let native = &info.native;
+    let chunked = &info.chunked;
     let name = ctx.name;
     let pp = super::polars_paths::prelude();
     let valid_opt = validity_into_option(&validity);
@@ -370,7 +421,7 @@ fn option_for_numeric(ctx: &LeafCtx<'_>, base: &BaseType, inner: Encoder) -> Enc
         #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
     }};
     Encoder {
-        decls: vec![vec_decl(&buf, &native), mb_decl(&validity)],
+        decls: vec![vec_decl(&buf, native), mb_decl(&validity)],
         push: inner.option_push.unwrap_or(inner.push),
         option_push: None,
         finish: Encoder::series_finish(finish_series),
@@ -1805,13 +1856,16 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &BaseType) -> E
 // --- Top-level dispatcher ---
 
 /// Returns `Some(encoder)` when the (base, transform, wrappers) triple can be
-/// served by this encoder IR. After Step 4 this covers every wrapper stack
-/// the parser accepts, for every primitive leaf except bare `ISize`/`USize`.
-///
-/// `ISize`/`USize` are kept on the legacy generic path because their
-/// materialized buffer type doesn't match the field's native type — routing
-/// them through `numeric_leaf` would need extra cast/clone plumbing for
-/// ~zero real-world impact.
+/// served by this encoder IR. Covers every wrapper stack the parser accepts
+/// for every primitive leaf — bare numerics, `ISize`/`USize` (widened to
+/// `i64`/`u64` at the codegen boundary), `String`, `Bool`, `Decimal`,
+/// `DateTime`, `as_str`, `to_string`, plus `Option<…<Option<T>>>` stacks of
+/// arbitrary depth (Polars folds consecutive `Option`s into a single
+/// validity bit, so the encoder collapses the access expression to a
+/// single `Option<&T>` before invoking the option-leaf push). The lone
+/// remaining return-`None` case is the typed-builder carve-out for
+/// `[Option, Vec]`-over-primitive shapes that benefit from
+/// `gen_typed_list_append`.
 pub fn try_build_encoder(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -1824,11 +1878,15 @@ pub fn try_build_encoder(
             let leaf = build_leaf(base, transform, ctx)?;
             Some(wrap_option(base, transform, leaf, ctx))
         }
-        // Primitive multi-Option leaf shapes (`Option<Option<i32>>` etc.)
-        // are not represented in the test surface — leave them on the
-        // legacy primitive path. Nested multi-Option (`Option<Option<T>>`)
-        // is handled in `try_build_nested_encoder`.
-        WrapperKind::Leaf { option_layers: _ } => None,
+        // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
+        // `Option<Option<Option<T>>>`, …): pre-collapse the access to
+        // `Option<&T>` (Polars folds every nested None to one validity bit)
+        // and feed it through the single-Option leaf machinery via a
+        // synthesized per-row local. Nested multi-Option (`Option<Option<T>>`
+        // over a struct/generic) is handled separately in `build_nested_encoder`.
+        WrapperKind::Leaf {
+            option_layers: layers,
+        } => wrap_multi_option_primitive(base, transform, ctx, layers),
         WrapperKind::Vec(shape) => {
             // `[Option, Vec, ...]` (outer-Option above a single-Vec stack)
             // over a primitive that has a typed `ListPrimitiveChunkedBuilder` /
@@ -1856,10 +1914,12 @@ pub fn try_build_encoder(
 /// Build the depth-N `vec(inner)` encoder for the `(base, transform)`
 /// combinations the encoder IR covers.
 ///
-/// Matches `build_leaf`'s coverage: bare numeric, `String`, `Bool`,
-/// `Decimal` (with `DecimalToInt128`), `DateTime` (with `DateTimeToInt`),
-/// `as_str` borrow, and `to_string`. Returns `None` for `ISize`/`USize`
-/// (legacy generic path) and for transforms that don't apply to the base.
+/// Matches `build_leaf`'s coverage: bare numeric, `ISize`/`USize` (widened
+/// to `i64`/`u64` at the leaf push site), `String`, `Bool`, `Decimal`
+/// (with `DecimalToInt128`), `DateTime` (with `DateTimeToInt`), `as_str`
+/// borrow, and `to_string`. Returns `None` only for transform/base
+/// combinations the parser cannot construct (e.g. `DateTimeToInt` on a
+/// non-`DateTime` base).
 fn try_build_vec_encoder(
     base: &BaseType,
     transform: Option<&PrimitiveTransform>,
@@ -1913,6 +1973,19 @@ fn try_build_vec_encoder_bare(
             };
             Some(vec_encoder(ctx, &spec, shape, &info.dtype))
         }
+        BaseType::ISize | BaseType::USize => {
+            // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
+            // The loop binding is `&isize`/`&usize`, so the cast reads the
+            // pointed-to value first (`*v`) then widens to the target.
+            let info = super::type_registry::isize_usize_widened_info(base)?;
+            let target = info.native.clone();
+            let spec = VecLeafSpec::Numeric {
+                native: info.native.clone(),
+                value_expr: quote! { (*__df_derive_v as #target) },
+                needs_decimal_import: false,
+            };
+            Some(vec_encoder(ctx, &spec, shape, &info.dtype))
+        }
         BaseType::String => {
             let pp = super::polars_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::String };
@@ -1931,12 +2004,9 @@ fn try_build_vec_encoder_bare(
                 Some(vec_encoder_bool_bare(ctx, shape))
             }
         }
-        BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => None,
+        BaseType::DateTimeUtc | BaseType::Decimal | BaseType::Struct(..) | BaseType::Generic(_) => {
+            None
+        }
     }
 }
 
@@ -2021,11 +2091,10 @@ fn build_leaf(
             | BaseType::U64
             | BaseType::F32
             | BaseType::F64 => Some(numeric_leaf(ctx, base)),
+            BaseType::ISize | BaseType::USize => Some(numeric_leaf_widened(ctx, base)),
             BaseType::String => Some(string_leaf(ctx)),
             BaseType::Bool => Some(bool_leaf(ctx)),
-            BaseType::ISize
-            | BaseType::USize
-            | BaseType::DateTimeUtc
+            BaseType::DateTimeUtc
             | BaseType::Decimal
             | BaseType::Struct(..)
             | BaseType::Generic(_) => None,
@@ -2071,11 +2140,10 @@ fn wrap_option(
             | BaseType::U64
             | BaseType::F32
             | BaseType::F64 => option_for_numeric(ctx, base, inner),
+            BaseType::ISize | BaseType::USize => option_for_numeric_widened(ctx, base, inner),
             BaseType::String => option_for_string_like(ctx, vec![], inner),
             BaseType::Bool => option_for_bool(ctx, inner),
-            BaseType::ISize
-            | BaseType::USize
-            | BaseType::DateTimeUtc
+            BaseType::DateTimeUtc
             | BaseType::Decimal
             | BaseType::Struct(..)
             | BaseType::Generic(_) => {
@@ -2098,6 +2166,139 @@ fn wrap_option(
         }
         Some(PrimitiveTransform::AsStr) => option_for_as_str(ctx, inner),
     }
+}
+
+/// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
+/// `Option`s above it (Polars folds them all to one validity bit). Strategy
+/// per leaf-kind:
+///
+/// - **`as_str` borrow path**: the leaf's owning buffer is
+///   `Vec<Option<&str>>` borrowing from `items`. Using a per-row local would
+///   discard the borrow at row end, so we collapse the access expression all
+///   the way to `Option<&str>` (one shared `as_ref().and_then(...).map(...)`
+///   chain) and push it directly. Borrows from the field, lives for the
+///   whole pass.
+/// - **Owning leaves (numeric, `ISize`/`USize`, `Bool`, `String`, `Decimal`,
+///   `DateTime`, `to_string`)**: the buffer holds owned values, so a per-row
+///   `Option<T>` local materialised by `.copied()` (Copy types) or
+///   `.cloned()` (non-Copy) and fed back through the standard single-Option
+///   leaf machinery is sound. The clone is per-row only on this rare slow
+///   path; the fast paths still apply for `[]` and `[Option]` shapes.
+fn wrap_multi_option_primitive(
+    base: &BaseType,
+    transform: Option<&PrimitiveTransform>,
+    ctx: &LeafCtx<'_>,
+    layers: usize,
+) -> Option<Encoder> {
+    debug_assert!(layers >= 2);
+    if matches!(transform, Some(PrimitiveTransform::AsStr)) {
+        return wrap_multi_option_as_str(base, ctx, layers);
+    }
+    let orig_access = ctx.access.clone();
+    let local = format_ident!("__df_derive_mo_{}", ctx.idx);
+    let local_access = quote! { #local };
+    let collapsed_chain = collapse_options_to_ref(&orig_access, layers);
+    // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`) flatten
+    // through `.copied()`; everything else through `.cloned()`. The local
+    // shadows the field for the inner option-leaf machinery so its existing
+    // `match #access { Some(v) => ... }` push body just works.
+    let materializer = if is_copy_primitive_base(base) {
+        quote! { .copied() }
+    } else {
+        quote! { .cloned() }
+    };
+    let setup = quote! {
+        let #local: ::std::option::Option<_> = #collapsed_chain #materializer;
+    };
+    let new_ctx = LeafCtx {
+        access: &local_access,
+        idx: ctx.idx,
+        name: ctx.name,
+        decimal128_encode_trait: ctx.decimal128_encode_trait,
+    };
+    let leaf = build_leaf(base, transform, &new_ctx)?;
+    let mut wrapped = wrap_option(base, transform, leaf, &new_ctx);
+    let original_push = wrapped.push.clone();
+    wrapped.push = quote! {
+        #setup
+        #original_push
+    };
+    Some(wrapped)
+}
+
+/// `as_str`-specific multi-Option wrapper. Builds the same `Vec<Option<&str>>`
+/// buffer + finish as `option_for_as_str`, but the per-row push collapses the
+/// stacked `Option`s into a single `Option<&str>` borrowed from the original
+/// field — the buffer's borrow needs to live for the whole pass, which a
+/// per-row local owning `String` cannot provide.
+fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -> Option<Encoder> {
+    let ty_path = match base {
+        BaseType::String => quote! { ::std::string::String },
+        BaseType::Struct(ident, args) => super::strategy::build_type_path(ident, args.as_ref()),
+        BaseType::Generic(ident) => quote! { #ident },
+        BaseType::F64
+        | BaseType::F32
+        | BaseType::I64
+        | BaseType::U64
+        | BaseType::I32
+        | BaseType::U32
+        | BaseType::I16
+        | BaseType::U16
+        | BaseType::I8
+        | BaseType::U8
+        | BaseType::Bool
+        | BaseType::ISize
+        | BaseType::USize
+        | BaseType::DateTimeUtc
+        | BaseType::Decimal => return None,
+    };
+    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let name = ctx.name;
+    let pp = super::polars_paths::prelude();
+    let collapsed_ref = collapse_options_to_ref(ctx.access, layers);
+    let push = if matches!(base, BaseType::String) {
+        // For `String` base, `&String` deref-coerces to `&str`, so the
+        // collapsed `Option<&String>` maps to `Option<&str>` directly via
+        // `String::as_str`.
+        quote! { #buf.push((#collapsed_ref).map(::std::string::String::as_str)); }
+    } else {
+        quote! {
+            #buf.push(
+                (#collapsed_ref).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
+            );
+        }
+    };
+    let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
+    Some(Encoder {
+        decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
+        push,
+        option_push: None,
+        finish: Encoder::series_finish(finish_series),
+        kind: LeafKind::PerElementPush,
+        offset_depth: 0,
+    })
+}
+
+/// `Copy` primitive base test for the multi-Option per-row materializer.
+/// Numerics, `ISize`/`USize`, and `Bool` are `Copy`; `String`, `DateTime`,
+/// `Decimal`, and the struct/generic bases are not.
+const fn is_copy_primitive_base(base: &BaseType) -> bool {
+    matches!(
+        base,
+        BaseType::I8
+            | BaseType::I16
+            | BaseType::I32
+            | BaseType::I64
+            | BaseType::U8
+            | BaseType::U16
+            | BaseType::U32
+            | BaseType::U64
+            | BaseType::F32
+            | BaseType::F64
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::Bool
+    )
 }
 
 // --- Nested-struct/generic encoder paths (CollectThenBulk leaves) ---

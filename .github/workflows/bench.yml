@@ -27,7 +27,9 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
       # Force consistent, optimized builds on CI
-      RUSTFLAGS: "-C target-cpu=native -C codegen-units=1 -C opt-level=3"
+      # Pin to x86-64-v3 (AVX2 + BMI1/BMI2 + LZCNT + MOVBE) instead of `native` so bench
+      # results are stable across heterogeneous GitHub Actions runners.
+      RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3"
       # Pin parallelism for determinism
       RAYON_NUM_THREADS: '1'
       POLARS_MAX_THREADS: '1'

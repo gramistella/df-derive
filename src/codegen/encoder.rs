@@ -2568,7 +2568,7 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
     };
 
     let scan = quote! {
-        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::new();
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(items.len());
         let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
             ::std::vec::Vec::with_capacity(items.len());
         for __df_derive_it in items {

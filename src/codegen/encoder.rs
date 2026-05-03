@@ -2458,16 +2458,24 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
         //   typed-null Series of length total, offsets reference it.
         // - flat.len() == total: every leaf slot was Some → direct.
         // - else: mixed → take.
+        //
+        // The offsets-buffer freeze is emitted INSIDE each arm rather than
+        // hoisted above the dispatch: with the freeze local to each branch,
+        // LLVM specializes register allocation around the heavily-inlined
+        // `columnar_from_refs` on the hot direct/take paths instead of
+        // treating the `OffsetsBuffer` construction as a global obligation.
         quote! {{
             #scan_body
             #validity_freeze
-            #offsets_freeze
             if #total == 0 {
+                #offsets_freeze
                 #consume_empty
             } else if #flat.is_empty() {
+                #offsets_freeze
                 #consume_all_absent
             } else if #flat.len() == #total {
                 let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #offsets_freeze
                 #consume_direct
             } else {
                 let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
@@ -2476,20 +2484,23 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
                         "".into(),
                         #positions.iter().copied(),
                     );
+                #offsets_freeze
                 #consume_take
             }
         }}
     } else {
         // No inner-Option: total == flat.len(). Two branches: empty
-        // when flat is empty (no leaves), direct otherwise.
+        // when flat is empty (no leaves), direct otherwise. Same
+        // freeze-inside-branch rationale as above.
         quote! {{
             #scan_body
             #validity_freeze
-            #offsets_freeze
             if #flat.is_empty() {
+                #offsets_freeze
                 #consume_empty
             } else {
                 let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #offsets_freeze
                 #consume_direct
             }
         }}

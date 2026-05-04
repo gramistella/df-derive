@@ -15,7 +15,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
-use super::leaf::{LeafBuilder, validity_into_option};
+use super::leaf::{LeafSpec, validity_into_option};
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
 
@@ -913,7 +913,7 @@ pub(super) fn try_build_vec_encoder(
             // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
             // The loop binding is `&isize`/`&usize`, so the cast reads the
             // pointed-to value first (`*v`) then widens to the target.
-            let info = crate::codegen::type_registry::isize_usize_widened_info(base)
+            let info = crate::codegen::type_registry::numeric_info(base)
                 .expect("LeafShape::NumericWidened carries an `ISize`/`USize` BaseType");
             let target = info.native.clone();
             let spec = VecLeafSpec::Numeric {
@@ -1020,11 +1020,14 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
 /// Build the leaf-encoder bundle for a primitive shape. `LeafShape` encodes
 /// the parser's accept set, so this dispatch is exhaustive by construction —
 /// every "cannot reach this combination" check lives at
-/// `LeafShape::from_base_transform` instead.
-pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> LeafBuilder {
+/// `LeafShape::from_base_transform` instead. Both `Numeric` and
+/// `NumericWidened` route to the same `numeric_leaf` builder; the merged
+/// `numeric_info` carries the widening info inline, so the two parser-time
+/// `LeafShape` provenances yield distinct push tokens without needing
+/// distinct dispatcher arms.
+pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> LeafSpec {
     match shape {
-        LeafShape::Numeric(base) => leaf::numeric_leaf(ctx, base),
-        LeafShape::NumericWidened(base) => leaf::numeric_leaf_widened(ctx, base),
+        LeafShape::Numeric(base) | LeafShape::NumericWidened(base) => leaf::numeric_leaf(ctx, base),
         LeafShape::String => leaf::string_leaf(ctx),
         LeafShape::Bool => leaf::bool_leaf(ctx),
         LeafShape::DateTime(unit) => leaf::datetime_leaf(ctx, *unit),

@@ -5,96 +5,64 @@ use crate::type_analysis::{
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-/// Token bundle for one bare numeric primitive base. Every fast-path emitter
-/// consumes some subset of these — collected here so the 10-arm match per
-/// metadata kind doesn't have to be repeated at every call site.
+/// Token bundle for one numeric-shaped primitive base. Every fast-path
+/// emitter consumes some subset of these — collected here so the 12-arm
+/// match per metadata kind doesn't have to be repeated at every call site.
+///
+/// `widen_from` carries the SOURCE Rust type (`isize`/`usize`) when widening
+/// is needed; `native` is the storage type (`i64`/`u64` in that case). For
+/// fixed-width bases (`i8/i16/.../f64`) `widen_from` is `None` and `native`
+/// matches the source type. Polars supports only fixed-width 8/16/32/64
+/// lanes, so the encoder widens `ISize`/`USize` reads to `i64`/`u64` at the
+/// leaf push site and stores into a `Vec<i64>` / `Vec<u64>` whose downstream
+/// chunked-array build matches the schema dtype directly.
 pub(super) struct NumericInfo {
-    /// Native Rust type token, e.g. `i8`, `f64`.
+    /// Native Rust storage type token, e.g. `i8`, `f64`. For `ISize`/`USize`
+    /// this is the widened storage type (`i64`/`u64`); for fixed-width bases
+    /// it equals the source type.
     pub native: TokenStream,
     /// `#pp::DataType::<Variant>` for the leaf, e.g. `#pp::DataType::Int8`.
     pub dtype: TokenStream,
     /// `#pp::<Variant>Chunked` alias, e.g. `#pp::Int8Chunked`.
     pub chunked: TokenStream,
+    /// `Some(source_type_tokens)` when the leaf push site must widen reads
+    /// (`isize`/`usize` → `i64`/`u64` via an `as` cast). `None` for
+    /// fixed-width bases where storage matches the source.
+    pub widen_from: Option<TokenStream>,
 }
 
-/// Returns `Some(NumericInfo)` for the bare numeric bases (`i8/i16/i32/i64/
-/// u8/u16/u32/u64/f32/f64`). `None` for everything else (`Bool`, `String`,
-/// `ISize`/`USize`, `DateTime`, `Decimal`, `Struct`, `Generic`).
-///
-/// `ISize`/`USize` are excluded because the encoder widens them to
-/// `i64`/`u64` at the codegen boundary; they reach the numeric vec-emit
-/// path through the i64/u64 register entry, not through their own.
-/// `Bool` is excluded because the encoder uses a dedicated boolean
-/// builder rather than a numeric `PrimitiveArray`.
+/// Returns `Some(NumericInfo)` for every numeric-shaped base
+/// (`i8/i16/i32/i64/u8/u16/u32/u64/f32/f64/isize/usize`). `None` for
+/// everything else (`Bool`, `String`, `DateTime`, `Decimal`, `Struct`,
+/// `Generic`). `ISize`/`USize` carry `widen_from = Some(isize|usize)` and
+/// `native = i64|u64`; the leaf push site reads `(*v) as i64` / `(*v) as
+/// u64` to match the storage type.
 pub(super) fn numeric_info(base: &BaseType) -> Option<NumericInfo> {
     let pp = super::polars_paths::prelude();
-    let info = |native: TokenStream, variant: &str| {
+    let info = |native: TokenStream, variant: &str, widen_from: Option<TokenStream>| {
         let chunked_ident = format_ident!("{}Chunked", variant);
         let dtype_ident = format_ident!("{}", variant);
         NumericInfo {
             native,
             dtype: quote! { #pp::DataType::#dtype_ident },
             chunked: quote! { #pp::#chunked_ident },
+            widen_from,
         }
     };
     Some(match base {
-        BaseType::I8 => info(quote! { i8 }, "Int8"),
-        BaseType::I16 => info(quote! { i16 }, "Int16"),
-        BaseType::I32 => info(quote! { i32 }, "Int32"),
-        BaseType::I64 => info(quote! { i64 }, "Int64"),
-        BaseType::U8 => info(quote! { u8 }, "UInt8"),
-        BaseType::U16 => info(quote! { u16 }, "UInt16"),
-        BaseType::U32 => info(quote! { u32 }, "UInt32"),
-        BaseType::U64 => info(quote! { u64 }, "UInt64"),
-        BaseType::F32 => info(quote! { f32 }, "Float32"),
-        BaseType::F64 => info(quote! { f64 }, "Float64"),
+        BaseType::I8 => info(quote! { i8 }, "Int8", None),
+        BaseType::I16 => info(quote! { i16 }, "Int16", None),
+        BaseType::I32 => info(quote! { i32 }, "Int32", None),
+        BaseType::I64 => info(quote! { i64 }, "Int64", None),
+        BaseType::U8 => info(quote! { u8 }, "UInt8", None),
+        BaseType::U16 => info(quote! { u16 }, "UInt16", None),
+        BaseType::U32 => info(quote! { u32 }, "UInt32", None),
+        BaseType::U64 => info(quote! { u64 }, "UInt64", None),
+        BaseType::F32 => info(quote! { f32 }, "Float32", None),
+        BaseType::F64 => info(quote! { f64 }, "Float64", None),
+        BaseType::ISize => info(quote! { i64 }, "Int64", Some(quote! { isize })),
+        BaseType::USize => info(quote! { u64 }, "UInt64", Some(quote! { usize })),
         BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal
-        | BaseType::Struct(..)
-        | BaseType::Generic(_) => return None,
-    })
-}
-
-/// Returns the widened-storage `NumericInfo` for `ISize`/`USize` — the
-/// platform-sized integers polars cannot represent natively (Polars supports
-/// only fixed-width 8/16/32/64 lanes). The encoder leaf path widens reads
-/// to `i64`/`u64` at the codegen boundary via an `as` cast and stores into
-/// a `Vec<i64>` / `Vec<u64>` so the downstream chunked-array build matches
-/// the schema dtype directly.
-///
-/// Returns `None` for any base that is NOT `ISize`/`USize` — the caller
-/// dispatches `ISize`/`USize` separately from the bare-numeric path because
-/// the typed `ListPrimitiveChunkedBuilder` fast path requires the native
-/// element type to match the field type, which it cannot here.
-pub(super) fn isize_usize_widened_info(base: &BaseType) -> Option<NumericInfo> {
-    let pp = super::polars_paths::prelude();
-    let info = |native: TokenStream, variant: &str| {
-        let chunked_ident = format_ident!("{}Chunked", variant);
-        let dtype_ident = format_ident!("{}", variant);
-        NumericInfo {
-            native,
-            dtype: quote! { #pp::DataType::#dtype_ident },
-            chunked: quote! { #pp::#chunked_ident },
-        }
-    };
-    Some(match base {
-        BaseType::ISize => info(quote! { i64 }, "Int64"),
-        BaseType::USize => info(quote! { u64 }, "UInt64"),
-        BaseType::I8
-        | BaseType::I16
-        | BaseType::I32
-        | BaseType::I64
-        | BaseType::U8
-        | BaseType::U16
-        | BaseType::U32
-        | BaseType::U64
-        | BaseType::F32
-        | BaseType::F64
-        | BaseType::Bool
         | BaseType::String
         | BaseType::DateTimeUtc
         | BaseType::Decimal

@@ -6,11 +6,12 @@
 //! Per-field codegen folds the wrapper stack right-to-left over the leaf to
 //! assemble the final emission.
 //!
-//! Each `LeafBuilder` carries two push token streams: `bare_push` for the
-//! unwrapped shape, and `option_push` for the `[Option]` shape. The split
-//! lets the `bool` leaf override the option case with a 3-arm match (so
-//! `Some(false)` is a true no-op against a values bitmap pre-filled with
-//! `false`).
+//! Each `LeafSpec` carries two arms — `bare` for the unwrapped shape and
+//! `option` for the `[Option]` shape. The split lets the `bool` leaf
+//! override the option case with a 3-arm match (so `Some(false)` is a true
+//! no-op against a values bitmap pre-filled with `false`) and lets each
+//! leaf pick the right buffer/finish layout for its option semantics
+//! without leaking a runtime "is-this-supplied?" check into the dispatcher.
 //!
 //! `Vec`-bearing wrappers are normalized into a [`VecShape`] (one entry per
 //! `Vec` layer; each entry tracks whether an outer `Option` adjoins it as
@@ -410,16 +411,28 @@ pub fn build_encoder(
     let shape = LeafShape::from_base_transform(base, transform);
     match normalize_wrappers(wrappers) {
         WrapperKind::Leaf { option_layers: 0 } => {
-            let builder = vec::build_leaf(&shape, ctx);
+            let leaf::LeafArm {
+                decls,
+                push,
+                series,
+            } = vec::build_leaf(&shape, ctx).bare;
             Encoder::Leaf {
-                decls: builder.decls,
-                push: builder.bare_push,
-                series: builder.bare_series,
+                decls,
+                push,
+                series,
             }
         }
         WrapperKind::Leaf { option_layers: 1 } => {
-            let builder = vec::build_leaf(&shape, ctx);
-            option::wrap_option(&shape, builder, ctx)
+            let leaf::LeafArm {
+                decls,
+                push,
+                series,
+            } = vec::build_leaf(&shape, ctx).option;
+            Encoder::Leaf {
+                decls,
+                push,
+                series,
+            }
         }
         // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
         // `Option<Option<Option<T>>>`, …): pre-collapse the access to

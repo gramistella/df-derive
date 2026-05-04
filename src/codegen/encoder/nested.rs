@@ -23,7 +23,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
-use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
+use super::shape_walk::{
+    ScanLayerIdents, ShapePrecount, ShapeScan, shape_offsets_decls, shape_validity_decls,
+};
 use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
@@ -408,11 +410,13 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
 /// Scan the input building flat refs, per-layer offsets vecs, per-layer
 /// validity bitmaps, and (when `has_inner_option`) per-element positions.
 ///
-/// The scan walker (per-row offset/validity/leaf-push body) is shared with
-/// the flat-vec path via [`ShapeScan`]; the precount stays inline because
-/// its dead-store-after-precount counter behavior differs from any reuse
-/// the flat-vec path needs (and is bench-sensitive).
-#[allow(clippy::items_after_statements, clippy::too_many_lines)]
+/// Both the scan walker (per-row offset/validity/leaf-push body) and the
+/// precount walker (per-layer-counter tally) are shared with the flat-vec
+/// path via [`ShapeScan`] and [`ShapePrecount`]. The scan loop must NOT
+/// increment the per-layer counters that the precount loop sized — those
+/// counters are dead-store after the precount and re-incrementing them
+/// during scan only inflates loop bodies (LLVM does eliminate the dead
+/// store, but the path is sensitive to exactly how the loop is shaped).
 fn build_nested_scan_body(
     access: &TokenStream,
     shape: &VecShape,
@@ -494,74 +498,20 @@ fn build_nested_scan_body(
     }
     .build();
 
-    // Precount: walk the same structure and tally totals.
-    //
-    // The scan loop must NOT increment the per-layer counters that the
-    // precount loop sized — those counters are dead-store after the precount
-    // and re-incrementing them during scan only inflates loop bodies (LLVM
-    // does eliminate the dead store, but the path is sensitive to exactly
-    // how the loop is shaped). Counters live exclusively in `build_pre_iter`.
-    fn build_pre_iter(
-        shape: &VecShape,
-        layers: &[NestedLayerIdents],
-        layer_counters: &[syn::Ident],
-        total: &syn::Ident,
-        cur: usize,
-        vec_bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        if cur + 1 == depth {
-            quote! { #total += #vec_bind.len(); }
-        } else {
-            let inner_bind = &layers[cur + 1].bind;
-            let counter = &layer_counters[cur];
-            let inner_pre = build_pre_layer(
-                shape,
-                layers,
-                layer_counters,
-                total,
-                cur + 1,
-                &quote! { #inner_bind },
-            );
-            quote! {
-                for #inner_bind in #vec_bind.iter() {
-                    #inner_pre
-                    #counter += 1;
-                }
-            }
-        }
+    // The nested precount uses a distinct outer-Some prefix
+    // (`__df_derive_n_pre_some_`) from the scan walker
+    // (`__df_derive_n_some_`) so the two loops can coexist without name
+    // shadowing inside the same generated block.
+    const NESTED_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_n_pre_some_";
+    let pre_iter_body = ShapePrecount {
+        shape,
+        access,
+        layers: &scan_layers,
+        outer_some_prefix: NESTED_PRE_OUTER_SOME_PREFIX,
+        total_counter: total,
+        layer_counters: &layer_counters,
     }
-
-    fn build_pre_layer(
-        shape: &VecShape,
-        layers: &[NestedLayerIdents],
-        layer_counters: &[syn::Ident],
-        total: &syn::Ident,
-        cur: usize,
-        bind: &TokenStream,
-    ) -> TokenStream {
-        if shape.layers[cur].has_outer_validity() {
-            let inner_vec_bind = idents::nested_pre_outer_some(cur);
-            let inner = build_pre_iter(
-                shape,
-                layers,
-                layer_counters,
-                total,
-                cur,
-                &quote! { #inner_vec_bind },
-            );
-            quote! {
-                if let ::std::option::Option::Some(#inner_vec_bind) = #bind {
-                    #inner
-                }
-            }
-        } else {
-            build_pre_iter(shape, layers, layer_counters, total, cur, bind)
-        }
-    }
-
-    let layer0_iter_src = quote! { (&(#access)) };
-    let pre_iter_body = build_pre_layer(shape, layers, &layer_counters, total, 0, &layer0_iter_src);
+    .build();
 
     // Allocate offsets vecs and validity bitmaps via the shared helpers.
     // The per-depth counter ident matches the precount loop's counters above.
@@ -572,9 +522,6 @@ fn build_nested_scan_body(
     let validity_decls =
         shape_validity_decls(shape, &validity_idents, &counter_for_depth, &pa_root);
 
-    let counter_decls = layer_counters
-        .iter()
-        .map(|c| quote! { let mut #c: usize = 0; });
     let positions_decl = if shape.has_inner_option() {
         quote! {
             let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
@@ -583,13 +530,8 @@ fn build_nested_scan_body(
     } else {
         TokenStream::new()
     };
-    let it = idents::populator_iter();
     quote! {
-        let mut #total: usize = 0;
-        #(#counter_decls)*
-        for #it in items {
-            #pre_iter_body
-        }
+        #pre_iter_body
         let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
         #positions_decl
         #offsets_decls

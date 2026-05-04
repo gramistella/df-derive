@@ -16,7 +16,9 @@ use quote::quote;
 
 use super::idents;
 use super::leaf::{LeafSpec, validity_into_option};
-use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
+use super::shape_walk::{
+    ScanLayerIdents, ShapePrecount, ShapeScan, shape_offsets_decls, shape_validity_decls,
+};
 use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
 
 // --- Vec combinator ---
@@ -207,12 +209,11 @@ fn vec_emit_decl(
 /// Returns `(decls, leaf_capacity)` — the leaf capacity is the running total
 /// of leaf elements summed across every nested `Vec` layer of every outer row.
 ///
-/// Mirrors the structure of `build_vec_push_loops` so the precount and the
-/// actual push loop walk the same `Some/None` arms in lock-step. Layers with
-/// `has_outer_validity` skip both the layer-counter increment and the
-/// recursion on `None`, matching the runtime push logic that records a
-/// repeat-offset for the null cell.
-#[allow(clippy::items_after_statements)]
+/// Routes through the shared [`ShapePrecount`] walker; the per-row body
+/// mirrors `build_vec_push_loops` so precount and scan walk the same
+/// `Some/None` arms in lock-step. Layers with `has_outer_validity` skip both
+/// the layer-counter increment and the recursion on `None`, matching the
+/// runtime push logic that records a repeat-offset for the null cell.
 fn vec_precount_pieces(
     access: &TokenStream,
     shape: &VecShape,
@@ -223,98 +224,23 @@ fn vec_precount_pieces(
     let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
         .map(idents::vec_layer_total)
         .collect();
-
-    fn build_iter_body(
-        shape: &VecShape,
-        layers: &[VecLayerIdents],
-        layer_counters: &[syn::Ident],
-        total_leaves: &syn::Ident,
-        cur: usize,
-        vec_bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        if cur + 1 == depth {
-            quote! { #total_leaves += #vec_bind.len(); }
-        } else {
-            let inner_bind = &layers[cur + 1].bind;
-            let counter = &layer_counters[cur];
-            let inner_layer_body = build_layer_body(
-                shape,
-                layers,
-                layer_counters,
-                total_leaves,
-                cur + 1,
-                &quote! { #inner_bind },
-            );
-            quote! {
-                for #inner_bind in #vec_bind.iter() {
-                    #inner_layer_body
-                    #counter += 1;
-                }
-            }
-        }
-    }
-
-    fn build_layer_body(
-        shape: &VecShape,
-        layers: &[VecLayerIdents],
-        layer_counters: &[syn::Ident],
-        total_leaves: &syn::Ident,
-        cur: usize,
-        bind: &TokenStream,
-    ) -> TokenStream {
-        let opt_layers = shape.layers[cur].option_layers;
-        if opt_layers > 0 {
-            let inner_vec_bind = idents::vec_outer_some(cur);
-            let inner_iter = build_iter_body(
-                shape,
-                layers,
-                layer_counters,
-                total_leaves,
-                cur,
-                &quote! { #inner_vec_bind },
-            );
-            // Collapse N consecutive Options to one match. Polars semantics:
-            // every nested None collapses to the same null. The collapsed
-            // expression evaluates to `Option<&Vec<...>>`. For the
-            // `opt_layers == 1` case, default binding modes match
-            // `&Option<Vec<...>>` directly without an explicit `.as_ref()`,
-            // which LLVM doesn't always eliminate.
-            let collapsed = if opt_layers == 1 {
-                bind.clone()
-            } else {
-                collapse_options_to_ref(bind, opt_layers)
-            };
-            quote! {
-                if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
-                    #inner_iter
-                }
-            }
-        } else {
-            build_iter_body(shape, layers, layer_counters, total_leaves, cur, bind)
-        }
-    }
-
-    let layer0_iter_src = quote! { (&(#access)) };
-    let body = build_layer_body(
-        shape,
-        layers,
-        &layer_counters,
-        &total_leaves,
-        0,
-        &layer0_iter_src,
-    );
-    let counter_decls = layer_counters
+    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
         .iter()
-        .map(|c| quote! { let mut #c: usize = 0; });
-    let it = idents::populator_iter();
-    let pre = quote! {
-        let mut #total_leaves: usize = 0;
-        #(#counter_decls)*
-        for #it in items {
-            #body
-        }
-    };
+        .map(|l| ScanLayerIdents {
+            offsets: &l.offsets,
+            validity: &l.validity,
+            bind: &l.bind,
+        })
+        .collect();
+    let pre = ShapePrecount {
+        shape,
+        access,
+        layers: &scan_layers,
+        outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
+        total_counter: &total_leaves,
+        layer_counters: &layer_counters,
+    }
+    .build();
     (pre, quote! { #total_leaves })
 }
 

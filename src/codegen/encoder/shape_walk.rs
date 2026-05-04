@@ -13,6 +13,19 @@
 //! into the shared three-ident shape: offsets, validity, bind), choose the
 //! `outer_some_prefix`, and supply the deepest-layer body via `leaf_body`.
 //!
+//! [`ShapePrecount`] is the parallel walker for the precount loop both paths
+//! run before the scan to size the offsets/validity/leaf-storage buffers up
+//! front. The two paths differ only in: (a) the leaf-counter increment (the
+//! flat-vec path tallies `__df_derive_total_leaves`; the nested path tallies
+//! the per-field `__df_derive_gen_total_<idx>`), (b) the outer-Some bind name
+//! prefix, and (c) the per-layer counter idents. The precount walker emits
+//! the full `let mut #total: usize = 0;` decl, the per-layer counter decls,
+//! and the `for #it in items { ... }` ring; callers splice the result
+//! verbatim. Critically, when `option_layers >= 2` on an outer-Vec layer the
+//! walker calls [`collapse_options_to_ref`] so multi-Option-over-Vec shapes
+//! don't try to `if let Some(...) = &Option<Option<Vec<...>>>` (which doesn't
+//! type-check).
+//!
 //! Two related decl helpers ([`shape_offsets_decls`] and
 //! [`shape_validity_decls`]) generalize the per-layer offsets-vec and
 //! validity-bitmap allocations: layer 0 is sized by `items.len()` (or
@@ -145,6 +158,105 @@ impl ShapeScan<'_> {
         quote! {
             #inner_iter
             #offsets.push(#offsets_post_push as i64);
+        }
+    }
+}
+
+/// Inputs to the shared precount walker. Builds the precount loop both the
+/// flat-vec and nested-struct paths run before the scan to size the
+/// offsets/validity/leaf-storage buffers up front.
+///
+/// `total_counter` is the leaf-element accumulator ident (the flat-vec path
+/// passes `__df_derive_total_leaves`; the nested path passes
+/// `__df_derive_gen_total_<idx>`). `layer_counters` are the per-depth
+/// counter idents (`depth - 1` of them; layer `i` counts the child-lists
+/// produced by layer `i+1`). `layers` reuses the `ScanLayerIdents` shape
+/// from the scan walker; only the `bind` field is consumed (for the
+/// inter-layer `for #inner_bind in ...` loops).
+///
+/// `outer_some_prefix` is the ident-prefix for the `if let Some(<bind>)`
+/// arm at layers with `option_layers > 0`. The flat-vec path uses
+/// `__df_derive_some_` (matching its scan walker); the nested path uses
+/// `__df_derive_n_pre_some_` (distinct from its scan walker's
+/// `__df_derive_n_some_` so the two loops can coexist without name shadowing
+/// inside the same generated block).
+///
+/// The walker calls [`collapse_options_to_ref`] when `option_layers >= 2`
+/// so multi-Option-over-Vec shapes type-check (default binding modes can't
+/// match `&Option<Option<Vec<...>>>` against `Some(v)` directly without
+/// stripping the outer `&` first).
+///
+/// `build` emits the entire precount block: the `let mut <total>: usize = 0;`
+/// decl, the per-layer counter decls, and the `for <it> in items { ... }`
+/// ring with the recursion body. Callers splice the result verbatim.
+pub(super) struct ShapePrecount<'a> {
+    pub shape: &'a VecShape,
+    pub access: &'a TokenStream,
+    pub layers: &'a [ScanLayerIdents<'a>],
+    pub outer_some_prefix: &'a str,
+    pub total_counter: &'a syn::Ident,
+    pub layer_counters: &'a [syn::Ident],
+}
+
+impl ShapePrecount<'_> {
+    /// Build the full precount block (total + per-layer counter decls plus
+    /// the `for <it> in items { ... }` ring).
+    pub(super) fn build(&self) -> TokenStream {
+        let layer0_iter_src = {
+            let access = self.access;
+            quote! { (&(#access)) }
+        };
+        let body = self.build_layer(0, &layer0_iter_src);
+        let total = self.total_counter;
+        let counter_decls = self
+            .layer_counters
+            .iter()
+            .map(|c| quote! { let mut #c: usize = 0; });
+        let it = idents::populator_iter();
+        quote! {
+            let mut #total: usize = 0;
+            #(#counter_decls)*
+            for #it in items {
+                #body
+            }
+        }
+    }
+
+    fn build_iter(&self, cur: usize, vec_bind: &TokenStream) -> TokenStream {
+        let depth = self.shape.depth();
+        let total = self.total_counter;
+        if cur + 1 == depth {
+            quote! { #total += #vec_bind.len(); }
+        } else {
+            let inner_bind = self.layers[cur + 1].bind;
+            let counter = &self.layer_counters[cur];
+            let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
+            quote! {
+                for #inner_bind in #vec_bind.iter() {
+                    #inner_layer_body
+                    #counter += 1;
+                }
+            }
+        }
+    }
+
+    fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
+        let opt_layers = self.shape.layers[cur].option_layers;
+        if opt_layers > 0 {
+            let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
+            let inner = self.build_iter(cur, &quote! { #inner_vec_bind });
+            let collapsed = if opt_layers == 1 {
+                bind.clone()
+            } else {
+                collapse_options_to_ref(bind, opt_layers)
+            };
+            quote! {
+                if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
+                    #inner
+                }
+            }
+        } else {
+            self.build_iter(cur, bind)
         }
     }
 }

@@ -103,17 +103,13 @@ pub(super) fn vec_layer_total(layer: usize) -> Ident {
     format_ident!("__df_derive_total_layer_{}", layer)
 }
 
-/// Per-layer outer-Some bind in the flat-vec scan walker. The walker uses
-/// this ident inside `match collapsed { Some(<bind>) => ... }` arms.
+/// Token-form of the prefix used by the shared walker to construct
+/// flat-vec outer-Some binds. The walker uses this prefix inside
+/// `match collapsed { Some(<bind>) => ... }` arms (and the precount walker
+/// inside `if let Some(<bind>) = ...` arms).
 ///
 /// The `__df_derive_some_` prefix vs. the nested path's `__df_derive_n_some_`
 /// is load-bearing — see the module docs.
-pub(super) fn vec_outer_some(layer: usize) -> Ident {
-    format_ident!("__df_derive_some_{}", layer)
-}
-
-/// Token-form of the prefix used by the shared walker to construct outer-Some
-/// binds. Paired with [`vec_outer_some`] to keep the prefix knob in one place.
 pub(super) const VEC_OUTER_SOME_PREFIX: &str = "__df_derive_some_";
 
 // --- Per-layer idents for the nested-struct push/scan path ----------------
@@ -156,13 +152,6 @@ pub(super) fn nested_layer_total(layer: usize) -> Ident {
 /// `format_ident!("{prefix}{cur}")`. The `n_` infix is intentional safety
 /// margin against the flat-vec path (see module docs).
 pub(super) const NESTED_OUTER_SOME_PREFIX: &str = "__df_derive_n_some_";
-
-/// Per-layer outer-Some bind in the nested precount loop. Distinct from
-/// [`nested_outer_some`] (the scan-walker bind) so the two loops can coexist
-/// without name shadowing inside the same generated block.
-pub(super) fn nested_pre_outer_some(layer: usize) -> Ident {
-    format_ident!("__df_derive_n_pre_some_{}", layer)
-}
 
 /// Per-layer `LargeListArray` ident produced by the nested encoder's
 /// `build_nested_layer_wrap`.

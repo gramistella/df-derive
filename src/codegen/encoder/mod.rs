@@ -26,6 +26,7 @@
 mod leaf;
 mod nested;
 mod option;
+mod shape_walk;
 mod vec;
 
 use crate::ir::{BaseType, PrimitiveTransform, Wrapper};

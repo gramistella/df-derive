@@ -22,6 +22,7 @@ use crate::ir::Wrapper;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{
     Encoder, EncoderFinish, LeafKind, VecShape, WrapperKind, collapse_options_to_ref,
     normalize_wrappers,
@@ -426,6 +427,11 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
 
 /// Scan the input building flat refs, per-layer offsets vecs, per-layer
 /// validity bitmaps, and (when `has_inner_option`) per-element positions.
+///
+/// The scan walker (per-row offset/validity/leaf-push body) is shared with
+/// the flat-vec path via [`ShapeScan`]; the precount stays inline because
+/// its dead-store-after-precount counter behavior differs from any reuse
+/// the flat-vec path needs (and is bench-sensitive).
 #[allow(clippy::items_after_statements, clippy::too_many_lines)]
 fn build_nested_scan_body(
     access: &TokenStream,
@@ -449,124 +455,70 @@ fn build_nested_scan_body(
         .map(|i| format_ident!("__df_derive_n_total_layer_{}", i))
         .collect();
 
-    // Build the inner iter body for layer `cur`. `vec_bind` is the expression
-    // that holds the inner Vec (after Option-unwrap). At the deepest layer
-    // we iterate elements (and optionally scatter into positions).
+    // Deepest-layer leaf body: scatter into flat (and positions, under
+    // inner-Option). The nested-struct path normalizes nested-struct wrappers
+    // so `inner_option_layers` is at most 1 — assert that here so the shared
+    // walker's multi-collapse branch can't accidentally activate via a future
+    // emitter change.
+    debug_assert!(
+        shape.inner_option_layers <= 1,
+        "nested-struct scan walker only supports inner_option_layers <= 1"
+    );
+    let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
+        if shape.has_inner_option() {
+            quote! {
+                for __df_derive_maybe in #vec_bind.iter() {
+                    match __df_derive_maybe {
+                        ::std::option::Option::Some(__df_derive_v) => {
+                            #positions.push(::std::option::Option::Some(
+                                #flat.len() as #pp::IdxSize,
+                            ));
+                            #flat.push(__df_derive_v);
+                        }
+                        ::std::option::Option::None => {
+                            #positions.push(::std::option::Option::None);
+                        }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                for __df_derive_v in #vec_bind.iter() {
+                    #flat.push(__df_derive_v);
+                }
+            }
+        }
+    };
+    let leaf_offsets_post_push = if shape.has_inner_option() {
+        quote! { #positions.len() }
+    } else {
+        quote! { #flat.len() }
+    };
+    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
+        .iter()
+        .map(|l| ScanLayerIdents {
+            offsets: &l.offsets,
+            validity: &l.validity_mb,
+            bind: &l.bind,
+        })
+        .collect();
+    let scan_iter = ShapeScan {
+        shape,
+        access,
+        layers: &scan_layers,
+        outer_some_prefix: "__df_derive_n_some_",
+        leaf_body: &leaf_body,
+        leaf_offsets_post_push: &leaf_offsets_post_push,
+    }
+    .build();
+
+    // Precount: walk the same structure and tally totals.
     //
     // The scan loop must NOT increment the per-layer counters that the
     // precount loop sized — those counters are dead-store after the precount
     // and re-incrementing them during scan only inflates loop bodies (LLVM
     // does eliminate the dead store, but the path is sensitive to exactly
     // how the loop is shaped). Counters live exclusively in `build_pre_iter`.
-    fn build_iter(
-        shape: &VecShape,
-        layers: &[NestedLayerIdents],
-        flat: &syn::Ident,
-        positions: &syn::Ident,
-        cur: usize,
-        vec_bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        if cur + 1 == depth {
-            // Innermost: iterate values. Inner-Option branches per element.
-            if shape.has_inner_option() {
-                let pp = crate::codegen::polars_paths::prelude();
-                quote! {
-                    for __df_derive_maybe in #vec_bind.iter() {
-                        match __df_derive_maybe {
-                            ::std::option::Option::Some(__df_derive_v) => {
-                                #positions.push(::std::option::Option::Some(
-                                    #flat.len() as #pp::IdxSize,
-                                ));
-                                #flat.push(__df_derive_v);
-                            }
-                            ::std::option::Option::None => {
-                                #positions.push(::std::option::Option::None);
-                            }
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    for __df_derive_v in #vec_bind.iter() {
-                        #flat.push(__df_derive_v);
-                    }
-                }
-            }
-        } else {
-            let inner_bind = &layers[cur + 1].bind;
-            let inner_layer_body = build_layer(
-                shape,
-                layers,
-                flat,
-                positions,
-                cur + 1,
-                &quote! { #inner_bind },
-            );
-            quote! {
-                for #inner_bind in #vec_bind.iter() {
-                    #inner_layer_body
-                }
-            }
-        }
-    }
-
-    fn build_layer(
-        shape: &VecShape,
-        layers: &[NestedLayerIdents],
-        flat: &syn::Ident,
-        positions: &syn::Ident,
-        cur: usize,
-        bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        let layer = &layers[cur];
-        let offsets = &layer.offsets;
-        // `offsets.push(...)` value: for the innermost layer it's flat.len()
-        // (or positions.len() when inner-option scatters); for outer layers
-        // it's the next-inner-layer's offsets length minus 1.
-        let offsets_post = if cur + 1 == depth {
-            if shape.has_inner_option() {
-                quote! { #positions.len() }
-            } else {
-                quote! { #flat.len() }
-            }
-        } else {
-            let inner_offsets = &layers[cur + 1].offsets;
-            quote! { (#inner_offsets.len() - 1) }
-        };
-        let inner_iter = if shape.layers[cur].has_outer_validity() {
-            let validity = &layer.validity_mb;
-            let inner_vec_bind = format_ident!("__df_derive_n_some_{}", cur);
-            let inner_iter = build_iter(
-                shape,
-                layers,
-                flat,
-                positions,
-                cur,
-                &quote! { #inner_vec_bind },
-            );
-            quote! {
-                match #bind {
-                    ::std::option::Option::Some(#inner_vec_bind) => {
-                        #validity.push(true);
-                        #inner_iter
-                    }
-                    ::std::option::Option::None => {
-                        #validity.push(false);
-                    }
-                }
-            }
-        } else {
-            build_iter(shape, layers, flat, positions, cur, bind)
-        };
-        quote! {
-            #inner_iter
-            #offsets.push(#offsets_post as i64);
-        }
-    }
-
-    // Precount: walk the same structure and tally totals.
     fn build_pre_iter(
         shape: &VecShape,
         layers: &[NestedLayerIdents],
@@ -627,42 +579,20 @@ fn build_nested_scan_body(
     }
 
     let layer0_iter_src = quote! { (&(#access)) };
-    let scan_iter_body = build_layer(shape, layers, flat, positions, 0, &layer0_iter_src);
     let pre_iter_body = build_pre_layer(shape, layers, &layer_counters, total, 0, &layer0_iter_src);
 
-    // Allocate offsets vecs with capacity from the layer counters. Layer 0
-    // is `items.len() + 1`; deeper layers use the layer counter.
-    let mut offsets_decls: Vec<TokenStream> = Vec::with_capacity(depth);
-    for (i, layer) in layers.iter().enumerate() {
-        let offsets = &layer.offsets;
-        let cap = if i == 0 {
-            quote! { items.len() + 1 }
-        } else {
-            let counter = &layer_counters[i - 1];
-            quote! { #counter + 1 }
-        };
-        offsets_decls.push(quote! {
-            let mut #offsets: ::std::vec::Vec<i64> = ::std::vec::Vec::with_capacity(#cap);
-            #offsets.push(0);
-        });
-    }
-    let mut validity_decls: Vec<TokenStream> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        if !shape.layers[i].has_outer_validity() {
-            continue;
-        }
-        let validity = &layer.validity_mb;
-        let cap = if i == 0 {
-            quote! { items.len() }
-        } else {
-            let counter = &layer_counters[i - 1];
-            quote! { #counter }
-        };
-        validity_decls.push(quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#cap);
-        });
-    }
+    // Allocate offsets vecs and validity bitmaps via the shared helpers.
+    // The per-depth counter ident matches the precount loop's counters above.
+    let counter_for_depth = |i: usize| -> TokenStream {
+        let id = &layer_counters[i];
+        quote! { #id }
+    };
+    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
+    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
+    let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
+    let validity_decls =
+        shape_validity_decls(shape, &validity_idents, &counter_for_depth, &pa_root);
+
     let counter_decls = layer_counters
         .iter()
         .map(|c| quote! { let mut #c: usize = 0; });
@@ -682,11 +612,9 @@ fn build_nested_scan_body(
         }
         let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
         #positions_decl
-        #(#offsets_decls)*
-        #(#validity_decls)*
-        for __df_derive_it in items {
-            #scan_iter_body
-        }
+        #offsets_decls
+        #validity_decls
+        #scan_iter
     }
 }
 

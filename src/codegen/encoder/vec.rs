@@ -15,6 +15,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::leaf::validity_into_option;
+use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents, VecShape, collapse_options_to_ref, leaf};
 
 // --- Vec combinator ---
@@ -171,9 +172,16 @@ fn vec_emit_decl(
     };
 
     let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
-    let offsets_decls = vec_offsets_decls(shape, &layers);
-    let validity_decls = vec_layer_validity_decls(shape, &layers, &pa_root);
-    let push_loops = vec_push_loops(
+    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
+    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity).collect();
+    let counter_for_depth = |i: usize| -> TokenStream {
+        let id = format_ident!("__df_derive_total_layer_{}", i);
+        quote! { #id }
+    };
+    let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
+    let validity_decls =
+        shape_validity_decls(shape, &validity_idents, &counter_for_depth, &pa_root);
+    let push_loops = build_vec_push_loops(
         access,
         shape,
         &layers,
@@ -201,8 +209,8 @@ fn vec_emit_decl(
 /// Returns `(decls, leaf_capacity)` — the leaf capacity is the running total
 /// of leaf elements summed across every nested `Vec` layer of every outer row.
 ///
-/// Mirrors the structure of `vec_push_loops` so the precount and the actual
-/// push loop walk the same `Some/None` arms in lock-step. Layers with
+/// Mirrors the structure of `build_vec_push_loops` so the precount and the
+/// actual push loop walk the same `Some/None` arms in lock-step. Layers with
 /// `has_outer_validity` skip both the layer-counter increment and the
 /// recursion on `None`, matching the runtime push logic that records a
 /// repeat-offset for the null cell.
@@ -311,20 +319,11 @@ fn vec_precount_pieces(
     (pre, quote! { #total_leaves })
 }
 
-/// Build the nested for-loop push body for the depth-N vec emit.
-///
-/// At each layer `i`:
-/// - if `has_outer_validity`: the source binding is an `Option<Vec<...>>`. A
-///   `None` arm pushes validity=false and skips iteration (the layer's
-///   offset just repeats the previous value, so the outer cell is treated
-///   as "null with no children"). A `Some` arm pushes validity=true and
-///   iterates the inner Vec normally.
-/// - if not: the source binding is a `Vec<...>`; iterate it directly.
-/// - after the iteration arm, push this layer's offset (next inner layer's
-///   offsets length minus 1, or for the innermost layer the leaf-buffer
-///   length).
-#[allow(clippy::items_after_statements, clippy::too_many_lines)]
-fn vec_push_loops(
+/// Build the nested for-loop push body for the depth-N vec emit. Routes
+/// through the shared [`ShapeScan`] walker (in `shape_walk`); the per-leaf
+/// loop body splices `per_elem_push` and handles `inner_option_layers > 1`
+/// via `collapse_options_to_ref`.
+fn build_vec_push_loops(
     access: &TokenStream,
     shape: &VecShape,
     layers: &[VecLayerIdents],
@@ -332,206 +331,58 @@ fn vec_push_loops(
     per_elem_push: &TokenStream,
     leaf_offsets_post_push: &TokenStream,
 ) -> TokenStream {
-    fn build_inner_iter(
-        shape: &VecShape,
-        layers: &[VecLayerIdents],
-        leaf_bind: &syn::Ident,
-        per_elem_push: &TokenStream,
-        leaf_offsets_post_push: &TokenStream,
-        cur: usize,
-        // Expression bound to the inner Vec at this layer (after Option-
-        // unwrap when has_outer_validity, otherwise the layer's source bind).
-        vec_bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        if cur + 1 == depth {
-            // At the deepest Vec, iterate elements. The per_elem_push body
-            // expects `__df_derive_v` to be either:
-            // - `&T` directly (no inner-Option), bound by the for-loop, or
-            // - `Option<&T>` (inner-Option), with the per-elem push then
-            //   matching it. To support `inner_option_layers > 1`, we
-            //   collapse the for-loop binding through `as_ref().and_then`
-            //   into a single `Option<&T>` before splicing the push body.
-            //   The bare for-loop binding is `__df_derive_v_raw` and the
-            //   collapsed one becomes `__df_derive_v`.
-            if shape.has_inner_option() {
-                if shape.inner_option_layers == 1 {
-                    quote! {
-                        for #leaf_bind in #vec_bind.iter() {
-                            #per_elem_push
-                        }
-                    }
-                } else {
-                    let raw_bind = format_ident!("__df_derive_v_raw");
-                    let collapsed =
-                        collapse_options_to_ref(&quote! { #raw_bind }, shape.inner_option_layers);
-                    quote! {
-                        for #raw_bind in #vec_bind.iter() {
-                            let #leaf_bind: ::std::option::Option<_> = #collapsed;
-                            #per_elem_push
-                        }
-                    }
-                }
-            } else {
+    // The deepest-layer for-loop. The per_elem_push body expects
+    // `__df_derive_v` to be either:
+    // - `&T` directly (no inner-Option), bound by the for-loop, or
+    // - `Option<&T>` (inner-Option), with the per-elem push then matching it.
+    // To support `inner_option_layers > 1`, we collapse the for-loop binding
+    // through `as_ref().and_then` into a single `Option<&T>` before splicing
+    // the push body. The bare for-loop binding is `__df_derive_v_raw` and
+    // the collapsed one becomes `__df_derive_v`.
+    let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
+        if shape.has_inner_option() {
+            if shape.inner_option_layers == 1 {
                 quote! {
                     for #leaf_bind in #vec_bind.iter() {
                         #per_elem_push
                     }
                 }
-            }
-        } else {
-            let inner_bind = &layers[cur + 1].bind;
-            let inner_layer_body = build_layer_body(
-                shape,
-                layers,
-                leaf_bind,
-                per_elem_push,
-                leaf_offsets_post_push,
-                cur + 1,
-                &quote! { #inner_bind },
-            );
-            quote! {
-                for #inner_bind in #vec_bind.iter() {
-                    #inner_layer_body
-                }
-            }
-        }
-    }
-
-    fn build_layer_body(
-        shape: &VecShape,
-        layers: &[VecLayerIdents],
-        leaf_bind: &syn::Ident,
-        per_elem_push: &TokenStream,
-        leaf_offsets_post_push: &TokenStream,
-        cur: usize,
-        bind: &TokenStream,
-    ) -> TokenStream {
-        let depth = shape.depth();
-        let layer = &layers[cur];
-        let offsets = &layer.offsets;
-        let offsets_post_push = if cur + 1 == depth {
-            leaf_offsets_post_push.clone()
-        } else {
-            let inner_offsets = &layers[cur + 1].offsets;
-            quote! { (#inner_offsets.len() - 1) }
-        };
-        let opt_layers = shape.layers[cur].option_layers;
-        let inner_iter = if opt_layers > 0 {
-            // The bind here holds `&Option<...<Option<Vec<...>>>>` with
-            // `opt_layers` of nesting. Collapse to `Option<&Vec<...>>` and
-            // match: Some(v) pushes validity=true and iterates v; None
-            // pushes validity=false and skips. Polars folds every nested
-            // None into the same null.
-            let validity = &layer.validity;
-            let inner_vec_bind = format_ident!("__df_derive_some_{}", cur);
-            let inner_iter = build_inner_iter(
-                shape,
-                layers,
-                leaf_bind,
-                per_elem_push,
-                leaf_offsets_post_push,
-                cur,
-                &quote! { #inner_vec_bind },
-            );
-            let collapsed = if opt_layers == 1 {
-                bind.clone()
             } else {
-                collapse_options_to_ref(bind, opt_layers)
-            };
-            quote! {
-                match #collapsed {
-                    ::std::option::Option::Some(#inner_vec_bind) => {
-                        #validity.push(true);
-                        #inner_iter
-                    }
-                    ::std::option::Option::None => {
-                        #validity.push(false);
+                let raw_bind = format_ident!("__df_derive_v_raw");
+                let collapsed =
+                    collapse_options_to_ref(&quote! { #raw_bind }, shape.inner_option_layers);
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind: ::std::option::Option<_> = #collapsed;
+                        #per_elem_push
                     }
                 }
             }
         } else {
-            build_inner_iter(
-                shape,
-                layers,
-                leaf_bind,
-                per_elem_push,
-                leaf_offsets_post_push,
-                cur,
-                bind,
-            )
-        };
-        quote! {
-            #inner_iter
-            #offsets.push(#offsets_post_push as i64);
+            quote! {
+                for #leaf_bind in #vec_bind.iter() {
+                    #per_elem_push
+                }
+            }
         }
-    }
-
-    let layer0_iter_src = quote! { (&(#access)) };
-    let body = build_layer_body(
+    };
+    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
+        .iter()
+        .map(|l| ScanLayerIdents {
+            offsets: &l.offsets,
+            validity: &l.validity,
+            bind: &l.bind,
+        })
+        .collect();
+    ShapeScan {
         shape,
-        layers,
-        leaf_bind,
-        per_elem_push,
+        access,
+        layers: &scan_layers,
+        outer_some_prefix: "__df_derive_some_",
+        leaf_body: &leaf_body,
         leaf_offsets_post_push,
-        0,
-        &layer0_iter_src,
-    );
-    quote! {
-        for __df_derive_it in items {
-            #body
-        }
     }
-}
-
-/// Per-layer offsets vec declarations. Layer 0 is sized `items.len() + 1`;
-/// deeper layers use the precounted layer-N counter when available
-/// (`__df_derive_total_layer_{N-1} + 1`).
-fn vec_offsets_decls(shape: &VecShape, layers: &[VecLayerIdents]) -> TokenStream {
-    let depth = shape.depth();
-    let mut out: Vec<TokenStream> = Vec::with_capacity(depth);
-    for (i, layer) in layers.iter().enumerate() {
-        let offsets = &layer.offsets;
-        let cap = if i == 0 {
-            quote! { items.len() + 1 }
-        } else {
-            let counter = format_ident!("__df_derive_total_layer_{}", i - 1);
-            quote! { #counter + 1 }
-        };
-        out.push(quote! {
-            let mut #offsets: ::std::vec::Vec<i64> =
-                ::std::vec::Vec::with_capacity(#cap);
-            #offsets.push(0);
-        });
-    }
-    quote! { #(#out)* }
-}
-
-/// Per-layer outer-`Option` validity bitmap declarations. Allocated push-
-/// based (no pre-fill) — `Some` arms push `true`, `None` arms push `false`.
-fn vec_layer_validity_decls(
-    shape: &VecShape,
-    layers: &[VecLayerIdents],
-    pa_root: &TokenStream,
-) -> TokenStream {
-    let mut out: Vec<TokenStream> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        if !shape.layers[i].has_outer_validity() {
-            continue;
-        }
-        let validity = &layer.validity;
-        let cap = if i == 0 {
-            quote! { items.len() }
-        } else {
-            let counter = format_ident!("__df_derive_total_layer_{}", i - 1);
-            quote! { #counter }
-        };
-        out.push(quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#cap);
-        });
-    }
-    quote! { #(#out)* }
+    .build()
 }
 
 /// Stack `depth` `LargeListArray::new` layers and route the outermost one

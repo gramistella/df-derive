@@ -411,18 +411,33 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
                         .map_err(|e| meta.error(format!("invalid trait path: {e}")))?;
                     to_df_trait_path_ts = quote! { #path };
 
-                    // Automatically infer the Columnar trait path by replacing the final segment
+                    // Infer the `Columnar` trait path by rebasing the
+                    // final segment of the user-supplied `trait = "..."`
+                    // path. Convention: the parent module of the supplied
+                    // `ToDataFrame` path must also export a sibling
+                    // `Columnar` (and `Decimal128Encode`, below). This
+                    // keeps the typical case to a single attribute.
+                    // Unusual layouts opt out by passing
+                    // `columnar = "..."` explicitly; for that to win, the
+                    // user must write the explicit key after `trait =
+                    // "..."` because `parse_nested_meta` invokes this
+                    // callback in source order and later writes overwrite
+                    // earlier ones. The doc-comment block on the
+                    // proc-macro itself is the source of truth for the
+                    // user-facing contract; this comment is a maintenance
+                    // note for the inference site.
                     let mut columnar_path = path.clone();
                     if let Some(last_segment) = columnar_path.segments.last_mut() {
                         last_segment.ident = syn::Ident::new("Columnar", last_segment.ident.span());
                     }
                     columnar_trait_path_ts = quote! { #columnar_path };
 
-                    // Same inference for Decimal128Encode: rebase the trait
-                    // path's final segment so a user who only sets `trait =
-                    // "..."` gets all three siblings without separate
-                    // attributes. Custom decimal-only overrides go through
-                    // `decimal128_encode` below.
+                    // Same inference for `Decimal128Encode`: rebase the
+                    // trait path's final segment so a user who only sets
+                    // `trait = "..."` gets all three siblings without
+                    // separate attributes. The same source-order rule
+                    // applies — `decimal128_encode = "..."` only wins if
+                    // written after `trait = "..."`.
                     let mut decimal_path = path;
                     if let Some(last_segment) = decimal_path.segments.last_mut() {
                         last_segment.ident =

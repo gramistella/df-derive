@@ -9,7 +9,7 @@ use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents};
+use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents, StringyBase};
 
 // --- Common decl helpers ---
 
@@ -377,9 +377,11 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
 }
 
 /// `as_str` (borrowed) leaf. `Vec<&str>` (or `Vec<Option<&str>>` in option
-/// context) borrows from `items`. `ty_path` is the type-path expression for
-/// UFCS — `String`, the field's struct ident, or a generic-parameter ident.
-pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, ty_path: &TokenStream, base: &BaseType) -> Encoder {
+/// context) borrows from `items`. `StringyBase` carries the type-path
+/// information (`String`, the field's struct ident, or a generic-parameter
+/// ident) and lets the bare-`String` deref-coercion path stay distinct from
+/// the UFCS path.
+pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> Encoder {
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
@@ -388,20 +390,21 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, ty_path: &TokenStream, base: &BaseT
     // non-string base have different push expressions: `String`'s `&String`
     // deref-coerces to `&str` so the plain `&` form works there; non-string
     // bases need UFCS through the type path.
-    let is_string = matches!(base, BaseType::String);
-    let bare_push = if is_string {
-        quote! { #buf.push(&(#access)); }
+    let (bare_push, option_push) = if base.is_string() {
+        (
+            quote! { #buf.push(&(#access)); },
+            quote! { #buf.push((#access).as_deref()); },
+        )
     } else {
-        quote! { #buf.push(<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#access))); }
-    };
-    let option_push = if is_string {
-        quote! { #buf.push((#access).as_deref()); }
-    } else {
-        quote! {
-            #buf.push(
-                (#access).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
-            );
-        }
+        let ty_path = base.ty_path();
+        (
+            quote! { #buf.push(<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#access))); },
+            quote! {
+                #buf.push(
+                    (#access).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
+                );
+            },
+        )
     };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
     Encoder {

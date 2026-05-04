@@ -10,13 +10,16 @@
 //! primitive leaf encoder — because it sits at the leaf/vec boundary and
 //! `try_build_vec_encoder` shares its (base, transform) coverage matrix.
 
-use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
+use crate::ir::{DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::leaf::validity_into_option;
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
-use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents, VecShape, collapse_options_to_ref, leaf};
+use super::{
+    Encoder, LeafCtx, LeafKind, LeafShape, PopulatorIdents, StringyBase, VecShape,
+    collapse_options_to_ref, leaf,
+};
 
 // --- Vec combinator ---
 
@@ -853,38 +856,21 @@ fn bool_bare_depth1_body(
 /// `String` path, but the value expression sources `&str` via UFCS through
 /// `AsRef<str>`. The bytes are copied into the view array once, identical
 /// to the `String::as_str()` path.
-fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &BaseType) -> Encoder {
+fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_>) -> Encoder {
     // For bare `String`, `&String` deref-coerces to `&str`; for non-String
     // bases we go through UFCS so generic-parameter and concrete-struct
-    // leaves both resolve. `as_str` on a non-String/Struct/Generic base is
-    // rejected at parse time, so the codegen never reaches the wildcard arm
-    // — the const-fn assert in helpers.rs catches it with a clean error
-    // span. We funnel the wildcard to the same `String` arm so the match
-    // doesn't trip clippy's `match_same_arms` over identical bodies.
+    // leaves both resolve. `StringyBase` already encodes the parser's
+    // accept set (String/Struct/Generic), so the match below is exhaustive
+    // by type rather than by wildcard.
     let value_expr = match base {
-        BaseType::Struct(ident, args) => {
-            let ty_path = crate::codegen::strategy::build_type_path(ident, args.as_ref());
+        StringyBase::String => quote! { __df_derive_v.as_str() },
+        StringyBase::Struct { ident, args } => {
+            let ty_path = crate::codegen::strategy::build_type_path(ident, *args);
             quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(__df_derive_v) }
         }
-        BaseType::Generic(ident) => {
+        StringyBase::Generic(ident) => {
             quote! { <#ident as ::core::convert::AsRef<str>>::as_ref(__df_derive_v) }
         }
-        BaseType::String
-        | BaseType::F64
-        | BaseType::F32
-        | BaseType::I64
-        | BaseType::U64
-        | BaseType::I32
-        | BaseType::U32
-        | BaseType::I16
-        | BaseType::U16
-        | BaseType::I8
-        | BaseType::U8
-        | BaseType::Bool
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal => quote! { __df_derive_v.as_str() },
     };
     let spec = VecLeafSpec::StringLike {
         value_expr,
@@ -897,60 +883,22 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &BaseType) -> E
 
 // --- Top-level dispatcher pieces ---
 
-/// Build the depth-N `vec(inner)` encoder for the `(base, transform)`
-/// combinations the encoder IR covers.
+/// Build the depth-N `vec(inner)` encoder for every leaf shape. `LeafShape`
+/// already encodes the parser's accept set, so the match below is
+/// exhaustive by construction — no `_ => unreachable!()` arms.
 ///
-/// Matches `build_leaf`'s coverage: bare numeric, `ISize`/`USize` (widened
-/// to `i64`/`u64` at the leaf push site), `String`, `Bool`, `Decimal`
-/// (with `DecimalToInt128`), `DateTime` (with `DateTimeToInt`), `as_str`
-/// borrow, and `to_string`. Returns `None` only for transform/base
-/// combinations the parser cannot construct (e.g. `DateTimeToInt` on a
-/// non-`DateTime` base).
+/// Covers: bare numeric, `ISize`/`USize` (widened to `i64`/`u64` at the leaf
+/// push site), `String`, `Bool`, `Decimal` (with `DecimalToInt128`),
+/// `DateTime` (with `DateTimeToInt`), `as_str` borrow, and `to_string`.
 pub(super) fn try_build_vec_encoder(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
+    shape: &LeafShape<'_>,
     ctx: &LeafCtx<'_>,
-    shape: &VecShape,
+    vec_shape: &VecShape,
 ) -> Encoder {
-    match transform {
-        None => try_build_vec_encoder_bare(base, ctx, shape),
-        // The parser injects `DateTimeToInt` only for `DateTimeUtc` bases
-        // and `DecimalToInt128` only for `Decimal` bases, so the
-        // mismatched arms below cannot be reached on a parser-validated IR.
-        Some(PrimitiveTransform::DateTimeToInt(unit)) => match base {
-            BaseType::DateTimeUtc => vec_encoder_datetime(ctx, *unit, shape),
-            _ => unreachable!(
-                "df-derive: DateTimeToInt transform reached vec encoder with non-DateTime base"
-            ),
-        },
-        Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => match base {
-            BaseType::Decimal => vec_encoder_decimal(ctx, *precision, *scale, shape),
-            _ => unreachable!(
-                "df-derive: DecimalToInt128 transform reached vec encoder with non-Decimal base"
-            ),
-        },
-        Some(PrimitiveTransform::ToString) => vec_encoder_to_string(ctx, shape),
-        // `as_str` borrow path: same MBVA-based encoder as `String`, but
-        // the value expression goes through UFCS (`AsRef<str>`) instead of
-        // `String::as_str`. Bytes are copied into the view array once.
-        Some(PrimitiveTransform::AsStr) => vec_encoder_as_str(ctx, shape, base),
-    }
-}
-
-fn try_build_vec_encoder_bare(base: &BaseType, ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
-    match base {
-        BaseType::I8
-        | BaseType::I16
-        | BaseType::I32
-        | BaseType::I64
-        | BaseType::U8
-        | BaseType::U16
-        | BaseType::U32
-        | BaseType::U64
-        | BaseType::F32
-        | BaseType::F64 => {
+    match shape {
+        LeafShape::Numeric(base) => {
             let info = crate::codegen::type_registry::numeric_info(base)
-                .expect("numeric_info covers every base reaching this arm");
+                .expect("LeafShape::Numeric carries a numeric BaseType");
             // The loop binding is `&T` for Copy primitives, so dereferencing
             // produces the storage value directly. Bare and inner-Option
             // arms share the same expression because `build_vec_leaf_pieces`
@@ -961,50 +909,49 @@ fn try_build_vec_encoder_bare(base: &BaseType, ctx: &LeafCtx<'_>, shape: &VecSha
                 value_expr: quote! { *__df_derive_v },
                 needs_decimal_import: false,
             };
-            vec_encoder(ctx, &spec, shape, &info.dtype)
+            vec_encoder(ctx, &spec, vec_shape, &info.dtype)
         }
-        BaseType::ISize | BaseType::USize => {
+        LeafShape::NumericWidened(base) => {
             // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
             // The loop binding is `&isize`/`&usize`, so the cast reads the
             // pointed-to value first (`*v`) then widens to the target.
             let info = crate::codegen::type_registry::isize_usize_widened_info(base)
-                .expect("isize_usize_widened_info covers every base reaching this arm");
+                .expect("LeafShape::NumericWidened carries an `ISize`/`USize` BaseType");
             let target = info.native.clone();
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
                 value_expr: quote! { (*__df_derive_v as #target) },
                 needs_decimal_import: false,
             };
-            vec_encoder(ctx, &spec, shape, &info.dtype)
+            vec_encoder(ctx, &spec, vec_shape, &info.dtype)
         }
-        BaseType::String => {
+        LeafShape::String => {
             let pp = crate::codegen::polars_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::String };
             let spec = VecLeafSpec::StringLike {
                 value_expr: quote! { __df_derive_v.as_str() },
                 extra_decls: Vec::new(),
             };
-            vec_encoder(ctx, &spec, shape, &leaf_dtype)
+            vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
         }
-        BaseType::Bool => {
-            if shape.has_inner_option() {
+        LeafShape::Bool => {
+            if vec_shape.has_inner_option() {
                 let pp = crate::codegen::polars_paths::prelude();
                 let leaf_dtype = quote! { #pp::DataType::Boolean };
-                vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
+                vec_encoder(ctx, &VecLeafSpec::Bool, vec_shape, &leaf_dtype)
             } else {
-                vec_encoder_bool_bare(ctx, shape)
+                vec_encoder_bool_bare(ctx, vec_shape)
             }
         }
-        // `DateTimeUtc` / `Decimal` always carry a `DateTimeToInt` /
-        // `DecimalToInt128` transform on a parser-validated IR, so the
-        // no-transform arm cannot reach them. `Struct` / `Generic` route
-        // through `build_nested_encoder` (or, with a stringy transform,
-        // the `AsStr` / `ToString` arms above).
-        BaseType::DateTimeUtc | BaseType::Decimal | BaseType::Struct(..) | BaseType::Generic(_) => {
-            unreachable!(
-                "df-derive: vec encoder reached with no-transform DateTime/Decimal/Struct/Generic base"
-            )
+        LeafShape::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
+        LeafShape::Decimal { precision, scale } => {
+            vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
         }
+        LeafShape::AsString => vec_encoder_to_string(ctx, vec_shape),
+        // `as_str` borrow path: same MBVA-based encoder as `String`, but
+        // the value expression goes through UFCS (`AsRef<str>`) instead of
+        // `String::as_str`. Bytes are copied into the view array once.
+        LeafShape::AsStr(stringy) => vec_encoder_as_str(ctx, vec_shape, stringy),
     }
 }
 
@@ -1072,80 +1019,19 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-/// Build the leaf-encoder for a primitive `(base, transform)` pair. Every
-/// arm below corresponds to a parser-admissible combination — the parser
-/// injects `DateTimeToInt`/`DecimalToInt128` for `DateTime`/`Decimal`
-/// bases, rejects `as_str` on incompatible bases, and routes
-/// `Struct`/`Generic` through `build_nested_encoder` unless paired with a
-/// stringy transform. Combinations that cannot reach this function panic
-/// rather than silently returning `None`.
-pub(super) fn build_leaf(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
-    ctx: &LeafCtx<'_>,
-) -> Encoder {
-    match transform {
-        None => match base {
-            BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64 => leaf::numeric_leaf(ctx, base),
-            BaseType::ISize | BaseType::USize => leaf::numeric_leaf_widened(ctx, base),
-            BaseType::String => leaf::string_leaf(ctx),
-            BaseType::Bool => leaf::bool_leaf(ctx),
-            BaseType::DateTimeUtc
-            | BaseType::Decimal
-            | BaseType::Struct(..)
-            | BaseType::Generic(_) => unreachable!(
-                "df-derive: build_leaf reached with no-transform DateTime/Decimal/Struct/Generic base"
-            ),
-        },
-        Some(PrimitiveTransform::DateTimeToInt(unit)) => match base {
-            BaseType::DateTimeUtc => leaf::datetime_leaf(ctx, *unit),
-            _ => unreachable!(
-                "df-derive: DateTimeToInt transform reached build_leaf with non-DateTime base"
-            ),
-        },
-        Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => match base {
-            BaseType::Decimal => leaf::decimal_leaf(ctx, *precision, *scale),
-            _ => unreachable!(
-                "df-derive: DecimalToInt128 transform reached build_leaf with non-Decimal base"
-            ),
-        },
-        Some(PrimitiveTransform::ToString) => leaf::as_string_leaf(ctx),
-        Some(PrimitiveTransform::AsStr) => {
-            let ty_path = match base {
-                BaseType::String => quote! { ::std::string::String },
-                BaseType::Struct(ident, args) => {
-                    crate::codegen::strategy::build_type_path(ident, args.as_ref())
-                }
-                BaseType::Generic(ident) => quote! { #ident },
-                BaseType::F64
-                | BaseType::F32
-                | BaseType::I64
-                | BaseType::U64
-                | BaseType::I32
-                | BaseType::U32
-                | BaseType::I16
-                | BaseType::U16
-                | BaseType::I8
-                | BaseType::U8
-                | BaseType::Bool
-                | BaseType::ISize
-                | BaseType::USize
-                | BaseType::DateTimeUtc
-                | BaseType::Decimal => unreachable!(
-                    "df-derive: as_str transform reached build_leaf on a non-stringy base \
-                     (parser rejects this case)"
-                ),
-            };
-            leaf::as_str_leaf(ctx, &ty_path, base)
-        }
+/// Build the leaf-encoder for a primitive shape. `LeafShape` encodes the
+/// parser's accept set, so this dispatch is exhaustive by construction —
+/// every "cannot reach this combination" check lives at
+/// `LeafShape::from_base_transform` instead.
+pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> Encoder {
+    match shape {
+        LeafShape::Numeric(base) => leaf::numeric_leaf(ctx, base),
+        LeafShape::NumericWidened(base) => leaf::numeric_leaf_widened(ctx, base),
+        LeafShape::String => leaf::string_leaf(ctx),
+        LeafShape::Bool => leaf::bool_leaf(ctx),
+        LeafShape::DateTime(unit) => leaf::datetime_leaf(ctx, *unit),
+        LeafShape::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale),
+        LeafShape::AsString => leaf::as_string_leaf(ctx),
+        LeafShape::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy),
     }
 }

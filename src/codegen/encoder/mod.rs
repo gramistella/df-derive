@@ -29,12 +29,194 @@ mod option;
 mod shape_walk;
 mod vec;
 
-use crate::ir::{BaseType, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
+
+/// Narrowed enum of every (base, transform) combination the parser can
+/// construct that reaches the encoder. Strategy splits at `build_field_emit`:
+/// `Struct`/`Generic` bases without a stringy transform route through
+/// `build_nested_encoder`; everything else lands here. The variants are the
+/// canonical primitive leaf shapes, with the parser-coupled fields (`DateTime`
+/// unit, `Decimal` precision/scale, stringy base ident) inlined so downstream
+/// dispatch is a single exhaustive match — no `_ => unreachable!()` arms.
+pub(super) enum LeafShape<'a> {
+    /// `i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`/`f32`/`f64`.
+    /// The borrowed `BaseType` retrieves `NumericInfo` downstream.
+    Numeric(&'a BaseType),
+    /// `ISize`/`USize` widened to `i64`/`u64` at the leaf push site.
+    NumericWidened(&'a BaseType),
+    /// Bare `String` field (no transform).
+    String,
+    /// Bare `bool` field (no transform).
+    Bool,
+    /// `chrono::DateTime<Utc>` paired with the parser-injected
+    /// `DateTimeToInt(unit)` transform.
+    DateTime(DateTimeUnit),
+    /// `rust_decimal::Decimal` paired with the parser-injected
+    /// `DecimalToInt128 { precision, scale }` transform.
+    Decimal { precision: u8, scale: u8 },
+    /// `to_string` transform (any `Display` base materializes to `String`).
+    AsString,
+    /// `as_str` borrow path. Base is restricted to types implementing
+    /// `AsRef<str>`; the parser rejects every other base.
+    AsStr(StringyBase<'a>),
+}
+
+/// Bases that can be paired with the `as_str` transform: `String`,
+/// concrete user struct types, and generic type parameters. The parser's
+/// `reject_as_str_on_incompatible_base` enforces this set.
+pub(super) enum StringyBase<'a> {
+    String,
+    Struct {
+        ident: &'a Ident,
+        args: Option<&'a syn::AngleBracketedGenericArguments>,
+    },
+    Generic(&'a Ident),
+}
+
+impl<'a> LeafShape<'a> {
+    /// Project a parser-validated `(base, transform)` pair onto a narrowed
+    /// `LeafShape`. The single panic site for "encoder reached with a base
+    /// the parser cannot construct" lives here — every other dispatcher
+    /// downstream consumes `LeafShape` and is exhaustively typed.
+    pub(super) fn from_base_transform(
+        base: &'a BaseType,
+        transform: Option<&'a PrimitiveTransform>,
+    ) -> Self {
+        match transform {
+            None => match base {
+                BaseType::I8
+                | BaseType::I16
+                | BaseType::I32
+                | BaseType::I64
+                | BaseType::U8
+                | BaseType::U16
+                | BaseType::U32
+                | BaseType::U64
+                | BaseType::F32
+                | BaseType::F64 => Self::Numeric(base),
+                BaseType::ISize | BaseType::USize => Self::NumericWidened(base),
+                BaseType::String => Self::String,
+                BaseType::Bool => Self::Bool,
+                BaseType::DateTimeUtc
+                | BaseType::Decimal
+                | BaseType::Struct(..)
+                | BaseType::Generic(_) => unreachable!(
+                    "df-derive: encoder boundary reached with no-transform \
+                     DateTime/Decimal/Struct/Generic base — \
+                     parser injects transforms for DateTime/Decimal and \
+                     routes Struct/Generic through the nested encoder"
+                ),
+            },
+            Some(PrimitiveTransform::DateTimeToInt(unit)) => match base {
+                BaseType::DateTimeUtc => Self::DateTime(*unit),
+                BaseType::F64
+                | BaseType::F32
+                | BaseType::I64
+                | BaseType::U64
+                | BaseType::I32
+                | BaseType::U32
+                | BaseType::I16
+                | BaseType::U16
+                | BaseType::I8
+                | BaseType::U8
+                | BaseType::Bool
+                | BaseType::String
+                | BaseType::ISize
+                | BaseType::USize
+                | BaseType::Decimal
+                | BaseType::Struct(..)
+                | BaseType::Generic(_) => unreachable!(
+                    "df-derive: DateTimeToInt transform paired with non-DateTime \
+                     base — parser injects this transform only for DateTime<Utc>"
+                ),
+            },
+            Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => match base {
+                BaseType::Decimal => Self::Decimal {
+                    precision: *precision,
+                    scale: *scale,
+                },
+                BaseType::F64
+                | BaseType::F32
+                | BaseType::I64
+                | BaseType::U64
+                | BaseType::I32
+                | BaseType::U32
+                | BaseType::I16
+                | BaseType::U16
+                | BaseType::I8
+                | BaseType::U8
+                | BaseType::Bool
+                | BaseType::String
+                | BaseType::ISize
+                | BaseType::USize
+                | BaseType::DateTimeUtc
+                | BaseType::Struct(..)
+                | BaseType::Generic(_) => unreachable!(
+                    "df-derive: DecimalToInt128 transform paired with non-Decimal \
+                     base — parser injects this transform only for rust_decimal::Decimal"
+                ),
+            },
+            Some(PrimitiveTransform::ToString) => Self::AsString,
+            Some(PrimitiveTransform::AsStr) => Self::AsStr(StringyBase::from_base(base)),
+        }
+    }
+}
+
+impl<'a> StringyBase<'a> {
+    /// Project a parser-validated `as_str` base onto `StringyBase`. The
+    /// parser's `reject_as_str_on_incompatible_base` guarantees only
+    /// `String`/`Struct`/`Generic` reach this projection.
+    fn from_base(base: &'a BaseType) -> Self {
+        match base {
+            BaseType::String => Self::String,
+            BaseType::Struct(ident, args) => Self::Struct {
+                ident,
+                args: args.as_ref(),
+            },
+            BaseType::Generic(ident) => Self::Generic(ident),
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::DateTimeUtc
+            | BaseType::Decimal => unreachable!(
+                "df-derive: as_str transform paired with non-stringy base — \
+                 parser rejects every base except String/Struct/Generic"
+            ),
+        }
+    }
+
+    /// Token stream for the type-as-path expression used in UFCS calls
+    /// (`<#ty as AsRef<str>>::as_ref(...)`).
+    pub(super) fn ty_path(&self) -> TokenStream {
+        match self {
+            Self::String => quote! { ::std::string::String },
+            Self::Struct { ident, args } => crate::codegen::strategy::build_type_path(ident, *args),
+            Self::Generic(ident) => quote! { #ident },
+        }
+    }
+
+    /// True when the stringy base is bare `String`. The bare-`String` path
+    /// has tighter token shapes (deref-coercion through `&String`) than the
+    /// UFCS path.
+    pub(super) const fn is_string(&self) -> bool {
+        matches!(self, Self::String)
+    }
+}
 
 /// Per-field identifier convention for the encoder IR's primitive leaves.
 /// Funneling every declaration site through this struct turns rename
@@ -292,11 +474,12 @@ pub fn build_encoder(
     wrappers: &[Wrapper],
     ctx: &LeafCtx<'_>,
 ) -> Encoder {
+    let shape = LeafShape::from_base_transform(base, transform);
     match normalize_wrappers(wrappers) {
-        WrapperKind::Leaf { option_layers: 0 } => vec::build_leaf(base, transform, ctx),
+        WrapperKind::Leaf { option_layers: 0 } => vec::build_leaf(&shape, ctx),
         WrapperKind::Leaf { option_layers: 1 } => {
-            let leaf = vec::build_leaf(base, transform, ctx);
-            option::wrap_option(base, transform, leaf, ctx)
+            let leaf = vec::build_leaf(&shape, ctx);
+            option::wrap_option(&shape, leaf, ctx)
         }
         // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
         // `Option<Option<Option<T>>>`, …): pre-collapse the access to
@@ -306,7 +489,7 @@ pub fn build_encoder(
         // over a struct/generic) is handled separately in `build_nested_encoder`.
         WrapperKind::Leaf {
             option_layers: layers,
-        } => option::wrap_multi_option_primitive(base, transform, ctx, layers),
-        WrapperKind::Vec(shape) => vec::try_build_vec_encoder(base, transform, ctx, &shape),
+        } => option::wrap_multi_option_primitive(&shape, ctx, layers),
+        WrapperKind::Vec(vec_shape) => vec::try_build_vec_encoder(&shape, ctx, &vec_shape),
     }
 }

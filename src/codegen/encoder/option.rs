@@ -6,7 +6,7 @@
 //! bit-packed values bitmap + validity bitmap), reusing the leaf's
 //! `option_push` body for the per-row work.
 //!
-//! `wrap_option` dispatches per (base, transform) to the right helper, and
+//! `wrap_option` dispatches per [`LeafShape`] to the right helper, and
 //! `wrap_multi_option_*` handles `Option<…<Option<T>>>` stacks of depth ≥ 2
 //! by collapsing the access into a single `Option<&T>` (Polars folds every
 //! nested None into one validity bit).
@@ -18,7 +18,9 @@ use quote::{format_ident, quote};
 use super::leaf::{
     mb_decl, mb_decl_filled, mbva_decl, row_idx_decl, validity_into_option, vec_decl,
 };
-use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents, collapse_options_to_ref};
+use super::{
+    Encoder, LeafCtx, LeafKind, LeafShape, PopulatorIdents, StringyBase, collapse_options_to_ref,
+};
 
 /// Option combinator for the `String` / `as_string` MBVA-based leaves.
 /// Adds the `MutableBitmap` validity buffer + row counter and finishes by
@@ -217,39 +219,17 @@ fn option_for_as_str(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
     }
 }
 
-pub(super) fn wrap_option(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
-    inner: Encoder,
-    ctx: &LeafCtx<'_>,
-) -> Encoder {
-    match transform {
-        None => match base {
-            BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64 => option_for_numeric(ctx, base, inner),
-            BaseType::ISize | BaseType::USize => option_for_numeric_widened(ctx, base, inner),
-            BaseType::String => option_for_string_like(ctx, vec![], inner),
-            BaseType::Bool => option_for_bool(ctx, inner),
-            BaseType::DateTimeUtc
-            | BaseType::Decimal
-            | BaseType::Struct(..)
-            | BaseType::Generic(_) => {
-                unreachable!("df-derive: wrap_option reached for a leaf shape build_leaf rejects")
-            }
-        },
-        Some(PrimitiveTransform::DateTimeToInt(unit)) => option_for_datetime(ctx, *unit, inner),
-        Some(PrimitiveTransform::DecimalToInt128 { precision, scale }) => {
+pub(super) fn wrap_option(shape: &LeafShape<'_>, inner: Encoder, ctx: &LeafCtx<'_>) -> Encoder {
+    match shape {
+        LeafShape::Numeric(base) => option_for_numeric(ctx, base, inner),
+        LeafShape::NumericWidened(base) => option_for_numeric_widened(ctx, base, inner),
+        LeafShape::String => option_for_string_like(ctx, vec![], inner),
+        LeafShape::Bool => option_for_bool(ctx, inner),
+        LeafShape::DateTime(unit) => option_for_datetime(ctx, *unit, inner),
+        LeafShape::Decimal { precision, scale } => {
             option_for_decimal(ctx, *precision, *scale, inner)
         }
-        Some(PrimitiveTransform::ToString) => {
+        LeafShape::AsString => {
             // `as_string` has a `String` scratch on top of the MBVA pair —
             // pass it as an extra decl into the shared option-string-like
             // combinator so the layout exactly matches the prior emission.
@@ -259,7 +239,7 @@ pub(super) fn wrap_option(
             ];
             option_for_string_like(ctx, extra, inner)
         }
-        Some(PrimitiveTransform::AsStr) => option_for_as_str(ctx, inner),
+        LeafShape::AsStr(_) => option_for_as_str(ctx, inner),
     }
 }
 
@@ -280,14 +260,13 @@ pub(super) fn wrap_option(
 ///   leaf machinery is sound. The clone is per-row only on this rare slow
 ///   path; the fast paths still apply for `[]` and `[Option]` shapes.
 pub(super) fn wrap_multi_option_primitive(
-    base: &BaseType,
-    transform: Option<&PrimitiveTransform>,
+    shape: &LeafShape<'_>,
     ctx: &LeafCtx<'_>,
     layers: usize,
 ) -> Encoder {
     debug_assert!(layers >= 2);
-    if matches!(transform, Some(PrimitiveTransform::AsStr)) {
-        return wrap_multi_option_as_str(base, ctx, layers);
+    if let LeafShape::AsStr(stringy) = shape {
+        return wrap_multi_option_as_str(stringy, ctx, layers);
     }
     let orig_access = ctx.access.clone();
     let local = format_ident!("__df_derive_mo_{}", ctx.idx);
@@ -297,7 +276,7 @@ pub(super) fn wrap_multi_option_primitive(
     // through `.copied()`; everything else through `.cloned()`. The local
     // shadows the field for the inner option-leaf machinery so its existing
     // `match #access { Some(v) => ... }` push body just works.
-    let materializer = if is_copy_primitive_base(base) {
+    let materializer = if is_copy_leaf_shape(shape) {
         quote! { .copied() }
     } else {
         quote! { .cloned() }
@@ -311,8 +290,8 @@ pub(super) fn wrap_multi_option_primitive(
         name: ctx.name,
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
-    let leaf = super::vec::build_leaf(base, transform, &new_ctx);
-    let mut wrapped = wrap_option(base, transform, leaf, &new_ctx);
+    let leaf = super::vec::build_leaf(shape, &new_ctx);
+    let mut wrapped = wrap_option(shape, leaf, &new_ctx);
     let original_push = wrapped.push.clone();
     wrapped.push = quote! {
         #setup
@@ -326,42 +305,18 @@ pub(super) fn wrap_multi_option_primitive(
 /// stacked `Option`s into a single `Option<&str>` borrowed from the original
 /// field — the buffer's borrow needs to live for the whole pass, which a
 /// per-row local owning `String` cannot provide.
-fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
-    let ty_path = match base {
-        BaseType::String => quote! { ::std::string::String },
-        BaseType::Struct(ident, args) => {
-            crate::codegen::strategy::build_type_path(ident, args.as_ref())
-        }
-        BaseType::Generic(ident) => quote! { #ident },
-        BaseType::F64
-        | BaseType::F32
-        | BaseType::I64
-        | BaseType::U64
-        | BaseType::I32
-        | BaseType::U32
-        | BaseType::I16
-        | BaseType::U16
-        | BaseType::I8
-        | BaseType::U8
-        | BaseType::Bool
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal => unreachable!(
-            "df-derive: wrap_multi_option_as_str reached on a non-stringy base \
-             (parser rejects `as_str` on these bases)"
-        ),
-    };
+fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
     let buf = PopulatorIdents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let collapsed_ref = collapse_options_to_ref(ctx.access, layers);
-    let push = if matches!(base, BaseType::String) {
+    let push = if base.is_string() {
         // For `String` base, `&String` deref-coerces to `&str`, so the
         // collapsed `Option<&String>` maps to `Option<&str>` directly via
         // `String::as_str`.
         quote! { #buf.push((#collapsed_ref).map(::std::string::String::as_str)); }
     } else {
+        let ty_path = base.ty_path();
         quote! {
             #buf.push(
                 (#collapsed_ref).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
@@ -379,24 +334,13 @@ fn wrap_multi_option_as_str(base: &BaseType, ctx: &LeafCtx<'_>, layers: usize) -
     }
 }
 
-/// `Copy` primitive base test for the multi-Option per-row materializer.
-/// Numerics, `ISize`/`USize`, and `Bool` are `Copy`; `String`, `DateTime`,
-/// `Decimal`, and the struct/generic bases are not.
-const fn is_copy_primitive_base(base: &BaseType) -> bool {
+/// `Copy` test for the multi-Option per-row materializer. Numeric leaves,
+/// `ISize`/`USize`, and `Bool` are `Copy`; `String`, `DateTime`, `Decimal`,
+/// `as_string`, and the `as_str` borrow path are not (and `as_str` takes its
+/// own branch above before reaching this helper).
+const fn is_copy_leaf_shape(shape: &LeafShape<'_>) -> bool {
     matches!(
-        base,
-        BaseType::I8
-            | BaseType::I16
-            | BaseType::I32
-            | BaseType::I64
-            | BaseType::U8
-            | BaseType::U16
-            | BaseType::U32
-            | BaseType::U64
-            | BaseType::F32
-            | BaseType::F64
-            | BaseType::ISize
-            | BaseType::USize
-            | BaseType::Bool
+        shape,
+        LeafShape::Numeric(_) | LeafShape::NumericWidened(_) | LeafShape::Bool
     )
 }

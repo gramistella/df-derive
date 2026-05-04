@@ -23,6 +23,7 @@
 //! sees them — the runtime semantics match because the only observable null
 //! is whichever bit is the outermost Polars validity.
 
+mod idents;
 mod leaf;
 mod nested;
 mod option;
@@ -31,7 +32,7 @@ mod vec;
 
 use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::Ident;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
@@ -218,50 +219,6 @@ impl<'a> StringyBase<'a> {
     }
 }
 
-/// Per-field identifier convention for the encoder IR's primitive leaves.
-/// Funneling every declaration site through this struct turns rename
-/// mistakes into a compile error at the helper itself.
-///
-/// Nested-struct/generic encoders manage their own per-shape ident
-/// bundles (`NestedIdents` / `NestedLayerIdents`).
-struct PopulatorIdents;
-
-impl PopulatorIdents {
-    /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar
-    /// field. Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast
-    /// path.
-    fn primitive_buf(idx: usize) -> Ident {
-        format_ident!("__df_derive_buf_{}", idx)
-    }
-
-    /// `MutableBitmap` validity buffer for the
-    /// `is_direct_primitive_array_option_numeric_leaf` fast path. Paired
-    /// with `primitive_buf` (which holds `Vec<#native>` on that path) so the
-    /// finisher can build a `PrimitiveArray::new(dtype, vals, validity)`
-    /// directly without a `Vec<Option<T>>` second walk.
-    fn primitive_validity(idx: usize) -> Ident {
-        format_ident!("__df_derive_val_{}", idx)
-    }
-
-    /// Row counter for the `is_direct_view_option_string_leaf` fast path.
-    /// Indexes the pre-filled `MutableBitmap` so the per-row push only
-    /// writes a single byte for `None` rows via `set_unchecked`, instead
-    /// of pushing both `true` and `false` bits unconditionally.
-    fn primitive_row_idx(idx: usize) -> Ident {
-        format_ident!("__df_derive_ri_{}", idx)
-    }
-
-    /// Reused `String` scratch buffer for the
-    /// `is_direct_view_to_string_leaf` fast path. Paired with `primitive_buf`
-    /// (which holds `MutableBinaryViewArray<str>` on that path) so each row
-    /// can clear-and-write into the scratch via `Display::fmt` and then push
-    /// the resulting `&str` into the view array (which copies the bytes),
-    /// avoiding a fresh per-row `String` allocation.
-    fn primitive_str_scratch(idx: usize) -> Ident {
-        format_ident!("__df_derive_str_{}", idx)
-    }
-}
-
 /// One `Vec` layer in a normalized wrapper stack. Outermost layer first.
 #[derive(Clone, Copy, Debug)]
 struct VecLayer {
@@ -377,9 +334,10 @@ fn collapse_options_to_ref(base: &TokenStream, n: usize) -> TokenStream {
     if n == 0 {
         return base.clone();
     }
+    let param = idents::collapse_option_param();
     let mut out = quote! { (#base).as_ref() };
     for _ in 1..n {
-        out = quote! { #out.and_then(|__df_derive_o| __df_derive_o.as_ref()) };
+        out = quote! { #out.and_then(|#param| #param.as_ref()) };
     }
     out
 }

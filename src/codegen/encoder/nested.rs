@@ -20,8 +20,9 @@
 
 use crate::ir::Wrapper;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 
+use super::idents;
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
 
@@ -60,11 +61,11 @@ struct NestedIdents {
 impl NestedIdents {
     fn new(idx: usize) -> Self {
         Self {
-            flat: format_ident!("__df_derive_gen_flat_{}", idx),
-            positions: format_ident!("__df_derive_gen_pos_{}", idx),
-            df: format_ident!("__df_derive_gen_df_{}", idx),
-            take: format_ident!("__df_derive_gen_take_{}", idx),
-            total: format_ident!("__df_derive_gen_total_{}", idx),
+            flat: idents::nested_flat(idx),
+            positions: idents::nested_positions(idx),
+            df: idents::nested_df(idx),
+            take: idents::nested_take(idx),
+            total: idents::nested_total(idx),
         }
     }
 }
@@ -123,10 +124,11 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
             .clone()
     };
     let columnar = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr);
+    let it = idents::populator_iter();
     let setup = quote! {
         let #flat: ::std::vec::Vec<&#ty> = items
             .iter()
-            .map(|__df_derive_it| &(#access))
+            .map(|#it| &(#access))
             .collect();
         let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
     };
@@ -199,17 +201,19 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
             .extend_constant(#pp::AnyValue::Null, items.len())?
     };
 
+    let it = idents::populator_iter();
+    let v = idents::leaf_value();
     let scan = quote! {
         let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(items.len());
         let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
             ::std::vec::Vec::with_capacity(items.len());
-        for __df_derive_it in items {
+        for #it in items {
             match #match_expr {
-                ::std::option::Option::Some(__df_derive_v) => {
+                ::std::option::Option::Some(#v) => {
                     #positions.push(::std::option::Option::Some(
                         #flat.len() as #pp::IdxSize,
                     ));
-                    #flat.push(__df_derive_v);
+                    #flat.push(#v);
                 }
                 ::std::option::Option::None => {
                     #positions.push(::std::option::Option::None);
@@ -261,11 +265,11 @@ struct NestedLayerIdents {
 fn nested_layer_idents(idx: usize, depth: usize) -> Vec<NestedLayerIdents> {
     (0..depth)
         .map(|i| NestedLayerIdents {
-            offsets: format_ident!("__df_derive_n_off_{}_{}", idx, i),
-            offsets_buf: format_ident!("__df_derive_n_off_buf_{}_{}", idx, i),
-            validity_mb: format_ident!("__df_derive_n_valmb_{}_{}", idx, i),
-            validity_bm: format_ident!("__df_derive_n_valbm_{}_{}", idx, i),
-            bind: format_ident!("__df_derive_n_bind_{}_{}", idx, i),
+            offsets: idents::nested_layer_offsets(idx, i),
+            offsets_buf: idents::nested_layer_offsets_buf(idx, i),
+            validity_mb: idents::nested_layer_validity_mb(idx, i),
+            validity_bm: idents::nested_layer_validity_bm(idx, i),
+            bind: idents::nested_layer_bind(idx, i),
         })
         .collect()
 }
@@ -428,7 +432,7 @@ fn build_nested_scan_body(
     // by `items.len()` directly. `total_leaves` (== `total`) is used for the
     // flat ref vec capacity (and the positions vec under has_inner_option).
     let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
-        .map(|i| format_ident!("__df_derive_n_total_layer_{}", i))
+        .map(idents::nested_layer_total)
         .collect();
 
     // Deepest-layer leaf body: scatter into flat (and positions, under
@@ -440,16 +444,18 @@ fn build_nested_scan_body(
         shape.inner_option_layers <= 1,
         "nested-struct scan walker only supports inner_option_layers <= 1"
     );
+    let maybe = idents::nested_maybe();
+    let v = idents::leaf_value();
     let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
         if shape.has_inner_option() {
             quote! {
-                for __df_derive_maybe in #vec_bind.iter() {
-                    match __df_derive_maybe {
-                        ::std::option::Option::Some(__df_derive_v) => {
+                for #maybe in #vec_bind.iter() {
+                    match #maybe {
+                        ::std::option::Option::Some(#v) => {
                             #positions.push(::std::option::Option::Some(
                                 #flat.len() as #pp::IdxSize,
                             ));
-                            #flat.push(__df_derive_v);
+                            #flat.push(#v);
                         }
                         ::std::option::Option::None => {
                             #positions.push(::std::option::Option::None);
@@ -459,8 +465,8 @@ fn build_nested_scan_body(
             }
         } else {
             quote! {
-                for __df_derive_v in #vec_bind.iter() {
-                    #flat.push(__df_derive_v);
+                for #v in #vec_bind.iter() {
+                    #flat.push(#v);
                 }
             }
         }
@@ -482,7 +488,7 @@ fn build_nested_scan_body(
         shape,
         access,
         layers: &scan_layers,
-        outer_some_prefix: "__df_derive_n_some_",
+        outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
         leaf_body: &leaf_body,
         leaf_offsets_post_push: &leaf_offsets_post_push,
     }
@@ -535,7 +541,7 @@ fn build_nested_scan_body(
         bind: &TokenStream,
     ) -> TokenStream {
         if shape.layers[cur].has_outer_validity() {
-            let inner_vec_bind = format_ident!("__df_derive_n_pre_some_{}", cur);
+            let inner_vec_bind = idents::nested_pre_outer_some(cur);
             let inner = build_pre_iter(
                 shape,
                 layers,
@@ -559,10 +565,7 @@ fn build_nested_scan_body(
 
     // Allocate offsets vecs and validity bitmaps via the shared helpers.
     // The per-depth counter ident matches the precount loop's counters above.
-    let counter_for_depth = |i: usize| -> TokenStream {
-        let id = &layer_counters[i];
-        quote! { #id }
-    };
+    let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
     let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
     let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
@@ -580,10 +583,11 @@ fn build_nested_scan_body(
     } else {
         TokenStream::new()
     };
+    let it = idents::populator_iter();
     quote! {
         let mut #total: usize = 0;
         #(#counter_decls)*
-        for __df_derive_it in items {
+        for #it in items {
             #pre_iter_body
         }
         let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
@@ -653,17 +657,18 @@ fn build_nested_layer_wrap(
 ) -> TokenStream {
     let depth = layers.len();
     let mut block: Vec<TokenStream> = Vec::new();
+    let inner_chunk = idents::nested_inner_chunk();
     block.push(quote! {
         let __df_derive_inner_col: #pp::Series = #inner_col_expr;
         let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
-        let __df_derive_inner_chunk: #pp::ArrayRef =
+        let #inner_chunk: #pp::ArrayRef =
             __df_derive_inner_rech.chunks()[0].clone();
     });
-    let mut prev_arr = format_ident!("__df_derive_inner_chunk");
+    let mut prev_arr = idents::nested_inner_chunk();
     for cur in (0..depth).rev() {
         let layer = &layers[cur];
         let buf = &layer.offsets_buf;
-        let arr_id = format_ident!("__df_derive_n_arr_{}", cur);
+        let arr_id = idents::nested_layer_list_arr(cur);
         let validity_expr = if shape.layers[cur].has_outer_validity() {
             let bm = &layer.validity_bm;
             quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }

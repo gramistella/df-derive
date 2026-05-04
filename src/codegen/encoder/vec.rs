@@ -12,14 +12,12 @@
 
 use crate::ir::{DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 
+use super::idents;
 use super::leaf::validity_into_option;
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
-use super::{
-    Encoder, LeafCtx, LeafShape, PopulatorIdents, StringyBase, VecShape, collapse_options_to_ref,
-    leaf,
-};
+use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
 
 // --- Vec combinator ---
 
@@ -123,9 +121,9 @@ struct VecLayerIdents {
 fn vec_layer_idents(depth: usize) -> Vec<VecLayerIdents> {
     (0..depth)
         .map(|i| VecLayerIdents {
-            offsets: format_ident!("__df_derive_layer_off_{}", i),
-            validity: format_ident!("__df_derive_layer_val_{}", i),
-            bind: format_ident!("__df_derive_layer_bind_{}", i),
+            offsets: idents::vec_layer_offsets(i),
+            validity: idents::vec_layer_validity(i),
+            bind: idents::vec_layer_bind(i),
         })
         .collect()
 }
@@ -148,7 +146,7 @@ fn vec_emit_decl(
     let pp = crate::codegen::polars_paths::prelude();
     let access = ctx.access;
     let series_local = vec_encoder_series_local(ctx.idx);
-    let leaf_bind = format_ident!("__df_derive_v");
+    let leaf_bind = idents::leaf_value();
     let layers = vec_layer_idents(shape.depth());
 
     let (precount_decls, leaf_capacity_expr) = vec_precount_pieces(access, shape, &layers);
@@ -177,10 +175,7 @@ fn vec_emit_decl(
     let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
     let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
     let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity).collect();
-    let counter_for_depth = |i: usize| -> TokenStream {
-        let id = format_ident!("__df_derive_total_layer_{}", i);
-        quote! { #id }
-    };
+    let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
     let validity_decls =
         shape_validity_decls(shape, &validity_idents, &counter_for_depth, &pa_root);
@@ -224,9 +219,9 @@ fn vec_precount_pieces(
     layers: &[VecLayerIdents],
 ) -> (TokenStream, TokenStream) {
     let depth = shape.depth();
-    let total_leaves = format_ident!("__df_derive_total_leaves");
+    let total_leaves = idents::total_leaves();
     let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
-        .map(|i| format_ident!("__df_derive_total_layer_{}", i))
+        .map(idents::vec_layer_total)
         .collect();
 
     fn build_iter_body(
@@ -270,7 +265,7 @@ fn vec_precount_pieces(
     ) -> TokenStream {
         let opt_layers = shape.layers[cur].option_layers;
         if opt_layers > 0 {
-            let inner_vec_bind = format_ident!("__df_derive_some_{}", cur);
+            let inner_vec_bind = idents::vec_outer_some(cur);
             let inner_iter = build_iter_body(
                 shape,
                 layers,
@@ -312,10 +307,11 @@ fn vec_precount_pieces(
     let counter_decls = layer_counters
         .iter()
         .map(|c| quote! { let mut #c: usize = 0; });
+    let it = idents::populator_iter();
     let pre = quote! {
         let mut #total_leaves: usize = 0;
         #(#counter_decls)*
-        for __df_derive_it in items {
+        for #it in items {
             #body
         }
     };
@@ -351,7 +347,7 @@ fn build_vec_push_loops(
                     }
                 }
             } else {
-                let raw_bind = format_ident!("__df_derive_v_raw");
+                let raw_bind = idents::leaf_value_raw();
                 let collapsed =
                     collapse_options_to_ref(&quote! { #raw_bind }, shape.inner_option_layers);
                 quote! {
@@ -381,7 +377,7 @@ fn build_vec_push_loops(
         shape,
         access,
         layers: &scan_layers,
-        outer_some_prefix: "__df_derive_some_",
+        outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
         leaf_body: &leaf_body,
         leaf_offsets_post_push,
     }
@@ -406,11 +402,11 @@ fn vec_final_assemble(
     let mut block: Vec<TokenStream> = Vec::new();
     // Layer indexing convention: layer `depth - 1` is the innermost (wraps
     // the leaf array). Layer 0 is the outermost (passed to the helper).
-    let mut prev_arr = format_ident!("__df_derive_leaf_arr");
+    let mut prev_arr = idents::leaf_arr();
     for cur in (0..depth).rev() {
         let layer = &layers[cur];
-        let offsets_buf_id = format_ident!("__df_derive_layer_off_buf_{}", cur);
-        let arr_id = format_ident!("__df_derive_list_arr_{}", cur);
+        let offsets_buf_id = idents::vec_layer_offsets_buf(cur);
+        let arr_id = idents::vec_layer_list_arr(cur);
         let validity_expr = if shape.layers[cur].has_outer_validity() {
             let validity = &layer.validity;
             quote! {
@@ -545,11 +541,12 @@ fn bool_bare_leaf_pieces(
         }
         __df_derive_leaf_idx += 1;
     };
-    let values_ident = format_ident!("__df_derive_values");
-    let validity_ident = format_ident!("__df_derive_validity");
+    let values_ident = idents::bool_values();
+    let validity_ident = idents::bool_validity();
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, false, &values_ident, &validity_ident);
+    let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
-        let __df_derive_leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
+        let #leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
     };
     (storage, push, leaf_arr_expr)
 }
@@ -739,11 +736,12 @@ fn bool_inner_option_leaf_pieces(
         }
         __df_derive_leaf_idx += 1;
     };
-    let values_ident = format_ident!("__df_derive_values");
-    let validity_ident = format_ident!("__df_derive_validity");
+    let values_ident = idents::bool_values();
+    let validity_ident = idents::bool_validity();
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, true, &values_ident, &validity_ident);
+    let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
-        let __df_derive_leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
+        let #leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
     };
     (storage, push, leaf_arr_expr)
 }
@@ -751,7 +749,7 @@ fn bool_inner_option_leaf_pieces(
 /// Per-field local for the assembled Series — one per (field, depth)
 /// combination, namespaced by `idx` so two adjacent fields don't collide.
 fn vec_encoder_series_local(idx: usize) -> syn::Ident {
-    format_ident!("__df_derive_field_series_{}", idx)
+    idents::vec_field_series(idx)
 }
 
 /// Build the encoder for a `[Vec, ...]` shape: a single `decls` statement
@@ -813,32 +811,35 @@ fn bool_bare_depth1_body(
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
-    let inner_offsets = format_ident!("__df_derive_inner_offsets");
+    let inner_offsets = idents::bool_inner_offsets();
+    let total_leaves = idents::total_leaves();
+    let it = idents::populator_iter();
+    let leaf_arr = idents::leaf_arr();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
     quote! {
-        let mut __df_derive_total_leaves: usize = 0;
-        for __df_derive_it in items {
-            __df_derive_total_leaves += (&(#access)).len();
+        let mut #total_leaves: usize = 0;
+        for #it in items {
+            #total_leaves += (&(#access)).len();
         }
         let mut __df_derive_flat: ::std::vec::Vec<bool> =
-            ::std::vec::Vec::with_capacity(__df_derive_total_leaves);
+            ::std::vec::Vec::with_capacity(#total_leaves);
         let mut #inner_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         #inner_offsets.push(0);
-        for __df_derive_it in items {
+        for #it in items {
             __df_derive_flat.extend((&(#access)).iter().copied());
             #inner_offsets.push(__df_derive_flat.len() as i64);
         }
-        let __df_derive_leaf_arr: #pa_root::array::BooleanArray =
+        let #leaf_arr: #pa_root::array::BooleanArray =
             #pa_root::array::BooleanArray::from_slice(&__df_derive_flat);
         let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
             #pa_root::offset::OffsetsBuffer::try_from(#inner_offsets)?;
         let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
             #pp::LargeListArray::default_datatype(
-                #pa_root::array::Array::dtype(&__df_derive_leaf_arr).clone(),
+                #pa_root::array::Array::dtype(&#leaf_arr).clone(),
             ),
             __df_derive_offsets_buf,
-            ::std::boxed::Box::new(__df_derive_leaf_arr) as #pp::ArrayRef,
+            ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef,
             ::std::option::Option::None,
         );
         __df_derive_assemble_list_series_unchecked(
@@ -999,7 +1000,7 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     // scratch — we splice that scratch's `as_str()` into the MBVA-push
     // expression, so the per-element work allocates the scratch once at
     // decl time and reuses on every row.
-    let scratch = PopulatorIdents::primitive_str_scratch(ctx.idx);
+    let scratch = idents::primitive_str_scratch(ctx.idx);
     let value_expr = quote! {{
         use ::std::fmt::Write as _;
         #scratch.clear();

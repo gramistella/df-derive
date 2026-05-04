@@ -24,6 +24,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use super::idents;
 use super::{VecShape, collapse_options_to_ref};
 
 /// Per-layer identifiers the shared scan walker needs. Both `VecLayerIdents`
@@ -72,8 +73,9 @@ impl ShapeScan<'_> {
             quote! { (&(#access)) }
         };
         let body = self.build_layer(0, &layer0_iter_src);
+        let it = idents::populator_iter();
         quote! {
-            for __df_derive_it in items {
+            for #it in items {
                 #body
             }
         }

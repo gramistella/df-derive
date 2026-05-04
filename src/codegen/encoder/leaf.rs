@@ -9,7 +9,8 @@ use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{Encoder, LeafCtx, PopulatorIdents, StringyBase};
+use super::idents;
+use super::{Encoder, LeafCtx, StringyBase};
 
 // --- Common decl helpers ---
 
@@ -115,8 +116,8 @@ fn numeric_leaf_with_info(
     info: &crate::codegen::type_registry::NumericInfo,
     widen_to: Option<&TokenStream>,
 ) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
     let native = &info.native;
     let chunked = &info.chunked;
     let access = ctx.access;
@@ -171,9 +172,9 @@ fn numeric_leaf_with_info(
 /// `MutableBinaryViewArray<str>` buffer. Bypasses the `Vec<&str>` round-trip
 /// and the second walk `Series::new(&Vec<&str>)` would do via `from_slice_values`.
 pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let row_idx = PopulatorIdents::primitive_row_idx(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
+    let row_idx = idents::primitive_row_idx(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
 
@@ -206,9 +207,9 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
 /// `BooleanChunked::from_slice` is bulk and faster than `BooleanArray::new` +
 /// `with_chunk` for the all-non-null case.
 pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let row_idx = PopulatorIdents::primitive_row_idx(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
+    let row_idx = idents::primitive_row_idx(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -244,7 +245,7 @@ fn mapped_push_pair(
     ctx: &LeafCtx<'_>,
     transform: &PrimitiveTransform,
 ) -> (TokenStream, TokenStream) {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let access = ctx.access;
     let decimal_trait = ctx.decimal128_encode_trait;
     let mapped_bare =
@@ -271,7 +272,7 @@ fn mapped_push_pair(
 /// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
 /// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
 pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let int128 = crate::codegen::polars_paths::int128_chunked();
@@ -295,7 +296,7 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encod
 /// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
 /// switches to `Vec<Option<i64>>` with the same finish path.
 pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let transform = PrimitiveTransform::DateTimeToInt(unit);
@@ -322,10 +323,10 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
 /// each row clears the scratch, runs `Display::fmt` into it, then pushes the
 /// resulting `&str` to the view array (which copies the bytes).
 pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let scratch = PopulatorIdents::primitive_str_scratch(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let row_idx = PopulatorIdents::primitive_row_idx(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let scratch = idents::primitive_str_scratch(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
+    let row_idx = idents::primitive_row_idx(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
 
@@ -370,7 +371,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
 /// the UFCS path.
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();

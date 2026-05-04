@@ -13,12 +13,13 @@
 
 use crate::ir::{BaseType, PrimitiveTransform};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 
+use super::idents;
 use super::leaf::{
     mb_decl, mb_decl_filled, mbva_decl, row_idx_decl, validity_into_option, vec_decl,
 };
-use super::{Encoder, LeafCtx, LeafShape, PopulatorIdents, StringyBase, collapse_options_to_ref};
+use super::{Encoder, LeafCtx, LeafShape, StringyBase, collapse_options_to_ref};
 
 /// Destructure an inner `Encoder::Leaf` produced by a leaf builder. The
 /// option combinators only ever wrap leaf encoders (multi-column nested
@@ -47,9 +48,9 @@ fn option_for_string_like(
     extra_decls: Vec<TokenStream>,
     inner: Encoder,
 ) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let row_idx = PopulatorIdents::primitive_row_idx(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
+    let row_idx = idents::primitive_row_idx(ctx.idx);
     let name = ctx.name;
     let valid_opt = validity_into_option(&validity);
     let mut decls = vec![mbva_decl(&buf)];
@@ -89,8 +90,8 @@ fn option_for_numeric_with_info(
     info: &crate::codegen::type_registry::NumericInfo,
     inner: Encoder,
 ) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let native = &info.native;
     let chunked = &info.chunked;
@@ -118,9 +119,9 @@ fn option_for_numeric_with_info(
 /// `false`) + validity bitmap (pre-filled `true`) + row counter. Finishes
 /// through `BooleanArray::new` + `BooleanChunked::with_chunk`.
 fn option_for_bool(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
-    let validity = PopulatorIdents::primitive_validity(ctx.idx);
-    let row_idx = PopulatorIdents::primitive_row_idx(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
+    let validity = idents::primitive_validity(ctx.idx);
+    let row_idx = idents::primitive_row_idx(ctx.idx);
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -151,7 +152,7 @@ fn option_for_bool(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
 /// Option combinator for Decimal: switches to `Vec<Option<i128>>` and
 /// `from_iter_options`-based finish.
 fn option_for_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, inner: Encoder) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let int128 = crate::codegen::polars_paths::int128_chunked();
@@ -181,7 +182,7 @@ fn option_for_datetime(
     unit: crate::ir::DateTimeUnit,
     inner: Encoder,
 ) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let dtype = crate::codegen::type_registry::compute_full_dtype(
@@ -206,7 +207,7 @@ fn option_for_datetime(
 /// Option combinator for `as_str`: switches to `Vec<Option<&str>>` storage.
 /// The finish path is `Series::new(name, &buf)` regardless.
 fn option_for_as_str(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
@@ -233,7 +234,7 @@ pub(super) fn wrap_option(shape: &LeafShape<'_>, inner: Encoder, ctx: &LeafCtx<'
             // `as_string` has a `String` scratch on top of the MBVA pair —
             // pass it as an extra decl into the shared option-string-like
             // combinator so the layout exactly matches the prior emission.
-            let scratch = PopulatorIdents::primitive_str_scratch(ctx.idx);
+            let scratch = idents::primitive_str_scratch(ctx.idx);
             let extra = vec![
                 quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); },
             ];
@@ -269,7 +270,7 @@ pub(super) fn wrap_multi_option_primitive(
         return wrap_multi_option_as_str(stringy, ctx, layers);
     }
     let orig_access = ctx.access.clone();
-    let local = format_ident!("__df_derive_mo_{}", ctx.idx);
+    let local = idents::multi_option_local(ctx.idx);
     let local_access = quote! { #local };
     let collapsed_chain = collapse_options_to_ref(&orig_access, layers);
     // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`) flatten
@@ -319,7 +320,7 @@ pub(super) fn wrap_multi_option_primitive(
 /// field — the buffer's borrow needs to live for the whole pass, which a
 /// per-row local owning `String` cannot provide.
 fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
-    let buf = PopulatorIdents::primitive_buf(ctx.idx);
+    let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let collapsed_ref = collapse_options_to_ref(ctx.access, layers);

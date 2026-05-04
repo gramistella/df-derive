@@ -1333,14 +1333,7 @@ fn vec_push_loops(
 fn vec_offsets_decls(shape: &VecShape, layers: &[VecLayerIdents]) -> TokenStream {
     let depth = shape.depth();
     let mut out: Vec<TokenStream> = Vec::with_capacity(depth);
-    // Declare innermost-first: matches the legacy `try_gen_vec_vec_*_emit`
-    // emission order (inner-offsets before outer-offsets). Reordering to
-    // outermost-first reproducibly regresses `vec_vec_i32` ~9% on this
-    // machine, even though the populator loop body is byte-identical. The
-    // Vec backing buffers are allocated consecutively; inner-first puts the
-    // most-frequently-touched offsets vec at the lower address, which the
-    // hot loop's prefetcher seems to favor.
-    for (i, layer) in layers.iter().enumerate().rev() {
+    for (i, layer) in layers.iter().enumerate() {
         let offsets = &layer.offsets;
         let cap = if i == 0 {
             quote! { items.len() + 1 }
@@ -1668,7 +1661,7 @@ fn string_like_leaf_pieces(
         quote! {
             match __df_derive_v {
                 ::std::option::Option::Some(__df_derive_v) => {
-                    __df_derive_view_buf.push_value_ignore_validity(#value_expr);
+                    __df_derive_view_buf.push_value_ignore_validity({ #value_expr });
                 }
                 ::std::option::Option::None => {
                     __df_derive_view_buf.push_value_ignore_validity("");

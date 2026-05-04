@@ -75,6 +75,20 @@ Demonstrates deep `Vec<Vec<Vec<T>>>` nesting and how each `Vec` layer becomes a 
 cargo run --example deep_vec
 ```
 
+### `multi_option_vec.rs`
+Demonstrates multi-`Option` wrappers above a `Vec` (e.g. `Option<Option<Vec<T>>>`). Consecutive `Option` layers above a `Vec` collapse to a single list-level validity bit, so `Some(None)` and `None` are indistinguishable in the resulting column.
+
+```bash
+cargo run --example multi_option_vec
+```
+
+### `nested_generics.rs`
+Demonstrates a generic struct used as a nested field (both as a flattened scalar nested type and inside a `Vec<...>` list column).
+
+```bash
+cargo run --example nested_generics
+```
+
 ## What Each Example Shows
 
 - **DataFrame output**: The actual Polars DataFrame structure

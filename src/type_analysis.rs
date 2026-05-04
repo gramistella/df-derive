@@ -43,15 +43,51 @@ pub fn analyze_type(
         break;
     }
 
-    // Before resolving the base type, detect some explicitly unsupported types
+    // Before resolving the base type, reject a small allow-list of common
+    // wrapper / collection types with an actionable hint. These all parse
+    // fine as a `Type::Path` and would otherwise either fall through to the
+    // generic "Unsupported field type" error or — worse — be silently
+    // routed through the `Struct` arm and explode at codegen time.
     if let Type::Path(type_path) = current_type
         && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "HashMap"
     {
-        return Err(syn::Error::new_spanned(
-            current_type,
-            "df-derive does not support HashMap",
-        ));
+        let hint: Option<&'static str> = match segment.ident.to_string().as_str() {
+            "HashMap" => Some(
+                "df-derive does not support `HashMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment.",
+            ),
+            "BTreeMap" => Some(
+                "df-derive does not support `BTreeMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment.",
+            ),
+            "HashSet" => Some(
+                "df-derive does not support `HashSet` fields. Convert to \
+                 `Vec<T>` (order will be set-defined, not insertion-defined).",
+            ),
+            "Box" => Some(
+                "df-derive does not support `Box` fields. Use the inner type \
+                 directly; df-derive copies values during conversion, so `Box` \
+                 only adds heap indirection without changing the column shape.",
+            ),
+            "Rc" => Some(
+                "df-derive does not support `Rc` fields. Use the inner type \
+                 directly; df-derive copies values during conversion, so the \
+                 reference count cannot be preserved into a Polars column.",
+            ),
+            "Arc" => Some(
+                "df-derive does not support `Arc` fields. Use the inner type \
+                 directly; df-derive copies values during conversion, so the \
+                 reference count cannot be preserved into a Polars column.",
+            ),
+            "Cow" => Some(
+                "df-derive does not support `Cow` fields. Use the owned type \
+                 directly; the conversion always materializes owned values.",
+            ),
+            _ => None,
+        };
+        if let Some(message) = hint {
+            return Err(syn::Error::new_spanned(current_type, message));
+        }
     }
 
     let base = analyze_base_type(current_type, generic_params)

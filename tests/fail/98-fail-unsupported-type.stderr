@@ -1,4 +1,4 @@
-error: df-derive does not support HashMap
+error: df-derive does not support `HashMap` fields. Convert to `Vec<(K, V)>` or pre-flatten into named columns before assignment.
   --> tests/fail/98-fail-unsupported-type.rs:10:15
    |
 10 |     metadata: HashMap<String, String>,

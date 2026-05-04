@@ -1,14 +1,19 @@
 use crate::ir::{BaseType, DateTimeUnit, FieldIR, PrimitiveTransform, StructIR};
-use crate::type_analysis::analyze_type;
+use crate::type_analysis::{
+    DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE, analyze_type,
+};
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
 
-#[derive(Default, Clone, Copy)]
-struct FieldAttributes {
-    as_string: bool,
-    as_str: bool,
-    decimal: Option<(u8, u8)>,
-    time_unit: Option<DateTimeUnit>,
+/// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
+/// `None` means the field had no override; `derive_transform` injects defaults
+/// (e.g. `DateTimeToInt(Milliseconds)` for `chrono::DateTime<Utc>`) in that case.
+enum FieldOverride {
+    None,
+    AsStr,
+    AsString,
+    Decimal { precision: u8, scale: u8 },
+    TimeUnit(DateTimeUnit),
 }
 
 fn parse_decimal_attr(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<(u8, u8), syn::Error> {
@@ -64,31 +69,114 @@ fn parse_time_unit_attr(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<DateTim
     }
 }
 
-fn parse_attributes(
+/// Build the conflict error when a second mutually-exclusive override key is
+/// encountered after the first has already been set. Spans on the field so
+/// the message lands on the entire `#[df_derive(...)]` plus declaration block.
+fn override_conflict(
     field: &syn::Field,
     field_display_name: &str,
-) -> Result<FieldAttributes, syn::Error> {
-    let mut attrs = FieldAttributes::default();
+    existing: &FieldOverride,
+    incoming: &FieldOverride,
+) -> syn::Error {
+    let message = match (existing, incoming) {
+        (FieldOverride::AsStr, FieldOverride::AsString)
+        | (FieldOverride::AsString, FieldOverride::AsStr) => format!(
+            "field `{field_display_name}` has both `as_str` and `as_string`; \
+             pick one — `as_str` borrows via `AsRef<str>` (no allocation), \
+             `as_string` formats via `Display` (allocates per row)"
+        ),
+        (FieldOverride::Decimal { .. }, FieldOverride::AsStr | FieldOverride::AsString)
+        | (FieldOverride::AsStr | FieldOverride::AsString, FieldOverride::Decimal { .. }) => {
+            format!(
+                "field `{field_display_name}` combines `decimal(...)` with `as_str`/`as_string`; \
+                 `as_str`/`as_string` produce a String column, so the `decimal(...)` \
+                 dtype override has no effect — drop one"
+            )
+        }
+        (FieldOverride::TimeUnit(_), FieldOverride::AsStr | FieldOverride::AsString)
+        | (FieldOverride::AsStr | FieldOverride::AsString, FieldOverride::TimeUnit(_)) => {
+            format!(
+                "field `{field_display_name}` combines `time_unit = \"...\"` with \
+                 `as_str`/`as_string`; the latter produces a String column, so the \
+                 `time_unit` override has no effect — drop one"
+            )
+        }
+        (FieldOverride::Decimal { .. }, FieldOverride::TimeUnit(_))
+        | (FieldOverride::TimeUnit(_), FieldOverride::Decimal { .. }) => format!(
+            "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
+             pick one — `decimal(...)` only applies to `rust_decimal::Decimal`, \
+             `time_unit` only applies to `chrono::DateTime<Utc>`"
+        ),
+        (FieldOverride::None, _)
+        | (_, FieldOverride::None)
+        | (FieldOverride::AsStr, FieldOverride::AsStr)
+        | (FieldOverride::AsString, FieldOverride::AsString)
+        | (FieldOverride::Decimal { .. }, FieldOverride::Decimal { .. })
+        | (FieldOverride::TimeUnit(_), FieldOverride::TimeUnit(_)) => unreachable!(
+            "override_conflict invoked on a non-conflicting pair; \
+             the caller must check existing/incoming variants differ"
+        ),
+    };
+    syn::Error::new_spanned(field, message)
+}
+
+/// Set `override_` to `incoming` only if no override has been declared yet;
+/// otherwise emit the conflict error for the (existing, incoming) pair. Same-key
+/// repeats (`#[df_derive(as_str, as_str)]`, two `decimal(...)` blocks) are
+/// idempotent / last-wins respectively, matching pre-refactor de facto behavior.
+fn set_override(
+    field: &syn::Field,
+    field_display_name: &str,
+    override_: &mut FieldOverride,
+    incoming: FieldOverride,
+) -> Result<(), syn::Error> {
+    match (&*override_, &incoming) {
+        (FieldOverride::None, _)
+        | (FieldOverride::AsStr, FieldOverride::AsStr)
+        | (FieldOverride::AsString, FieldOverride::AsString)
+        | (FieldOverride::Decimal { .. }, FieldOverride::Decimal { .. })
+        | (FieldOverride::TimeUnit(_), FieldOverride::TimeUnit(_)) => {
+            *override_ = incoming;
+            Ok(())
+        }
+        _ => Err(override_conflict(
+            field,
+            field_display_name,
+            override_,
+            &incoming,
+        )),
+    }
+}
+
+fn parse_field_override(
+    field: &syn::Field,
+    field_display_name: &str,
+) -> Result<FieldOverride, syn::Error> {
+    let mut override_ = FieldOverride::None;
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("as_string") {
-                    attrs.as_string = true;
-                    Ok(())
+                    set_override(field, field_display_name, &mut override_, FieldOverride::AsString)
                 } else if meta.path.is_ident("as_str") {
-                    attrs.as_str = true;
-                    Ok(())
+                    set_override(field, field_display_name, &mut override_, FieldOverride::AsStr)
                 } else if meta.path.is_ident("decimal") {
-                    let (p, s) = parse_decimal_attr(&meta)?;
-                    attrs.decimal = Some((p, s));
-                    Ok(())
+                    let (precision, scale) = parse_decimal_attr(&meta)?;
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        FieldOverride::Decimal { precision, scale },
+                    )
                 } else if meta.path.is_ident("time_unit") {
-                    attrs.time_unit = Some(parse_time_unit_attr(&meta)?);
-                    Ok(())
+                    let unit = parse_time_unit_attr(&meta)?;
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        FieldOverride::TimeUnit(unit),
+                    )
                 } else {
-                    // Reject unknown keys so a typo (e.g. `as_strg` or `as_string` swapped
-                    // with `as_str`) surfaces at the user's source instead of being
-                    // silently ignored.
                     Err(meta.error(
                         "unknown key in #[df_derive(...)] field attribute; expected `as_str`, `as_string`, `decimal(precision = N, scale = N)`, or `time_unit = \"ms\"|\"us\"|\"ns\"`",
                     ))
@@ -96,120 +184,128 @@ fn parse_attributes(
             })?;
         }
     }
-    if attrs.as_string && attrs.as_str {
-        return Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has both `as_str` and `as_string`; \
-                 pick one — `as_str` borrows via `AsRef<str>` (no allocation), \
-                 `as_string` formats via `Display` (allocates per row)"
-            ),
-        ));
-    }
-    Ok(attrs)
+    Ok(override_)
 }
 
-/// Reject `#[df_derive(as_str)]` on a base type that codegen knows cannot be
-/// `AsRef<str>`. Without this check, the codegen would emit UFCS-against-the-
-/// base-type tokens and lean on the per-field `AsRef<str>` const-fn assert in
-/// `helpers.rs` to fail compilation. Surfacing the mistake at parse time
-/// yields a cleaner span and message at the user's attribute, not deep in
-/// macro expansion.
-/// `Struct` / `Generic` / `String` bases are still allowed: the first two are
-/// validated by the runtime assert (the parser cannot know whether a user
-/// type implements `AsRef<str>`), and `String` itself implements it.
-fn reject_as_str_on_incompatible_base(
+/// Single source of truth for combining a parsed `FieldOverride` with the
+/// analyzed `BaseType` into the final `Option<PrimitiveTransform>` carried on
+/// the IR. Performs base-type compatibility checks for every override variant
+/// and injects the default `DateTimeToInt(Milliseconds)` /
+/// `DecimalToInt128 { 38, 10 }` transforms when no override was declared.
+fn derive_transform(
     field: &syn::Field,
     field_display_name: &str,
-    attrs: FieldAttributes,
+    override_: &FieldOverride,
     base: &BaseType,
-) -> Result<(), syn::Error> {
-    if !attrs.as_str {
-        return Ok(());
-    }
-    match base {
-        BaseType::String | BaseType::Struct(..) | BaseType::Generic(..) => Ok(()),
-        BaseType::F64
-        | BaseType::F32
-        | BaseType::I64
-        | BaseType::U64
-        | BaseType::I32
-        | BaseType::U32
-        | BaseType::I16
-        | BaseType::U16
-        | BaseType::I8
-        | BaseType::U8
-        | BaseType::Bool
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `as_str` but its base type does not implement \
-                 `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
-                 generic type parameters — drop the attribute or change the field type"
-            ),
-        )),
-    }
-}
-
-/// Apply user-specified `decimal(...)` / `time_unit = "..."` overrides to the
-/// transform produced by `analyze_type`. Rejects combinations that don't make
-/// sense (e.g. `decimal(...)` on a non-`Decimal` field, or alongside
-/// `as_str`/`as_string`).
-fn apply_dtype_overrides(
-    field: &syn::Field,
-    field_display_name: &str,
-    attrs: FieldAttributes,
-    base: &BaseType,
-    transform: &mut Option<PrimitiveTransform>,
-) -> Result<(), syn::Error> {
-    if let Some((precision, scale)) = attrs.decimal {
-        if attrs.as_str || attrs.as_string {
-            return Err(syn::Error::new_spanned(
+) -> Result<Option<PrimitiveTransform>, syn::Error> {
+    match override_ {
+        FieldOverride::None => Ok(match base {
+            BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToInt(DEFAULT_DATETIME_UNIT)),
+            BaseType::Decimal => Some(PrimitiveTransform::DecimalToInt128 {
+                precision: DEFAULT_DECIMAL_PRECISION,
+                scale: DEFAULT_DECIMAL_SCALE,
+            }),
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::String
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::Struct(..)
+            | BaseType::Generic(..) => None,
+        }),
+        FieldOverride::AsString => Ok(Some(PrimitiveTransform::ToString)),
+        FieldOverride::AsStr => match base {
+            BaseType::String | BaseType::Struct(..) | BaseType::Generic(..) => {
+                Ok(Some(PrimitiveTransform::AsStr))
+            }
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::DateTimeUtc
+            | BaseType::Decimal => Err(syn::Error::new_spanned(
                 field,
                 format!(
-                    "field `{field_display_name}` combines `decimal(...)` with `as_str`/`as_string`; \
-                     `as_str`/`as_string` produce a String column, so the `decimal(...)` \
-                     dtype override has no effect — drop one"
+                    "field `{field_display_name}` has `as_str` but its base type does not implement \
+                     `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
+                     generic type parameters — drop the attribute or change the field type"
                 ),
-            ));
-        }
-        if !matches!(base, BaseType::Decimal) {
-            return Err(syn::Error::new_spanned(
+            )),
+        },
+        FieldOverride::Decimal { precision, scale } => match base {
+            BaseType::Decimal => Ok(Some(PrimitiveTransform::DecimalToInt128 {
+                precision: *precision,
+                scale: *scale,
+            })),
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::String
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::DateTimeUtc
+            | BaseType::Struct(..)
+            | BaseType::Generic(..) => Err(syn::Error::new_spanned(
                 field,
                 format!(
                     "field `{field_display_name}` has `decimal(...)` but its base type is not \
                      `rust_decimal::Decimal`; remove the attribute or change the field type"
                 ),
-            ));
-        }
-        *transform = Some(PrimitiveTransform::DecimalToInt128 { precision, scale });
-    }
-    if let Some(unit) = attrs.time_unit {
-        if attrs.as_str || attrs.as_string {
-            return Err(syn::Error::new_spanned(
-                field,
-                format!(
-                    "field `{field_display_name}` combines `time_unit = \"...\"` with \
-                     `as_str`/`as_string`; the latter produces a String column, so the \
-                     `time_unit` override has no effect — drop one"
-                ),
-            ));
-        }
-        if !matches!(base, BaseType::DateTimeUtc) {
-            return Err(syn::Error::new_spanned(
+            )),
+        },
+        FieldOverride::TimeUnit(unit) => match base {
+            BaseType::DateTimeUtc => Ok(Some(PrimitiveTransform::DateTimeToInt(*unit))),
+            BaseType::F64
+            | BaseType::F32
+            | BaseType::I64
+            | BaseType::U64
+            | BaseType::I32
+            | BaseType::U32
+            | BaseType::I16
+            | BaseType::U16
+            | BaseType::I8
+            | BaseType::U8
+            | BaseType::Bool
+            | BaseType::String
+            | BaseType::ISize
+            | BaseType::USize
+            | BaseType::Decimal
+            | BaseType::Struct(..)
+            | BaseType::Generic(..) => Err(syn::Error::new_spanned(
                 field,
                 format!(
                     "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
                      not `chrono::DateTime<Utc>`; remove the attribute or change the field type"
                 ),
-            ));
-        }
-        *transform = Some(PrimitiveTransform::DateTimeToInt(unit));
+            )),
+        },
     }
-    Ok(())
 }
 
 /// Parse a `syn::DeriveInput` into the IR consumed by codegen.
@@ -249,19 +345,14 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                     .clone();
 
                 let display_name = field_name_ident.to_string();
-                let attrs = parse_attributes(field, &display_name)?;
-                let analyzed =
-                    analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
-
-                let base_type = analyzed.base.clone();
-                let mut transform = analyzed.transform.clone();
-                reject_as_str_on_incompatible_base(field, &display_name, attrs, &base_type)?;
-                apply_dtype_overrides(field, &display_name, attrs, &base_type, &mut transform)?;
+                let override_ = parse_field_override(field, &display_name)?;
+                let analyzed = analyze_type(&field.ty, &generic_params)?;
+                let transform = derive_transform(field, &display_name, &override_, &analyzed.base)?;
                 fields_ir.push(FieldIR {
                     name: field_name_ident,
                     field_index: None,
-                    wrappers: analyzed.wrappers.clone(),
-                    base_type,
+                    wrappers: analyzed.wrappers,
+                    base_type: analyzed.base,
                     transform,
                     field_ty: field.ty.clone(),
                 });
@@ -273,19 +364,14 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                 let field_name_ident = format_ident!("field_{}", index);
 
                 let display_name = field_name_ident.to_string();
-                let attrs = parse_attributes(field, &display_name)?;
-                let analyzed =
-                    analyze_type(&field.ty, attrs.as_string, attrs.as_str, &generic_params)?;
-
-                let base_type = analyzed.base.clone();
-                let mut transform = analyzed.transform.clone();
-                reject_as_str_on_incompatible_base(field, &display_name, attrs, &base_type)?;
-                apply_dtype_overrides(field, &display_name, attrs, &base_type, &mut transform)?;
+                let override_ = parse_field_override(field, &display_name)?;
+                let analyzed = analyze_type(&field.ty, &generic_params)?;
+                let transform = derive_transform(field, &display_name, &override_, &analyzed.base)?;
                 fields_ir.push(FieldIR {
                     name: field_name_ident,
                     field_index: Some(index),
-                    wrappers: analyzed.wrappers.clone(),
-                    base_type,
+                    wrappers: analyzed.wrappers,
+                    base_type: analyzed.base,
                     transform,
                     field_ty: field.ty.clone(),
                 });

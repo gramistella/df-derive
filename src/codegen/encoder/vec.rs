@@ -862,7 +862,7 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_
     let value_expr = match base {
         StringyBase::String => quote! { __df_derive_v.as_str() },
         StringyBase::Struct { ident, args } => {
-            let ty_path = crate::codegen::strategy::build_type_path(ident, *args);
+            let ty_path = super::build_type_path(ident, *args);
             quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(__df_derive_v) }
         }
         StringyBase::Generic(ident) => {

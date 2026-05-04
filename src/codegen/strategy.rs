@@ -6,12 +6,12 @@
 //! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
 //! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
 
-use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec};
+use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec, vec_count};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use super::encoder::{self, Encoder, LeafCtx, NestedLeafCtx};
+use super::encoder::{self, Encoder, LeafCtx, NestedLeafCtx, build_type_path};
 
 /// Per-field columnar emit pieces. The columnar pipeline concatenates
 /// every field's `decls` ahead of the per-row push loop, splices every
@@ -23,23 +23,19 @@ pub struct FieldEmit {
     pub builders: Vec<TokenStream>,
 }
 
-/// Build the type-as-path token stream for a struct/generic field. For a
-/// struct referenced without args (e.g. `Address`) this is the bare ident;
-/// for a struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
-/// the turbofish form `Foo::<M, N>`, valid in both expression and type
-/// position. Generic type parameters use the bare ident (the macro injects
-/// the trait bounds that make `T::method()` resolve).
-pub fn build_type_path(
-    ident: &Ident,
-    args: Option<&syn::AngleBracketedGenericArguments>,
-) -> TokenStream {
-    args.map_or_else(
-        || quote! { #ident },
-        |ab| {
-            let inner = &ab.args;
-            quote! { #ident::<#inner> }
-        },
-    )
+/// Routing decision for one field. `Primitive` covers every base type that
+/// resolves to a single Polars column at the encoder boundary (numerics,
+/// strings, decimals, dates, plus stringy-transformed structs/generics).
+/// `Nested` covers concrete structs and generic type parameters that
+/// resolve to one Polars column per inner schema entry — `type_path` is
+/// the splicable `Foo::<M>` / `T` token stream and `list_layers` is the
+/// number of `Vec<…>` wrappers around the nested type.
+enum FieldRoute {
+    Primitive,
+    Nested {
+        type_path: TokenStream,
+        list_layers: usize,
+    },
 }
 
 /// Whether a transform routes the field through the primitive path even
@@ -52,17 +48,19 @@ const fn is_stringy(t: Option<&PrimitiveTransform>) -> bool {
     )
 }
 
-/// Build the type path for a nested field. Returns `None` for primitive
-/// fields and for nested types routed through a stringy transform
-/// (`to_string`/`as_str` produce a single `String` column, not a nested
-/// struct column).
-fn nested_type_path(field: &FieldIR) -> Option<TokenStream> {
+fn classify_field(field: &FieldIR) -> FieldRoute {
     if is_stringy(field.transform.as_ref()) {
-        return None;
+        return FieldRoute::Primitive;
     }
     match &field.base_type {
-        BaseType::Struct(id, args) => Some(build_type_path(id, args.as_ref())),
-        BaseType::Generic(id) => Some(quote! { #id }),
+        BaseType::Struct(id, args) => FieldRoute::Nested {
+            type_path: build_type_path(id, args.as_ref()),
+            list_layers: vec_count(&field.wrappers),
+        },
+        BaseType::Generic(id) => FieldRoute::Nested {
+            type_path: quote! { #id },
+            list_layers: vec_count(&field.wrappers),
+        },
         BaseType::F64
         | BaseType::F32
         | BaseType::I64
@@ -78,7 +76,7 @@ fn nested_type_path(field: &FieldIR) -> Option<TokenStream> {
         | BaseType::ISize
         | BaseType::USize
         | BaseType::DateTimeUtc
-        | BaseType::Decimal => None,
+        | BaseType::Decimal => FieldRoute::Primitive,
     }
 }
 
@@ -104,15 +102,16 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
 /// (with the parent name prefixed).
 pub fn build_schema_entries(field: &FieldIR) -> TokenStream {
     let name = field.name.to_string();
-    if let Some(type_path) = nested_type_path(field) {
-        return super::nested::generate_schema_entries_for_struct(
-            &type_path,
-            &name,
-            crate::ir::vec_count(&field.wrappers),
-        );
+    match classify_field(field) {
+        FieldRoute::Nested {
+            type_path,
+            list_layers,
+        } => super::nested::generate_schema_entries_for_struct(&type_path, &name, list_layers),
+        FieldRoute::Primitive => {
+            let dtype = field_full_dtype(field);
+            quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
+        }
     }
-    let dtype = field_full_dtype(field);
-    quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
 }
 
 /// Build the empty-series token expression for one field. Evaluates to a
@@ -120,12 +119,16 @@ pub fn build_schema_entries(field: &FieldIR) -> TokenStream {
 /// nested fields produce one empty Series per inner schema column.
 pub fn build_empty_series(field: &FieldIR) -> TokenStream {
     let name = field.name.to_string();
-    if let Some(type_path) = nested_type_path(field) {
-        return super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers);
+    match classify_field(field) {
+        FieldRoute::Nested { type_path, .. } => {
+            super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers)
+        }
+        FieldRoute::Primitive => {
+            let dtype = field_full_dtype(field);
+            let pp = super::polars_paths::prelude();
+            quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
+        }
     }
-    let dtype = field_full_dtype(field);
-    let pp = super::polars_paths::prelude();
-    quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
 }
 
 fn field_full_dtype(field: &FieldIR) -> TokenStream {
@@ -145,11 +148,13 @@ pub fn build_field_emit(
     idx: usize,
     it_ident: &Ident,
 ) -> FieldEmit {
-    let pa_root = super::polars_paths::polars_arrow_root();
-    if let Some(type_path) = nested_type_path(field) {
-        return build_nested_emit(field, config, idx, &type_path, &pa_root);
+    match classify_field(field) {
+        FieldRoute::Nested { type_path, .. } => {
+            let pa_root = super::polars_paths::polars_arrow_root();
+            build_nested_emit(field, config, idx, &type_path, &pa_root)
+        }
+        FieldRoute::Primitive => build_primitive_emit(field, config, idx, it_ident),
     }
-    build_primitive_emit(field, config, idx, it_ident)
 }
 
 fn build_nested_emit(

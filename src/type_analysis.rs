@@ -1,4 +1,4 @@
-use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform, Wrapper};
+use crate::ir::{BaseType, DateTimeUnit, Wrapper};
 use syn::{GenericArgument, Ident, PathArguments, Type};
 
 /// Default `Datetime` precision for `chrono::DateTime<Utc>` fields without an
@@ -15,15 +15,9 @@ pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 pub struct AnalyzedType {
     pub base: BaseType,
     pub wrappers: Vec<Wrapper>,
-    pub transform: Option<PrimitiveTransform>,
 }
 
-pub fn analyze_type(
-    ty: &Type,
-    as_string: bool,
-    as_str: bool,
-    generic_params: &[Ident],
-) -> Result<AnalyzedType, syn::Error> {
+pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
     let mut wrappers: Vec<Wrapper> = Vec::new();
     let mut current_type = ty;
 
@@ -93,29 +87,7 @@ pub fn analyze_type(
     let base = analyze_base_type(current_type, generic_params)
         .ok_or_else(|| syn::Error::new_spanned(current_type, "Unsupported field type"))?;
 
-    // Determine abstract transform; `as_str` and `as_string` attributes override
-    // any base-type-driven default. The two attributes are mutually exclusive
-    // (enforced in the parser).
-    let transform = if as_str {
-        Some(PrimitiveTransform::AsStr)
-    } else if as_string {
-        Some(PrimitiveTransform::ToString)
-    } else {
-        match &base {
-            BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToInt(DEFAULT_DATETIME_UNIT)),
-            BaseType::Decimal => Some(PrimitiveTransform::DecimalToInt128 {
-                precision: DEFAULT_DECIMAL_PRECISION,
-                scale: DEFAULT_DECIMAL_SCALE,
-            }),
-            _ => None,
-        }
-    };
-
-    Ok(AnalyzedType {
-        base,
-        wrappers,
-        transform,
-    })
+    Ok(AnalyzedType { base, wrappers })
 }
 
 fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<BaseType> {

@@ -37,6 +37,25 @@ use syn::Ident;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
 
+/// Build the type-as-path token stream for a struct/generic field. For a
+/// struct referenced without args (e.g. `Address`) this is the bare ident;
+/// for a struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
+/// the turbofish form `Foo::<M, N>`, valid in both expression and type
+/// position. Generic type parameters use the bare ident (the macro injects
+/// the trait bounds that make `T::method()` resolve).
+pub fn build_type_path(
+    ident: &Ident,
+    args: Option<&syn::AngleBracketedGenericArguments>,
+) -> TokenStream {
+    args.map_or_else(
+        || quote! { #ident },
+        |ab| {
+            let inner = &ab.args;
+            quote! { #ident::<#inner> }
+        },
+    )
+}
+
 /// Narrowed enum of every (base, transform) combination the parser can
 /// construct that reaches the encoder. Strategy splits at `build_field_emit`:
 /// `Struct`/`Generic` bases without a stringy transform route through
@@ -69,7 +88,7 @@ pub(super) enum LeafShape<'a> {
 
 /// Bases that can be paired with the `as_str` transform: `String`,
 /// concrete user struct types, and generic type parameters. The parser's
-/// `reject_as_str_on_incompatible_base` enforces this set.
+/// `derive_transform` enforces this set.
 pub(super) enum StringyBase<'a> {
     String,
     Struct {
@@ -170,7 +189,7 @@ impl<'a> LeafShape<'a> {
 
 impl<'a> StringyBase<'a> {
     /// Project a parser-validated `as_str` base onto `StringyBase`. The
-    /// parser's `reject_as_str_on_incompatible_base` guarantees only
+    /// parser's `derive_transform` guarantees only
     /// `String`/`Struct`/`Generic` reach this projection.
     fn from_base(base: &'a BaseType) -> Self {
         match base {
@@ -206,7 +225,7 @@ impl<'a> StringyBase<'a> {
     pub(super) fn ty_path(&self) -> TokenStream {
         match self {
             Self::String => quote! { ::std::string::String },
-            Self::Struct { ident, args } => crate::codegen::strategy::build_type_path(ident, *args),
+            Self::Struct { ident, args } => build_type_path(ident, *args),
             Self::Generic(ident) => quote! { #ident },
         }
     }

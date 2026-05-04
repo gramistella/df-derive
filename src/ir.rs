@@ -98,11 +98,6 @@ pub enum Wrapper {
     Vec,
 }
 
-/// True if any wrapper layer is `Vec<…>`.
-pub fn has_vec(wrappers: &[Wrapper]) -> bool {
-    wrappers.iter().any(|w| matches!(w, Wrapper::Vec))
-}
-
 /// Number of `Vec<…>` layers in the wrapper stack.
 pub fn vec_count(wrappers: &[Wrapper]) -> usize {
     wrappers

@@ -15,7 +15,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
-use super::leaf::validity_into_option;
+use super::leaf::{LeafBuilder, validity_into_option};
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
 
@@ -752,11 +752,12 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
     idents::vec_field_series(idx)
 }
 
-/// Build the encoder for a `[Vec, ...]` shape: a single `decls` statement
-/// declaring `let series_local = { ... };`, an empty `push`, and a
-/// finish that just references the local (with the columnar-context rename
-/// applied via `with_name(name)` — the vec-anyvalues context passes
-/// `name = ""`, so the rename is a no-op there).
+/// Build the encoder for a `[Vec, ...]` shape: a self-contained columnar
+/// block that allocates the per-field series local, renames it to the
+/// field's column name, and pushes it onto the call site's `columns` vec.
+/// The block is scoped so the per-field intermediate buffers (offsets vecs,
+/// validity bitmaps, the field Series itself) are confined to the field's
+/// scope, matching the pre-Step-4 emission shape.
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -765,24 +766,22 @@ fn vec_encoder(
 ) -> Encoder {
     let series_local = vec_encoder_series_local(ctx.idx);
     let decl = vec_emit_decl(ctx, spec, shape, leaf_dtype);
-    // The decl binds `series_local` to the assembled Series. The caller
-    // wraps the encoder's finish expression in `with_name(...)` /
-    // `AnyValue::List(...)` as appropriate.
-    let finish_series = quote! { #series_local };
-    Encoder::Leaf {
-        decls: vec![decl],
-        push: TokenStream::new(),
-        option_push: None,
-        series: finish_series,
-    }
+    let name = ctx.name;
+    let columnar = quote! {
+        {
+            #decl
+            let __df_derive_named = #series_local.with_name(#name.into());
+            columns.push(__df_derive_named.into());
+        }
+    };
+    Encoder::Multi { columnar }
 }
 
 /// Bare-bool variant of the vec encoder. At depth 1 with no inner-Option and
 /// no outer-Option layers, uses `BooleanArray::from_slice` (bulk, no
 /// bit-packing). For deeper or option-bearing shapes, routes through the
 /// generalized `vec_encoder` with `VecLeafSpec::BoolBare` (a bit-packed
-/// `MutableBitmap` set per element). The depth-1 fast path matches the
-/// legacy `from_slice`-based emission byte-for-byte.
+/// `MutableBitmap` set per element).
 fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     if shape.depth() == 1 && !shape.any_outer_validity() {
         let pa_root = crate::codegen::polars_paths::polars_arrow_root();
@@ -791,12 +790,14 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
         let body = bool_bare_depth1_body(ctx.access, &pa_root, &pp);
         let name = ctx.name;
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
-        return Encoder::Leaf {
-            decls: vec![decl],
-            push: TokenStream::new(),
-            option_push: None,
-            series: quote! { #series_local.with_name(#name.into()) },
+        let columnar = quote! {
+            {
+                #decl
+                let __df_derive_named = #series_local.with_name(#name.into());
+                columns.push(__df_derive_named.into());
+            }
         };
+        return Encoder::Multi { columnar };
     }
     let pp = crate::codegen::polars_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
@@ -1016,11 +1017,11 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-/// Build the leaf-encoder for a primitive shape. `LeafShape` encodes the
-/// parser's accept set, so this dispatch is exhaustive by construction —
+/// Build the leaf-encoder bundle for a primitive shape. `LeafShape` encodes
+/// the parser's accept set, so this dispatch is exhaustive by construction —
 /// every "cannot reach this combination" check lives at
 /// `LeafShape::from_base_transform` instead.
-pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> Encoder {
+pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> LeafBuilder {
     match shape {
         LeafShape::Numeric(base) => leaf::numeric_leaf(ctx, base),
         LeafShape::NumericWidened(base) => leaf::numeric_leaf_widened(ctx, base),

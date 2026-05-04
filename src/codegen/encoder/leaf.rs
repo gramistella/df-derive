@@ -1,16 +1,30 @@
 //! Primitive leaf builders + shared decl helpers.
 //!
-//! Each `*_leaf` here returns the `Encoder` for the bare-leaf shape (no
-//! wrappers); the matching `option_for_*` helpers in [`super::option`] turn
-//! that bare encoder into the `[Option]` shape, and the deeper stacks
-//! compose through the vec/option combinators.
+//! Each `*_leaf` here returns a [`LeafBuilder`] carrying both the bare-leaf
+//! and `[Option]` shape pieces. The matching `option_for_*` helpers in
+//! [`super::option`] consume that builder to produce the final
+//! `Encoder::Leaf` for the `[Option]` shape; deeper stacks compose through
+//! the vec/option combinators.
 
 use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
-use super::{Encoder, LeafCtx, StringyBase};
+use super::{LeafCtx, StringyBase};
+
+/// Per-leaf bundle of token streams. Every primitive leaf carries both a
+/// bare-shape and an `[Option]`-shape push body. The split lets each leaf
+/// override the option-shape per-row work (e.g. the bool 3-arm match
+/// against a pre-filled values bitmap) without leaking a runtime
+/// "is-this-supplied?" check into the dispatcher. The combinators in
+/// [`super::option`] consume `LeafBuilder` to project to `Encoder::Leaf`.
+pub(super) struct LeafBuilder {
+    pub decls: Vec<TokenStream>,
+    pub bare_push: TokenStream,
+    pub option_push: TokenStream,
+    pub bare_series: TokenStream,
+}
 
 // --- Common decl helpers ---
 
@@ -87,7 +101,7 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 /// for `<Chunked>::from_vec(name, buf)`, which consumes the Vec without
 /// copying. The option combinator switches to `PrimitiveArray::new` over
 /// the `Vec<#native>` + parallel `MutableBitmap`.
-pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
+pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafBuilder {
     let info = crate::codegen::type_registry::numeric_info(base)
         .expect("numeric_leaf must be called with a numeric BaseType");
     numeric_leaf_with_info(ctx, &info, None)
@@ -98,7 +112,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
 /// `as` cast at every push site. Storage matches `compute_mapping`'s
 /// element dtype (`Int64`/`UInt64`) so the downstream chunked-array build
 /// produces the schema dtype with no post-finish cast.
-pub(super) fn numeric_leaf_widened(ctx: &LeafCtx<'_>, base: &BaseType) -> Encoder {
+pub(super) fn numeric_leaf_widened(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafBuilder {
     let info = crate::codegen::type_registry::isize_usize_widened_info(base)
         .expect("numeric_leaf_widened requires an `ISize`/`USize` BaseType");
     let cast_target = info.native.clone();
@@ -115,7 +129,7 @@ fn numeric_leaf_with_info(
     ctx: &LeafCtx<'_>,
     info: &crate::codegen::type_registry::NumericInfo,
     widen_to: Option<&TokenStream>,
-) -> Encoder {
+) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let validity = idents::primitive_validity(ctx.idx);
     let native = &info.native;
@@ -160,18 +174,18 @@ fn numeric_leaf_with_info(
             }
         }
     };
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![vec_decl(&buf, native)],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
 /// Bare `String` leaf — accumulates straight into a
 /// `MutableBinaryViewArray<str>` buffer. Bypasses the `Vec<&str>` round-trip
 /// and the second walk `Series::new(&Vec<&str>)` would do via `from_slice_values`.
-pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
+pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let validity = idents::primitive_validity(ctx.idx);
     let row_idx = idents::primitive_row_idx(ctx.idx);
@@ -195,18 +209,18 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![mbva_decl(&buf)],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
 /// Bare `bool` leaf — `Vec<bool>` + `Series::new`. Keeps the slow path because
 /// `BooleanChunked::from_slice` is bulk and faster than `BooleanArray::new` +
 /// `with_chunk` for the all-non-null case.
-pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
+pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let validity = idents::primitive_validity(ctx.idx);
     let row_idx = idents::primitive_row_idx(ctx.idx);
@@ -229,11 +243,11 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![vec_decl(&buf, &quote! { bool })],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
@@ -271,7 +285,7 @@ fn mapped_push_pair(
 /// `Decimal` leaf with a `DecimalToInt128` transform. Bare: `Vec<i128>` +
 /// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
 /// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
-pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encoder {
+pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -284,18 +298,18 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encod
         let ca = #int128::from_vec(#name.into(), #buf);
         #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
     }};
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![vec_decl(&buf, &quote! { i128 })],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
 /// `DateTime<Utc>` leaf with a `DateTimeToInt(unit)` transform. Bare:
 /// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
 /// switches to `Vec<Option<i64>>` with the same finish path.
-pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
+pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -311,18 +325,18 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
         s = s.cast(&#dtype)?;
         s
     }};
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![vec_decl(&buf, &quote! { i64 })],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
 /// `as_string` (Display) leaf. Reused `String` scratch + MBVA accumulator —
 /// each row clears the scratch, runs `Display::fmt` into it, then pushes the
 /// resulting `&str` to the view array (which copies the bytes).
-pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
+pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let scratch = idents::primitive_str_scratch(ctx.idx);
     let validity = idents::primitive_validity(ctx.idx);
@@ -354,14 +368,14 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![
             mbva_decl(&buf),
             quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); },
         ],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }
 
@@ -370,7 +384,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
 /// information (`String`, the field's struct ident, or a generic-parameter
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
 /// the UFCS path.
-pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> Encoder {
+pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.idx);
     let access = ctx.access;
     let name = ctx.name;
@@ -396,10 +410,10 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> Encoder 
         )
     };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    Encoder::Leaf {
+    LeafBuilder {
         decls: vec![vec_decl(&buf, &quote! { &str })],
-        push: bare_push,
-        option_push: Some(option_push),
-        series: finish_series,
+        bare_push,
+        option_push,
+        bare_series: finish_series,
     }
 }

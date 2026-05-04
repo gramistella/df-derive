@@ -6,7 +6,7 @@
 //! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
 //! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
 
-use crate::ir::{BaseType, FieldIR, PrimitiveTransform, has_vec, vec_count};
+use crate::ir::{BaseType, FieldIR, PrimitiveTransform, vec_count};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
@@ -191,6 +191,15 @@ fn build_nested_emit(
     }
 }
 
+/// Build the columnar emit pieces for a primitive-routed field. `[Vec, ...]`
+/// shapes produce `Encoder::Multi` (the encoder packs precount, buffers,
+/// fill loop, leaf array, list stacking, and the rename + push into one
+/// self-contained block placed AFTER the per-row loop — matches the legacy
+/// direct-fast-path emitters' cache locality, see `vec_vec_i32` /
+/// `vec_opt_datetime` benches: emitting in decls regresses ~4% relative to
+/// placing the same work post-loop). Bare and `[Option]` shapes produce
+/// `Encoder::Leaf` with decls + push + finisher splayed across the three
+/// slots.
 fn build_primitive_emit(
     field: &FieldIR,
     config: &super::MacroConfig,
@@ -205,63 +214,32 @@ fn build_primitive_emit(
         name: &name,
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
     };
-
     let enc = encoder::build_encoder(
         &field.base_type,
         field.transform.as_ref(),
         &field.wrappers,
         &leaf_ctx,
     );
-    primitive_emit_from_encoder(field, &name, enc)
-}
-
-/// Encoder-served primitive shapes. `[Vec, ...]` shapes route through the
-/// bulk-emit channel (the encoder packs precount, buffers, fill loop, leaf
-/// array, and list stacking into one block placed AFTER the per-row loop —
-/// matches the legacy direct-fast-path emitters' cache locality, see
-/// `vec_vec_i32` / `vec_opt_datetime` benches: emitting in decls regresses
-/// ~4% relative to placing the same work post-loop). Bare and `[Option]`
-/// shapes get decls + push + finisher splayed across the three slots.
-fn primitive_emit_from_encoder(
-    field: &FieldIR,
-    name: &str,
-    enc: super::encoder::Encoder,
-) -> FieldEmit {
-    let Encoder::Leaf {
-        decls,
-        push,
-        option_push: _,
-        series,
-    } = enc
-    else {
-        unreachable!("primitive encoder must produce a leaf encoder")
-    };
-    if has_vec(&field.wrappers) {
-        // Wrap the per-field series local in an inner block so it goes out
-        // of scope as soon as we've pushed the column. Keeps the per-field
-        // intermediate buffers (offsets vecs, validity bitmaps, the field
-        // Series itself) confined to the field's scope, matching the
-        // pre-Step-4 emission shape.
-        let builder = quote! {
-            {
-                #(#decls)*
-                let __df_derive_named = #series.with_name(#name.into());
-                columns.push(__df_derive_named.into());
+    match enc {
+        Encoder::Leaf {
+            decls,
+            push,
+            series,
+        } => {
+            let builder = quote! {{
+                let s = #series;
+                columns.push(s.into());
+            }};
+            FieldEmit {
+                decls,
+                push,
+                builders: vec![builder],
             }
-        };
-        return FieldEmit {
+        }
+        Encoder::Multi { columnar } => FieldEmit {
             decls: Vec::new(),
             push: TokenStream::new(),
-            builders: vec![builder],
-        };
-    }
-    let builder = quote! {{
-        let s = #series;
-        columns.push(s.into());
-    }};
-    FieldEmit {
-        decls,
-        push,
-        builders: vec![builder],
+            builders: vec![columnar],
+        },
     }
 }

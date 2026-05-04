@@ -6,10 +6,11 @@
 //! Per-field codegen folds the wrapper stack right-to-left over the leaf to
 //! assemble the final emission.
 //!
-//! Each leaf carries two push token streams: `bare_push` for the unwrapped
-//! shape, and `option_push` for the `[Option]` shape. The split lets the
-//! `bool` leaf override the option case with a 3-arm match (so `Some(false)`
-//! is a true no-op against a values bitmap pre-filled with `false`).
+//! Each `LeafBuilder` carries two push token streams: `bare_push` for the
+//! unwrapped shape, and `option_push` for the `[Option]` shape. The split
+//! lets the `bool` leaf override the option case with a 3-arm match (so
+//! `Some(false)` is a true no-op against a values bitmap pre-filled with
+//! `false`).
 //!
 //! `Vec`-bearing wrappers are normalized into a [`VecShape`] (one entry per
 //! `Vec` layer; each entry tracks whether an outer `Option` adjoins it as
@@ -366,17 +367,12 @@ fn collapse_options_to_ref(base: &TokenStream, n: usize) -> TokenStream {
 /// path (`Multi`); the field set is type-enforced per variant.
 pub enum Encoder {
     /// Single-column primitive leaf path. `decls` is emitted once before the
-    /// per-row loop; `push` (or `option_push` when an outer option wrapper
-    /// composes over this leaf) is spliced inside the loop; `series` is an
+    /// per-row loop; `push` is spliced inside the loop; `series` is an
     /// expression that evaluates to a `polars::prelude::Series` after the
     /// loop, which the caller wraps as `columns.push(series.into())`.
     Leaf {
         decls: Vec<TokenStream>,
-        /// Push tokens used when this encoder is the top of the wrapper stack.
         push: TokenStream,
-        /// Push tokens specifically for an outer `option(...)` wrapper.
-        /// `None` makes the option combinator generate a generic 2-arm match.
-        option_push: Option<TokenStream>,
         series: TokenStream,
     },
     /// Multi-column nested path. The `columnar` block executes once after
@@ -413,10 +409,17 @@ pub fn build_encoder(
 ) -> Encoder {
     let shape = LeafShape::from_base_transform(base, transform);
     match normalize_wrappers(wrappers) {
-        WrapperKind::Leaf { option_layers: 0 } => vec::build_leaf(&shape, ctx),
+        WrapperKind::Leaf { option_layers: 0 } => {
+            let builder = vec::build_leaf(&shape, ctx);
+            Encoder::Leaf {
+                decls: builder.decls,
+                push: builder.bare_push,
+                series: builder.bare_series,
+            }
+        }
         WrapperKind::Leaf { option_layers: 1 } => {
-            let leaf = vec::build_leaf(&shape, ctx);
-            option::wrap_option(&shape, leaf, ctx)
+            let builder = vec::build_leaf(&shape, ctx);
+            option::wrap_option(&shape, builder, ctx)
         }
         // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
         // `Option<Option<Option<T>>>`, …): pre-collapse the access to

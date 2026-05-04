@@ -138,6 +138,21 @@ fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
     None
 }
 
+/// Detect a `chrono::DateTime<Utc>` field by ident only.
+///
+/// The match looks at the last segment of the outer path (`DateTime`) and the
+/// last segment of the first generic argument's path (`Utc`). Anything that
+/// happens to share those idents — e.g. `some_other_crate::DateTime<other::Utc>`
+/// — would be a false positive and routed through the chrono encoder.
+///
+/// This leniency is intentional: user crates frequently re-export
+/// `chrono::DateTime<chrono::Utc>` under their own paths (type aliases, prelude
+/// modules, glob re-exports), and tightening the match to a specific path
+/// prefix would break those uses without a robust way to recover the original
+/// definition from a `syn::Type` alone. The proc-macro happily generates code
+/// that calls chrono's `timestamp_*` methods; if the type isn't actually
+/// chrono's, the user gets a compile error at the call site, which is the
+/// correct failure mode.
 fn is_datetime_utc(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()

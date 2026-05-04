@@ -384,68 +384,28 @@ fn collapse_options_to_ref(base: &TokenStream, n: usize) -> TokenStream {
     out
 }
 
-/// How a leaf consumes values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LeafKind {
-    /// Leaf consumes one value at a time via a `push` token stream.
-    PerElementPush,
-    /// Leaf collects refs across all rows then performs one bulk encode call.
-    /// Used for nested-struct/generic base types that route through
-    /// `<T as Columnar>::columnar_from_refs(&refs)`.
-    #[allow(dead_code)]
-    CollectThenBulk,
-}
-
-/// What an `Encoder`'s finish step produces.
-///
-/// Primitive leaves materialize a single `Series` (the field's column).
-/// Nested-struct/generic leaves materialize **multiple** Series, one per
-/// inner schema column of the nested type — so they are emitted as a block
-/// that pushes directly onto the call site's `columns` vec.
-pub enum EncoderFinish {
-    /// Single-Series finish: an expression that evaluates to a
-    /// `polars::prelude::Series`. Outer call sites wrap as
-    /// `columns.push(s.into())`.
-    Series(TokenStream),
-    /// Multi-column finish: a pre-built block that pushes one Series per
-    /// inner schema column onto the call site's `columns` vec.
+/// Per-field encoder state. Variant determines whether the encoder serves
+/// the single-column primitive path (`Leaf`) or the multi-column nested
+/// path (`Multi`); the field set is type-enforced per variant.
+pub enum Encoder {
+    /// Single-column primitive leaf path. `decls` is emitted once before the
+    /// per-row loop; `push` (or `option_push` when an outer option wrapper
+    /// composes over this leaf) is spliced inside the loop; `series` is an
+    /// expression that evaluates to a `polars::prelude::Series` after the
+    /// loop, which the caller wraps as `columns.push(series.into())`.
+    Leaf {
+        decls: Vec<TokenStream>,
+        /// Push tokens used when this encoder is the top of the wrapper stack.
+        push: TokenStream,
+        /// Push tokens specifically for an outer `option(...)` wrapper.
+        /// `None` makes the option combinator generate a generic 2-arm match.
+        option_push: Option<TokenStream>,
+        series: TokenStream,
+    },
+    /// Multi-column nested path. The `columnar` block executes once after
+    /// the call site's per-row loop and pushes one Series per inner schema
+    /// column of the nested type onto the outer `columns` vec directly.
     Multi { columnar: TokenStream },
-}
-
-/// Per-field encoder state. `decls` and `finish` are emitted once at the
-/// top/bottom of the columnar populator pipeline; `push` is spliced inside
-/// the per-row loop.
-pub struct Encoder {
-    pub decls: Vec<TokenStream>,
-    /// Push tokens used when this encoder is the top of the wrapper stack.
-    pub push: TokenStream,
-    /// Push tokens specifically for an outer `option(...)` wrapper. `None`
-    /// makes the option combinator generate a generic 2-arm match.
-    pub option_push: Option<TokenStream>,
-    pub finish: EncoderFinish,
-    pub kind: LeafKind,
-    /// 0 for leaves, +1 per `vec` layer. Used by Step 2.
-    #[allow(dead_code)]
-    pub offset_depth: usize,
-}
-
-impl Encoder {
-    /// Convenience: wrap a `Series`-valued token expression as `Encoder.finish`.
-    const fn series_finish(expr: TokenStream) -> EncoderFinish {
-        EncoderFinish::Series(expr)
-    }
-
-    /// Consume the encoder and extract its `EncoderFinish::Series` payload.
-    /// Panics if the encoder produces multi-column output — primitive call
-    /// sites only ever build single-Series encoders, so this is invariant.
-    pub fn into_series_finish(self) -> TokenStream {
-        match self.finish {
-            EncoderFinish::Series(ts) => ts,
-            EncoderFinish::Multi { .. } => {
-                unreachable!("into_series_finish called on a multi-column encoder")
-            }
-        }
-    }
 }
 
 /// Per-leaf metadata threaded into the leaf builders.

@@ -9,7 +9,7 @@ use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{Encoder, LeafCtx, LeafKind, PopulatorIdents, StringyBase};
+use super::{Encoder, LeafCtx, PopulatorIdents, StringyBase};
 
 // --- Common decl helpers ---
 
@@ -159,13 +159,11 @@ fn numeric_leaf_with_info(
             }
         }
     };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, native)],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -196,13 +194,11 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![mbva_decl(&buf)],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -232,13 +228,11 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { bool })],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -289,13 +283,11 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> Encod
         let ca = #int128::from_vec(#name.into(), #buf);
         #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
     }};
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { i128 })],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -318,13 +310,11 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> Encoder {
         s = s.cast(&#dtype)?;
         s
     }};
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { i64 })],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -363,16 +353,14 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> Encoder {
         }
         #row_idx += 1;
     };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![
             mbva_decl(&buf),
             quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); },
         ],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 
@@ -407,12 +395,10 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> Encoder 
         )
     };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { &str })],
         push: bare_push,
         option_push: Some(option_push),
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }

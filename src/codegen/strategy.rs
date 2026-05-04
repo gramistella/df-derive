@@ -11,7 +11,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use super::encoder::{self, EncoderFinish, LeafCtx, NestedLeafCtx};
+use super::encoder::{self, Encoder, LeafCtx, NestedLeafCtx};
 
 /// Per-field columnar emit pieces. The columnar pipeline concatenates
 /// every field's `decls` ahead of the per-row push loop, splices every
@@ -176,8 +176,8 @@ fn build_nested_emit(
         pa_root,
     };
     let enc = encoder::build_nested_encoder(&field.wrappers, &ctx);
-    let EncoderFinish::Multi { columnar } = enc.finish else {
-        unreachable!("nested encoder must produce a multi-column finish")
+    let Encoder::Multi { columnar } = enc else {
+        unreachable!("nested encoder must produce a multi-column encoder")
     };
     FieldEmit {
         decls: Vec::new(),
@@ -222,9 +222,16 @@ fn primitive_emit_from_encoder(
     name: &str,
     enc: super::encoder::Encoder,
 ) -> FieldEmit {
+    let Encoder::Leaf {
+        decls,
+        push,
+        option_push: _,
+        series,
+    } = enc
+    else {
+        unreachable!("primitive encoder must produce a leaf encoder")
+    };
     if has_vec(&field.wrappers) {
-        let decls = enc.decls.clone();
-        let series = enc.into_series_finish();
         // Wrap the per-field series local in an inner block so it goes out
         // of scope as soon as we've pushed the column. Keeps the per-field
         // intermediate buffers (offsets vecs, validity bitmaps, the field
@@ -243,9 +250,6 @@ fn primitive_emit_from_encoder(
             builders: vec![builder],
         };
     }
-    let push = enc.push.clone();
-    let decls = enc.decls.clone();
-    let series = enc.into_series_finish();
     let builder = quote! {{
         let s = #series;
         columns.push(s.into());

@@ -13,20 +13,17 @@
 //! `Self`-bearing impl method so `clippy::unsafe_derive_deserialize` stays
 //! silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
 //!
-//! Every shape produces an `EncoderFinish::Multi { columnar }` because the
-//! inner `DataFrame` carries one column per inner schema entry of `T`. The
-//! block pushes one Series per inner schema column onto the call site's
-//! `columns` vec, with the parent name prefixed onto each inner column name.
+//! Every shape produces an `Encoder::Multi { columnar }` because the inner
+//! `DataFrame` carries one column per inner schema entry of `T`. The block
+//! pushes one Series per inner schema column onto the call site's `columns`
+//! vec, with the parent name prefixed onto each inner column name.
 
 use crate::ir::Wrapper;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
-use super::{
-    Encoder, EncoderFinish, LeafKind, VecShape, WrapperKind, collapse_options_to_ref,
-    normalize_wrappers,
-};
+use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// `polars-arrow` crate root (so the combinators don't re-resolve it per
@@ -134,15 +131,8 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
         let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
     };
     let columnar_block = quote! {{ #setup #columnar }};
-    Encoder {
-        decls: Vec::new(),
-        push: TokenStream::new(),
-        option_push: None,
-        finish: EncoderFinish::Multi {
-            columnar: columnar_block,
-        },
-        kind: LeafKind::CollectThenBulk,
-        offset_depth: 0,
+    Encoder::Multi {
+        columnar: columnar_block,
     }
 }
 
@@ -247,15 +237,8 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
             #consume_take
         }
     }};
-    Encoder {
-        decls: Vec::new(),
-        push: TokenStream::new(),
-        option_push: None,
-        finish: EncoderFinish::Multi {
-            columnar: columnar_block,
-        },
-        kind: LeafKind::CollectThenBulk,
-        offset_depth: 0,
+    Encoder::Multi {
+        columnar: columnar_block,
     }
 }
 
@@ -413,15 +396,8 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
             }
         }}
     };
-    Encoder {
-        decls: Vec::new(),
-        push: TokenStream::new(),
-        option_push: None,
-        finish: EncoderFinish::Multi {
-            columnar: columnar_block,
-        },
-        kind: LeafKind::CollectThenBulk,
-        offset_depth: depth,
+    Encoder::Multi {
+        columnar: columnar_block,
     }
 }
 

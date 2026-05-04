@@ -17,8 +17,8 @@ use quote::{format_ident, quote};
 use super::leaf::validity_into_option;
 use super::shape_walk::{ScanLayerIdents, ShapeScan, shape_offsets_decls, shape_validity_decls};
 use super::{
-    Encoder, LeafCtx, LeafKind, LeafShape, PopulatorIdents, StringyBase, VecShape,
-    collapse_options_to_ref, leaf,
+    Encoder, LeafCtx, LeafShape, PopulatorIdents, StringyBase, VecShape, collapse_options_to_ref,
+    leaf,
 };
 
 // --- Vec combinator ---
@@ -771,13 +771,11 @@ fn vec_encoder(
     // wraps the encoder's finish expression in `with_name(...)` /
     // `AnyValue::List(...)` as appropriate.
     let finish_series = quote! { #series_local };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![decl],
         push: TokenStream::new(),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: shape.depth(),
+        series: finish_series,
     }
 }
 
@@ -795,13 +793,11 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
         let body = bool_bare_depth1_body(ctx.access, &pa_root, &pp);
         let name = ctx.name;
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
-        return Encoder {
+        return Encoder::Leaf {
             decls: vec![decl],
             push: TokenStream::new(),
             option_push: None,
-            finish: Encoder::series_finish(quote! { #series_local.with_name(#name.into()) }),
-            kind: LeafKind::PerElementPush,
-            offset_depth: 1,
+            series: quote! { #series_local.with_name(#name.into()) },
         };
     }
     let pp = crate::codegen::polars_paths::prelude();

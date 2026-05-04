@@ -18,9 +18,25 @@ use quote::{format_ident, quote};
 use super::leaf::{
     mb_decl, mb_decl_filled, mbva_decl, row_idx_decl, validity_into_option, vec_decl,
 };
-use super::{
-    Encoder, LeafCtx, LeafKind, LeafShape, PopulatorIdents, StringyBase, collapse_options_to_ref,
-};
+use super::{Encoder, LeafCtx, LeafShape, PopulatorIdents, StringyBase, collapse_options_to_ref};
+
+/// Destructure an inner `Encoder::Leaf` produced by a leaf builder. The
+/// option combinators only ever wrap leaf encoders (multi-column nested
+/// encoders take their own dedicated paths), so any other variant is a
+/// programmer error.
+fn unwrap_leaf(inner: Encoder) -> (Vec<TokenStream>, TokenStream, Option<TokenStream>) {
+    match inner {
+        Encoder::Leaf {
+            decls,
+            push,
+            option_push,
+            series: _,
+        } => (decls, push, option_push),
+        Encoder::Multi { .. } => {
+            unreachable!("option combinator received a multi-column encoder")
+        }
+    }
+}
 
 /// Option combinator for the `String` / `as_string` MBVA-based leaves.
 /// Adds the `MutableBitmap` validity buffer + row counter and finishes by
@@ -41,15 +57,12 @@ fn option_for_string_like(
     decls.push(mb_decl_filled(&validity, true));
     decls.push(row_idx_decl(&row_idx));
     let arr_expr = quote! { #buf.freeze().with_validity(#valid_opt) };
-    Encoder {
+    let (_, _, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls,
-        push: inner
-            .option_push
-            .expect("string-like leaf must supply option_push"),
+        push: inner_option_push.expect("string-like leaf must supply option_push"),
         option_push: None,
-        finish: Encoder::series_finish(super::leaf::string_chunked_series(name, &arr_expr)),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: super::leaf::string_chunked_series(name, &arr_expr),
     }
 }
 
@@ -92,13 +105,12 @@ fn option_for_numeric_with_info(
         );
         #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
     }};
-    Encoder {
+    let (_, inner_push, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, native), mb_decl(&validity)],
-        push: inner.option_push.unwrap_or(inner.push),
+        push: inner_option_push.unwrap_or(inner_push),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: finish_series,
     }
 }
 
@@ -123,19 +135,16 @@ fn option_for_bool(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
             #pp::BooleanChunked::with_chunk(#name.into(), arr),
         )
     }};
-    Encoder {
+    let (_, _, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls: vec![
             mb_decl_filled(&buf, false),
             mb_decl_filled(&validity, true),
             row_idx_decl(&row_idx),
         ],
-        push: inner
-            .option_push
-            .expect("bool_leaf must supply option_push"),
+        push: inner_option_push.expect("bool_leaf must supply option_push"),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: finish_series,
     }
 }
 
@@ -155,15 +164,12 @@ fn option_for_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, inner: Encode
         );
         #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
     }};
-    Encoder {
+    let (_, _, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i128> })],
-        push: inner
-            .option_push
-            .expect("decimal_leaf must supply option_push"),
+        push: inner_option_push.expect("decimal_leaf must supply option_push"),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: finish_series,
     }
 }
 
@@ -188,15 +194,12 @@ fn option_for_datetime(
         s = s.cast(&#dtype)?;
         s
     }};
-    Encoder {
+    let (_, _, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i64> })],
-        push: inner
-            .option_push
-            .expect("datetime_leaf must supply option_push"),
+        push: inner_option_push.expect("datetime_leaf must supply option_push"),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: finish_series,
     }
 }
 
@@ -207,15 +210,12 @@ fn option_for_as_str(ctx: &LeafCtx<'_>, inner: Encoder) -> Encoder {
     let name = ctx.name;
     let pp = crate::codegen::polars_paths::prelude();
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    Encoder {
+    let (_, _, inner_option_push) = unwrap_leaf(inner);
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
-        push: inner
-            .option_push
-            .expect("as_str_leaf must supply option_push"),
+        push: inner_option_push.expect("as_str_leaf must supply option_push"),
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: inner.kind,
-        offset_depth: inner.offset_depth,
+        series: finish_series,
     }
 }
 
@@ -291,13 +291,26 @@ pub(super) fn wrap_multi_option_primitive(
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
     let leaf = super::vec::build_leaf(shape, &new_ctx);
-    let mut wrapped = wrap_option(shape, leaf, &new_ctx);
-    let original_push = wrapped.push.clone();
-    wrapped.push = quote! {
-        #setup
-        #original_push
-    };
-    wrapped
+    let wrapped = wrap_option(shape, leaf, &new_ctx);
+    match wrapped {
+        Encoder::Leaf {
+            decls,
+            push,
+            option_push,
+            series,
+        } => Encoder::Leaf {
+            decls,
+            push: quote! {
+                #setup
+                #push
+            },
+            option_push,
+            series,
+        },
+        Encoder::Multi { .. } => {
+            unreachable!("wrap_option over a primitive leaf must yield a Leaf")
+        }
+    }
 }
 
 /// `as_str`-specific multi-Option wrapper. Builds the same `Vec<Option<&str>>`
@@ -324,13 +337,11 @@ fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: u
         }
     };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    Encoder {
+    Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
         push,
         option_push: None,
-        finish: Encoder::series_finish(finish_series),
-        kind: LeafKind::PerElementPush,
-        offset_depth: 0,
+        series: finish_series,
     }
 }
 

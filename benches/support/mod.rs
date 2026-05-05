@@ -17,10 +17,7 @@ use std::time::Duration;
 #[must_use]
 pub fn configure_criterion() -> Criterion {
     Criterion::default()
-        .sample_size(150)
-        .warm_up_time(Duration::from_secs(8))
-        .measurement_time(Duration::from_secs(20))
-        .nresamples(200_000)
+        .measurement_time(Duration::from_secs(10))
         .noise_threshold(0.02)
         .confidence_level(0.99)
 }

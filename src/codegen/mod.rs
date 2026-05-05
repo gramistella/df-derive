@@ -56,6 +56,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let helpers_impl = helpers::generate_helpers_impl(ir, config);
     let pp = polars_paths::prelude();
+    let assemble_helper = encoder::idents::assemble_helper();
 
     // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`
     // scope. Inherent impls inside an anonymous const still apply to the outer
@@ -79,7 +80,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         const _: () = {
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
-            fn __df_derive_assemble_list_series_unchecked(
+            fn #assemble_helper(
                 list_arr: #pp::LargeListArray,
                 inner_logical_dtype: #pp::DataType,
             ) -> #pp::Series {

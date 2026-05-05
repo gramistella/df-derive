@@ -407,9 +407,10 @@ pub(super) fn shape_assemble_list_stack(
         helper_logical = quote! { #pp::DataType::List(::std::boxed::Box::new(#helper_logical)) };
     }
     let outer = arr_id_for_layer(0);
+    let assemble_helper = idents::assemble_helper();
     quote! {
         #(#block)*
-        __df_derive_assemble_list_series_unchecked(
+        #assemble_helper(
             #outer,
             #helper_logical,
         )

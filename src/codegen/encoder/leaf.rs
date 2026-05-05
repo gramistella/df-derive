@@ -58,11 +58,12 @@ pub(super) fn mb_decl(ident: &syn::Ident) -> TokenStream {
 /// `let mut #ident: MutableBitmap = MutableBitmap pre-filled with #value over items.len();`
 pub(super) fn mb_decl_filled(ident: &syn::Ident, value: bool) -> TokenStream {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let b = idents::bitmap_builder();
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap = {
-            let mut __df_derive_b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
-            __df_derive_b.extend_constant(items.len(), #value);
-            __df_derive_b
+            let mut #b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+            #b.extend_constant(items.len(), #value);
+            #b
         };
     }
 }
@@ -149,14 +150,15 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
     // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
     // `<#native>::default()` and `validity.push(false)`. Splitting value vs
     // validity into independent pushes lets the compiler vectorize cleanly.
+    let v = idents::leaf_value();
     let some_push_value = if info.widen_from.is_some() {
-        quote! { (__df_derive_v as #native) }
+        quote! { (#v as #native) }
     } else {
-        quote! { __df_derive_v }
+        quote! { #v }
     };
     let option_push = quote! {
         match #access {
-            ::std::option::Option::Some(__df_derive_v) => {
+            ::std::option::Option::Some(#v) => {
                 #buf.push(#some_push_value);
                 #validity.push(true);
             }
@@ -202,12 +204,13 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
     let access = ctx.base.access;
     let name = ctx.base.name;
 
+    let v = idents::leaf_value();
     let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
     let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
     let option_push = quote! {
         match &(#access) {
-            ::std::option::Option::Some(__df_derive_v) => {
-                #buf.push_value_ignore_validity(__df_derive_v.as_str());
+            ::std::option::Option::Some(#v) => {
+                #buf.push_value_ignore_validity(#v.as_str());
             }
             ::std::option::Option::None => {
                 #buf.push_value_ignore_validity("");
@@ -303,16 +306,17 @@ fn mapped_push_pair(
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let decimal_trait = ctx.decimal128_encode_trait;
+    let v = idents::leaf_value();
     let mapped_bare =
         crate::codegen::type_registry::map_primitive_expr(access, Some(transform), decimal_trait);
     let mapped_some = {
-        let some_var = quote! { __df_derive_v };
+        let some_var = quote! { #v };
         crate::codegen::type_registry::map_primitive_expr(&some_var, Some(transform), decimal_trait)
     };
     let bare_push = quote! { #buf.push({ #mapped_bare }); };
     let option_push = quote! {
         match &(#access) {
-            ::std::option::Option::Some(__df_derive_v) => {
+            ::std::option::Option::Some(#v) => {
                 #buf.push(::std::option::Option::Some({ #mapped_some }));
             }
             ::std::option::Option::None => {
@@ -406,6 +410,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
     let access = ctx.base.access;
     let name = ctx.base.name;
 
+    let v = idents::leaf_value();
     let bare_push = quote! {
         {
             use ::std::fmt::Write as _;
@@ -417,10 +422,10 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
     let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
     let option_push = quote! {
         match &(#access) {
-            ::std::option::Option::Some(__df_derive_v) => {
+            ::std::option::Option::Some(#v) => {
                 use ::std::fmt::Write as _;
                 #scratch.clear();
-                ::std::write!(&mut #scratch, "{}", __df_derive_v).unwrap();
+                ::std::write!(&mut #scratch, "{}", #v).unwrap();
                 #buf.push_value_ignore_validity(#scratch.as_str());
             }
             ::std::option::Option::None => {

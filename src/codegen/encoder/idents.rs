@@ -1,9 +1,9 @@
 //! Centralized identifier generation for the encoder IR.
 //!
-//! Every identifier the encoder injects into generated code is built from
+//! Every identifier the macro injects into generated code is built from
 //! the `__df_derive_` prefix plus a structured suffix. Funneling every
 //! identifier through this module gives a single place to look when adding
-//! a new encoder or renaming an identifier that collides with a future user
+//! a new emitter or renaming an identifier that collides with a future user
 //! identifier.
 //!
 //! The `__df_derive_some_` (flat-vec) versus `__df_derive_n_some_` (nested)
@@ -13,7 +13,11 @@
 //! function; the `n_` infix preserves the safety margin against future
 //! emitter combinations that mix the paths.
 //!
-//! Visibility is `pub(super)` so naming details stay inside the encoder.
+//! Visibility is `pub(in crate::codegen)` so the encoder's siblings under
+//! `src/codegen/` (the columnar/strategy/nested-schema entry points and the
+//! per-derive helper definition in `mod.rs`) can route their literals
+//! through the same registry. The contract is repo-wide: every
+//! `__df_derive_*` identifier the macro emits comes from this file.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -23,48 +27,49 @@ use syn::Ident;
 
 /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar field.
 /// Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast path.
-pub(super) fn primitive_buf(idx: usize) -> Ident {
+pub(in crate::codegen) fn primitive_buf(idx: usize) -> Ident {
     format_ident!("__df_derive_buf_{}", idx)
 }
 
-/// `MutableBitmap` validity buffer for the
-/// `is_direct_primitive_array_option_numeric_leaf` fast path. Paired with
-/// `primitive_buf` (which holds `Vec<#native>` on that path) so the finisher
-/// can build a `PrimitiveArray::new(dtype, vals, validity)` directly without
-/// a `Vec<Option<T>>` second walk.
-pub(super) fn primitive_validity(idx: usize) -> Ident {
+/// `MutableBitmap` validity buffer for the option-bearing primitive leaves
+/// (numeric / `Decimal` / `DateTime` / bool / string-like). Paired with
+/// `primitive_buf` (which holds `Vec<#native>` for numeric leaves and an
+/// `MBVA<str>` for string-like leaves) so the finisher can build a
+/// `PrimitiveArray::new(dtype, vals, validity)` directly without a
+/// `Vec<Option<T>>` second walk.
+pub(in crate::codegen) fn primitive_validity(idx: usize) -> Ident {
     format_ident!("__df_derive_val_{}", idx)
 }
 
-/// Row counter for the `is_direct_view_option_string_leaf` fast path.
-/// Indexes the pre-filled `MutableBitmap` so the per-row push only writes a
-/// single byte for `None` rows via `set_unchecked`, instead of pushing both
-/// `true` and `false` bits unconditionally.
-pub(super) fn primitive_row_idx(idx: usize) -> Ident {
+/// Row counter paired with a pre-filled `MutableBitmap` validity buffer for
+/// the option-bearing string-like / bool primitive leaves. Indexes the
+/// pre-filled bitmap so the per-row push only flips a single bit on the
+/// `None` rows, instead of pushing both `true` and `false` bits
+/// unconditionally.
+pub(in crate::codegen) fn primitive_row_idx(idx: usize) -> Ident {
     format_ident!("__df_derive_ri_{}", idx)
 }
 
-/// Reused `String` scratch buffer for the `is_direct_view_to_string_leaf`
-/// fast path. Paired with `primitive_buf` (which holds
-/// `MutableBinaryViewArray<str>` on that path) so each row can clear-and-write
-/// into the scratch via `Display::fmt` and then push the resulting `&str`
-/// into the view array (which copies the bytes), avoiding a fresh per-row
-/// `String` allocation.
-pub(super) fn primitive_str_scratch(idx: usize) -> Ident {
+/// Reused `String` scratch buffer for the `to_string` (`as_string`) leaf.
+/// Paired with `primitive_buf` (which holds `MutableBinaryViewArray<str>`
+/// for that leaf) so each row can clear-and-write into the scratch via
+/// `Display::fmt` and then push the resulting `&str` into the view array
+/// (which copies the bytes), avoiding a fresh per-row `String` allocation.
+pub(in crate::codegen) fn primitive_str_scratch(idx: usize) -> Ident {
     format_ident!("__df_derive_str_{}", idx)
 }
 
 /// Per-field local for the assembled Series produced by `vec_emit_decl` —
 /// one per (field, depth) combination, namespaced by `idx` so two adjacent
 /// fields don't collide.
-pub(super) fn vec_field_series(idx: usize) -> Ident {
+pub(in crate::codegen) fn vec_field_series(idx: usize) -> Ident {
     format_ident!("__df_derive_field_series_{}", idx)
 }
 
 /// Synthesized per-row local for `wrap_multi_option_primitive`. Holds the
 /// collapsed `Option<&T>` (or `Option<T>` after `.copied()`/`.cloned()`)
 /// the inner option-leaf machinery consumes.
-pub(super) fn multi_option_local(idx: usize) -> Ident {
+pub(in crate::codegen) fn multi_option_local(idx: usize) -> Ident {
     format_ident!("__df_derive_mo_{}", idx)
 }
 
@@ -72,23 +77,23 @@ pub(super) fn multi_option_local(idx: usize) -> Ident {
 
 /// Per-layer offsets vec ident. Layer `i` is the `i`-th `Vec` from the
 /// outside; layer `depth-1` is the innermost.
-pub(super) fn vec_layer_offsets(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_offsets(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_off_{}", layer)
 }
 
 /// Per-layer outer-validity `MutableBitmap` ident.
-pub(super) fn vec_layer_validity(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_validity(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_val_{}", layer)
 }
 
 /// Per-layer iteration binding. Layer 0 binds the field access; deeper
 /// layers bind the previous layer's iterator output.
-pub(super) fn vec_layer_bind(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_bind(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_bind_{}", layer)
 }
 
 /// Per-layer offsets buffer (frozen `OffsetsBuffer<i64>`).
-pub(super) fn vec_layer_offsets_buf(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_offsets_buf(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_off_buf_{}", layer)
 }
 
@@ -96,18 +101,18 @@ pub(super) fn vec_layer_offsets_buf(layer: usize) -> Ident {
 /// Mirror of [`nested_layer_validity_bm`] for the flat-vec path; the freeze
 /// is hoisted out of the wrap loop so the assemble helper can clone the
 /// pre-frozen buffer rather than consume the `MutableBitmap` directly.
-pub(super) fn vec_layer_validity_bm(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_validity_bm(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_val_bm_{}", layer)
 }
 
 /// Per-layer `LargeListArray` ident produced during the final-assemble step.
-pub(super) fn vec_layer_list_arr(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_list_arr_{}", layer)
 }
 
 /// Per-layer total counter for the flat-vec precount loop. Layer `i` counts
 /// child-lists produced by layer `i+1`.
-pub(super) fn vec_layer_total(layer: usize) -> Ident {
+pub(in crate::codegen) fn vec_layer_total(layer: usize) -> Ident {
     format_ident!("__df_derive_total_layer_{}", layer)
 }
 
@@ -118,40 +123,40 @@ pub(super) fn vec_layer_total(layer: usize) -> Ident {
 ///
 /// The `__df_derive_some_` prefix vs. the nested path's `__df_derive_n_some_`
 /// is load-bearing — see the module docs.
-pub(super) const VEC_OUTER_SOME_PREFIX: &str = "__df_derive_some_";
+pub(in crate::codegen) const VEC_OUTER_SOME_PREFIX: &str = "__df_derive_some_";
 
 // --- Per-layer idents for the nested-struct push/scan path ----------------
 
 /// Per-(field, layer) offsets vec ident for the nested encoder.
-pub(super) fn nested_layer_offsets(idx: usize, layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_offsets(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_off_{}_{}", idx, layer)
 }
 
 /// Per-(field, layer) frozen `OffsetsBuffer<i64>` ident for the nested encoder.
-pub(super) fn nested_layer_offsets_buf(idx: usize, layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_offsets_buf(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_off_buf_{}_{}", idx, layer)
 }
 
 /// Per-(field, layer) `MutableBitmap` outer-validity ident for the nested
 /// encoder.
-pub(super) fn nested_layer_validity_mb(idx: usize, layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_validity_mb(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_valmb_{}_{}", idx, layer)
 }
 
 /// Per-(field, layer) frozen `Bitmap` outer-validity ident for the nested
 /// encoder.
-pub(super) fn nested_layer_validity_bm(idx: usize, layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_validity_bm(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_valbm_{}_{}", idx, layer)
 }
 
 /// Per-(field, layer) iteration binding for the nested encoder.
-pub(super) fn nested_layer_bind(idx: usize, layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_bind(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_bind_{}_{}", idx, layer)
 }
 
 /// Per-layer total counter for the nested precount loop. Mirror of
 /// [`vec_layer_total`] with the nested-path `n_` prefix.
-pub(super) fn nested_layer_total(layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_total(layer: usize) -> Ident {
     format_ident!("__df_derive_n_total_layer_{}", layer)
 }
 
@@ -159,17 +164,23 @@ pub(super) fn nested_layer_total(layer: usize) -> Ident {
 /// The shared walker constructs per-layer binds inline as
 /// `format_ident!("{prefix}{cur}")`. The `n_` infix is intentional safety
 /// margin against the flat-vec path (see module docs).
-pub(super) const NESTED_OUTER_SOME_PREFIX: &str = "__df_derive_n_some_";
+pub(in crate::codegen) const NESTED_OUTER_SOME_PREFIX: &str = "__df_derive_n_some_";
+
+/// Token-form of the prefix used by the nested-path precount walker. Distinct
+/// from [`NESTED_OUTER_SOME_PREFIX`] (the scan walker's prefix) so the two
+/// walkers' loops can coexist inside the same generated block without their
+/// outer-Some binds shadowing one another.
+pub(in crate::codegen) const NESTED_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_n_pre_some_";
 
 /// Per-layer `LargeListArray` ident produced by the nested encoder's
 /// `build_nested_layer_wrap`.
-pub(super) fn nested_layer_list_arr(layer: usize) -> Ident {
+pub(in crate::codegen) fn nested_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_n_arr_{}", layer)
 }
 
 /// Innermost `ArrayRef` chunk pulled from the rechunked inner Series, used
 /// as the seed of the layer-wrap stack.
-pub(super) fn nested_inner_chunk() -> Ident {
+pub(in crate::codegen) fn nested_inner_chunk() -> Ident {
     format_ident!("__df_derive_inner_chunk")
 }
 
@@ -178,97 +189,213 @@ pub(super) fn nested_inner_chunk() -> Ident {
 /// dtype access keeps its static-dispatch `Array::dtype(&typed_arr)`
 /// shape — boxing then dispatching virtually through `Box<dyn Array>`
 /// reproducibly regresses several depth-N benches.
-pub(super) fn seed_arrow_dtype() -> Ident {
+pub(in crate::codegen) fn seed_arrow_dtype() -> Ident {
     format_ident!("__df_derive_seed_dt")
 }
 
 // --- Nested encoder per-field intermediates (one per field) ---------------
 
 /// `Vec<&T>` flat ref accumulator for the nested encoder.
-pub(super) fn nested_flat(idx: usize) -> Ident {
+pub(in crate::codegen) fn nested_flat(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_flat_{}", idx)
 }
 
 /// `Vec<Option<IdxSize>>` per-element positions for the inner-Option
 /// scatter case in the nested encoder.
-pub(super) fn nested_positions(idx: usize) -> Ident {
+pub(in crate::codegen) fn nested_positions(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_pos_{}", idx)
 }
 
 /// Inner `DataFrame` returned by `columnar_from_refs` in the nested encoder.
-pub(super) fn nested_df(idx: usize) -> Ident {
+pub(in crate::codegen) fn nested_df(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_df_{}", idx)
 }
 
 /// `IdxCa` built from `positions` for the nested-encoder scatter case.
-pub(super) fn nested_take(idx: usize) -> Ident {
+pub(in crate::codegen) fn nested_take(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_take_{}", idx)
 }
 
 /// Total inner-element count for the nested encoder (used by precount and
 /// outer-list capacity).
-pub(super) fn nested_total(idx: usize) -> Ident {
+pub(in crate::codegen) fn nested_total(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_total_{}", idx)
 }
 
 // --- Per-populator local idents (no parameter) ----------------------------
 
 /// Outer iter binding for the populator's `for ... in items` ring.
-pub(super) fn populator_iter() -> Ident {
+pub(in crate::codegen) fn populator_iter() -> Ident {
     format_ident!("__df_derive_it")
 }
 
 /// Inner-leaf binding inside the deepest-layer for-loop. Bound to `&T`
 /// (no inner-Option) or `Option<&T>` after the multi-Option collapse.
-pub(super) fn leaf_value() -> Ident {
+pub(in crate::codegen) fn leaf_value() -> Ident {
     format_ident!("__df_derive_v")
 }
 
 /// Raw inner-leaf binding before the multi-Option collapse (used only when
 /// `inner_option_layers > 1`; the loop binding is `__df_derive_v_raw` and
 /// then collapsed into [`leaf_value`]).
-pub(super) fn leaf_value_raw() -> Ident {
+pub(in crate::codegen) fn leaf_value_raw() -> Ident {
     format_ident!("__df_derive_v_raw")
 }
 
 /// Innermost leaf array ident (the `PrimitiveArray<T>` / `Utf8ViewArray` /
 /// `BooleanArray` value the layer stack wraps).
-pub(super) fn leaf_arr() -> Ident {
+pub(in crate::codegen) fn leaf_arr() -> Ident {
     format_ident!("__df_derive_leaf_arr")
 }
 
 /// Total leaf-element counter for the flat-vec precount loop.
-pub(super) fn total_leaves() -> Ident {
+pub(in crate::codegen) fn total_leaves() -> Ident {
     format_ident!("__df_derive_total_leaves")
 }
 
 /// Bit-packed values bitmap ident for the bool inner-Option / bool-bare
 /// vec encoders. Same name in both spec variants (the variants never
 /// coexist in one block).
-pub(super) fn bool_values() -> Ident {
+pub(in crate::codegen) fn bool_values() -> Ident {
     format_ident!("__df_derive_values")
 }
 
 /// Validity bitmap ident for the bool / numeric / string-like vec encoders.
 /// Same name across spec variants (they never coexist in one block).
-pub(super) fn bool_validity() -> Ident {
+pub(in crate::codegen) fn bool_validity() -> Ident {
     format_ident!("__df_derive_validity")
 }
 
 /// Inner offsets vec ident for the depth-1 bool-bare fast path.
-pub(super) fn bool_inner_offsets() -> Ident {
+pub(in crate::codegen) fn bool_inner_offsets() -> Ident {
     format_ident!("__df_derive_inner_offsets")
 }
 
+/// Flat values buffer ident for the bulk-vec leaf paths: `Vec<#native>` for
+/// numeric / decimal / datetime spec variants, and `Vec<bool>` for the
+/// depth-1 bool-bare fast path. Same name across variants — they never
+/// coexist in one block.
+pub(in crate::codegen) fn vec_flat() -> Ident {
+    format_ident!("__df_derive_flat")
+}
+
+/// `MutableBinaryViewArray<str>` accumulator ident for the bulk-vec
+/// string-like leaf paths (`String`, `to_string`, `as_str`).
+pub(in crate::codegen) fn vec_view_buf() -> Ident {
+    format_ident!("__df_derive_view_buf")
+}
+
+/// Per-leaf index counter ident for bulk-vec leaves that pre-fill a values /
+/// validity bitmap and need a running index for `set(idx, ...)` calls
+/// (bool inner-Option, bool-bare, string-like with inner-Option).
+pub(in crate::codegen) fn vec_leaf_idx() -> Ident {
+    format_ident!("__df_derive_leaf_idx")
+}
+
+/// Local `MutableBitmap` builder ident used inside the pre-filled-bitmap
+/// init blocks (`let mut <bitmap> = { let mut __df_derive_b = ...; b }`).
+/// Local to each builder block; centralized for consistency.
+pub(in crate::codegen) fn bitmap_builder() -> Ident {
+    format_ident!("__df_derive_b")
+}
+
+/// Frozen `OffsetsBuffer<i64>` local for the depth-1 bool-bare fast path.
+/// Sole call site, kept here so the safety-net scanner finds the literal in
+/// exactly one place.
+pub(in crate::codegen) fn bool_bare_offsets_buf() -> Ident {
+    format_ident!("__df_derive_offsets_buf")
+}
+
+/// `LargeListArray` local for the depth-1 bool-bare fast path. Like
+/// [`bool_bare_offsets_buf`], a single-call-site ident centralized so the
+/// scanner sees one definition, not a literal.
+pub(in crate::codegen) fn bool_bare_list_arr() -> Ident {
+    format_ident!("__df_derive_list_arr")
+}
+
+/// Per-field `with_name(...)`-renamed Series local pushed onto `columns` in
+/// the bulk-vec and nested-struct columnar blocks. Same name across both
+/// paths (the two paths' blocks are independent scopes).
+pub(in crate::codegen) fn field_named_series() -> Ident {
+    format_ident!("__df_derive_named")
+}
+
+/// Per-row `format!`-built prefixed column name ident inside the
+/// nested-struct `for col in schema` loop body.
+pub(in crate::codegen) fn nested_prefixed_name() -> Ident {
+    format_ident!("__df_derive_prefixed")
+}
+
+/// Inner schema-column-name binding inside the nested-struct
+/// `for (name, dtype) in schema()?` loop. The schema name is exposed as
+/// `&str` and used to look up the inner Series via `df.column(name)`.
+pub(in crate::codegen) fn nested_col_name() -> Ident {
+    format_ident!("__df_derive_col_name")
+}
+
+/// Inner schema-column-dtype binding inside the nested-struct
+/// `for (name, dtype) in schema()?` loop. Borrowed as `&DataType` so the
+/// per-column expressions can pass it to typed-null builders.
+pub(in crate::codegen) fn nested_col_dtype() -> Ident {
+    format_ident!("__df_derive_dtype")
+}
+
+/// Per-column inner Series local inside the nested-struct columnar block —
+/// pulled from the inner `DataFrame`, then renamed and pushed.
+pub(in crate::codegen) fn nested_inner_series() -> Ident {
+    format_ident!("__df_derive_inner")
+}
+
+/// Per-column "full" inner Series local for the scatter-via-take branch of
+/// the nested-struct dispatch. Bound to `df.column(...)?.as_materialized_series()`
+/// then `take(&idx)?`-ed into the final Series.
+pub(in crate::codegen) fn nested_inner_full() -> Ident {
+    format_ident!("__df_derive_inner_full")
+}
+
+/// Per-column rechunked inner Series local in the depth-N nested-Vec
+/// encoder's `build_nested_layer_wrap` — feeds the layer-wrap stack a
+/// single contiguous `ArrayRef`.
+pub(in crate::codegen) fn nested_inner_col() -> Ident {
+    format_ident!("__df_derive_inner_col")
+}
+
+/// Per-column post-rechunk Series local in `build_nested_layer_wrap`. Holds
+/// the result of `inner_col.rechunk()` so the layer-wrap stack can pull
+/// `chunks()[0].clone()` as the seed `ArrayRef`.
+pub(in crate::codegen) fn nested_inner_rech() -> Ident {
+    format_ident!("__df_derive_inner_rech")
+}
+
+/// Mutable `DataType` accumulator inside the schema/empty-frame helpers'
+/// per-layer `List<>` wrap loop. Each iteration replaces it with
+/// `DataType::List(Box::new(prev))`, building up the runtime dtype that
+/// matches the field's `Vec<…<Vec<T>>>` nesting.
+pub(in crate::codegen) fn schema_wrapped_dtype() -> Ident {
+    format_ident!("__df_derive_wrapped")
+}
+
+/// Free-function helper emitted at the top of each derive's per-derive
+/// `const _: () = { ... };` scope. The helper holds the only
+/// `Series::from_chunks_and_dtype_unchecked` `unsafe` block in the
+/// generated code; every bulk-list emit site routes through it. Inlining
+/// the `unsafe` call into a `Self::__df_derive_*` method on the user type
+/// re-triggers `clippy::unsafe_derive_deserialize` on downstream
+/// `#[derive(ToDataFrame, Deserialize)]` users — the helper's name and
+/// scope are load-bearing per the encoder-IR doc invariant.
+pub(in crate::codegen) fn assemble_helper() -> Ident {
+    format_ident!("__df_derive_assemble_list_series_unchecked")
+}
+
 /// Per-row inner-Option binding inside the nested-struct deepest leaf body.
-pub(super) fn nested_maybe() -> Ident {
+pub(in crate::codegen) fn nested_maybe() -> Ident {
     format_ident!("__df_derive_maybe")
 }
 
 /// Closure parameter inside `collapse_options_to_ref`'s
 /// `.and_then(|__df_derive_o| __df_derive_o.as_ref())` chain. Local to the
 /// closure; centralized for consistency.
-pub(super) fn collapse_option_param() -> Ident {
+pub(in crate::codegen) fn collapse_option_param() -> Ident {
     format_ident!("__df_derive_o")
 }
 
@@ -278,13 +405,13 @@ pub(super) fn collapse_option_param() -> Ident {
 /// stream for layer `i`. The precount loop allocates the counters; the
 /// shared `shape_offsets_decls` / `shape_validity_decls` helpers consume
 /// them via this closure.
-pub(super) fn vec_layer_total_token(layer: usize) -> TokenStream {
+pub(in crate::codegen) fn vec_layer_total_token(layer: usize) -> TokenStream {
     let id = vec_layer_total(layer);
     quote! { #id }
 }
 
 /// Mirror of [`vec_layer_total_token`] for the nested-encoder path.
-pub(super) fn nested_layer_total_token(layer: usize) -> TokenStream {
+pub(in crate::codegen) fn nested_layer_total_token(layer: usize) -> TokenStream {
     let id = nested_layer_total(layer);
     quote! { #id }
 }

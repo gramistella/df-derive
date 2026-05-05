@@ -376,10 +376,13 @@ fn vec_final_assemble(
 /// of pushed views); the bool bit-packed-bitmap layout tracks a per-leaf
 /// index so it can stay in sync with both the values and validity bitmaps.
 fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
+    let flat = idents::vec_flat();
+    let view_buf = idents::vec_view_buf();
+    let leaf_idx = idents::vec_leaf_idx();
     match spec {
-        VecLeafSpec::Numeric { .. } => quote! { __df_derive_flat.len() },
-        VecLeafSpec::StringLike { .. } => quote! { __df_derive_view_buf.len() },
-        VecLeafSpec::Bool | VecLeafSpec::BoolBare => quote! { __df_derive_leaf_idx },
+        VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
+        VecLeafSpec::StringLike { .. } => quote! { #view_buf.len() },
+        VecLeafSpec::Bool | VecLeafSpec::BoolBare => quote! { #leaf_idx },
     }
 }
 
@@ -444,23 +447,26 @@ fn bool_bare_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let storage = quote! {
-        let mut __df_derive_values: #pa_root::bitmap::MutableBitmap = {
-            let mut __df_derive_b =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            __df_derive_b.extend_constant(#leaf_capacity_expr, false);
-            __df_derive_b
-        };
-        let mut __df_derive_leaf_idx: usize = 0;
-    };
-    let push = quote! {
-        if *__df_derive_v {
-            __df_derive_values.set(__df_derive_leaf_idx, true);
-        }
-        __df_derive_leaf_idx += 1;
-    };
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
+    let leaf_idx = idents::vec_leaf_idx();
+    let b = idents::bitmap_builder();
+    let v = idents::leaf_value();
+    let storage = quote! {
+        let mut #values_ident: #pa_root::bitmap::MutableBitmap = {
+            let mut #b =
+                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+            #b.extend_constant(#leaf_capacity_expr, false);
+            #b
+        };
+        let mut #leaf_idx: usize = 0;
+    };
+    let push = quote! {
+        if *#v {
+            #values_ident.set(#leaf_idx, true);
+        }
+        #leaf_idx += 1;
+    };
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, false, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
@@ -476,22 +482,27 @@ fn numeric_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let flat = idents::vec_flat();
+    let validity = idents::bool_validity();
+    let b = idents::bitmap_builder();
+    let v = idents::leaf_value();
+    let leaf_arr = idents::leaf_arr();
     // Numeric / Decimal / DateTime: `Vec<#native>` flat values.
     // Inner-Option carries a parallel `MutableBitmap` pre-filled `true`.
     let storage = if has_inner_option {
         quote! {
-            let mut __df_derive_flat: ::std::vec::Vec<#native> =
+            let mut #flat: ::std::vec::Vec<#native> =
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-            let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
-                let mut __df_derive_b =
+            let mut #validity: #pa_root::bitmap::MutableBitmap = {
+                let mut #b =
                     #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-                __df_derive_b.extend_constant(#leaf_capacity_expr, true);
-                __df_derive_b
+                #b.extend_constant(#leaf_capacity_expr, true);
+                #b
             };
         }
     } else {
         quote! {
-            let mut __df_derive_flat: ::std::vec::Vec<#native> =
+            let mut #flat: ::std::vec::Vec<#native> =
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
         }
     };
@@ -517,36 +528,36 @@ fn numeric_leaf_pieces(
     // does not. This locks in both bench-targeted shapes.
     let push = if has_inner_option {
         quote! {
-            match __df_derive_v {
-                ::std::option::Option::Some(__df_derive_v) => {
-                    __df_derive_flat.push({ #value_expr });
+            match #v {
+                ::std::option::Option::Some(#v) => {
+                    #flat.push({ #value_expr });
                 }
                 ::std::option::Option::None => {
-                    __df_derive_flat.push(<#native as ::std::default::Default>::default());
-                    __df_derive_validity.set(__df_derive_flat.len() - 1, false);
+                    #flat.push(<#native as ::std::default::Default>::default());
+                    #validity.set(#flat.len() - 1, false);
                 }
             }
         }
     } else {
         quote! {
-            __df_derive_flat.push(#value_expr);
+            #flat.push(#value_expr);
         }
     };
     let leaf_arr_expr = if has_inner_option {
         quote! {
-            let __df_derive_leaf_arr: #pa_root::array::PrimitiveArray<#native> =
+            let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
                 #pa_root::array::PrimitiveArray::<#native>::new(
                     <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-                    __df_derive_flat.into(),
+                    #flat.into(),
                     ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
-                        __df_derive_validity,
+                        #validity,
                     ),
                 );
         }
     } else {
         quote! {
-            let __df_derive_leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                #pa_root::array::PrimitiveArray::<#native>::from_vec(__df_derive_flat);
+            let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
+                #pa_root::array::PrimitiveArray::<#native>::from_vec(#flat);
         }
     };
     (storage, push, leaf_arr_expr)
@@ -559,6 +570,12 @@ fn string_like_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let view_buf = idents::vec_view_buf();
+    let validity = idents::bool_validity();
+    let leaf_idx = idents::vec_leaf_idx();
+    let b = idents::bitmap_builder();
+    let v = idents::leaf_value();
+    let leaf_arr = idents::leaf_arr();
     // String / to_string / as_str: `MutableBinaryViewArray<str>` flat values.
     // Inner-Option uses a separate validity bitmap pre-filled `true`, plus
     // a row index that advances per element so `validity.set(i, false)`
@@ -568,52 +585,52 @@ fn string_like_leaf_pieces(
         storage_parts.push(d.clone());
     }
     storage_parts.push(quote! {
-        let mut __df_derive_view_buf: #pa_root::array::MutableBinaryViewArray<str> =
+        let mut #view_buf: #pa_root::array::MutableBinaryViewArray<str> =
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
         storage_parts.push(quote! {
-            let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
-                let mut __df_derive_b =
+            let mut #validity: #pa_root::bitmap::MutableBitmap = {
+                let mut #b =
                     #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-                __df_derive_b.extend_constant(#leaf_capacity_expr, true);
-                __df_derive_b
+                #b.extend_constant(#leaf_capacity_expr, true);
+                #b
             };
-            let mut __df_derive_leaf_idx: usize = 0;
+            let mut #leaf_idx: usize = 0;
         });
     }
     let storage = quote! { #(#storage_parts)* };
     let push = if has_inner_option {
         quote! {
-            match __df_derive_v {
-                ::std::option::Option::Some(__df_derive_v) => {
-                    __df_derive_view_buf.push_value_ignore_validity({ #value_expr });
+            match #v {
+                ::std::option::Option::Some(#v) => {
+                    #view_buf.push_value_ignore_validity({ #value_expr });
                 }
                 ::std::option::Option::None => {
-                    __df_derive_view_buf.push_value_ignore_validity("");
-                    __df_derive_validity.set(__df_derive_leaf_idx, false);
+                    #view_buf.push_value_ignore_validity("");
+                    #validity.set(#leaf_idx, false);
                 }
             }
-            __df_derive_leaf_idx += 1;
+            #leaf_idx += 1;
         }
     } else {
         quote! {
-            __df_derive_view_buf.push_value_ignore_validity({ #value_expr });
+            #view_buf.push_value_ignore_validity({ #value_expr });
         }
     };
     let leaf_arr_expr = if has_inner_option {
         quote! {
-            let __df_derive_leaf_arr: #pa_root::array::Utf8ViewArray = __df_derive_view_buf
+            let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf
                 .freeze()
                 .with_validity(
                     ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
-                        __df_derive_validity,
+                        #validity,
                     ),
                 );
         }
     } else {
         quote! {
-            let __df_derive_leaf_arr: #pa_root::array::Utf8ViewArray = __df_derive_view_buf.freeze();
+            let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf.freeze();
         }
     };
     (storage, push, leaf_arr_expr)
@@ -623,39 +640,42 @@ fn bool_inner_option_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let values_ident = idents::bool_values();
+    let validity_ident = idents::bool_validity();
+    let leaf_idx = idents::vec_leaf_idx();
+    let b = idents::bitmap_builder();
+    let v = idents::leaf_value();
     // Bool with inner-Option only — bare bool is served by
     // `vec_encoder_bool_bare`. Bit-packed values bitmap (pre-filled `false`)
     // + parallel validity bitmap (pre-filled `true`) + leaf index counter so
     // `set(i, ...)` lands on the right bit.
     let storage = quote! {
-        let mut __df_derive_values: #pa_root::bitmap::MutableBitmap = {
-            let mut __df_derive_b =
+        let mut #values_ident: #pa_root::bitmap::MutableBitmap = {
+            let mut #b =
                 #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            __df_derive_b.extend_constant(#leaf_capacity_expr, false);
-            __df_derive_b
+            #b.extend_constant(#leaf_capacity_expr, false);
+            #b
         };
-        let mut __df_derive_validity: #pa_root::bitmap::MutableBitmap = {
-            let mut __df_derive_b =
+        let mut #validity_ident: #pa_root::bitmap::MutableBitmap = {
+            let mut #b =
                 #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            __df_derive_b.extend_constant(#leaf_capacity_expr, true);
-            __df_derive_b
+            #b.extend_constant(#leaf_capacity_expr, true);
+            #b
         };
-        let mut __df_derive_leaf_idx: usize = 0;
+        let mut #leaf_idx: usize = 0;
     };
     let push = quote! {
-        match __df_derive_v {
+        match #v {
             ::std::option::Option::Some(true) => {
-                __df_derive_values.set(__df_derive_leaf_idx, true);
+                #values_ident.set(#leaf_idx, true);
             }
             ::std::option::Option::Some(false) => {}
             ::std::option::Option::None => {
-                __df_derive_validity.set(__df_derive_leaf_idx, false);
+                #validity_ident.set(#leaf_idx, false);
             }
         }
-        __df_derive_leaf_idx += 1;
+        #leaf_idx += 1;
     };
-    let values_ident = idents::bool_values();
-    let validity_ident = idents::bool_validity();
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, true, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
@@ -685,11 +705,12 @@ fn vec_encoder(
     let series_local = vec_encoder_series_local(ctx.base.idx);
     let decl = vec_emit_decl(ctx, spec, shape, leaf_dtype);
     let name = ctx.base.name;
+    let named = idents::field_named_series();
     let columnar = quote! {
         {
             #decl
-            let __df_derive_named = #series_local.with_name(#name.into());
-            columns.push(__df_derive_named.into());
+            let #named = #series_local.with_name(#name.into());
+            columns.push(#named.into());
         }
     };
     Encoder::Multi { columnar }
@@ -707,12 +728,13 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
         let series_local = vec_encoder_series_local(ctx.base.idx);
         let body = bool_bare_depth1_body(ctx.base.access, &pa_root, &pp);
         let name = ctx.base.name;
+        let named = idents::field_named_series();
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
         let columnar = quote! {
             {
                 #decl
-                let __df_derive_named = #series_local.with_name(#name.into());
-                columns.push(__df_derive_named.into());
+                let #named = #series_local.with_name(#name.into());
+                columns.push(#named.into());
             }
         };
         return Encoder::Multi { columnar };
@@ -734,35 +756,39 @@ fn bool_bare_depth1_body(
     let total_leaves = idents::total_leaves();
     let it = idents::populator_iter();
     let leaf_arr = idents::leaf_arr();
+    let flat = idents::vec_flat();
+    let offsets_buf = idents::bool_bare_offsets_buf();
+    let list_arr = idents::bool_bare_list_arr();
+    let assemble_helper = idents::assemble_helper();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
     quote! {
         let mut #total_leaves: usize = 0;
         for #it in items {
             #total_leaves += (&(#access)).len();
         }
-        let mut __df_derive_flat: ::std::vec::Vec<bool> =
+        let mut #flat: ::std::vec::Vec<bool> =
             ::std::vec::Vec::with_capacity(#total_leaves);
         let mut #inner_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(items.len() + 1);
         #inner_offsets.push(0);
         for #it in items {
-            __df_derive_flat.extend((&(#access)).iter().copied());
-            #inner_offsets.push(__df_derive_flat.len() as i64);
+            #flat.extend((&(#access)).iter().copied());
+            #inner_offsets.push(#flat.len() as i64);
         }
         let #leaf_arr: #pa_root::array::BooleanArray =
-            #pa_root::array::BooleanArray::from_slice(&__df_derive_flat);
-        let __df_derive_offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::array::BooleanArray::from_slice(&#flat);
+        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
             #pa_root::offset::OffsetsBuffer::try_from(#inner_offsets)?;
-        let __df_derive_list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
+        let #list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
             #pp::LargeListArray::default_datatype(
                 #pa_root::array::Array::dtype(&#leaf_arr).clone(),
             ),
-            __df_derive_offsets_buf,
+            #offsets_buf,
             ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef,
             ::std::option::Option::None,
         );
-        __df_derive_assemble_list_series_unchecked(
-            __df_derive_list_arr,
+        #assemble_helper(
+            #list_arr,
             #leaf_dtype,
         )
     }
@@ -778,14 +804,15 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_
     // leaves both resolve. `StringyBase` already encodes the parser's
     // accept set (String/Struct/Generic), so the match below is exhaustive
     // by type rather than by wildcard.
+    let v = idents::leaf_value();
     let value_expr = match base {
-        StringyBase::String => quote! { __df_derive_v.as_str() },
+        StringyBase::String => quote! { #v.as_str() },
         StringyBase::Struct { ident, args } => {
             let ty_path = super::build_type_path(ident, *args);
-            quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(__df_derive_v) }
+            quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(#v) }
         }
         StringyBase::Generic(ident) => {
-            quote! { <#ident as ::core::convert::AsRef<str>>::as_ref(__df_derive_v) }
+            quote! { <#ident as ::core::convert::AsRef<str>>::as_ref(#v) }
         }
     };
     let spec = VecLeafSpec::StringLike {
@@ -811,6 +838,7 @@ pub(super) fn try_build_vec_encoder(
     ctx: &LeafCtx<'_>,
     vec_shape: &VecShape,
 ) -> Encoder {
+    let v = idents::leaf_value();
     match shape {
         LeafShape::Numeric(base) => {
             let info = crate::codegen::type_registry::numeric_info(base)
@@ -822,7 +850,7 @@ pub(super) fn try_build_vec_encoder(
             // splicing the value expression in.
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
-                value_expr: quote! { *__df_derive_v },
+                value_expr: quote! { *#v },
                 needs_decimal_import: false,
             };
             vec_encoder(ctx, &spec, vec_shape, &info.dtype)
@@ -836,7 +864,7 @@ pub(super) fn try_build_vec_encoder(
             let target = info.native.clone();
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
-                value_expr: quote! { (*__df_derive_v as #target) },
+                value_expr: quote! { (*#v as #target) },
                 needs_decimal_import: false,
             };
             vec_encoder(ctx, &spec, vec_shape, &info.dtype)
@@ -845,7 +873,7 @@ pub(super) fn try_build_vec_encoder(
             let pp = crate::codegen::polars_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::String };
             let spec = VecLeafSpec::StringLike {
-                value_expr: quote! { __df_derive_v.as_str() },
+                value_expr: quote! { #v.as_str() },
                 extra_decls: Vec::new(),
             };
             vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
@@ -873,6 +901,7 @@ pub(super) fn try_build_vec_encoder(
 
 fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
+    let v = idents::leaf_value();
     let unit_tokens = match unit {
         DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
         DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
@@ -882,7 +911,7 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape)
         #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
     };
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
-        &quote! { __df_derive_v },
+        &quote! { #v },
         Some(&PrimitiveTransform::DateTimeToInt(unit)),
         ctx.decimal128_encode_trait,
     );
@@ -896,11 +925,12 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape)
 
 fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecShape) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
+    let v = idents::leaf_value();
     let p = precision as usize;
     let s = scale as usize;
     let leaf_dtype = quote! { #pp::DataType::Decimal(#p, #s) };
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
-        &quote! { __df_derive_v },
+        &quote! { #v },
         Some(&PrimitiveTransform::DecimalToInt128 { precision, scale }),
         ctx.decimal128_encode_trait,
     );
@@ -920,10 +950,11 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     // expression, so the per-element work allocates the scratch once at
     // decl time and reuses on every row.
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
+    let v = idents::leaf_value();
     let value_expr = quote! {{
         use ::std::fmt::Write as _;
         #scratch.clear();
-        ::std::write!(&mut #scratch, "{}", __df_derive_v).unwrap();
+        ::std::write!(&mut #scratch, "{}", #v).unwrap();
         #scratch.as_str()
     }};
     let spec = VecLeafSpec::StringLike {

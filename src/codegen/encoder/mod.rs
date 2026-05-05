@@ -25,7 +25,7 @@
 //! sees them — the runtime semantics match because the only observable null
 //! is whichever bit is the outermost Polars validity.
 
-mod idents;
+pub(in crate::codegen) mod idents;
 mod leaf;
 mod nested;
 mod option;

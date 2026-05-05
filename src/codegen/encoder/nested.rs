@@ -83,20 +83,25 @@ fn nested_consume_columns(
     series_expr: &TokenStream,
 ) -> TokenStream {
     let pp = crate::codegen::polars_paths::prelude();
+    let col_name = idents::nested_col_name();
+    let dtype = idents::nested_col_dtype();
+    let prefixed = idents::nested_prefixed_name();
+    let inner = idents::nested_inner_series();
+    let named = idents::field_named_series();
     quote! {
-        for (__df_derive_col_name, __df_derive_dtype) in
+        for (#col_name, #dtype) in
             <#ty as #to_df_trait>::schema()?
         {
-            let __df_derive_col_name: &str = __df_derive_col_name.as_str();
-            let __df_derive_dtype: &#pp::DataType = &__df_derive_dtype;
+            let #col_name: &str = #col_name.as_str();
+            let #dtype: &#pp::DataType = &#dtype;
             {
-                let __df_derive_prefixed = ::std::format!(
-                    "{}.{}", #parent_name, __df_derive_col_name,
+                let #prefixed = ::std::format!(
+                    "{}.{}", #parent_name, #col_name,
                 );
-                let __df_derive_inner: #pp::Series = #series_expr;
-                let __df_derive_named = __df_derive_inner
-                    .with_name(__df_derive_prefixed.as_str().into());
-                columns.push(__df_derive_named.into());
+                let #inner: #pp::Series = #series_expr;
+                let #named = #inner
+                    .with_name(#prefixed.as_str().into());
+                columns.push(#named.into());
             }
         }
     }
@@ -117,8 +122,9 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
     let ids = NestedIdents::new(idx);
     let flat = &ids.flat;
     let df = &ids.df;
+    let col_name = idents::nested_col_name();
     let inner_expr = quote! {
-        #df.column(__df_derive_col_name)?
+        #df.column(#col_name)?
             .as_materialized_series()
             .clone()
     };
@@ -185,20 +191,23 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
     let positions = &ids.positions;
     let df = &ids.df;
     let take = &ids.take;
+    let col_name = idents::nested_col_name();
+    let dtype = idents::nested_col_dtype();
+    let inner_full = idents::nested_inner_full();
 
     let direct_inner = quote! {
-        #df.column(__df_derive_col_name)?
+        #df.column(#col_name)?
             .as_materialized_series()
             .clone()
     };
     let take_inner = quote! {{
-        let __df_derive_inner_full = #df
-            .column(__df_derive_col_name)?
+        let #inner_full = #df
+            .column(#col_name)?
             .as_materialized_series();
-        __df_derive_inner_full.take(&#take)?
+        #inner_full.take(&#take)?
     }};
     let null_inner = quote! {
-        #pp::Series::new_empty("".into(), __df_derive_dtype)
+        #pp::Series::new_empty("".into(), #dtype)
             .extend_constant(#pp::AnyValue::Null, items.len())?
     };
 
@@ -292,6 +301,9 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
     let scan_body = build_nested_scan_body(access, shape, &layers, flat, positions, total, ty);
     let validity_freeze = build_nested_validity_freeze(shape, &layers, pa_root);
     let offsets_freeze = build_nested_offsets_freeze(&layers, pa_root);
+    let col_name = idents::nested_col_name();
+    let dtype = idents::nested_col_dtype();
+    let inner_full = idents::nested_inner_full();
 
     // Per-column wrap expressions. We need three branches:
     // - filled-direct: `df` exists, positions match flat 1:1 (or no inner
@@ -301,18 +313,18 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
     // - all-empty (flat empty): wrap an empty Series in N list layers.
 
     let inner_col_direct = quote! {
-        #df.column(__df_derive_col_name)?
+        #df.column(#col_name)?
             .as_materialized_series()
             .clone()
     };
     let inner_col_take = quote! {{
-        let __df_derive_inner_full = #df
-            .column(__df_derive_col_name)?
+        let #inner_full = #df
+            .column(#col_name)?
             .as_materialized_series();
-        __df_derive_inner_full.take(&#take)?
+        #inner_full.take(&#take)?
     }};
     let inner_col_empty = quote! {
-        #pp::Series::new_empty("".into(), __df_derive_dtype)
+        #pp::Series::new_empty("".into(), #dtype)
     };
     // All-absent: every element slot is `None`, but the outer offsets are
     // non-zero (each outer row carries inner-Vec lengths > 0). The inner
@@ -321,7 +333,7 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
     // length. Without inner-Option, this branch is unreachable — zero
     // total leaves implies zero outer-list members.
     let inner_col_all_absent = quote! {
-        #pp::Series::new_empty("".into(), __df_derive_dtype)
+        #pp::Series::new_empty("".into(), #dtype)
             .extend_constant(#pp::AnyValue::Null, #total)?
     };
 
@@ -480,13 +492,13 @@ fn build_nested_scan_body(
     // The nested precount uses a distinct outer-Some prefix
     // (`__df_derive_n_pre_some_`) from the scan walker
     // (`__df_derive_n_some_`) so the two loops can coexist without name
-    // shadowing inside the same generated block.
-    const NESTED_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_n_pre_some_";
+    // shadowing inside the same generated block. Both prefixes live in
+    // [`idents`] so any rename touches one place.
     let pre_iter_body = ShapePrecount {
         shape,
         access,
         layers,
-        outer_some_prefix: NESTED_PRE_OUTER_SOME_PREFIX,
+        outer_some_prefix: idents::NESTED_PRE_OUTER_SOME_PREFIX,
         total_counter: total,
         layer_counters: &layer_counters,
     }
@@ -580,11 +592,13 @@ fn build_nested_layer_wrap(
     pp: &TokenStream,
 ) -> TokenStream {
     let inner_chunk = idents::nested_inner_chunk();
+    let inner_col = idents::nested_inner_col();
+    let inner_rech = idents::nested_inner_rech();
     let chunk_decl = quote! {
-        let __df_derive_inner_col: #pp::Series = #inner_col_expr;
-        let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
+        let #inner_col: #pp::Series = #inner_col_expr;
+        let #inner_rech = #inner_col.rechunk();
         let #inner_chunk: #pp::ArrayRef =
-            __df_derive_inner_rech.chunks()[0].clone();
+            #inner_rech.chunks()[0].clone();
     };
     let wrap_layers: Vec<LayerWrap<'_>> = layers
         .iter()
@@ -611,11 +625,12 @@ fn build_nested_layer_wrap(
     // `Series` rechunk). The dtype borrow is taken before the chunk is
     // moved into the innermost wrap below.
     let seed_dtype = quote! { #inner_chunk.dtype().clone() };
+    let dtype = idents::nested_col_dtype();
     let stack = shape_assemble_list_stack(
         quote! { #inner_chunk },
         seed_dtype,
         &wrap_layers,
-        quote! { (*__df_derive_dtype).clone() },
+        quote! { (*#dtype).clone() },
         &idents::nested_layer_list_arr,
     );
     quote! {{

@@ -1,6 +1,8 @@
 use crate::ir::StructIR;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
+
+use super::encoder::idents;
 
 /// Walk every field, build its [`FieldEmit`](super::strategy::FieldEmit),
 /// and concatenate decls/pushes/builders into the three buckets the
@@ -45,7 +47,7 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
     let pp = super::polars_paths::prelude();
-    let it_ident = format_ident!("__df_derive_it");
+    let it_ident = idents::populator_iter();
     let (impl_generics, ty_generics, where_clause) =
         super::impl_parts_with_bounds(&ir.generics, config);
 

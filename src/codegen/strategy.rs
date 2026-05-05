@@ -8,10 +8,10 @@
 
 use crate::ir::{BaseType, FieldIR, PrimitiveTransform, vec_count};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::Ident;
 
-use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_type_path};
+use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_type_path, idents};
 
 /// Per-field columnar emit pieces. The columnar pipeline concatenates
 /// every field's `decls` ahead of the per-row push loop, splices every
@@ -166,9 +166,9 @@ fn build_nested_emit(
 ) -> FieldEmit {
     // The nested encoder paths run their own `iter().map(|__df_derive_it| ...)`
     // loops to build their flat ref vec, so the access expression is
-    // hard-rooted at `__df_derive_it` regardless of the call site's
-    // outer-loop binding.
-    let inner_it = format_ident!("__df_derive_it");
+    // hard-rooted at the centralized populator-iter ident regardless of the
+    // call site's outer-loop binding.
+    let inner_it = idents::populator_iter();
     let access = it_access(field, &inner_it);
     let name = field.name.to_string();
     let ctx = NestedLeafCtx {

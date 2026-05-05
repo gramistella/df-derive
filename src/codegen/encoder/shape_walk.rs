@@ -33,6 +33,20 @@
 //! layers use a per-depth counter ident the caller supplies via a closure.
 //! The flat-vec path passes `__df_derive_total_layer_{i-1}`; the nested path
 //! passes `__df_derive_n_total_layer_{i-1}`.
+//!
+//! [`shape_assemble_list_stack`] is the shared per-layer wrap stack that
+//! both paths emit after the scan completes. Each caller supplies a
+//! `[LayerWrap]` slice describing every layer's offsets-buf ownership via
+//! [`OwnPolicy`]: `OwnPolicy::Move` for single-use sites (the flat-vec path,
+//! where each frozen offsets buffer feeds exactly one `LargeListArray::new`)
+//! and `OwnPolicy::Clone` when the buffer rides across multiple downstream
+//! arms (the nested encoder's four-arm dispatch reuses the same offsets
+//! buffer per arm). The helper emits the reversed `LargeListArray::new`
+//! chain plus the routed `__df_derive_assemble_list_series_unchecked` call
+//! at the outermost layer. Per-layer `OffsetsBuffer::try_from(...)?` freeze
+//! decls stay interleaved with each wrap rather than hoisted upfront —
+//! moving them to the top produced a reproducible regression on
+//! `vec_vec_opt_string`.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -258,6 +272,134 @@ impl ShapePrecount<'_> {
         } else {
             self.build_iter(cur, bind)
         }
+    }
+}
+
+/// Per-layer inputs to the shared layer-wrap stack.
+///
+/// `offsets_buf` is the per-layer offsets-buffer expression — an `OwnPolicy`
+/// the helper splices verbatim into the `LargeListArray::new` argument
+/// position. The flat-vec path passes `OwnPolicy::Move` (its frozen
+/// buffer is single-use); the nested-struct path passes `OwnPolicy::Clone`
+/// (its buffer is shared across the four-arm dispatch's `for col in
+/// schema { ... }` iterations and so cannot be moved out).
+///
+/// `validity_bm` is the optional outer-Option validity-bitmap source —
+/// `None` when the layer has no outer Option (the wrap passes
+/// `Option::None` for its validity argument). When present it is always
+/// cloned (the same frozen `Bitmap` rides under every list-array layer's
+/// LargeListArray::new in the same arm and across multiple arms in the
+/// nested four-way dispatch).
+pub(super) enum OwnPolicy<'a> {
+    /// Move the named local into the wrap argument. The local is bound
+    /// inside the helper's emission scope and used exactly once.
+    Move(&'a syn::Ident),
+    /// Clone the named local (`Clone::clone(&#ident)`). Used when the same
+    /// frozen buffer is read across multiple `LargeListArray::new` sites
+    /// (e.g. across the nested four-arm dispatch's `for col in schema`
+    /// iterations).
+    Clone(&'a syn::Ident),
+}
+
+impl OwnPolicy<'_> {
+    fn splice(&self) -> TokenStream {
+        match self {
+            Self::Move(id) => quote! { #id },
+            Self::Clone(id) => quote! { ::std::clone::Clone::clone(&#id) },
+        }
+    }
+}
+
+pub(super) struct LayerWrap<'a> {
+    pub offsets_buf: OwnPolicy<'a>,
+    pub validity_bm: Option<&'a syn::Ident>,
+    /// Optional per-layer freeze decl emitted immediately before this
+    /// layer's `LargeListArray::new` call. The flat-vec path uses this to
+    /// interleave each layer's `OffsetsBuffer::try_from(...)?` with its
+    /// wrap (matching the pre-refactor emission shape — hoisting the
+    /// freezes out of the wrap loop reproducibly regresses depth-N
+    /// benches by 4-12% even though it is semantically identical). The
+    /// nested-struct path leaves this empty because its freeze happens
+    /// once, above the four-arm dispatch.
+    pub freeze_decl: TokenStream,
+}
+
+/// Stack `layers.len()` `LargeListArray::new` calls (innermost-first,
+/// outermost-last) and route the outermost through
+/// `__df_derive_assemble_list_series_unchecked`.
+///
+/// `seed` is an expression evaluating to an `ArrayRef` (boxed leaf array
+/// for the flat-vec path, `chunks()[0].clone()` for the nested path). It
+/// is moved verbatim into the innermost `LargeListArray::new` call's
+/// values argument. `seed_dtype` is the arrow dtype of that seed array
+/// as a token expression — captured BEFORE the seed is boxed/moved so
+/// the flat-vec path can keep its static `Array::dtype(&typed_leaf_arr)`
+/// call (a virtual dispatch through `Box<dyn Array>::dtype()` does not
+/// inline and reproducibly regresses several depth-N benches by 5-12%).
+///
+/// `leaf_logical_dtype` is the per-leaf logical dtype (e.g. `DataType::String`
+/// for the flat-vec path, `(*__df_derive_dtype).clone()` for the nested
+/// path). The helper wraps it in `(layers.len() - 1)` extra `List<>`
+/// envelopes so the schema dtype matches the runtime list nesting (the
+/// `__df_derive_assemble_list_series_unchecked` helper adds the outermost
+/// `List<>` itself).
+///
+/// `arr_id_for_layer(cur)` produces the per-layer `LargeListArray` local
+/// ident — the flat-vec path uses [`idents::vec_layer_list_arr`] and the
+/// nested path uses [`idents::nested_layer_list_arr`].
+pub(super) fn shape_assemble_list_stack(
+    seed: TokenStream,
+    seed_dtype: TokenStream,
+    layers: &[LayerWrap<'_>],
+    leaf_logical_dtype: TokenStream,
+    arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
+) -> TokenStream {
+    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pp = crate::codegen::polars_paths::prelude();
+    let depth = layers.len();
+
+    let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
+    let mut prev_payload = seed;
+    let mut prev_dtype = seed_dtype;
+    for cur in (0..depth).rev() {
+        let layer = &layers[cur];
+        let freeze = &layer.freeze_decl;
+        let buf_splice = layer.offsets_buf.splice();
+        let arr_id = arr_id_for_layer(cur);
+        let validity_expr = match layer.validity_bm {
+            Some(bm) => {
+                quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }
+            }
+            None => quote! { ::std::option::Option::None },
+        };
+        block.push(quote! {
+            #freeze
+            let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(
+                #pp::LargeListArray::default_datatype(#prev_dtype),
+                #buf_splice,
+                #prev_payload,
+                #validity_expr,
+            );
+        });
+        // Subsequent wraps box the previous `LargeListArray` into an
+        // `ArrayRef` and read its dtype via UFCS so the `Array` trait
+        // method resolves regardless of whether the trait is in scope at
+        // the user call site.
+        prev_payload = quote! { ::std::boxed::Box::new(#arr_id) as #pp::ArrayRef };
+        prev_dtype = quote! { #pa_root::array::Array::dtype(&#arr_id).clone() };
+    }
+
+    let mut helper_logical = leaf_logical_dtype;
+    for _ in 0..depth.saturating_sub(1) {
+        helper_logical = quote! { #pp::DataType::List(::std::boxed::Box::new(#helper_logical)) };
+    }
+    let outer = arr_id_for_layer(0);
+    quote! {
+        #(#block)*
+        __df_derive_assemble_list_series_unchecked(
+            #outer,
+            #helper_logical,
+        )
     }
 }
 

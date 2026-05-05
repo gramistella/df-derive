@@ -24,7 +24,8 @@ use quote::quote;
 
 use super::idents;
 use super::shape_walk::{
-    ScanLayerIdents, ShapePrecount, ShapeScan, shape_offsets_decls, shape_validity_decls,
+    LayerWrap, OwnPolicy, ScanLayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack,
+    shape_offsets_decls, shape_validity_decls,
 };
 use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
 
@@ -589,75 +590,59 @@ fn build_nested_offsets_freeze(layers: &[NestedLayerIdents], pa_root: &TokenStre
 
 /// Wrap the supplied inner-column expression in `depth` `LargeListArray::new`
 /// layers (innermost-first, outermost-last) and route the outermost through
-/// `__df_derive_assemble_list_series_unchecked`. Per-layer validity bitmaps
-/// (when their Option is present) ride under each `LargeListArray`.
+/// `__df_derive_assemble_list_series_unchecked` via the shared
+/// [`shape_assemble_list_stack`] helper. Per-layer validity bitmaps (when
+/// their Option is present) ride under each `LargeListArray`. The freeze
+/// of offsets/validity already happened above the four-arm dispatch so this
+/// helper just wires the pre-frozen idents into the shared stack.
 fn build_nested_layer_wrap(
     layers: &[NestedLayerIdents],
     shape: &VecShape,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
-    let depth = layers.len();
-    let mut block: Vec<TokenStream> = Vec::new();
     let inner_chunk = idents::nested_inner_chunk();
-    block.push(quote! {
+    let chunk_decl = quote! {
         let __df_derive_inner_col: #pp::Series = #inner_col_expr;
         let __df_derive_inner_rech = __df_derive_inner_col.rechunk();
         let #inner_chunk: #pp::ArrayRef =
             __df_derive_inner_rech.chunks()[0].clone();
-    });
-    let mut prev_arr = idents::nested_inner_chunk();
-    for cur in (0..depth).rev() {
-        let layer = &layers[cur];
-        let buf = &layer.offsets_buf;
-        let arr_id = idents::nested_layer_list_arr(cur);
-        let validity_expr = if shape.layers[cur].has_outer_validity() {
-            let bm = &layer.validity_bm;
-            quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }
-        } else {
-            quote! { ::std::option::Option::None }
-        };
-        let prev = prev_arr.clone();
-        // The first wrap consumes the inner chunk (an `ArrayRef`); subsequent
-        // wraps consume the previous LargeListArray boxed as ArrayRef.
-        let prev_payload = if cur == depth - 1 {
-            quote! { #prev }
-        } else {
-            quote! { ::std::boxed::Box::new(#prev) as #pp::ArrayRef }
-        };
-        let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-        // Read the chunk's arrow dtype: `ArrayRef`'s dtype method (the
-        // first wrap) and `LargeListArray::dtype()` (subsequent wraps)
-        // both proxy through the `Array` trait.
-        let dtype_src = if cur == depth - 1 {
-            quote! { #prev.dtype().clone() }
-        } else {
-            quote! { #pa_root::array::Array::dtype(&#prev).clone() }
-        };
-        block.push(quote! {
-            let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(
-                #pp::LargeListArray::default_datatype(#dtype_src),
-                ::std::clone::Clone::clone(&#buf),
-                #prev_payload,
-                #validity_expr,
-            );
-        });
-        prev_arr = arr_id;
-    }
-    // Wrap the per-leaf logical dtype in `(depth - 1)` extra `List<>` layers
-    // to construct what `__df_derive_assemble_list_series_unchecked` expects
-    // (the helper wraps once more, yielding the full N-layer List nesting).
-    let mut helper_logical = quote! { (*__df_derive_dtype).clone() };
-    for _ in 0..depth.saturating_sub(1) {
-        helper_logical = quote! { #pp::DataType::List(::std::boxed::Box::new(#helper_logical)) };
-    }
-    let outer = prev_arr;
+    };
+    let wrap_layers: Vec<LayerWrap<'_>> = layers
+        .iter()
+        .enumerate()
+        .map(|(i, layer)| LayerWrap {
+            // The frozen offsets buffer is bound above the four-arm
+            // dispatch's `for col in schema { ... }` iteration body — it
+            // is read on every iteration of every arm, so the helper
+            // must clone it (an `Arc::clone` under the hood). Moving
+            // would fail the borrow check on the second iteration.
+            offsets_buf: OwnPolicy::Clone(&layer.offsets_buf),
+            validity_bm: shape.layers[i]
+                .has_outer_validity()
+                .then_some(&layer.validity_bm),
+            // Nested freezes happen once above the four-arm dispatch (see
+            // `build_nested_offsets_freeze` / `build_nested_validity_freeze`)
+            // so the per-layer wrap doesn't re-freeze.
+            freeze_decl: TokenStream::new(),
+        })
+        .collect();
+    // The inner chunk is already an `ArrayRef` (`Box<dyn Array>`); the
+    // dtype access goes through the trait object's vtable (no static-
+    // dispatch alternative exists for a chunk that came out of a
+    // `Series` rechunk). The dtype borrow is taken before the chunk is
+    // moved into the innermost wrap below.
+    let seed_dtype = quote! { #inner_chunk.dtype().clone() };
+    let stack = shape_assemble_list_stack(
+        quote! { #inner_chunk },
+        seed_dtype,
+        &wrap_layers,
+        quote! { (*__df_derive_dtype).clone() },
+        &idents::nested_layer_list_arr,
+    );
     quote! {{
-        #(#block)*
-        __df_derive_assemble_list_series_unchecked(
-            #outer,
-            #helper_logical,
-        )
+        #chunk_decl
+        #stack
     }}
 }
 

@@ -92,6 +92,14 @@ pub(super) fn vec_layer_offsets_buf(layer: usize) -> Ident {
     format_ident!("__df_derive_layer_off_buf_{}", layer)
 }
 
+/// Per-layer frozen `Bitmap` outer-validity ident for the flat-vec encoder.
+/// Mirror of [`nested_layer_validity_bm`] for the flat-vec path; the freeze
+/// is hoisted out of the wrap loop so the assemble helper can clone the
+/// pre-frozen buffer rather than consume the `MutableBitmap` directly.
+pub(super) fn vec_layer_validity_bm(layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_val_bm_{}", layer)
+}
+
 /// Per-layer `LargeListArray` ident produced during the final-assemble step.
 pub(super) fn vec_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_list_arr_{}", layer)
@@ -163,6 +171,15 @@ pub(super) fn nested_layer_list_arr(layer: usize) -> Ident {
 /// as the seed of the layer-wrap stack.
 pub(super) fn nested_inner_chunk() -> Ident {
     format_ident!("__df_derive_inner_chunk")
+}
+
+/// Seed-array arrow dtype local. The flat-vec path captures the typed
+/// leaf array's dtype into this local BEFORE boxing the leaf so the
+/// dtype access keeps its static-dispatch `Array::dtype(&typed_arr)`
+/// shape — boxing then dispatching virtually through `Box<dyn Array>`
+/// reproducibly regresses several depth-N benches.
+pub(super) fn seed_arrow_dtype() -> Ident {
+    format_ident!("__df_derive_seed_dt")
 }
 
 // --- Nested encoder per-field intermediates (one per field) ---------------

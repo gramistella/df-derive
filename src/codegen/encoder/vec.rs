@@ -17,7 +17,8 @@ use quote::quote;
 use super::idents;
 use super::leaf::{LeafSpec, validity_into_option};
 use super::shape_walk::{
-    ScanLayerIdents, ShapePrecount, ShapeScan, shape_offsets_decls, shape_validity_decls,
+    LayerWrap, OwnPolicy, ScanLayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack,
+    shape_offsets_decls, shape_validity_decls,
 };
 use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
 
@@ -311,12 +312,16 @@ fn build_vec_push_loops(
 }
 
 /// Stack `depth` `LargeListArray::new` layers and route the outermost one
-/// through `__df_derive_assemble_list_series_unchecked`. Each layer's
-/// validity (when its `Option` is present) is folded onto its
-/// `LargeListArray`. The helper wraps the supplied logical dtype in one
-/// `List<>` layer; for depth N we pre-wrap `leaf_dtype_tokens` in
-/// `N - 1` extra `List<>` envelopes so the schema dtype matches the
-/// runtime list nesting.
+/// through `__df_derive_assemble_list_series_unchecked` via the shared
+/// [`shape_assemble_list_stack`] helper.
+///
+/// Builds a per-layer `freeze_decl` that the helper splices in just before
+/// each layer's wrap (the freeze and the wrap stay co-located the way the
+/// pre-refactor emission did — hoisting the freezes outside the wrap loop
+/// is semantically identical but reproducibly regresses depth-N benches by
+/// 4-12%). The leaf's arrow dtype is captured to a named local before the
+/// leaf is boxed into an `ArrayRef` so the dtype access keeps its static
+/// dispatch shape.
 fn vec_final_assemble(
     shape: &VecShape,
     layers: &[VecLayerIdents],
@@ -325,56 +330,68 @@ fn vec_final_assemble(
     pp: &TokenStream,
 ) -> TokenStream {
     let depth = shape.depth();
-    let mut block: Vec<TokenStream> = Vec::new();
-    // Layer indexing convention: layer `depth - 1` is the innermost (wraps
-    // the leaf array). Layer 0 is the outermost (passed to the helper).
-    let mut prev_arr = idents::leaf_arr();
-    for cur in (0..depth).rev() {
+    let buf_idents: Vec<syn::Ident> = (0..depth).map(idents::vec_layer_offsets_buf).collect();
+    let bm_idents: Vec<syn::Ident> = (0..depth).map(idents::vec_layer_validity_bm).collect();
+    let mut wrap_layers: Vec<LayerWrap<'_>> = Vec::with_capacity(depth);
+    for cur in 0..depth {
         let layer = &layers[cur];
-        let offsets_buf_id = idents::vec_layer_offsets_buf(cur);
-        let arr_id = idents::vec_layer_list_arr(cur);
-        let validity_expr = if shape.layers[cur].has_outer_validity() {
-            let validity = &layer.validity;
-            quote! {
-                ::std::option::Option::Some(
+        let offsets = &layer.offsets;
+        let buf_id = &buf_idents[cur];
+        let mut freeze_decl = quote! {
+            let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
+                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
+        };
+        let validity_bm = if shape.layers[cur].has_outer_validity() {
+            let validity_mb = &layer.validity;
+            let bm_id = &bm_idents[cur];
+            freeze_decl.extend(quote! {
+                let #bm_id: #pa_root::bitmap::Bitmap =
                     <#pa_root::bitmap::Bitmap as ::core::convert::From<
                         #pa_root::bitmap::MutableBitmap,
-                    >>::from(#validity)
-                )
-            }
+                    >>::from(#validity_mb);
+            });
+            Some(bm_id)
         } else {
-            quote! { ::std::option::Option::None }
+            None
         };
-        let offsets = &layer.offsets;
-        let prev_arr_local = prev_arr.clone();
-        block.push(quote! {
-            let #offsets_buf_id: #pa_root::offset::OffsetsBuffer<i64> =
-                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-            let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(
-                #pp::LargeListArray::default_datatype(
-                    #pa_root::array::Array::dtype(&#prev_arr_local).clone(),
-                ),
-                #offsets_buf_id,
-                ::std::boxed::Box::new(#prev_arr_local) as #pp::ArrayRef,
-                #validity_expr,
-            );
+        // The flat-vec path freezes each per-layer offsets buffer once and
+        // then uses it in exactly one `LargeListArray::new` (no shared
+        // dispatch arms, no per-column iteration), so the helper can move
+        // it into the wrap. The freeze itself is interleaved with the
+        // wrap via [`LayerWrap::freeze_decl`]: hoisting all freezes above
+        // the wrap loop reproducibly regresses depth-N benches by 4-12%
+        // even though the resulting state is identical, so we replicate
+        // the pre-refactor ordering layer-by-layer.
+        wrap_layers.push(LayerWrap {
+            offsets_buf: OwnPolicy::Move(buf_id),
+            validity_bm,
+            freeze_decl,
         });
-        prev_arr = arr_id;
     }
-    // Wrap the leaf logical dtype in `(depth - 1)` extra `List<>` layers.
-    // The helper wraps once more, yielding `List<List<...List<leaf>>>`
-    // with `depth` total `List<>` envelopes.
-    let mut helper_logical = leaf_dtype_tokens.clone();
-    for _ in 0..depth.saturating_sub(1) {
-        helper_logical = quote! { #pp::DataType::List(::std::boxed::Box::new(#helper_logical)) };
-    }
-    let outer_arr = prev_arr;
+    let leaf_arr = idents::leaf_arr();
+    // Capture the leaf's arrow dtype to a named local BEFORE boxing the
+    // leaf — `Box::new(#leaf_arr) as ArrayRef` moves the typed leaf, so
+    // a post-box `Array::dtype(&leaf)` would no longer compile, and a
+    // post-box `Array::dtype(&seed)` would dispatch through the boxed
+    // trait object's vtable (a virtual call that doesn't inline and
+    // reproducibly regresses several depth-N benches by 5-12%).
+    let seed_arrow_dtype_id = idents::seed_arrow_dtype();
+    let seed_dtype_decl = quote! {
+        let #seed_arrow_dtype_id: #pa_root::datatypes::ArrowDataType =
+            #pa_root::array::Array::dtype(&#leaf_arr).clone();
+    };
+    let seed = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
+    let seed_dtype = quote! { #seed_arrow_dtype_id };
+    let stack = shape_assemble_list_stack(
+        seed,
+        seed_dtype,
+        &wrap_layers,
+        leaf_dtype_tokens.clone(),
+        &idents::vec_layer_list_arr,
+    );
     quote! {
-        #(#block)*
-        __df_derive_assemble_list_series_unchecked(
-            #outer_arr,
-            #helper_logical,
-        )
+        #seed_dtype_decl
+        #stack
     }
 }
 

@@ -165,16 +165,12 @@ fn base_and_transform_to_rust_and_dtype(
 }
 
 fn wrap_dtype(element_dtype: &TokenStream, wrappers: &[Wrapper]) -> TokenStream {
-    let layers = vec_count(wrappers);
-    if layers == 0 {
-        return quote! { #element_dtype };
-    }
     let pp = super::polars_paths::prelude();
-    let mut dt = element_dtype.clone();
-    for _ in 0..layers {
-        dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
-    }
-    dt
+    super::polars_paths::wrap_list_layers_compile_time(
+        &pp,
+        element_dtype.clone(),
+        vec_count(wrappers),
+    )
 }
 
 pub fn map_primitive_expr(

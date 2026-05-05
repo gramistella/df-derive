@@ -96,39 +96,59 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
     )
 }
 
+/// Whether a per-field emission produces schema entries (`(name, dtype)`
+/// tuples) or empty-series rows. Both modes iterate the same field set and
+/// share the Primitive-vs-Nested classification; only the leaf token shape
+/// (and the runtime accumulator inside [`super::nested`]) varies.
+#[derive(Clone, Copy)]
+pub(super) enum EmitMode {
+    SchemaEntries,
+    EmptyRows,
+}
+
+/// Shared per-field emitter for the schema / empty-rows pair. Classifies
+/// the field once, then dispatches to the matching [`super::nested`]
+/// runtime helper for nested fields, or emits a one-element vec literal
+/// for primitive fields. The two leaf shapes are byte-equivalent to the
+/// pre-refactor `build_schema_entries` / `build_empty_series` emissions.
+fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
+    let name = field.name.to_string();
+    match (classify_field(field), mode) {
+        (
+            FieldRoute::Nested {
+                type_path,
+                list_layers,
+            },
+            EmitMode::SchemaEntries,
+        ) => super::nested::generate_schema_entries_for_struct(&type_path, &name, list_layers),
+        (FieldRoute::Nested { type_path, .. }, EmitMode::EmptyRows) => {
+            super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers)
+        }
+        (FieldRoute::Primitive, EmitMode::SchemaEntries) => {
+            let dtype = field_full_dtype(field);
+            quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
+        }
+        (FieldRoute::Primitive, EmitMode::EmptyRows) => {
+            let dtype = field_full_dtype(field);
+            let pp = super::polars_paths::prelude();
+            quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
+        }
+    }
+}
+
 /// Build the schema entries token expression for one field. Evaluates to a
 /// `Vec<(String, DataType)>` at runtime — primitive fields return a
 /// one-element vec, nested fields return one entry per inner schema column
 /// (with the parent name prefixed).
 pub fn build_schema_entries(field: &FieldIR) -> TokenStream {
-    let name = field.name.to_string();
-    match classify_field(field) {
-        FieldRoute::Nested {
-            type_path,
-            list_layers,
-        } => super::nested::generate_schema_entries_for_struct(&type_path, &name, list_layers),
-        FieldRoute::Primitive => {
-            let dtype = field_full_dtype(field);
-            quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
-        }
-    }
+    build_field_entries(field, EmitMode::SchemaEntries)
 }
 
 /// Build the empty-series token expression for one field. Evaluates to a
 /// `Vec<Column>` at runtime — primitive fields produce one empty Series,
 /// nested fields produce one empty Series per inner schema column.
 pub fn build_empty_series(field: &FieldIR) -> TokenStream {
-    let name = field.name.to_string();
-    match classify_field(field) {
-        FieldRoute::Nested { type_path, .. } => {
-            super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers)
-        }
-        FieldRoute::Primitive => {
-            let dtype = field_full_dtype(field);
-            let pp = super::polars_paths::prelude();
-            quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
-        }
-    }
+    build_field_entries(field, EmitMode::EmptyRows)
 }
 
 fn field_full_dtype(field: &FieldIR) -> TokenStream {

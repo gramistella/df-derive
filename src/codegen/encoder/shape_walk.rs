@@ -402,10 +402,11 @@ pub(super) fn shape_assemble_list_stack(
         prev_dtype = quote! { #pa_root::array::Array::dtype(&#arr_id).clone() };
     }
 
-    let mut helper_logical = leaf_logical_dtype;
-    for _ in 0..depth.saturating_sub(1) {
-        helper_logical = quote! { #pp::DataType::List(::std::boxed::Box::new(#helper_logical)) };
-    }
+    let helper_logical = crate::codegen::polars_paths::wrap_list_layers_compile_time(
+        &pp,
+        leaf_logical_dtype,
+        depth.saturating_sub(1),
+    );
     let outer = arr_id_for_layer(0);
     let assemble_helper = idents::assemble_helper();
     quote! {

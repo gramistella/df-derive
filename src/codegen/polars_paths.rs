@@ -11,6 +11,26 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+/// Resolve a crate by name to a `::<resolved-name>` path token, or splice
+/// the caller's `fallback` when the crate is not found or refers to the
+/// expanding crate itself. Used by [`root`] and [`polars_arrow_root`] —
+/// neither of those macros realistically expands inside the polars or
+/// polars-arrow crate, and a missing direct dep is best surfaced as
+/// `unresolved import ::<name>` at the call site rather than `unresolved
+/// name <name>`. The `mod::resolve_paft_crate_path` site is bespoke
+/// because its `Itself` arm maps to `crate::dataframe` (a substantive
+/// path), not to the fallback — a different cascade shape that this
+/// helper cannot model cleanly.
+pub(super) fn resolve_or_fallback(name: &str, fallback: TokenStream) -> TokenStream {
+    match crate_name(name) {
+        Ok(FoundCrate::Name(resolved)) => {
+            let ident = format_ident!("{}", resolved);
+            quote! { ::#ident }
+        }
+        Ok(FoundCrate::Itself) | Err(_) => fallback,
+    }
+}
+
 /// Token tree for the user-visible `polars` crate root.
 ///
 /// `Itself` and `Err` collapse to `::polars` because the macro doesn't
@@ -18,13 +38,7 @@ use quote::{format_ident, quote};
 /// missing direct dep is better surfaced as `unresolved import ::polars`
 /// than `unresolved name polars` — same eventual error, more specific span.
 fn root() -> TokenStream {
-    match crate_name("polars") {
-        Ok(FoundCrate::Name(name)) => {
-            let ident = format_ident!("{}", name);
-            quote! { ::#ident }
-        }
-        Ok(FoundCrate::Itself) | Err(_) => quote! { ::polars },
-    }
+    resolve_or_fallback("polars", quote! { ::polars })
 }
 
 /// `polars::prelude` — namespace for ~all polars items the macro emits.
@@ -56,11 +70,48 @@ pub fn int128_chunked() -> TokenStream {
 /// missing direct dep is best surfaced as `unresolved import
 /// ::polars_arrow` at the call site.
 pub fn polars_arrow_root() -> TokenStream {
-    match crate_name("polars-arrow") {
-        Ok(FoundCrate::Name(name)) => {
-            let ident = format_ident!("{}", name);
-            quote! { ::#ident }
+    resolve_or_fallback("polars-arrow", quote! { ::polars_arrow })
+}
+
+/// Wrap an inner `DataType` token expression in `layers` `List<>` envelopes
+/// at compile time. Returns `inner` unchanged when `layers == 0`. Used by
+/// every site that needs to project a leaf logical dtype to its
+/// `Vec<…<Vec<leaf>>>` form, where the wrap count is statically known from
+/// the wrapper stack: the type-registry full-dtype computation and the
+/// encoder's final-assemble per-leaf logical dtype.
+pub(super) fn wrap_list_layers_compile_time(
+    pp: &TokenStream,
+    inner: TokenStream,
+    layers: usize,
+) -> TokenStream {
+    let mut dt = inner;
+    for _ in 0..layers {
+        dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
+    }
+    dt
+}
+
+/// Emit a runtime `for _ in 0..layers` loop that wraps a runtime `DataType`
+/// variable in `layers` `List<>` envelopes. Returns an empty token stream
+/// when `layers == 0` so the caller does not emit `for _ in 0..0`, which
+/// trips `clippy::reversed_empty_ranges` inside the user's expanded code.
+/// Used by the nested schema/empty-frame helpers, where the wrap count is
+/// compile-time known but the inner dtype comes from a runtime
+/// `T::schema()?` iteration.
+pub(super) fn wrap_list_layers_runtime(
+    pp: &TokenStream,
+    var: &syn::Ident,
+    layers: usize,
+) -> TokenStream {
+    if layers == 0 {
+        TokenStream::new()
+    } else {
+        quote! {
+            for _ in 0..#layers {
+                #var = #pp::DataType::List(
+                    ::std::boxed::Box::new(#var),
+                );
+            }
         }
-        Ok(FoundCrate::Itself) | Err(_) => quote! { ::polars_arrow },
     }
 }

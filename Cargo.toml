@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "df-derive-test-harness"]
+members = [".", "df-derive-runtime", "df-derive-test-harness"]
 
 [package]
 name = "df-derive"
@@ -32,6 +32,7 @@ rust_decimal = { version = "1.41.0", features = ["serde"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4"
 serde = { version = "1", features = ["derive"] }
+df-derive-runtime = { path = "df-derive-runtime" }
 
 [profile.bench]
 opt-level = 3

@@ -4,47 +4,16 @@
 //! materializes as `List<List<List<T>>>` in the output frame. The derive
 //! fuses the wrapper layers into a single bulk emission, so per-row work is
 //! O(total leaf count) rather than O(layer count * leaf count).
+//!
+//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
+//! any user-defined module at this path; see `quickstart.rs` for the inline form.
 
-use crate::dataframe::ToDataFrameVec;
 use df_derive::ToDataFrame;
-
-#[allow(dead_code)]
-mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
-        }
-    }
-}
+use df_derive_runtime::dataframe;
+use df_derive_runtime::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Tensor {
     label: String,
     // List<List<List<f64>>> after derive: outer batches, sequences, frames.
@@ -71,7 +40,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     println!("Deep Vec<Vec<Vec<T>>> DataFrame:");
     println!("{df}");
 
-    let schema = <Tensor as crate::dataframe::ToDataFrame>::schema()?;
+    let schema = <Tensor as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (each Vec layer becomes a List wrap):");
     for (name, dtype) in schema {
         println!("  {name}: {dtype:?}");

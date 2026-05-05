@@ -18,47 +18,16 @@
 //! `Vec<T>` itself is not nullable — only the outer-list validity bit can
 //! make a row null. So `Some(Some(vec![]))` is observably distinct from
 //! `None` / `Some(None)`: the former is an empty list, the latter is null.
+//!
+//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
+//! any user-defined module at this path; see `quickstart.rs` for the inline form.
 
-use crate::dataframe::ToDataFrameVec;
 use df_derive::ToDataFrame;
-
-#[allow(dead_code)]
-mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
-        }
-    }
-}
+use df_derive_runtime::dataframe;
+use df_derive_runtime::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Sample {
     id: u32,
     // The example's whole point is to demonstrate this shape.
@@ -103,7 +72,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     println!("Multi-Option-over-Vec DataFrame:");
     println!("{df}");
 
-    let schema = <Sample as crate::dataframe::ToDataFrame>::schema()?;
+    let schema = <Sample as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (consecutive Options collapse to one list-level validity bit):");
     for (name, dtype) in schema {
         println!("  {name}: {dtype:?}");

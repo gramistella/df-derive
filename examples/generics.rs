@@ -5,76 +5,16 @@
 //! bounds on every type parameter, so any concrete instantiation must satisfy
 //! those traits. The unit type `()` can be used as a payload to contribute
 //! zero columns.
+//!
+//! Uses `df-derive-runtime` for the canonical trait module — it ships
+//! `impl ToDataFrame for ()` and `impl Columnar for ()` so the unit-payload
+//! shapes below work out of the box. See `quickstart.rs` for the inline form.
 
 use df_derive::ToDataFrame;
-
-#[allow(dead_code)]
-mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, NamedFrom, PolarsResult, Series};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
-        }
-    }
-
-    // The unit type `()` contributes zero columns. The DataFrame must still
-    // carry the right number of rows, so we attach a temporary dummy column
-    // and drop it before returning.
-    impl ToDataFrame for () {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            let dummy = Series::new("_dummy".into(), &[0i32]);
-            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-            df.drop_in_place("_dummy")?;
-            Ok(df)
-        }
-        fn empty_dataframe() -> PolarsResult<DataFrame> {
-            DataFrame::new_infer_height(vec![])
-        }
-        fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-            Ok(Vec::new())
-        }
-    }
-
-    impl Columnar for () {
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-            let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
-                .extend_constant(AnyValue::Null, items.len())?;
-            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-            df.drop_in_place("_dummy")?;
-            Ok(df)
-        }
-    }
-}
-
-use crate::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive_runtime::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Meta {
     timestamp: i64,
     note: String,
@@ -85,21 +25,21 @@ struct Meta {
 // parameter for the impl blocks it generates.
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Wrapper<T> {
     id: u32,
     payload: T,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct DefaultMeta<M = ()> {
     value: i32,
     meta: M,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Pair<A, B> {
     name: String,
     left: A,
@@ -107,14 +47,14 @@ struct Pair<A, B> {
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct OptWrapper<T> {
     id: u32,
     payload: Option<T>,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct VecWrapper<T> {
     id: u32,
     payload: Vec<T>,

@@ -119,6 +119,8 @@ Run it:
 cargo run
 ```
 
+> **Skip the boilerplate.** The `dataframe` module above is the same on every project that doesn't already use a `paft` runtime. The sibling crate `df-derive-runtime` ships it (and the reference `Decimal128Encode for rust_decimal::Decimal` impl) so you don't have to inline it yourself. Add `df-derive-runtime = "0.1"` to your `[dependencies]` and replace the `#[df_derive(...)]` attribute's trait path with `df_derive_runtime::dataframe::ToDataFrame`. See the [Using `df-derive-runtime`](#using-df-derive-runtime) section below for the full snippet.
+
 ## Features
 
 - **Nested structs (flattening)**: fields of nested structs appear as `outer.inner` columns
@@ -385,6 +387,30 @@ If you need to override them explicitly:
 struct MyType { /* fields */ }
 ```
 
+### Using `df-derive-runtime`
+
+If you don't already have a `paft` runtime, depend on the sibling crate `df-derive-runtime` instead of inlining the trait module yourself. It ships the canonical `ToDataFrame` / `Columnar` / `ToDataFrameVec` / `Decimal128Encode` traits, the `()` impls used by generic `Wrapper<()>` shapes, and the reference `Decimal128Encode for rust_decimal::Decimal` impl (gated behind the `rust_decimal` feature, which is enabled by default).
+
+```toml
+[dependencies]
+df-derive = "0.3"
+df-derive-runtime = "0.1"
+```
+
+```rust
+#[derive(df_derive::ToDataFrame)]
+#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
+struct MyType { /* fields */ }
+```
+
+The `Columnar` and `Decimal128Encode` paths are auto-inferred from the `trait` attribute, so the single `trait = "..."` line is all you need. Since the runtime crate ships the reference decimal impl, `Decimal` fields just work without any extra `impl` block in your code. Most of the runnable examples in this repository (everything except `quickstart.rs`) use this shape — see them for end-to-end snippets.
+
+If you don't need the `rust_decimal` reference impl (e.g. you ship your own `Decimal128Encode for MyDecimal` and don't pull in `rust_decimal`), turn the feature off:
+
+```toml
+df-derive-runtime = { version = "0.1", default-features = false }
+```
+
 ## Custom decimal backends
 
 `Decimal` fields are converted to a polars `Decimal(precision, scale)` column by going through a small user-pluggable trait, `Decimal128Encode`:
@@ -412,7 +438,7 @@ The implementer rescales the value to the schema scale and returns the mantissa 
 struct Tx { /* … */ }
 ```
 
-**Backend status.** `paft-decimal` (planned) provides `Decimal128Encode` impls for `rust_decimal::Decimal` and `bigdecimal::BigDecimal` so projects can mix backends without writing the rescale themselves. Until then, a copy-paste-ready `rust_decimal` impl lives in `tests/common.rs`.
+**Backend status.** `paft-decimal` (planned) provides `Decimal128Encode` impls for `rust_decimal::Decimal` and `bigdecimal::BigDecimal` so projects can mix backends without writing the rescale themselves. Until then, the sibling crate `df-derive-runtime` ships the reference `Decimal128Encode for rust_decimal::Decimal` impl behind a default-on `rust_decimal` feature — depend on it (see [Using `df-derive-runtime`](#using-df-derive-runtime) above) and the codegen finds the impl via the auto-inferred `df_derive_runtime::dataframe::Decimal128Encode` path. A copy-paste-ready inline form also lives in `tests/common.rs` for projects that prefer not to take the dependency.
 
 **Validating a custom backend (`df-derive-test-harness`).** Backend authors can guard against silently-wrong rounding by calling the contract harness from their own test suite. The harness sibling crate exposes a single function that cross-checks any `try_to_i128_mantissa` impl against polars's own `str_to_dec128` over a battery of inputs covering positive and negative half-tie boundaries, scale-up, scale-down, very-large magnitudes near `i128::MAX`, and scale-up overflow. A backend that gets banker's rounding wrong (e.g. `rust_decimal::Decimal::rescale`'s half-away-from-zero) compiles and runs cleanly, so this harness is the only mechanical check that catches the bug class before it reaches a consumer's column bytes.
 

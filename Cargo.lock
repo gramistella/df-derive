@@ -689,6 +689,7 @@ version = "0.3.0"
 dependencies = [
  "chrono",
  "criterion",
+ "df-derive-runtime",
  "polars",
  "polars-arrow",
  "pretty_assertions",
@@ -699,6 +700,15 @@ dependencies = [
  "serde",
  "syn 2.0.117",
  "trybuild",
+]
+
+[[package]]
+name = "df-derive-runtime"
+version = "0.1.0"
+dependencies = [
+ "polars",
+ "polars-arrow",
+ "rust_decimal",
 ]
 
 [[package]]

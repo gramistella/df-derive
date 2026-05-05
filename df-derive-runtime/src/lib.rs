@@ -1,19 +1,74 @@
-// Inline trait module: defines `ToDataFrame`, `Columnar`, `ToDataFrameVec`,
-// and `Decimal128Encode`, plus the reference `Decimal128Encode for
-// rust_decimal::Decimal` impl. These are byte-equivalent to the canonical
-// definitions in the `df-derive-runtime` sibling crate; users without a
-// `paft` runtime should depend on `df-derive-runtime` directly rather than
-// reproducing this module.
-//
-// Why the test surface is NOT routed through `df-derive-runtime`:
-// `tests/pass/20-generics.rs` implements `ToDataFrame for f64` and
-// `Columnar for f64` to instantiate generic wrappers over a primitive
-// payload. Rust's orphan rules require the trait to be defined in the same
-// crate as the impl, so the traits MUST live in this test crate's source
-// (via `#[path = "../common.rs"] mod core;`) rather than being imported from
-// a sibling crate. The runtime crate remains the canonical surface for
-// downstream users; this `common.rs` is the local mirror the test suite
-// needs for orphan-rule reasons.
+//! Canonical runtime traits for [`df-derive`].
+//!
+//! # What this crate provides
+//!
+//! `df-derive` is a procedural derive macro that emits code naming a
+//! user-supplied trait module. The macro itself ships no traits — every
+//! example, test, and downstream user historically had to inline its own
+//! copy of `ToDataFrame`, `Columnar`, `ToDataFrameVec`, and
+//! `Decimal128Encode`. This crate is the canonical reference module so users
+//! without a `paft` runtime can just depend on `df-derive-runtime` and point
+//! the derive at it.
+//!
+//! The [`dataframe`] module exposes:
+//!
+//! - [`dataframe::ToDataFrame`] — the per-instance API the derive populates.
+//! - [`dataframe::Columnar`] — the columnar batch API the derive populates.
+//! - [`dataframe::ToDataFrameVec`] — the slice extension trait that routes
+//!   `[T]::to_dataframe()` through `Columnar` or `empty_dataframe`.
+//! - [`dataframe::Decimal128Encode`] — the contract for encoding a decimal
+//!   value as an `i128` mantissa rescaled to a target scale. The reference
+//!   `rust_decimal::Decimal` impl is gated behind the `rust_decimal`
+//!   feature (enabled by default).
+//! - `impl ToDataFrame for ()` and `impl Columnar for ()` — the zero-column
+//!   payload behavior used by generic `Wrapper<()>` shapes.
+//!
+//! # When to use this crate
+//!
+//! Add this crate when you want the macro's default trait surface but do
+//! not have a `paft` ecosystem dependency. The macro's default discovery
+//! cascade still tries `paft` / `paft-utils` / `paft-core` first; this
+//! crate is for the everything-else case.
+//!
+//! ```toml
+//! [dependencies]
+//! df-derive = "0.3"
+//! df-derive-runtime = "0.1"
+//! ```
+//!
+//! ```ignore
+//! use df_derive::ToDataFrame;
+//! use df_derive_runtime::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+//!
+//! #[derive(ToDataFrame)]
+//! #[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
+//! struct Trade { symbol: String, price: f64, size: u64 }
+//! ```
+//!
+//! The `#[df_derive(trait = "...")]` attribute auto-infers the `Columnar`
+//! and `Decimal128Encode` paths by replacing the last segment of the trait
+//! path, so you only need to name the `ToDataFrame` path.
+//!
+//! # Validating a custom decimal backend
+//!
+//! The `Decimal128Encode` contract requires round-half-to-even (banker's
+//! rounding) on scale-down. The reference `rust_decimal::Decimal` impl in
+//! this crate honours that contract; it is byte-equivalent to the
+//! historical `tests/common.rs` impl and is exercised by the
+//! `df-derive-test-harness` contract battery. Backend authors writing their
+//! own `Decimal128Encode` impl should call
+//! `df_derive_test_harness::assert_decimal128_encode_contract` to verify
+//! their rounding direction matches polars's `str_to_dec128`.
+//!
+//! [`df-derive`]: https://docs.rs/df-derive
+
+// `polars` pulls a wide transitive dependency tree (ahash, foldhash,
+// hashbrown, windows-sys variants, …) where multiple resolved versions are
+// unavoidable. `clippy::multiple_crate_versions` is part of the
+// `clippy::cargo` group `just lint` enables, and it would fire ~21 times on
+// dependencies entirely outside this crate's control. Allow it here so the
+// lint surface stays focused on this crate's own code.
+#![allow(clippy::multiple_crate_versions)]
 
 #[allow(dead_code)]
 pub mod dataframe {
@@ -116,6 +171,18 @@ pub mod dataframe {
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
     }
 
+    /// Reference [`Decimal128Encode`] impl for [`rust_decimal::Decimal`].
+    ///
+    /// Banker's-rounding contract: round-half-to-even on scale-down,
+    /// `checked_mul` overflow-to-`None` on scale-up. This impl is verified
+    /// against polars's `str_to_dec128` on a battery of inputs covering
+    /// half-tie boundaries (positive and negative), large magnitudes, and
+    /// scale-up overflow by the contract harness in
+    /// [`df-derive-test-harness`](https://docs.rs/df-derive-test-harness).
+    /// Backend authors writing their own `Decimal128Encode` impl should
+    /// call `df_derive_test_harness::assert_decimal128_encode_contract`
+    /// from their own test suite to prove the same.
+    #[cfg(feature = "rust_decimal")]
     impl Decimal128Encode for rust_decimal::Decimal {
         #[inline]
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {

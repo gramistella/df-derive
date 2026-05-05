@@ -1,3 +1,13 @@
+//! Quick-start example. This file is intentionally self-contained: it
+//! defines the `dataframe` trait module inline so it works without any
+//! runtime crate dependency. The macro accepts any user-defined module at
+//! the path you point `#[df_derive(trait = "...")]` at — that's the whole
+//! reason `df-derive` is decoupled from a fixed runtime.
+//!
+//! For the "skip the boilerplate" path, depend on `df-derive-runtime` and
+//! point the derive at `df_derive_runtime::dataframe::ToDataFrame` instead.
+//! The other examples in this directory show that shape.
+
 use crate::dataframe::ToDataFrameVec;
 use df_derive::ToDataFrame;
 

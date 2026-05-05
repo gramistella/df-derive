@@ -17,7 +17,7 @@ use quote::quote;
 use super::idents;
 use super::leaf::{LeafSpec, validity_into_option};
 use super::shape_walk::{
-    LayerWrap, OwnPolicy, ScanLayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack,
+    LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, shape_assemble_list_stack,
     shape_offsets_decls, shape_validity_decls,
 };
 use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
@@ -108,24 +108,18 @@ fn bool_leaf_array_tokens(
     }
 }
 
-/// Per-`Vec` layer ident set. `offsets` accumulates per-list element counts
-/// for this layer; `validity` is the optional list-level `MutableBitmap`
-/// (only when `has_outer_validity`). Layer `i` is the `i`-th `Vec` from the
-/// outside; layer `depth-1` is the innermost (its `offsets` track flat-leaf
-/// counts; deeper layers' `offsets` track child-list counts).
-struct VecLayerIdents {
-    offsets: syn::Ident,
-    validity: syn::Ident,
-    /// Per-layer iteration binding. Layer 0 binds the field access; deeper
-    /// layers bind the previous layer's iterator output.
-    bind: syn::Ident,
-}
-
-fn vec_layer_idents(depth: usize) -> Vec<VecLayerIdents> {
+/// Per-`Vec` layer ident set for the flat-vec path. Layer `i` is the
+/// `i`-th `Vec` from the outside; layer `depth-1` is the innermost (its
+/// `offsets` track flat-leaf counts; deeper layers' `offsets` track
+/// child-list counts). The `validity_mb` field is allocated only when
+/// `has_outer_validity` for that layer.
+fn vec_layer_idents(depth: usize) -> Vec<LayerIdents> {
     (0..depth)
-        .map(|i| VecLayerIdents {
+        .map(|i| LayerIdents {
             offsets: idents::vec_layer_offsets(i),
-            validity: idents::vec_layer_validity(i),
+            offsets_buf: idents::vec_layer_offsets_buf(i),
+            validity_mb: idents::vec_layer_validity(i),
+            validity_bm: idents::vec_layer_validity_bm(i),
             bind: idents::vec_layer_bind(i),
         })
         .collect()
@@ -177,7 +171,7 @@ fn vec_emit_decl(
 
     let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
     let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity).collect();
+    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
     let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
     let validity_decls =
@@ -218,25 +212,17 @@ fn vec_emit_decl(
 fn vec_precount_pieces(
     access: &TokenStream,
     shape: &VecShape,
-    layers: &[VecLayerIdents],
+    layers: &[LayerIdents],
 ) -> (TokenStream, TokenStream) {
     let depth = shape.depth();
     let total_leaves = idents::total_leaves();
     let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
         .map(idents::vec_layer_total)
         .collect();
-    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
-        .iter()
-        .map(|l| ScanLayerIdents {
-            offsets: &l.offsets,
-            validity: &l.validity,
-            bind: &l.bind,
-        })
-        .collect();
     let pre = ShapePrecount {
         shape,
         access,
-        layers: &scan_layers,
+        layers,
         outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
         total_counter: &total_leaves,
         layer_counters: &layer_counters,
@@ -252,7 +238,7 @@ fn vec_precount_pieces(
 fn build_vec_push_loops(
     access: &TokenStream,
     shape: &VecShape,
-    layers: &[VecLayerIdents],
+    layers: &[LayerIdents],
     leaf_bind: &syn::Ident,
     per_elem_push: &TokenStream,
     leaf_offsets_post_push: &TokenStream,
@@ -292,18 +278,10 @@ fn build_vec_push_loops(
             }
         }
     };
-    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
-        .iter()
-        .map(|l| ScanLayerIdents {
-            offsets: &l.offsets,
-            validity: &l.validity,
-            bind: &l.bind,
-        })
-        .collect();
     ShapeScan {
         shape,
         access,
-        layers: &scan_layers,
+        layers,
         outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
         leaf_body: &leaf_body,
         leaf_offsets_post_push,
@@ -324,26 +302,23 @@ fn build_vec_push_loops(
 /// dispatch shape.
 fn vec_final_assemble(
     shape: &VecShape,
-    layers: &[VecLayerIdents],
+    layers: &[LayerIdents],
     leaf_dtype_tokens: &TokenStream,
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
     let depth = shape.depth();
-    let buf_idents: Vec<syn::Ident> = (0..depth).map(idents::vec_layer_offsets_buf).collect();
-    let bm_idents: Vec<syn::Ident> = (0..depth).map(idents::vec_layer_validity_bm).collect();
     let mut wrap_layers: Vec<LayerWrap<'_>> = Vec::with_capacity(depth);
-    for cur in 0..depth {
-        let layer = &layers[cur];
+    for (cur, layer) in layers.iter().enumerate() {
         let offsets = &layer.offsets;
-        let buf_id = &buf_idents[cur];
+        let buf_id = &layer.offsets_buf;
         let mut freeze_decl = quote! {
             let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
                 #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
         };
         let validity_bm = if shape.layers[cur].has_outer_validity() {
-            let validity_mb = &layer.validity;
-            let bm_id = &bm_idents[cur];
+            let validity_mb = &layer.validity_mb;
+            let bm_id = &layer.validity_bm;
             freeze_decl.extend(quote! {
                 let #bm_id: #pa_root::bitmap::Bitmap =
                     <#pa_root::bitmap::Bitmap as ::core::convert::From<

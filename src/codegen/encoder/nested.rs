@@ -24,7 +24,7 @@ use quote::quote;
 
 use super::idents;
 use super::shape_walk::{
-    LayerWrap, OwnPolicy, ScanLayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack,
+    LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, shape_assemble_list_stack,
     shape_offsets_decls, shape_validity_decls,
 };
 use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
@@ -251,23 +251,14 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
 
 // --- Generalized depth-N nested encoder ---
 
-/// Per-layer ident set for the depth-N nested encoder. Layer 0 is the
-/// outermost `Vec`. `offsets` accumulates offset entries (one per child-list
-/// inside this layer); `offsets_buf` is the frozen `OffsetsBuffer`. `validity`
-/// holds the layer-level `MutableBitmap` when this layer's outer Option is
-/// present. `bind` is the per-layer iteration binding (mirrors the primitive
-/// `VecLayerIdents` pattern).
-struct NestedLayerIdents {
-    offsets: syn::Ident,
-    offsets_buf: syn::Ident,
-    validity_mb: syn::Ident,
-    validity_bm: syn::Ident,
-    bind: syn::Ident,
-}
-
-fn nested_layer_idents(idx: usize, depth: usize) -> Vec<NestedLayerIdents> {
+/// Per-(field, layer) ident set for the depth-N nested encoder. Layer 0 is
+/// the outermost `Vec`. `offsets` accumulates offset entries (one per
+/// child-list inside this layer); `offsets_buf` is the frozen `OffsetsBuffer`.
+/// `validity_mb` holds the layer-level `MutableBitmap` when this layer's
+/// outer Option is present (frozen into `validity_bm` after the scan).
+fn nested_layer_idents(idx: usize, depth: usize) -> Vec<LayerIdents> {
     (0..depth)
-        .map(|i| NestedLayerIdents {
+        .map(|i| LayerIdents {
             offsets: idents::nested_layer_offsets(idx, i),
             offsets_buf: idents::nested_layer_offsets_buf(idx, i),
             validity_mb: idents::nested_layer_validity_mb(idx, i),
@@ -421,7 +412,7 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
 fn build_nested_scan_body(
     access: &TokenStream,
     shape: &VecShape,
-    layers: &[NestedLayerIdents],
+    layers: &[LayerIdents],
     flat: &syn::Ident,
     positions: &syn::Ident,
     total: &syn::Ident,
@@ -481,18 +472,10 @@ fn build_nested_scan_body(
     } else {
         quote! { #flat.len() }
     };
-    let scan_layers: Vec<ScanLayerIdents<'_>> = layers
-        .iter()
-        .map(|l| ScanLayerIdents {
-            offsets: &l.offsets,
-            validity: &l.validity_mb,
-            bind: &l.bind,
-        })
-        .collect();
     let scan_iter = ShapeScan {
         shape,
         access,
-        layers: &scan_layers,
+        layers,
         outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
         leaf_body: &leaf_body,
         leaf_offsets_post_push: &leaf_offsets_post_push,
@@ -507,7 +490,7 @@ fn build_nested_scan_body(
     let pre_iter_body = ShapePrecount {
         shape,
         access,
-        layers: &scan_layers,
+        layers,
         outer_some_prefix: NESTED_PRE_OUTER_SOME_PREFIX,
         total_counter: total,
         layer_counters: &layer_counters,
@@ -546,7 +529,7 @@ fn build_nested_scan_body(
 /// is named `validity_bm_<idx>_<layer>` post-freeze.
 fn build_nested_validity_freeze(
     shape: &VecShape,
-    layers: &[NestedLayerIdents],
+    layers: &[LayerIdents],
     pa_root: &TokenStream,
 ) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::new();
@@ -575,7 +558,7 @@ fn build_nested_validity_freeze(
 /// `OffsetsBuffer` is `Arc`-backed, so subsequent uses (one per branch in
 /// the four-way dispatch, plus per-layer wraps) clone cheaply by bumping
 /// the refcount.
-fn build_nested_offsets_freeze(layers: &[NestedLayerIdents], pa_root: &TokenStream) -> TokenStream {
+fn build_nested_offsets_freeze(layers: &[LayerIdents], pa_root: &TokenStream) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::new();
     for layer in layers {
         let offsets = &layer.offsets;
@@ -596,7 +579,7 @@ fn build_nested_offsets_freeze(layers: &[NestedLayerIdents], pa_root: &TokenStre
 /// of offsets/validity already happened above the four-arm dispatch so this
 /// helper just wires the pre-frozen idents into the shared stack.
 fn build_nested_layer_wrap(
-    layers: &[NestedLayerIdents],
+    layers: &[LayerIdents],
     shape: &VecShape,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,

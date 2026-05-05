@@ -8,10 +8,11 @@
 //! offsets-push value at the innermost layer).
 //!
 //! [`ShapeScan`] captures all of those decision points behind one struct so
-//! the recursion logic lives in exactly one place. The two callers wire up
-//! their own `ScanLayerIdents` (mapping their per-layer identifier bundles
-//! into the shared three-ident shape: offsets, validity, bind), choose the
-//! `outer_some_prefix`, and supply the deepest-layer body via `leaf_body`.
+//! the recursion logic lives in exactly one place. The two callers share a
+//! unified [`LayerIdents`] bundle (5 fields: offsets / offsets_buf /
+//! validity_mb / validity_bm / bind); the walker reads `offsets`,
+//! `validity_mb`, and `bind` directly off it. Each caller chooses the
+//! `outer_some_prefix` and supplies the deepest-layer body via `leaf_body`.
 //!
 //! [`ShapePrecount`] is the parallel walker for the precount loop both paths
 //! run before the scan to size the offsets/validity/leaf-storage buffers up
@@ -54,13 +55,25 @@ use quote::{format_ident, quote};
 use super::idents;
 use super::{VecShape, collapse_options_to_ref};
 
-/// Per-layer identifiers the shared scan walker needs. Both `VecLayerIdents`
-/// (flat-vec path) and `NestedLayerIdents` (nested-struct path) project into
-/// this shape.
-pub(super) struct ScanLayerIdents<'a> {
-    pub offsets: &'a syn::Ident,
-    pub validity: &'a syn::Ident,
-    pub bind: &'a syn::Ident,
+/// Unified per-layer identifier bundle shared by the flat-vec path and the
+/// nested-struct path. The two paths construct these via their own per-path
+/// factories (`vec_layer_idents`, `nested_layer_idents`) — the factories
+/// differ only in which `idents::*` helpers they call (vec is per-layer;
+/// nested is per-(field-idx, layer)). Once built, every consumer (scan
+/// walker, precount walker, offsets-decl helper, validity-decl helper,
+/// final-assemble) reads from the same shape.
+pub(super) struct LayerIdents {
+    /// Mutable `Vec<i64>` offsets accumulator for this layer.
+    pub offsets: syn::Ident,
+    /// Frozen `OffsetsBuffer<i64>` for this layer (post `try_from`).
+    pub offsets_buf: syn::Ident,
+    /// Mutable `MutableBitmap` for this layer's outer-Option validity.
+    pub validity_mb: syn::Ident,
+    /// Frozen `Bitmap` for this layer's outer-Option validity (post `From`).
+    pub validity_bm: syn::Ident,
+    /// Per-layer iteration binding. Layer 0 binds the field access; deeper
+    /// layers bind the previous layer's iterator output.
+    pub bind: syn::Ident,
 }
 
 /// Inputs to the shared shape-walker for the per-row push/scan body.
@@ -85,7 +98,7 @@ pub(super) struct ScanLayerIdents<'a> {
 pub(super) struct ShapeScan<'a> {
     pub shape: &'a VecShape,
     pub access: &'a TokenStream,
-    pub layers: &'a [ScanLayerIdents<'a>],
+    pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
     pub leaf_body: &'a dyn Fn(&TokenStream) -> TokenStream,
     pub leaf_offsets_post_push: &'a TokenStream,
@@ -115,7 +128,7 @@ impl ShapeScan<'_> {
         if cur + 1 == depth {
             (self.leaf_body)(vec_bind)
         } else {
-            let inner_bind = self.layers[cur + 1].bind;
+            let inner_bind = &self.layers[cur + 1].bind;
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
             quote! {
                 for #inner_bind in #vec_bind.iter() {
@@ -130,16 +143,16 @@ impl ShapeScan<'_> {
     fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
         let depth = self.shape.depth();
         let layer = &self.layers[cur];
-        let offsets = layer.offsets;
+        let offsets = &layer.offsets;
         let offsets_post_push = if cur + 1 == depth {
             self.leaf_offsets_post_push.clone()
         } else {
-            let inner_offsets = self.layers[cur + 1].offsets;
+            let inner_offsets = &self.layers[cur + 1].offsets;
             quote! { (#inner_offsets.len() - 1) }
         };
         let opt_layers = self.shape.layers[cur].option_layers;
         let inner_iter = if opt_layers > 0 {
-            let validity = layer.validity;
+            let validity = &layer.validity_mb;
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner_iter = self.build_iter(cur, &quote! { #inner_vec_bind });
             // The bind here holds `&Option<...<Option<Vec<...>>>>` with
@@ -184,8 +197,8 @@ impl ShapeScan<'_> {
 /// passes `__df_derive_total_leaves`; the nested path passes
 /// `__df_derive_gen_total_<idx>`). `layer_counters` are the per-depth
 /// counter idents (`depth - 1` of them; layer `i` counts the child-lists
-/// produced by layer `i+1`). `layers` reuses the `ScanLayerIdents` shape
-/// from the scan walker; only the `bind` field is consumed (for the
+/// produced by layer `i+1`). `layers` reuses the unified [`LayerIdents`]
+/// shape from the scan walker; only the `bind` field is consumed (for the
 /// inter-layer `for #inner_bind in ...` loops).
 ///
 /// `outer_some_prefix` is the ident-prefix for the `if let Some(<bind>)`
@@ -206,7 +219,7 @@ impl ShapeScan<'_> {
 pub(super) struct ShapePrecount<'a> {
     pub shape: &'a VecShape,
     pub access: &'a TokenStream,
-    pub layers: &'a [ScanLayerIdents<'a>],
+    pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
     pub total_counter: &'a syn::Ident,
     pub layer_counters: &'a [syn::Ident],
@@ -242,7 +255,7 @@ impl ShapePrecount<'_> {
         if cur + 1 == depth {
             quote! { #total += #vec_bind.len(); }
         } else {
-            let inner_bind = self.layers[cur + 1].bind;
+            let inner_bind = &self.layers[cur + 1].bind;
             let counter = &self.layer_counters[cur];
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
             quote! {

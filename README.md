@@ -413,3 +413,26 @@ struct Tx { /* … */ }
 ```
 
 **Backend status.** `paft-decimal` (planned) provides `Decimal128Encode` impls for `rust_decimal::Decimal` and `bigdecimal::BigDecimal` so projects can mix backends without writing the rescale themselves. Until then, a copy-paste-ready `rust_decimal` impl lives in `tests/common.rs`.
+
+**Validating a custom backend (`df-derive-test-harness`).** Backend authors can guard against silently-wrong rounding by calling the contract harness from their own test suite. The harness sibling crate exposes a single function that cross-checks any `try_to_i128_mantissa` impl against polars's own `str_to_dec128` over a battery of inputs covering positive and negative half-tie boundaries, scale-up, scale-down, very-large magnitudes near `i128::MAX`, and scale-up overflow. A backend that gets banker's rounding wrong (e.g. `rust_decimal::Decimal::rescale`'s half-away-from-zero) compiles and runs cleanly, so this harness is the only mechanical check that catches the bug class before it reaches a consumer's column bytes.
+
+```toml
+[dev-dependencies]
+df-derive-test-harness = "0.1"
+```
+
+```rust,ignore
+use df_derive_test_harness::assert_decimal128_encode_contract;
+use my_runtime::Decimal128Encode;
+use std::str::FromStr as _;
+
+#[test]
+fn my_decimal_matches_polars_rounding() {
+    assert_decimal128_encode_contract(|literal, target_scale| {
+        let value = MyDecimal::from_str(literal).unwrap();
+        <MyDecimal as Decimal128Encode>::try_to_i128_mantissa(&value, target_scale)
+    });
+}
+```
+
+The closure form sidesteps any trait-bound dance — the harness does not import your `Decimal128Encode` trait, and you do not need `From<&str>` on your decimal type. On a contract violation the harness panics with the input literal, the target `(precision, scale)`, and both mantissa values, so the failure points directly at the rounding direction that diverged.

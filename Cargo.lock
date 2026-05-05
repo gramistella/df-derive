@@ -702,6 +702,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-derive-test-harness"
+version = "0.1.0"
+dependencies = [
+ "polars",
+ "rust_decimal",
+]
+
+[[package]]
 name = "diff"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"

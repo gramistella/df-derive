@@ -1,0 +1,19 @@
+[package]
+name = "df-derive-test-harness"
+version = "0.1.0"
+edition = "2024"
+authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
+description = "Contract test harness for `df-derive`'s `Decimal128Encode` trait. Validates that a custom decimal backend rounds half-to-even, matching polars's `str_to_dec128`."
+license = "MIT"
+repository = "https://github.com/gramistella/df-derive"
+homepage = "https://github.com/gramistella/df-derive"
+documentation = "https://docs.rs/df-derive-test-harness"
+readme = "README.md"
+keywords = ["polars", "decimal", "testing", "df-derive"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+polars = { version = "0.53.0", features = ["dtype-decimal"] }
+
+[dev-dependencies]
+rust_decimal = { version = "1.41.0", features = ["serde"] }

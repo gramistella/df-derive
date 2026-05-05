@@ -27,7 +27,7 @@ use super::shape_walk::{
     LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, shape_assemble_list_stack,
     shape_offsets_decls, shape_validity_decls,
 };
-use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
+use super::{BaseCtx, Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// `polars-arrow` crate root (so the combinators don't re-resolve it per
@@ -35,9 +35,7 @@ use super::{Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_w
 /// paths used in UFCS calls (`<#ty as #columnar_trait>::columnar_from_refs`,
 /// `<#ty as #to_df_trait>::schema`).
 pub struct NestedLeafCtx<'a> {
-    pub access: &'a TokenStream,
-    pub idx: usize,
-    pub parent_name: &'a str,
+    pub base: BaseCtx<'a>,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a TokenStream,
     pub to_df_trait: &'a TokenStream,
@@ -110,9 +108,7 @@ fn nested_consume_columns(
 /// (no list-array wrapping; the parent column is the inner column).
 fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
     let NestedLeafCtx {
-        access,
-        idx,
-        parent_name,
+        base: BaseCtx { access, idx, name },
         ty,
         columnar_trait,
         to_df_trait,
@@ -126,7 +122,7 @@ fn nested_leaf_encoder(ctx: &NestedLeafCtx<'_>) -> Encoder {
             .as_materialized_series()
             .clone()
     };
-    let columnar = nested_consume_columns(parent_name, to_df_trait, ty, &inner_expr);
+    let columnar = nested_consume_columns(name, to_df_trait, ty, &inner_expr);
     let it = idents::populator_iter();
     let setup = quote! {
         let #flat: ::std::vec::Vec<&#ty> = items
@@ -162,7 +158,7 @@ fn nested_option_encoder_collapsed(ctx: &NestedLeafCtx<'_>, option_layers: usize
     // expression — we match by reference. The two arms produce slightly
     // different scans because the bound `__df_derive_v` is `&T` either way,
     // but the surrounding match expression differs.
-    let access_ts = ctx.access.clone();
+    let access_ts = ctx.base.access.clone();
     let match_expr = if option_layers >= 2 {
         quote! { (#access_ts) }
     } else {
@@ -173,9 +169,11 @@ fn nested_option_encoder_collapsed(ctx: &NestedLeafCtx<'_>, option_layers: usize
 
 fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream) -> Encoder {
     let NestedLeafCtx {
-        access: _,
-        idx,
-        parent_name,
+        base: BaseCtx {
+            access: _,
+            idx,
+            name,
+        },
         ty,
         columnar_trait,
         to_df_trait,
@@ -224,9 +222,9 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
             }
         }
     };
-    let consume_direct = nested_consume_columns(parent_name, to_df_trait, ty, &direct_inner);
-    let consume_take = nested_consume_columns(parent_name, to_df_trait, ty, &take_inner);
-    let consume_null = nested_consume_columns(parent_name, to_df_trait, ty, &null_inner);
+    let consume_direct = nested_consume_columns(name, to_df_trait, ty, &direct_inner);
+    let consume_take = nested_consume_columns(name, to_df_trait, ty, &take_inner);
+    let consume_null = nested_consume_columns(name, to_df_trait, ty, &null_inner);
     let columnar_block = quote! {{
         #scan
         if #flat.is_empty() {
@@ -275,9 +273,7 @@ fn nested_layer_idents(idx: usize, depth: usize) -> Vec<LayerIdents> {
 #[allow(clippy::too_many_lines)]
 fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Encoder {
     let NestedLeafCtx {
-        access,
-        idx,
-        parent_name,
+        base: BaseCtx { access, idx, name },
         ty,
         columnar_trait,
         to_df_trait,
@@ -334,11 +330,10 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
     let series_empty = build_nested_layer_wrap(&layers, shape, &inner_col_empty, &pp);
     let series_all_absent = build_nested_layer_wrap(&layers, shape, &inner_col_all_absent, &pp);
 
-    let consume_direct = nested_consume_columns(parent_name, to_df_trait, ty, &series_direct);
-    let consume_take = nested_consume_columns(parent_name, to_df_trait, ty, &series_take);
-    let consume_empty = nested_consume_columns(parent_name, to_df_trait, ty, &series_empty);
-    let consume_all_absent =
-        nested_consume_columns(parent_name, to_df_trait, ty, &series_all_absent);
+    let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct);
+    let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take);
+    let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty);
+    let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent);
     let columnar_block = if shape.has_inner_option() {
         // 4-branch dispatch for the inner-Option case:
         // - total == 0: no leaf slots at all (every outer Vec was empty
@@ -648,15 +643,17 @@ pub fn build_nested_encoder(wrappers: &[Wrapper], ctx: &NestedLeafCtx<'_>) -> En
             // which evaluates to `Option<&T>` and matches the option-leaf
             // encoder's expected access type for the single-Option case.
             let collapsed_access = if layers >= 2 {
-                let chain = collapse_options_to_ref(ctx.access, layers);
+                let chain = collapse_options_to_ref(ctx.base.access, layers);
                 quote! { (#chain) }
             } else {
-                ctx.access.clone()
+                ctx.base.access.clone()
             };
             let new_ctx = NestedLeafCtx {
-                access: &collapsed_access,
-                idx: ctx.idx,
-                parent_name: ctx.parent_name,
+                base: BaseCtx {
+                    access: &collapsed_access,
+                    idx: ctx.base.idx,
+                    name: ctx.base.name,
+                },
                 ty: ctx.ty,
                 columnar_trait: ctx.columnar_trait,
                 to_df_trait: ctx.to_df_trait,

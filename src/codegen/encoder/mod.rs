@@ -382,11 +382,19 @@ pub enum Encoder {
     Multi { columnar: TokenStream },
 }
 
-/// Per-leaf metadata threaded into the leaf builders.
-pub struct LeafCtx<'a> {
+/// Per-leaf identity shared across both the primitive ([`LeafCtx`]) and
+/// nested ([`NestedLeafCtx`]) encoder paths: the per-row access expression,
+/// the field's stable index (used to namespace generated idents), and the
+/// field's column name.
+pub struct BaseCtx<'a> {
     pub access: &'a TokenStream,
     pub idx: usize,
     pub name: &'a str,
+}
+
+/// Per-leaf metadata threaded into the leaf builders.
+pub struct LeafCtx<'a> {
+    pub base: BaseCtx<'a>,
     pub decimal128_encode_trait: &'a TokenStream,
 }
 

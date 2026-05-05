@@ -141,8 +141,8 @@ fn vec_emit_decl(
 ) -> TokenStream {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let pp = crate::codegen::polars_paths::prelude();
-    let access = ctx.access;
-    let series_local = vec_encoder_series_local(ctx.idx);
+    let access = ctx.base.access;
+    let series_local = vec_encoder_series_local(ctx.base.idx);
     let leaf_bind = idents::leaf_value();
     let layers = vec_layer_idents(shape.depth());
 
@@ -682,9 +682,9 @@ fn vec_encoder(
     shape: &VecShape,
     leaf_dtype: &TokenStream,
 ) -> Encoder {
-    let series_local = vec_encoder_series_local(ctx.idx);
+    let series_local = vec_encoder_series_local(ctx.base.idx);
     let decl = vec_emit_decl(ctx, spec, shape, leaf_dtype);
-    let name = ctx.name;
+    let name = ctx.base.name;
     let columnar = quote! {
         {
             #decl
@@ -704,9 +704,9 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     if shape.depth() == 1 && !shape.any_outer_validity() {
         let pa_root = crate::codegen::polars_paths::polars_arrow_root();
         let pp = crate::codegen::polars_paths::prelude();
-        let series_local = vec_encoder_series_local(ctx.idx);
-        let body = bool_bare_depth1_body(ctx.access, &pa_root, &pp);
-        let name = ctx.name;
+        let series_local = vec_encoder_series_local(ctx.base.idx);
+        let body = bool_bare_depth1_body(ctx.base.access, &pa_root, &pp);
+        let name = ctx.base.name;
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
         let columnar = quote! {
             {
@@ -919,7 +919,7 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     // scratch — we splice that scratch's `as_str()` into the MBVA-push
     // expression, so the per-element work allocates the scratch once at
     // decl time and reuses on every row.
-    let scratch = idents::primitive_str_scratch(ctx.idx);
+    let scratch = idents::primitive_str_scratch(ctx.base.idx);
     let value_expr = quote! {{
         use ::std::fmt::Write as _;
         #scratch.clear();

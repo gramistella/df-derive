@@ -11,7 +11,7 @@ use quote::quote;
 
 use super::idents;
 use super::leaf::{LeafArm, LeafSpec, vec_decl};
-use super::{Encoder, LeafCtx, LeafShape, StringyBase, collapse_options_to_ref};
+use super::{BaseCtx, Encoder, LeafCtx, LeafShape, StringyBase, collapse_options_to_ref};
 
 /// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
 /// `Option`s above it (Polars folds them all to one validity bit). Strategy
@@ -38,8 +38,8 @@ pub(super) fn wrap_multi_option_primitive(
     if let LeafShape::AsStr(stringy) = shape {
         return wrap_multi_option_as_str(stringy, ctx, layers);
     }
-    let orig_access = ctx.access.clone();
-    let local = idents::multi_option_local(ctx.idx);
+    let orig_access = ctx.base.access.clone();
+    let local = idents::multi_option_local(ctx.base.idx);
     let local_access = quote! { #local };
     let collapsed_chain = collapse_options_to_ref(&orig_access, layers);
     // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`) flatten
@@ -55,9 +55,11 @@ pub(super) fn wrap_multi_option_primitive(
         let #local: ::std::option::Option<_> = #collapsed_chain #materializer;
     };
     let new_ctx = LeafCtx {
-        access: &local_access,
-        idx: ctx.idx,
-        name: ctx.name,
+        base: BaseCtx {
+            access: &local_access,
+            idx: ctx.base.idx,
+            name: ctx.base.name,
+        },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
     let LeafSpec {
@@ -84,10 +86,10 @@ pub(super) fn wrap_multi_option_primitive(
 /// from the original field — the buffer's borrow needs to live for the
 /// whole pass, which a per-row local owning `String` cannot provide.
 fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
-    let buf = idents::primitive_buf(ctx.idx);
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
-    let collapsed_ref = collapse_options_to_ref(ctx.access, layers);
+    let collapsed_ref = collapse_options_to_ref(ctx.base.access, layers);
     let push = if base.is_string() {
         // For `String` base, `&String` deref-coerces to `&str`, so the
         // collapsed `Option<&String>` maps to `Option<&str>` directly via

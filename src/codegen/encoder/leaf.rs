@@ -115,12 +115,12 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
     let info = crate::codegen::type_registry::numeric_info(base)
         .expect("numeric_leaf must be called with a numeric BaseType");
-    let buf = idents::primitive_buf(ctx.idx);
-    let validity = idents::primitive_validity(ctx.idx);
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
     let native = &info.native;
     let chunked = &info.chunked;
-    let access = ctx.access;
-    let name = ctx.name;
+    let access = ctx.base.access;
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
 
@@ -196,11 +196,11 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
 /// pushes the borrowed `&str` (no validity work), `None` pushes "" and flips
 /// a single bit via the safe `MutableBitmap::set`.
 pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let validity = idents::primitive_validity(ctx.idx);
-    let row_idx = idents::primitive_row_idx(ctx.idx);
-    let access = ctx.access;
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
+    let row_idx = idents::primitive_row_idx(ctx.base.idx);
+    let access = ctx.base.access;
+    let name = ctx.base.name;
 
     let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
     let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
@@ -245,11 +245,11 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
 /// 3-arm match makes `Some(false)` zero work, `Some(true)` flips a value
 /// bit, `None` flips a validity bit.
 pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let validity = idents::primitive_validity(ctx.idx);
-    let row_idx = idents::primitive_row_idx(ctx.idx);
-    let access = ctx.access;
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
+    let row_idx = idents::primitive_row_idx(ctx.base.idx);
+    let access = ctx.base.access;
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
 
@@ -300,8 +300,8 @@ fn mapped_push_pair(
     ctx: &LeafCtx<'_>,
     transform: &PrimitiveTransform,
 ) -> (TokenStream, TokenStream) {
-    let buf = idents::primitive_buf(ctx.idx);
-    let access = ctx.access;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let access = ctx.base.access;
     let decimal_trait = ctx.decimal128_encode_trait;
     let mapped_bare =
         crate::codegen::type_registry::map_primitive_expr(access, Some(transform), decimal_trait);
@@ -327,8 +327,8 @@ fn mapped_push_pair(
 /// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
 /// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
 pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let int128 = crate::codegen::polars_paths::int128_chunked();
     let p = precision as usize;
@@ -365,8 +365,8 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafS
 /// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
 /// + cast); only the element type changes.
 pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let transform = PrimitiveTransform::DateTimeToInt(unit);
     let (bare_push, option_push) = mapped_push_pair(ctx, &transform);
@@ -399,12 +399,12 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafSpec {
 /// resulting `&str` to the view array (which copies the bytes). Option arm
 /// adds the validity bitmap pair on top of the same MBVA + scratch layout.
 pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let scratch = idents::primitive_str_scratch(ctx.idx);
-    let validity = idents::primitive_validity(ctx.idx);
-    let row_idx = idents::primitive_row_idx(ctx.idx);
-    let access = ctx.access;
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let scratch = idents::primitive_str_scratch(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
+    let row_idx = idents::primitive_row_idx(ctx.base.idx);
+    let access = ctx.base.access;
+    let name = ctx.base.name;
 
     let bare_push = quote! {
         {
@@ -465,9 +465,9 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
 /// the UFCS path.
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> LeafSpec {
-    let buf = idents::primitive_buf(ctx.idx);
-    let access = ctx.access;
-    let name = ctx.name;
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let access = ctx.base.access;
+    let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     // Bare `String` base (with redundant `as_str`) and `as_str` on a
     // non-string base have different push expressions: `String`'s `&String`

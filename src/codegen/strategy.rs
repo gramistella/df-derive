@@ -11,7 +11,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use super::encoder::{self, Encoder, LeafCtx, NestedLeafCtx, build_type_path};
+use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_type_path};
 
 /// Per-field columnar emit pieces. The columnar pipeline concatenates
 /// every field's `decls` ahead of the per-row push loop, splices every
@@ -172,9 +172,11 @@ fn build_nested_emit(
     let access = it_access(field, &inner_it);
     let name = field.name.to_string();
     let ctx = NestedLeafCtx {
-        access: &access,
-        idx,
-        parent_name: &name,
+        base: BaseCtx {
+            access: &access,
+            idx,
+            name: &name,
+        },
         ty: type_path,
         columnar_trait: &config.columnar_trait_path,
         to_df_trait: &config.to_dataframe_trait_path,
@@ -209,9 +211,11 @@ fn build_primitive_emit(
     let name = field.name.to_string();
     let access = it_access(field, it_ident);
     let leaf_ctx = LeafCtx {
-        access: &access,
-        idx,
-        name: &name,
+        base: BaseCtx {
+            access: &access,
+            idx,
+            name: &name,
+        },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
     };
     let enc = encoder::build_encoder(

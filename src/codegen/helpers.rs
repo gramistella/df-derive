@@ -1,4 +1,4 @@
-use crate::ir::{PrimitiveTransform, StructIR};
+use crate::ir::{LeafSpec, StructIR};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -49,7 +49,7 @@ pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> Toke
         .fields
         .iter()
         .enumerate()
-        .filter(|(_, f)| matches!(f.transform, Some(PrimitiveTransform::AsStr)))
+        .filter(|(_, f)| matches!(f.leaf_spec, LeafSpec::AsStr(_)))
         .map(|(idx, f)| {
             let leaf = peel_to_leaf(&f.field_ty);
             let const_name = format_ident!("_DF_DERIVE_ASSERT_AS_REF_STR_{}", idx);

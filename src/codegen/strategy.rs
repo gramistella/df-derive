@@ -6,7 +6,7 @@
 //! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
 //! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
 
-use crate::ir::{BaseType, FieldIR, PrimitiveTransform, vec_count};
+use crate::ir::{FieldIR, LeafSpec};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
@@ -23,60 +23,39 @@ pub struct FieldEmit {
     pub builders: Vec<TokenStream>,
 }
 
-/// Routing decision for one field. `Primitive` covers every base type that
+/// Routing decision for one field. `Primitive` covers every leaf that
 /// resolves to a single Polars column at the encoder boundary (numerics,
 /// strings, decimals, dates, plus stringy-transformed structs/generics).
 /// `Nested` covers concrete structs and generic type parameters that
 /// resolve to one Polars column per inner schema entry — `type_path` is
-/// the splicable `Foo::<M>` / `T` token stream and `list_layers` is the
-/// number of `Vec<…>` wrappers around the nested type.
+/// the splicable `Foo::<M>` / `T` token stream.
 enum FieldRoute {
     Primitive,
-    Nested {
-        type_path: TokenStream,
-        list_layers: usize,
-    },
+    Nested { type_path: TokenStream },
 }
 
-/// Whether a transform routes the field through the primitive path even
-/// when the base type is a struct/generic. `to_string`/`as_str` over a
-/// nested type produce a `String` column, not a nested struct column.
-const fn is_stringy(t: Option<&PrimitiveTransform>) -> bool {
-    matches!(
-        t,
-        Some(PrimitiveTransform::ToString | PrimitiveTransform::AsStr)
-    )
-}
-
+/// Single source of truth for primitive-vs-nested routing. `Struct`/`Generic`
+/// without a stringy override (`as_str`/`as_string`) goes to the nested
+/// encoder; everything else (including `as_str` / `as_string` over a struct
+/// or generic — which produces a `String` column, not a nested struct
+/// column) stays primitive. The parser's legality matrix folds the stringy
+/// overrides into `LeafSpec::AsStr`/`LeafSpec::AsString`, so the destructure
+/// over `LeafSpec` is structurally exhaustive — no `is_stringy` bridge.
 fn classify_field(field: &FieldIR) -> FieldRoute {
-    if is_stringy(field.transform.as_ref()) {
-        return FieldRoute::Primitive;
-    }
-    match &field.base_type {
-        BaseType::Struct(id, args) => FieldRoute::Nested {
+    match &field.leaf_spec {
+        LeafSpec::Struct(id, args) => FieldRoute::Nested {
             type_path: build_type_path(id, args.as_ref()),
-            list_layers: vec_count(&field.wrappers),
         },
-        BaseType::Generic(id) => FieldRoute::Nested {
+        LeafSpec::Generic(id) => FieldRoute::Nested {
             type_path: quote! { #id },
-            list_layers: vec_count(&field.wrappers),
         },
-        BaseType::F64
-        | BaseType::F32
-        | BaseType::I64
-        | BaseType::U64
-        | BaseType::I32
-        | BaseType::U32
-        | BaseType::I16
-        | BaseType::U16
-        | BaseType::I8
-        | BaseType::U8
-        | BaseType::Bool
-        | BaseType::String
-        | BaseType::ISize
-        | BaseType::USize
-        | BaseType::DateTimeUtc
-        | BaseType::Decimal => FieldRoute::Primitive,
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::AsString
+        | LeafSpec::AsStr(_) => FieldRoute::Primitive,
     }
 }
 
@@ -114,15 +93,19 @@ pub(super) enum EmitMode {
 fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
     let name = field.name.to_string();
     match (classify_field(field), mode) {
-        (
-            FieldRoute::Nested {
-                type_path,
-                list_layers,
-            },
-            EmitMode::SchemaEntries,
-        ) => super::nested::generate_schema_entries_for_struct(&type_path, &name, list_layers),
-        (FieldRoute::Nested { type_path, .. }, EmitMode::EmptyRows) => {
-            super::nested::nested_empty_series_row(&type_path, &name, &field.wrappers)
+        (FieldRoute::Nested { type_path }, EmitMode::SchemaEntries) => {
+            super::nested::generate_schema_entries_for_struct(
+                &type_path,
+                &name,
+                field.wrapper_shape.vec_depth(),
+            )
+        }
+        (FieldRoute::Nested { type_path }, EmitMode::EmptyRows) => {
+            super::nested::nested_empty_series_row(
+                &type_path,
+                &name,
+                field.wrapper_shape.vec_depth(),
+            )
         }
         (FieldRoute::Primitive, EmitMode::SchemaEntries) => {
             let dtype = field_full_dtype(field);
@@ -152,11 +135,7 @@ pub fn build_empty_series(field: &FieldIR) -> TokenStream {
 }
 
 fn field_full_dtype(field: &FieldIR) -> TokenStream {
-    super::type_registry::compute_full_dtype(
-        &field.base_type,
-        field.transform.as_ref(),
-        &field.wrappers,
-    )
+    super::type_registry::full_dtype(&field.leaf_spec, &field.wrapper_shape)
 }
 
 /// Build the columnar emit pieces for one field. Routes every primitive
@@ -169,7 +148,7 @@ pub fn build_field_emit(
     it_ident: &Ident,
 ) -> FieldEmit {
     match classify_field(field) {
-        FieldRoute::Nested { type_path, .. } => {
+        FieldRoute::Nested { type_path } => {
             let pa_root = super::polars_paths::polars_arrow_root();
             build_nested_emit(field, config, idx, &type_path, &pa_root)
         }
@@ -202,7 +181,7 @@ fn build_nested_emit(
         to_df_trait: &config.to_dataframe_trait_path,
         pa_root,
     };
-    let enc = encoder::build_nested_encoder(&field.wrappers, &ctx);
+    let enc = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
     let Encoder::Multi { columnar } = enc else {
         unreachable!("nested encoder must produce a multi-column encoder")
     };
@@ -238,12 +217,7 @@ fn build_primitive_emit(
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
     };
-    let enc = encoder::build_encoder(
-        &field.base_type,
-        field.transform.as_ref(),
-        &field.wrappers,
-        &leaf_ctx,
-    );
+    let enc = encoder::build_encoder(&field.leaf_spec, &field.wrapper_shape, &leaf_ctx);
     match enc {
         Encoder::Leaf {
             decls,

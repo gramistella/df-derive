@@ -18,14 +18,14 @@
 //! pushes one Series per inner schema column onto the call site's `columns`
 //! vec, with the parent name prefixed onto each inner column name.
 
-use crate::ir::Wrapper;
+use crate::ir::{VecLayers, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::emit::{nested_consume_columns, vec_emit_general};
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
-use super::{BaseCtx, Encoder, VecShape, WrapperKind, collapse_options_to_ref, normalize_wrappers};
+use super::{BaseCtx, Encoder, collapse_options_to_ref};
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// `polars-arrow` crate root (so the combinators don't re-resolve it per
@@ -217,7 +217,7 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
 
 // --- Generalized depth-N nested encoder ---
 
-/// Build the depth-N nested vec encoder for an arbitrary [`VecShape`].
+/// Build the depth-N nested vec encoder for an arbitrary [`VecLayers`].
 /// Handles per-layer outer-Option (validity bitmap), inner-Option
 /// (per-element positions + scatter via `IdxCa::take`), and any mix
 /// thereof. Replaces the seven hand-written shape variants.
@@ -226,7 +226,7 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
 /// to the unified [`vec_emit_general`]; constructs a
 /// [`LeafKind::CollectThenBulk`] payload from the field's type/trait
 /// plumbing.
-fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Encoder {
+fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecLayers) -> Encoder {
     let NestedLeafCtx {
         base: BaseCtx { access, idx, name },
         ty,
@@ -251,12 +251,13 @@ fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecShape) -> Enco
 /// the `[]` and `[Option]` shapes use dedicated leaf encoders; every
 /// `Vec`-bearing shape (including deep nestings, mid-stack `Option`s,
 /// outer-list validity) routes through the depth-N general encoder.
-pub fn build_nested_encoder(wrappers: &[Wrapper], ctx: &NestedLeafCtx<'_>) -> Encoder {
-    match normalize_wrappers(wrappers) {
-        WrapperKind::Leaf { option_layers: 0 } => nested_leaf_encoder(ctx),
-        WrapperKind::Leaf {
+pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> Encoder {
+    match wrapper {
+        WrapperShape::Leaf { option_layers: 0 } => nested_leaf_encoder(ctx),
+        WrapperShape::Leaf {
             option_layers: layers,
         } => {
+            let layers = *layers;
             // Collapse N consecutive Options into a single `Option<&T>`
             // before invoking the option-leaf encoder. Polars folds every
             // nested None into one validity bit, so `Some(None)` and
@@ -283,6 +284,6 @@ pub fn build_nested_encoder(wrappers: &[Wrapper], ctx: &NestedLeafCtx<'_>) -> En
             };
             nested_option_encoder_collapsed(&new_ctx, layers)
         }
-        WrapperKind::Vec(shape) => nested_vec_encoder_general(ctx, &shape),
+        WrapperShape::Vec(shape) => nested_vec_encoder_general(ctx, shape),
     }
 }

@@ -38,8 +38,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use crate::ir::VecLayers;
+
+use super::idents;
 use super::shape_walk::{LayerIdents, LayerWrap, OwnPolicy};
-use super::{VecShape, idents};
 
 /// Per-element-push leaf payload — describes a primitive leaf's storage,
 /// per-row push, leaf-array materialization, and post-push offsets-counter
@@ -157,15 +159,15 @@ impl LeafKind<'_> {
 
 /// Per-emitter "shape × leaf-kind" intermediates the unified emitter passes
 /// down to materialization. Captures the per-layer ident bundle and the
-/// `VecShape` so leaf-kind-specific post-scan emission helpers don't have to
+/// `VecLayers` so leaf-kind-specific post-scan emission helpers don't have to
 /// recompute them.
 pub(super) struct EmitShape<'a> {
-    pub shape: &'a VecShape,
+    pub shape: &'a VecLayers,
     pub layers: &'a [LayerIdents],
 }
 
 impl<'a> EmitShape<'a> {
-    pub(super) const fn new(shape: &'a VecShape, layers: &'a [LayerIdents]) -> Self {
+    pub(super) const fn new(shape: &'a VecLayers, layers: &'a [LayerIdents]) -> Self {
         Self { shape, layers }
     }
 

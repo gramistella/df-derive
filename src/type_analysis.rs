@@ -1,4 +1,4 @@
-use crate::ir::{BaseType, DateTimeUnit, Wrapper};
+use crate::ir::{DateTimeUnit, NumericKind};
 use syn::{GenericArgument, Ident, PathArguments, Type};
 
 /// Default `Datetime` precision for `chrono::DateTime<Utc>` fields without an
@@ -11,25 +11,54 @@ pub const DEFAULT_DECIMAL_PRECISION: u8 = 38;
 /// Default scale paired with `DEFAULT_DECIMAL_PRECISION`.
 pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 
+/// Raw wrapper position before normalization. The parser collapses these
+/// into a `WrapperShape` (with consecutive `Option`s folded per Polars's
+/// single-validity-bit-per-level representation).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RawWrapper {
+    Option,
+    Vec,
+}
+
+/// Analyzed base type the parser uses internally before folding through the
+/// `(override, base)` legality matrix into a `LeafSpec`. Distinct from the
+/// IR's `LeafSpec` because this layer doesn't yet carry override-dependent
+/// information (e.g. `Decimal { precision, scale }`, `DateTime(unit)`,
+/// stringy classification) — that fusion happens in the parser when the
+/// override is consulted.
+#[derive(Clone)]
+pub enum AnalyzedBase {
+    Numeric(NumericKind),
+    String,
+    Bool,
+    DateTimeUtc,
+    Decimal,
+    /// Concrete user-defined struct, with optional angle-bracketed generic
+    /// arguments at the field's use site (e.g. `<M>` in `Vec<Foo<M>>`).
+    Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
+    /// Generic type parameter declared on the enclosing struct.
+    Generic(Ident),
+}
+
 #[derive(Clone)]
 pub struct AnalyzedType {
-    pub base: BaseType,
-    pub wrappers: Vec<Wrapper>,
+    pub base: AnalyzedBase,
+    pub wrappers: Vec<RawWrapper>,
 }
 
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
-    let mut wrappers: Vec<Wrapper> = Vec::new();
+    let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut current_type = ty;
 
     // Loop to peel off wrappers in any order
     loop {
         if let Some(inner_ty) = extract_inner_type(current_type, "Option") {
-            wrappers.push(Wrapper::Option);
+            wrappers.push(RawWrapper::Option);
             current_type = inner_ty;
             continue;
         }
         if let Some(inner_ty) = extract_inner_type(current_type, "Vec") {
-            wrappers.push(Wrapper::Vec);
+            wrappers.push(RawWrapper::Vec);
             current_type = inner_ty;
             continue;
         }
@@ -90,9 +119,9 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
     Ok(AnalyzedType { base, wrappers })
 }
 
-fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<BaseType> {
+fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<AnalyzedBase> {
     if is_datetime_utc(ty) {
-        return Some(BaseType::DateTimeUtc);
+        return Some(AnalyzedBase::DateTimeUtc);
     }
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
@@ -100,36 +129,36 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<BaseType> {
         let type_ident = &segment.ident;
         let has_args = !matches!(segment.arguments, PathArguments::None);
         let is_single_segment = type_path.qself.is_none() && type_path.path.segments.len() == 1;
-        let base_type = match type_ident.to_string().as_str() {
-            "String" => BaseType::String,
-            "f64" => BaseType::F64,
-            "f32" => BaseType::F32,
-            "i8" => BaseType::I8,
-            "u8" => BaseType::U8,
-            "i16" => BaseType::I16,
-            "u16" => BaseType::U16,
-            "i64" => BaseType::I64,
-            "isize" => BaseType::ISize,
-            "u64" => BaseType::U64,
-            "usize" => BaseType::USize,
-            "u32" => BaseType::U32,
-            "i32" => BaseType::I32,
-            "bool" => BaseType::Bool,
-            "Decimal" => BaseType::Decimal,
+        let base = match type_ident.to_string().as_str() {
+            "String" => AnalyzedBase::String,
+            "f64" => AnalyzedBase::Numeric(NumericKind::F64),
+            "f32" => AnalyzedBase::Numeric(NumericKind::F32),
+            "i8" => AnalyzedBase::Numeric(NumericKind::I8),
+            "u8" => AnalyzedBase::Numeric(NumericKind::U8),
+            "i16" => AnalyzedBase::Numeric(NumericKind::I16),
+            "u16" => AnalyzedBase::Numeric(NumericKind::U16),
+            "i64" => AnalyzedBase::Numeric(NumericKind::I64),
+            "isize" => AnalyzedBase::Numeric(NumericKind::ISize),
+            "u64" => AnalyzedBase::Numeric(NumericKind::U64),
+            "usize" => AnalyzedBase::Numeric(NumericKind::USize),
+            "u32" => AnalyzedBase::Numeric(NumericKind::U32),
+            "i32" => AnalyzedBase::Numeric(NumericKind::I32),
+            "bool" => AnalyzedBase::Bool,
+            "Decimal" => AnalyzedBase::Decimal,
             _ => {
                 if is_single_segment && !has_args && generic_params.iter().any(|p| p == type_ident)
                 {
-                    BaseType::Generic(type_ident.clone())
+                    AnalyzedBase::Generic(type_ident.clone())
                 } else {
                     let args = match &segment.arguments {
                         PathArguments::AngleBracketed(ab) => Some(ab.clone()),
                         _ => None,
                     };
-                    BaseType::Struct(type_ident.clone(), args)
+                    AnalyzedBase::Struct(type_ident.clone(), args)
                 }
             }
         };
-        return Some(base_type);
+        return Some(base);
     }
     None
 }

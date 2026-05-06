@@ -6,20 +6,20 @@
 //! per layer, one optional outer-list validity bitmap per layer that has
 //! an adjoining `Option`). The bulk-fusion invariant lives here.
 //!
-//! Also hosts `build_leaf` — the dispatcher from `(base, transform)` to a
-//! primitive leaf encoder — because it sits at the leaf/vec boundary and
-//! `try_build_vec_encoder` shares its (base, transform) coverage matrix.
+//! Also hosts `build_leaf` — the dispatcher from a [`crate::ir::LeafSpec`]
+//! to a primitive leaf encoder — because it sits at the leaf/vec boundary
+//! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::ir::{DateTimeUnit, PrimitiveTransform};
+use crate::ir::{DateTimeUnit, LeafSpec, StringyBase, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::emit::vec_emit_general;
 use super::idents;
-use super::leaf::{LeafSpec, validity_into_option};
+use super::leaf::{LeafBuilder, validity_into_option};
 use super::leaf_kind::{LeafKind, PerElementPush};
 use super::shape_walk::LayerIdents;
-use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, leaf};
+use super::{Encoder, LeafCtx, leaf};
 
 // --- Vec combinator ---
 
@@ -466,7 +466,7 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
-    shape: &VecShape,
+    shape: &VecLayers,
     leaf_dtype: &TokenStream,
 ) -> Encoder {
     let series_local = vec_encoder_series_local(ctx.base.idx);
@@ -495,7 +495,7 @@ fn vec_encoder(
 fn lower_to_pep(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
-    shape: &VecShape,
+    shape: &VecLayers,
     leaf_dtype: &TokenStream,
 ) -> PerElementPush {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
@@ -533,7 +533,7 @@ fn lower_to_pep(
 /// bit-packing). For deeper or option-bearing shapes, routes through the
 /// generalized `vec_encoder` with `VecLeafSpec::BoolBare` (a bit-packed
 /// `MutableBitmap` set per element).
-fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
+fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     if shape.depth() == 1 && !shape.any_outer_validity() {
         let pa_root = crate::codegen::polars_paths::polars_arrow_root();
         let pp = crate::codegen::polars_paths::prelude();
@@ -610,7 +610,7 @@ fn bool_bare_depth1_body(
 /// `String` path, but the value expression sources `&str` via UFCS through
 /// `AsRef<str>`. The bytes are copied into the view array once, identical
 /// to the `String::as_str()` path.
-fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_>) -> Encoder {
+fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecLayers, base: &StringyBase) -> Encoder {
     // For bare `String`, `&String` deref-coerces to `&str`; for non-String
     // bases we go through UFCS so generic-parameter and concrete-struct
     // leaves both resolve. `StringyBase` already encodes the parser's
@@ -619,8 +619,8 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_
     let v = idents::leaf_value();
     let value_expr = match base {
         StringyBase::String => quote! { #v.as_str() },
-        StringyBase::Struct { ident, args } => {
-            let ty_path = super::build_type_path(ident, *args);
+        StringyBase::Struct(ident, args) => {
+            let ty_path = super::build_type_path(ident, args.as_ref());
             quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(#v) }
         }
         StringyBase::Generic(ident) => {
@@ -638,50 +638,46 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecShape, base: &StringyBase<'_
 
 // --- Top-level dispatcher pieces ---
 
-/// Build the depth-N `vec(inner)` encoder for every leaf shape. `LeafShape`
-/// already encodes the parser's accept set, so the match below is
-/// exhaustive by construction — no `_ => unreachable!()` arms.
+/// Build the depth-N `vec(inner)` encoder for every leaf shape. The
+/// [`LeafSpec`] already encodes the parser's accept set, so the match
+/// below is exhaustive by construction — `Struct`/`Generic` leaves never
+/// reach this dispatcher (they route through `build_nested_encoder`).
 ///
 /// Covers: bare numeric, `ISize`/`USize` (widened to `i64`/`u64` at the leaf
-/// push site), `String`, `Bool`, `Decimal` (with `DecimalToInt128`),
-/// `DateTime` (with `DateTimeToInt`), `as_str` borrow, and `to_string`.
+/// push site), `String`, `Bool`, `Decimal`, `DateTime`, `as_str` borrow,
+/// and `to_string`.
 pub(super) fn try_build_vec_encoder(
-    shape: &LeafShape<'_>,
+    leaf: &LeafSpec,
     ctx: &LeafCtx<'_>,
-    vec_shape: &VecShape,
+    vec_shape: &VecLayers,
 ) -> Encoder {
     let v = idents::leaf_value();
-    match shape {
-        LeafShape::Numeric(base) => {
-            let info = crate::codegen::type_registry::numeric_info(base)
-                .expect("LeafShape::Numeric carries a numeric BaseType");
+    match leaf {
+        LeafSpec::Numeric(kind) => {
+            let info = crate::codegen::type_registry::numeric_info_for(*kind);
             // The loop binding is `&T` for Copy primitives, so dereferencing
             // produces the storage value directly. Bare and inner-Option
             // arms share the same expression because `build_vec_leaf_pieces`
             // re-binds the bare loop variable as `__df_derive_v` before
             // splicing the value expression in.
-            let spec = VecLeafSpec::Numeric {
-                native: info.native.clone(),
-                value_expr: quote! { *#v },
-                needs_decimal_import: false,
-            };
-            vec_encoder(ctx, &spec, vec_shape, &info.dtype)
-        }
-        LeafShape::NumericWidened(base) => {
+            //
             // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
             // The loop binding is `&isize`/`&usize`, so the cast reads the
             // pointed-to value first (`*v`) then widens to the target.
-            let info = crate::codegen::type_registry::numeric_info(base)
-                .expect("LeafShape::NumericWidened carries an `ISize`/`USize` BaseType");
-            let target = info.native.clone();
+            let value_expr = if kind.is_widened() {
+                let target = &info.native;
+                quote! { (*#v as #target) }
+            } else {
+                quote! { *#v }
+            };
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
-                value_expr: quote! { (*#v as #target) },
+                value_expr,
                 needs_decimal_import: false,
             };
             vec_encoder(ctx, &spec, vec_shape, &info.dtype)
         }
-        LeafShape::String => {
+        LeafSpec::String => {
             let pp = crate::codegen::polars_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::String };
             let spec = VecLeafSpec::StringLike {
@@ -690,7 +686,7 @@ pub(super) fn try_build_vec_encoder(
             };
             vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
         }
-        LeafShape::Bool => {
+        LeafSpec::Bool => {
             if vec_shape.has_inner_option() {
                 let pp = crate::codegen::polars_paths::prelude();
                 let leaf_dtype = quote! { #pp::DataType::Boolean };
@@ -699,19 +695,24 @@ pub(super) fn try_build_vec_encoder(
                 vec_encoder_bool_bare(ctx, vec_shape)
             }
         }
-        LeafShape::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
-        LeafShape::Decimal { precision, scale } => {
+        LeafSpec::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
+        LeafSpec::Decimal { precision, scale } => {
             vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
         }
-        LeafShape::AsString => vec_encoder_to_string(ctx, vec_shape),
+        LeafSpec::AsString => vec_encoder_to_string(ctx, vec_shape),
         // `as_str` borrow path: same MBVA-based encoder as `String`, but
         // the value expression goes through UFCS (`AsRef<str>`) instead of
         // `String::as_str`. Bytes are copied into the view array once.
-        LeafShape::AsStr(stringy) => vec_encoder_as_str(ctx, vec_shape, stringy),
+        LeafSpec::AsStr(stringy) => vec_encoder_as_str(ctx, vec_shape, stringy),
+        LeafSpec::Struct(..) | LeafSpec::Generic(_) => unreachable!(
+            "df-derive: try_build_vec_encoder reached with Struct/Generic leaf — \
+             those route through build_nested_encoder via the FieldRoute split \
+             in `super::strategy::classify_field`",
+        ),
     }
 }
 
-fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape) -> Encoder {
+fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
     let v = idents::leaf_value();
     let unit_tokens = match unit {
@@ -722,9 +723,10 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape)
     let leaf_dtype = quote! {
         #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
     };
+    let leaf = LeafSpec::DateTime(unit);
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
         &quote! { #v },
-        Some(&PrimitiveTransform::DateTimeToInt(unit)),
+        &leaf,
         ctx.decimal128_encode_trait,
     );
     let spec = VecLeafSpec::Numeric {
@@ -735,15 +737,16 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecShape)
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecShape) -> Encoder {
+fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecLayers) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
     let v = idents::leaf_value();
     let p = precision as usize;
     let s = scale as usize;
     let leaf_dtype = quote! { #pp::DataType::Decimal(#p, #s) };
+    let leaf = LeafSpec::Decimal { precision, scale };
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
         &quote! { #v },
-        Some(&PrimitiveTransform::DecimalToInt128 { precision, scale }),
+        &leaf,
         ctx.decimal128_encode_trait,
     );
     let spec = VecLeafSpec::Numeric {
@@ -754,7 +757,7 @@ fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecS
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
+fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::String };
     // `to_string` materializes via `Display::fmt` into a reusable `String`
@@ -778,22 +781,26 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecShape) -> Encoder {
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-/// Build the leaf-encoder bundle for a primitive shape. `LeafShape` encodes
-/// the parser's accept set, so this dispatch is exhaustive by construction —
-/// every "cannot reach this combination" check lives at
-/// `LeafShape::from_base_transform` instead. Both `Numeric` and
-/// `NumericWidened` route to the same `numeric_leaf` builder; the merged
-/// `numeric_info` carries the widening info inline, so the two parser-time
-/// `LeafShape` provenances yield distinct push tokens without needing
-/// distinct dispatcher arms.
-pub(super) fn build_leaf(shape: &LeafShape<'_>, ctx: &LeafCtx<'_>) -> LeafSpec {
-    match shape {
-        LeafShape::Numeric(base) | LeafShape::NumericWidened(base) => leaf::numeric_leaf(ctx, base),
-        LeafShape::String => leaf::string_leaf(ctx),
-        LeafShape::Bool => leaf::bool_leaf(ctx),
-        LeafShape::DateTime(unit) => leaf::datetime_leaf(ctx, *unit),
-        LeafShape::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale),
-        LeafShape::AsString => leaf::as_string_leaf(ctx),
-        LeafShape::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy),
+/// Build the leaf-encoder bundle for a primitive `LeafSpec`. Total over the
+/// primitive variants of `LeafSpec` — `Struct`/`Generic` cannot reach this
+/// dispatcher because `super::strategy::classify_field` routes them through
+/// `build_nested_encoder`. The fixed-width and `ISize`/`USize` numeric
+/// variants both route to `numeric_leaf`; the widening info is carried
+/// inline on `NumericKind`, so the two provenances yield distinct push
+/// tokens without needing distinct dispatcher arms.
+pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> LeafBuilder {
+    match leaf {
+        LeafSpec::Numeric(kind) => leaf::numeric_leaf(ctx, *kind),
+        LeafSpec::String => leaf::string_leaf(ctx),
+        LeafSpec::Bool => leaf::bool_leaf(ctx),
+        LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit),
+        LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale),
+        LeafSpec::AsString => leaf::as_string_leaf(ctx),
+        LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy),
+        LeafSpec::Struct(..) | LeafSpec::Generic(_) => unreachable!(
+            "df-derive: build_leaf reached with Struct/Generic leaf — those \
+             route through build_nested_encoder via the FieldRoute split in \
+             `super::strategy::classify_field`",
+        ),
     }
 }

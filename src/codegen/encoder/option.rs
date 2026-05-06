@@ -3,15 +3,16 @@
 //! `wrap_multi_option_primitive` and `wrap_multi_option_as_str` handle the
 //! `Option<…<Option<T>>>` stacks of depth ≥ 2 by collapsing the access into
 //! a single `Option<&T>` (Polars folds every nested None into one validity
-//! bit). The single-Option case is served directly by the leaf's
-//! `LeafSpec::option` arm — `mod.rs::build_encoder` selects it without
-//! needing a wrapper.
+//! bit). The single-Option case is served directly by the leaf builder's
+//! `option` arm — `mod.rs::build_encoder` selects it without needing a
+//! wrapper.
 
+use crate::ir::{LeafSpec, StringyBase};
 use quote::quote;
 
 use super::idents;
-use super::leaf::{LeafArm, LeafSpec, vec_decl};
-use super::{BaseCtx, Encoder, LeafCtx, LeafShape, StringyBase, collapse_options_to_ref};
+use super::leaf::{LeafArm, LeafBuilder, vec_decl};
+use super::{BaseCtx, Encoder, LeafCtx, collapse_options_to_ref};
 
 /// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
 /// `Option`s above it (Polars folds them all to one validity bit). Strategy
@@ -30,12 +31,12 @@ use super::{BaseCtx, Encoder, LeafCtx, LeafShape, StringyBase, collapse_options_
 ///   leaf machinery is sound. The clone is per-row only on this rare slow
 ///   path; the fast paths still apply for `[]` and `[Option]` shapes.
 pub(super) fn wrap_multi_option_primitive(
-    shape: &LeafShape<'_>,
+    leaf: &LeafSpec,
     ctx: &LeafCtx<'_>,
     layers: usize,
 ) -> Encoder {
     debug_assert!(layers >= 2);
-    if let LeafShape::AsStr(stringy) = shape {
+    if let LeafSpec::AsStr(stringy) = leaf {
         return wrap_multi_option_as_str(stringy, ctx, layers);
     }
     let orig_access = ctx.base.access.clone();
@@ -46,7 +47,7 @@ pub(super) fn wrap_multi_option_primitive(
     // through `.copied()`; everything else through `.cloned()`. The local
     // shadows the field for the inner option-leaf machinery so its existing
     // `match #access { Some(v) => ... }` push body just works.
-    let materializer = if is_copy_leaf_shape(shape) {
+    let materializer = if is_copy_leaf_spec(leaf) {
         quote! { .copied() }
     } else {
         quote! { .cloned() }
@@ -62,14 +63,14 @@ pub(super) fn wrap_multi_option_primitive(
         },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
-    let LeafSpec {
+    let LeafBuilder {
         option: LeafArm {
             decls,
             push,
             series,
         },
         ..
-    } = super::vec::build_leaf(shape, &new_ctx);
+    } = super::vec::build_leaf(leaf, &new_ctx);
     Encoder::Leaf {
         decls,
         push: quote! {
@@ -85,7 +86,7 @@ pub(super) fn wrap_multi_option_primitive(
 /// collapses the stacked `Option`s into a single `Option<&str>` borrowed
 /// from the original field — the buffer's borrow needs to live for the
 /// whole pass, which a per-row local owning `String` cannot provide.
-fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
+fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -96,7 +97,7 @@ fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: u
         // `String::as_str`.
         quote! { #buf.push((#collapsed_ref).map(::std::string::String::as_str)); }
     } else {
-        let ty_path = base.ty_path();
+        let ty_path = super::stringy_base_ty_path(base);
         quote! {
             #buf.push(
                 (#collapsed_ref).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
@@ -111,13 +112,10 @@ fn wrap_multi_option_as_str(base: &StringyBase<'_>, ctx: &LeafCtx<'_>, layers: u
     }
 }
 
-/// `Copy` test for the multi-Option per-row materializer. Numeric leaves,
-/// `ISize`/`USize`, and `Bool` are `Copy`; `String`, `DateTime`, `Decimal`,
-/// `as_string`, and the `as_str` borrow path are not (and `as_str` takes its
-/// own branch above before reaching this helper).
-const fn is_copy_leaf_shape(shape: &LeafShape<'_>) -> bool {
-    matches!(
-        shape,
-        LeafShape::Numeric(_) | LeafShape::NumericWidened(_) | LeafShape::Bool
-    )
+/// `Copy` test for the multi-Option per-row materializer. Numeric leaves
+/// (including `ISize`/`USize`) and `Bool` are `Copy`; `String`, `DateTime`,
+/// `Decimal`, `as_string`, and the `as_str` borrow path are not (and
+/// `as_str` takes its own branch above before reaching this helper).
+const fn is_copy_leaf_spec(leaf: &LeafSpec) -> bool {
+    matches!(leaf, LeafSpec::Numeric(_) | LeafSpec::Bool)
 }

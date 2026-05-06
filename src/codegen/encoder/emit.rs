@@ -28,13 +28,15 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use crate::ir::VecLayers;
+
+use super::collapse_options_to_ref;
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, EmitShape, LeafKind};
 use super::shape_walk::{
     LayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack, shape_offsets_decls,
     shape_validity_decls,
 };
-use super::{VecShape, collapse_options_to_ref};
 
 /// Produce per-layer ident bundle for the collect-then-bulk path.
 /// Per-(field, layer) namespaced so the same `idx` doesn't collide across
@@ -62,7 +64,7 @@ pub(super) fn nested_layer_idents(idx: usize, depth: usize) -> Vec<LayerIdents> 
 /// with [`super::shape_walk::ShapePrecount`].
 fn build_precount<'a>(
     access: &TokenStream,
-    shape: &'a VecShape,
+    shape: &'a VecLayers,
     layers: &'a [LayerIdents],
     outer_some_prefix: &'static str,
     total: &'a syn::Ident,
@@ -88,7 +90,7 @@ fn build_precount<'a>(
 /// scatter for the collect-then-bulk path).
 fn build_scan(
     access: &TokenStream,
-    shape: &VecShape,
+    shape: &VecLayers,
     layers: &[LayerIdents],
     outer_some_prefix: &'static str,
     leaf_body: &dyn Fn(&TokenStream) -> TokenStream,
@@ -111,7 +113,7 @@ fn build_scan(
 /// `__df_derive_v_raw` and is collapsed into `__df_derive_v: Option<&T>`
 /// before splicing the push body).
 fn pep_leaf_body<'a>(
-    shape: &'a VecShape,
+    shape: &'a VecLayers,
     leaf_bind: &'a syn::Ident,
     per_elem_push: &'a TokenStream,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
@@ -153,7 +155,7 @@ fn pep_leaf_body<'a>(
 /// boundary already enforces this for nested-struct/generic paths; the
 /// debug-assert is a safety margin against future emitter changes).
 fn ctb_leaf_body<'a>(
-    shape: &'a VecShape,
+    shape: &'a VecLayers,
     flat: &'a syn::Ident,
     positions: &'a syn::Ident,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
@@ -579,7 +581,7 @@ pub(super) fn vec_emit_general(
     kind: &LeafKind<'_>,
     access: &TokenStream,
     idx: usize,
-    shape: &VecShape,
+    shape: &VecLayers,
 ) -> TokenStream {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let pp = crate::codegen::polars_paths::prelude();

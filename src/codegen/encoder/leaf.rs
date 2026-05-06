@@ -1,18 +1,18 @@
 //! Primitive leaf builders + shared decl helpers.
 //!
-//! Each `*_leaf` here returns a [`LeafSpec`] carrying both the bare-leaf
+//! Each `*_leaf` here returns a [`LeafBuilder`] carrying both the bare-leaf
 //! and `[Option]` shape pieces (decls, push, finish). The dispatcher in
-//! [`super::mod`] selects `spec.bare` for `WrapperKind::Leaf { option_layers:
+//! [`super::mod`] selects `spec.bare` for `WrapperShape::Leaf { option_layers:
 //! 0 }` and `spec.option` for `option_layers == 1`. Deeper Option stacks
 //! reuse `spec.option` after collapsing the access into a single
 //! `Option<&T>` (Polars folds every nested None into one validity bit).
 
-use crate::ir::{BaseType, DateTimeUnit, PrimitiveTransform};
+use crate::ir::{DateTimeUnit, LeafSpec, NumericKind, StringyBase};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::LeafCtx;
 use super::idents;
-use super::{LeafCtx, StringyBase};
 
 /// Per-leaf bundle of token streams. Every primitive leaf carries both a
 /// bare-shape [`LeafArm`] and an `[Option]`-shape [`LeafArm`]. The split lets
@@ -20,12 +20,16 @@ use super::{LeafCtx, StringyBase};
 /// match against a pre-filled values bitmap, the string-like MBVA + bitmap
 /// pair, the bool inner-Option bit-packed values bitmap) without leaking a
 /// runtime "is-this-supplied?" check into the dispatcher.
-pub(super) struct LeafSpec {
+///
+/// Distinct from [`crate::ir::LeafSpec`] (which classifies the unwrapped
+/// element type at parse time). This builder bundle is the encoder-internal
+/// product of the dispatch over a `LeafSpec` plus a `LeafCtx`.
+pub(super) struct LeafBuilder {
     pub bare: LeafArm,
     pub option: LeafArm,
 }
 
-/// One arm (bare or `[Option]`) of a [`LeafSpec`]. `decls` is emitted once
+/// One arm (bare or `[Option]`) of a [`LeafBuilder`]. `decls` is emitted once
 /// before the per-row loop; `push` is spliced inside the loop; `series` is
 /// an expression that evaluates to a `polars::prelude::Series` after the
 /// loop.
@@ -113,9 +117,8 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 /// `MutableBitmap` + `PrimitiveArray::new`. When `info.widen_from` is `Some`,
 /// the bare push reads the field as `(#access) as #target` and the
 /// validity-arm `Some` push extracts via `(*v) as #target`.
-pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
-    let info = crate::codegen::type_registry::numeric_info(base)
-        .expect("numeric_leaf must be called with a numeric BaseType");
+pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind) -> LeafBuilder {
+    let info = crate::codegen::type_registry::numeric_info_for(kind);
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let native = &info.native;
@@ -177,7 +180,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
         );
         #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
     }};
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![vec_decl(&buf, native)],
             push: bare_push,
@@ -197,7 +200,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, base: &BaseType) -> LeafSpec {
 /// MBVA + parallel `MutableBitmap` (pre-filled `true`) + row counter; `Some`
 /// pushes the borrowed `&str` (no validity work), `None` pushes "" and flips
 /// a single bit via the safe `MutableBitmap::set`.
-pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
+pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
@@ -222,7 +225,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
     let valid_opt = validity_into_option(&validity);
     let option_series =
         string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![mbva_decl(&buf)],
             push: bare_push,
@@ -247,7 +250,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
 /// `false` + `MutableBitmap` validity pre-filled `true` + row counter); the
 /// 3-arm match makes `Some(false)` zero work, `Some(true)` flips a value
 /// bit, `None` flips a validity bit.
-pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
+pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
@@ -277,7 +280,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
             #pp::BooleanChunked::with_chunk(#name.into(), arr),
         )
     }};
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![vec_decl(&buf, &quote! { bool })],
             push: bare_push,
@@ -299,19 +302,16 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
 /// holds the result of a per-row mapped expression — used by `Decimal` and
 /// `DateTime` leaves which share the same shape (`buf.push({ mapped })` for
 /// bare, `match Some/None => Some(mapped)/None` for option).
-fn mapped_push_pair(
-    ctx: &LeafCtx<'_>,
-    transform: &PrimitiveTransform,
-) -> (TokenStream, TokenStream) {
+fn mapped_push_pair(ctx: &LeafCtx<'_>, leaf: &LeafSpec) -> (TokenStream, TokenStream) {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let decimal_trait = ctx.decimal128_encode_trait;
     let v = idents::leaf_value();
     let mapped_bare =
-        crate::codegen::type_registry::map_primitive_expr(access, Some(transform), decimal_trait);
+        crate::codegen::type_registry::map_primitive_expr(access, leaf, decimal_trait);
     let mapped_some = {
         let some_var = quote! { #v };
-        crate::codegen::type_registry::map_primitive_expr(&some_var, Some(transform), decimal_trait)
+        crate::codegen::type_registry::map_primitive_expr(&some_var, leaf, decimal_trait)
     };
     let bare_push = quote! { #buf.push({ #mapped_bare }); };
     let option_push = quote! {
@@ -330,15 +330,15 @@ fn mapped_push_pair(
 /// `Decimal` leaf with a `DecimalToInt128` transform. Bare: `Vec<i128>` +
 /// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
 /// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
-pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafSpec {
+pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let int128 = crate::codegen::polars_paths::int128_chunked();
     let p = precision as usize;
     let s = scale as usize;
-    let transform = PrimitiveTransform::DecimalToInt128 { precision, scale };
-    let (bare_push, option_push) = mapped_push_pair(ctx, &transform);
+    let leaf = LeafSpec::Decimal { precision, scale };
+    let (bare_push, option_push) = mapped_push_pair(ctx, &leaf);
     let bare_series = quote! {{
         let ca = #int128::from_vec(#name.into(), #buf);
         #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
@@ -350,7 +350,7 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafS
         );
         #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
     }};
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![vec_decl(&buf, &quote! { i128 })],
             push: bare_push,
@@ -368,23 +368,19 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafS
 /// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
 /// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
 /// + cast); only the element type changes.
-pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafSpec {
+pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
-    let transform = PrimitiveTransform::DateTimeToInt(unit);
-    let (bare_push, option_push) = mapped_push_pair(ctx, &transform);
-    let dtype = crate::codegen::type_registry::compute_full_dtype(
-        &BaseType::DateTimeUtc,
-        Some(&transform),
-        &[],
-    );
+    let leaf = LeafSpec::DateTime(unit);
+    let (bare_push, option_push) = mapped_push_pair(ctx, &leaf);
+    let dtype = crate::codegen::type_registry::leaf_dtype(&leaf);
     let series_finish = quote! {{
         let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
         s = s.cast(&#dtype)?;
         s
     }};
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![vec_decl(&buf, &quote! { i64 })],
             push: bare_push,
@@ -402,7 +398,7 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafSpec {
 /// each row clears the scratch, runs `Display::fmt` into it, then pushes the
 /// resulting `&str` to the view array (which copies the bytes). Option arm
 /// adds the validity bitmap pair on top of the same MBVA + scratch layout.
-pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
+pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -440,7 +436,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
         string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
     let scratch_decl =
         quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); };
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![mbva_decl(&buf), scratch_decl.clone()],
             push: bare_push,
@@ -469,7 +465,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafSpec {
 /// information (`String`, the field's struct ident, or a generic-parameter
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
 /// the UFCS path.
-pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> LeafSpec {
+pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
@@ -484,7 +480,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> LeafSpec
             quote! { #buf.push((#access).as_deref()); },
         )
     } else {
-        let ty_path = base.ty_path();
+        let ty_path = super::stringy_base_ty_path(base);
         (
             quote! { #buf.push(<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#access))); },
             quote! {
@@ -495,7 +491,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase<'_>) -> LeafSpec
         )
     };
     let series_finish = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    LeafSpec {
+    LeafBuilder {
         bare: LeafArm {
             decls: vec![vec_decl(&buf, &quote! { &str })],
             push: bare_push,

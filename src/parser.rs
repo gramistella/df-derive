@@ -1,12 +1,15 @@
-use crate::ir::{BaseType, DateTimeUnit, FieldIR, PrimitiveTransform, StructIR};
+use crate::ir::{
+    DateTimeUnit, FieldIR, LeafSpec, StringyBase, StructIR, VecLayerSpec, VecLayers, WrapperShape,
+};
 use crate::type_analysis::{
-    DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE, analyze_type,
+    AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
+    RawWrapper, analyze_type,
 };
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
 
 /// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
-/// `None` means the field had no override; `derive_transform` injects defaults
+/// `None` means the field had no override; `parse_leaf_spec` injects defaults
 /// (e.g. `DateTimeToInt(Milliseconds)` for `chrono::DateTime<Utc>`) in that case.
 enum FieldOverride {
     None,
@@ -188,60 +191,42 @@ fn parse_field_override(
 }
 
 /// Single source of truth for combining a parsed `FieldOverride` with the
-/// analyzed `BaseType` into the final `Option<PrimitiveTransform>` carried on
-/// the IR. Performs base-type compatibility checks for every override variant
-/// and injects the default `DateTimeToInt(Milliseconds)` /
-/// `DecimalToInt128 { 38, 10 }` transforms when no override was declared.
-fn derive_transform(
+/// analyzed base type into the final `LeafSpec` carried on the IR. Performs
+/// base-type compatibility checks for every override variant and injects
+/// the default semantics (`DateTimeToInt(Milliseconds)` for
+/// `chrono::DateTime<Utc>`, `Decimal(38, 10)` for `rust_decimal::Decimal`)
+/// when no override was declared.
+///
+/// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
+/// one `LeafSpec` per parser-accepted pair — no `unreachable!` arms downstream.
+fn parse_leaf_spec(
     field: &syn::Field,
     field_display_name: &str,
     override_: &FieldOverride,
-    base: &BaseType,
-) -> Result<Option<PrimitiveTransform>, syn::Error> {
+    base: AnalyzedBase,
+) -> Result<LeafSpec, syn::Error> {
     match override_ {
         FieldOverride::None => Ok(match base {
-            BaseType::DateTimeUtc => Some(PrimitiveTransform::DateTimeToInt(DEFAULT_DATETIME_UNIT)),
-            BaseType::Decimal => Some(PrimitiveTransform::DecimalToInt128 {
+            AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
+            AnalyzedBase::String => LeafSpec::String,
+            AnalyzedBase::Bool => LeafSpec::Bool,
+            AnalyzedBase::DateTimeUtc => LeafSpec::DateTime(DEFAULT_DATETIME_UNIT),
+            AnalyzedBase::Decimal => LeafSpec::Decimal {
                 precision: DEFAULT_DECIMAL_PRECISION,
                 scale: DEFAULT_DECIMAL_SCALE,
-            }),
-            BaseType::F64
-            | BaseType::F32
-            | BaseType::I64
-            | BaseType::U64
-            | BaseType::I32
-            | BaseType::U32
-            | BaseType::I16
-            | BaseType::U16
-            | BaseType::I8
-            | BaseType::U8
-            | BaseType::Bool
-            | BaseType::String
-            | BaseType::ISize
-            | BaseType::USize
-            | BaseType::Struct(..)
-            | BaseType::Generic(..) => None,
+            },
+            AnalyzedBase::Struct(ident, args) => LeafSpec::Struct(ident, args),
+            AnalyzedBase::Generic(ident) => LeafSpec::Generic(ident),
         }),
-        FieldOverride::AsString => Ok(Some(PrimitiveTransform::ToString)),
+        FieldOverride::AsString => Ok(LeafSpec::AsString),
         FieldOverride::AsStr => match base {
-            BaseType::String | BaseType::Struct(..) | BaseType::Generic(..) => {
-                Ok(Some(PrimitiveTransform::AsStr))
-            }
-            BaseType::F64
-            | BaseType::F32
-            | BaseType::I64
-            | BaseType::U64
-            | BaseType::I32
-            | BaseType::U32
-            | BaseType::I16
-            | BaseType::U16
-            | BaseType::I8
-            | BaseType::U8
-            | BaseType::Bool
-            | BaseType::ISize
-            | BaseType::USize
-            | BaseType::DateTimeUtc
-            | BaseType::Decimal => Err(syn::Error::new_spanned(
+            AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
+            AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
+            AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
+            AnalyzedBase::Numeric(_)
+            | AnalyzedBase::Bool
+            | AnalyzedBase::DateTimeUtc
+            | AnalyzedBase::Decimal => Err(syn::Error::new_spanned(
                 field,
                 format!(
                     "field `{field_display_name}` has `as_str` but its base type does not implement \
@@ -251,27 +236,16 @@ fn derive_transform(
             )),
         },
         FieldOverride::Decimal { precision, scale } => match base {
-            BaseType::Decimal => Ok(Some(PrimitiveTransform::DecimalToInt128 {
+            AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
                 precision: *precision,
                 scale: *scale,
-            })),
-            BaseType::F64
-            | BaseType::F32
-            | BaseType::I64
-            | BaseType::U64
-            | BaseType::I32
-            | BaseType::U32
-            | BaseType::I16
-            | BaseType::U16
-            | BaseType::I8
-            | BaseType::U8
-            | BaseType::Bool
-            | BaseType::String
-            | BaseType::ISize
-            | BaseType::USize
-            | BaseType::DateTimeUtc
-            | BaseType::Struct(..)
-            | BaseType::Generic(..) => Err(syn::Error::new_spanned(
+            }),
+            AnalyzedBase::Numeric(_)
+            | AnalyzedBase::String
+            | AnalyzedBase::Bool
+            | AnalyzedBase::DateTimeUtc
+            | AnalyzedBase::Struct(..)
+            | AnalyzedBase::Generic(_) => Err(syn::Error::new_spanned(
                 field,
                 format!(
                     "field `{field_display_name}` has `decimal(...)` but its base type is not \
@@ -280,24 +254,13 @@ fn derive_transform(
             )),
         },
         FieldOverride::TimeUnit(unit) => match base {
-            BaseType::DateTimeUtc => Ok(Some(PrimitiveTransform::DateTimeToInt(*unit))),
-            BaseType::F64
-            | BaseType::F32
-            | BaseType::I64
-            | BaseType::U64
-            | BaseType::I32
-            | BaseType::U32
-            | BaseType::I16
-            | BaseType::U16
-            | BaseType::I8
-            | BaseType::U8
-            | BaseType::Bool
-            | BaseType::String
-            | BaseType::ISize
-            | BaseType::USize
-            | BaseType::Decimal
-            | BaseType::Struct(..)
-            | BaseType::Generic(..) => Err(syn::Error::new_spanned(
+            AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(*unit)),
+            AnalyzedBase::Numeric(_)
+            | AnalyzedBase::String
+            | AnalyzedBase::Bool
+            | AnalyzedBase::Decimal
+            | AnalyzedBase::Struct(..)
+            | AnalyzedBase::Generic(_) => Err(syn::Error::new_spanned(
                 field,
                 format!(
                     "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
@@ -306,6 +269,52 @@ fn derive_transform(
             )),
         },
     }
+}
+
+/// Normalize the raw outer-to-inner `RawWrapper` sequence into a
+/// `WrapperShape` the encoder consumes directly. Consecutive `Option`s
+/// collapse into per-position counts: above each `Vec`, immediately
+/// surrounding the leaf, or for the leaf-only path, all in one bucket.
+/// Polars folds them into a single validity bit per position, so the count
+/// is preserved only so the encoder can pick between a direct match
+/// (`option_layers == 1`) and the multi-Option `as_ref().and_then(...)`
+/// collapse (`option_layers >= 2`).
+fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
+    let mut layers: Vec<VecLayerSpec> = Vec::new();
+    let mut pending_options: usize = 0;
+    let mut inner_option_layers: usize = 0;
+    let mut saw_vec = false;
+    for w in wrappers {
+        match w {
+            RawWrapper::Option => {
+                if saw_vec {
+                    inner_option_layers += 1;
+                } else {
+                    pending_options += 1;
+                }
+            }
+            RawWrapper::Vec => {
+                saw_vec = true;
+                // Options accumulated since the last Vec wrap THIS Vec from
+                // the previous Vec's element perspective: from the new Vec's
+                // POV they sit immediately above it as list-level validity.
+                // Drop them into the new layer instead of discarding.
+                layers.push(VecLayerSpec {
+                    option_layers_above: pending_options + std::mem::take(&mut inner_option_layers),
+                });
+                pending_options = 0;
+            }
+        }
+    }
+    if layers.is_empty() {
+        return WrapperShape::Leaf {
+            option_layers: pending_options,
+        };
+    }
+    WrapperShape::Vec(VecLayers {
+        layers,
+        inner_option_layers,
+    })
 }
 
 /// Parse a `syn::DeriveInput` into the IR consumed by codegen.
@@ -347,13 +356,13 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                 let display_name = field_name_ident.to_string();
                 let override_ = parse_field_override(field, &display_name)?;
                 let analyzed = analyze_type(&field.ty, &generic_params)?;
-                let transform = derive_transform(field, &display_name, &override_, &analyzed.base)?;
+                let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
+                let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
                 fields_ir.push(FieldIR {
                     name: field_name_ident,
                     field_index: None,
-                    wrappers: analyzed.wrappers,
-                    base_type: analyzed.base,
-                    transform,
+                    leaf_spec,
+                    wrapper_shape,
                     field_ty: field.ty.clone(),
                 });
             }
@@ -366,13 +375,13 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                 let display_name = field_name_ident.to_string();
                 let override_ = parse_field_override(field, &display_name)?;
                 let analyzed = analyze_type(&field.ty, &generic_params)?;
-                let transform = derive_transform(field, &display_name, &override_, &analyzed.base)?;
+                let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
+                let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
                 fields_ir.push(FieldIR {
                     name: field_name_ident,
                     field_index: Some(index),
-                    wrappers: analyzed.wrappers,
-                    base_type: analyzed.base,
-                    transform,
+                    leaf_spec,
+                    wrapper_shape,
                     field_ty: field.ty.clone(),
                 });
             }

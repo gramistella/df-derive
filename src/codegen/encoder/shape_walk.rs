@@ -2,7 +2,7 @@
 //!
 //! The unified emitter (`emit::vec_emit_general`) drives both per-element-push
 //! and collect-then-bulk paths through these primitives, parameterized by
-//! `LeafKind`. The two paths walk the same `VecShape` recursively and differ
+//! `LeafKind`. The two paths walk the same `VecLayers` recursively and differ
 //! only at the deepest layer (push to a typed buffer vs. push a ref into a
 //! `Vec<&T>` plus optional position scatter) and in a few naming choices
 //! (outer-Some bind name prefix, leaf-binding ident, the per-layer
@@ -53,8 +53,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use crate::ir::VecLayers;
+
 use super::idents;
-use super::{VecShape, collapse_options_to_ref};
+use super::collapse_options_to_ref;
 
 /// Unified per-layer identifier bundle shared by the flat-vec path and the
 /// nested-struct path. The two paths construct these via their own per-path
@@ -97,7 +99,7 @@ pub(super) struct LayerIdents {
 /// the nested path passes `flat.len()` (or `positions.len()` under
 /// `has_inner_option`).
 pub(super) struct ShapeScan<'a> {
-    pub shape: &'a VecShape,
+    pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
@@ -151,7 +153,7 @@ impl ShapeScan<'_> {
             let inner_offsets = &self.layers[cur + 1].offsets;
             quote! { (#inner_offsets.len() - 1) }
         };
-        let opt_layers = self.shape.layers[cur].option_layers;
+        let opt_layers = self.shape.layers[cur].option_layers_above;
         let inner_iter = if opt_layers > 0 {
             let validity = &layer.validity_mb;
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
@@ -218,7 +220,7 @@ impl ShapeScan<'_> {
 /// decl, the per-layer counter decls, and the `for <it> in items { ... }`
 /// ring with the recursion body. Callers splice the result verbatim.
 pub(super) struct ShapePrecount<'a> {
-    pub shape: &'a VecShape,
+    pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
@@ -269,7 +271,7 @@ impl ShapePrecount<'_> {
     }
 
     fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
-        let opt_layers = self.shape.layers[cur].option_layers;
+        let opt_layers = self.shape.layers[cur].option_layers_above;
         if opt_layers > 0 {
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner = self.build_iter(cur, &quote! { #inner_vec_bind });
@@ -447,7 +449,7 @@ pub(super) fn shape_offsets_decls(
 /// based (no pre-fill) — `Some` arms push `true`, `None` arms push `false`.
 /// Skips layers without an outer Option.
 pub(super) fn shape_validity_decls(
-    shape: &VecShape,
+    shape: &VecLayers,
     validity_per_layer: &[&syn::Ident],
     layer_counter: &dyn Fn(usize) -> TokenStream,
     pa_root: &TokenStream,

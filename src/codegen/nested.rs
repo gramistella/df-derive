@@ -3,7 +3,6 @@
 // in step 5; nested-struct columnar paths route through the encoder fold
 // in the `encoder` module.
 
-use crate::ir::{Wrapper, vec_count};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -23,9 +22,9 @@ fn gen_wrap_dtype_layers(layers: usize) -> TokenStream {
 pub fn nested_empty_series_row(
     type_path: &TokenStream,
     name: &str,
-    wrappers: &[Wrapper],
+    list_layers: usize,
 ) -> TokenStream {
-    generate_for_struct(type_path, name, vec_count(wrappers), EmitMode::EmptyRows)
+    generate_for_struct(type_path, name, list_layers, EmitMode::EmptyRows)
 }
 
 // --- Schema and series-shape helpers ---

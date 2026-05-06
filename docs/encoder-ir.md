@@ -15,9 +15,44 @@ maintained twice over.
 The encoder IR replaces those bespoke emitters with a small composable
 language. Each leaf type knows how to emit one column for the unwrapped
 shape; combinators (`option(...)`, `vec(...)`) wrap a leaf to add `Option`
-semantics or list-array layers. Per-field codegen normalizes the wrapper
-stack, picks a leaf, then folds the wrappers right-to-left over it. New
-wrapper shapes compose for free; new base types only need a leaf builder.
+semantics or list-array layers. Per-field codegen picks a leaf, then folds
+the wrappers right-to-left over it. New wrapper shapes compose for free;
+new base types only need a leaf builder.
+
+## The IR speaks the encoder's vocabulary
+
+The parser does not hand the encoder a raw `(base, override, [Option, Vec,
+…])` tuple. Instead it folds the parser's legality matrix once at parse
+time and produces two semantically narrowed objects per field: a leaf
+specifier and a wrapper specifier.
+
+The leaf specifier names the unwrapped element shape directly — every
+parser-accepted `(base, override)` combination becomes one variant. There
+is no later coercion site where mismatches like "stringy override on a
+non-stringy base" or "datetime transform on a non-datetime base" need a
+defensive panic; the parser rejects the combination at parse time, and the
+leaf specifier the encoder receives is, by construction, one of the
+encoder's accepted shapes.
+
+The wrapper specifier names the encoder's wrapper-stack vocabulary
+directly. Consecutive `Option`s collapse into per-position counts: above
+each `Vec` (folded into list-level validity), immediately surrounding the
+leaf (folded into per-element validity), or for the no-`Vec` shape, all in
+one bucket (folded into a single `Option<&T>` access expression for the
+encoder's option-leaf machinery). The raw count is preserved (not boolean)
+so the encoder can decide between a direct match (one Option) and a
+multi-Option `as_ref().and_then(...)` collapse (two or more) — Polars
+folds them all into one validity bit either way, but the access expression
+shapes differ.
+
+The split benefits both directions. The encoder destructures a single,
+semantically-narrowed enum and never sees a parser-impossible combination.
+The parser does the legality work once, where the user's source span is
+still available for actionable errors, instead of letting an `unreachable!`
+panic surface deep inside the macro expansion. Any future leaf shape (a
+new primitive, a new override) is added by extending the leaf specifier
+and the corresponding leaf builder — no cross-coordination across separate
+classifier functions.
 
 ## The two leaf kinds
 

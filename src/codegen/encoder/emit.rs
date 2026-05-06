@@ -1,29 +1,12 @@
 //! Unified depth-N `Vec`-bearing emitter parameterized by [`LeafKind`].
 //!
-//! Both leaf kinds (per-element-push primitives and collect-then-bulk
-//! nested structs/generics) share the depth-N walker scaffolding:
-//! [`ShapePrecount`] sizes per-layer counters; [`ShapeScan`] walks the
-//! per-row push body; [`shape_offsets_decls`] / [`shape_validity_decls`]
-//! allocate the offsets vecs and validity bitmaps; [`shape_assemble_list_stack`]
-//! chains `LargeListArray::new` per layer and routes the outermost through
-//! `__df_derive_assemble_list_series_unchecked`.
+//! [`vec_emit_general`] is the single place that ties together the
+//! depth-N walker primitives ([`ShapePrecount`], [`ShapeScan`],
+//! [`shape_offsets_decls`], [`shape_validity_decls`],
+//! [`shape_assemble_list_stack`]). It dispatches on [`LeafKind`] for the
+//! points where per-element-push and collect-then-bulk genuinely diverge.
 //!
-//! [`vec_emit_general`] is the single place that strings these primitives
-//! together. It dispatches on [`LeafKind`] for the points the two paths
-//! genuinely diverge:
-//!
-//! - storage decls before the scan
-//! - per-row push body inside the scan's deepest layer
-//! - post-scan materialization (one Series for per-element-push; for-loop
-//!   over inner schema with 2- or 4-arm dispatch for collect-then-bulk)
-//! - offsets-buffer ownership policy (Move vs Clone)
-//! - freeze placement (interleaved with each wrap vs hoisted above the
-//!   branch dispatch)
-//!
-//! The bool-d1-bare carve-out (`Vec<bool>` at depth 1, no inner Option, no
-//! outer Option) lives in [`super::vec`] and bypasses this emitter — its
-//! tighter `BooleanArray::from_slice` shape is a perf-driven outlier, not
-//! a leaf-kind variation.
+//! See `docs/encoder-ir.md` for the conceptual model.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -32,27 +15,129 @@ use crate::ir::VecLayers;
 
 use super::collapse_options_to_ref;
 use super::idents;
-use super::leaf_kind::{CollectThenBulk, EmitShape, LeafKind};
+use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::shape_walk::{
-    LayerIdents, ShapePrecount, ShapeScan, shape_assemble_list_stack, shape_offsets_decls,
-    shape_validity_decls,
+    LayerIdents, LayerWrap, ShapePrecount, ShapeScan, shape_assemble_list_stack,
+    shape_offsets_decls, shape_validity_decls,
 };
 
-/// Produce per-layer ident bundle for the collect-then-bulk path.
-/// Per-(field, layer) namespaced so the same `idx` doesn't collide across
-/// fields. The per-element-push path's matching factory lives in
-/// [`super::vec`] (per-layer only — the field idx isn't needed since the
-/// emit block is scoped per field via `__df_derive_field_series_<idx>`).
-pub(super) fn nested_layer_idents(idx: usize, depth: usize) -> Vec<LayerIdents> {
-    (0..depth)
-        .map(|i| LayerIdents {
-            offsets: idents::nested_layer_offsets(idx, i),
-            offsets_buf: idents::nested_layer_offsets_buf(idx, i),
-            validity_mb: idents::nested_layer_validity_mb(idx, i),
-            validity_bm: idents::nested_layer_validity_bm(idx, i),
-            bind: idents::nested_layer_bind(idx, i),
-        })
-        .collect()
+/// Per-layer ident bundle factory. `field_idx == None` produces the
+/// per-element-push path's flat-vec idents (`__df_derive_layer_*_{layer}`,
+/// no field namespacing — the emit block is scoped per field via
+/// `__df_derive_field_series_<idx>`); `field_idx == Some(idx)` produces the
+/// collect-then-bulk path's per-(field, layer) namespaced idents
+/// (`__df_derive_n_*_{idx}_{layer}`).
+fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
+    field_idx.map_or_else(
+        || LayerIdents {
+            offsets: idents::vec_layer_offsets(layer_idx),
+            offsets_buf: idents::vec_layer_offsets_buf(layer_idx),
+            validity_mb: idents::vec_layer_validity(layer_idx),
+            validity_bm: idents::vec_layer_validity_bm(layer_idx),
+            bind: idents::vec_layer_bind(layer_idx),
+        },
+        |idx| LayerIdents {
+            offsets: idents::nested_layer_offsets(idx, layer_idx),
+            offsets_buf: idents::nested_layer_offsets_buf(idx, layer_idx),
+            validity_mb: idents::nested_layer_validity_mb(idx, layer_idx),
+            validity_bm: idents::nested_layer_validity_bm(idx, layer_idx),
+            bind: idents::nested_layer_bind(idx, layer_idx),
+        },
+    )
+}
+
+/// Build the per-layer `LayerWrap` slice the shared list-stack helper
+/// consumes. Each layer's `freeze_decl` is empty for the
+/// collect-then-bulk path (freezes hoisted above) and contains the
+/// `OffsetsBuffer::try_from(...)?` plus optional `Bitmap::from(...)`
+/// for the per-element-push path (freezes interleaved with each wrap).
+fn layer_wraps<'a>(
+    shape: &VecLayers,
+    layers: &'a [LayerIdents],
+    kind: &LeafKind<'_>,
+    pa_root: &TokenStream,
+) -> Vec<LayerWrap<'a>> {
+    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
+    for (cur, layer) in layers.iter().enumerate() {
+        let buf_id = &layer.offsets_buf;
+        let validity_bm = if shape.layers[cur].has_outer_validity() {
+            Some(&layer.validity_bm)
+        } else {
+            None
+        };
+        let freeze_decl = if kind.freeze_hoisted() {
+            TokenStream::new()
+        } else {
+            let offsets = &layer.offsets;
+            let mut fd = quote! {
+                let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
+                    #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
+            };
+            if let Some(bm_id) = validity_bm {
+                let validity_mb = &layer.validity_mb;
+                fd.extend(quote! {
+                    let #bm_id: #pa_root::bitmap::Bitmap =
+                        <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                            #pa_root::bitmap::MutableBitmap,
+                        >>::from(#validity_mb);
+                });
+            }
+            fd
+        };
+        out.push(LayerWrap {
+            offsets_buf: kind.layer_own_policy(buf_id),
+            validity_bm,
+            freeze_decl,
+        });
+    }
+    out
+}
+
+/// Build the hoisted-freeze pair for the collect-then-bulk path:
+/// converts each layer's `MutableBitmap` to `Bitmap` (where the layer
+/// has an outer Option) and each layer's `Vec<i64>` to
+/// `OffsetsBuffer<i64>`. Returns empty token streams for the
+/// per-element-push path (freezes interleaved per-layer instead).
+///
+/// The pair is `(validity_freeze, offsets_freeze)` — the call site
+/// emits validity first (any outer-Option arms reference the frozen
+/// `Bitmap` lifetime) then offsets at the head of each branch.
+fn hoisted_freezes(
+    shape: &VecLayers,
+    layers: &[LayerIdents],
+    kind: &LeafKind<'_>,
+    pa_root: &TokenStream,
+) -> (TokenStream, TokenStream) {
+    if !kind.freeze_hoisted() {
+        return (TokenStream::new(), TokenStream::new());
+    }
+    let mut validity_freeze: Vec<TokenStream> = Vec::new();
+    for (i, layer) in layers.iter().enumerate() {
+        if !shape.layers[i].has_outer_validity() {
+            continue;
+        }
+        let mb = &layer.validity_mb;
+        let bm = &layer.validity_bm;
+        validity_freeze.push(quote! {
+            let #bm: #pa_root::bitmap::Bitmap =
+                <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                    #pa_root::bitmap::MutableBitmap,
+                >>::from(#mb);
+        });
+    }
+    let mut offsets_freeze: Vec<TokenStream> = Vec::new();
+    for layer in layers {
+        let offsets = &layer.offsets;
+        let buf = &layer.offsets_buf;
+        offsets_freeze.push(quote! {
+            let #buf: #pa_root::offset::OffsetsBuffer<i64> =
+                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
+        });
+    }
+    (
+        quote! { #(#validity_freeze)* },
+        quote! { #(#offsets_freeze)* },
+    )
 }
 
 /// Build the precount block for a depth-N vec emit. Returns
@@ -236,7 +321,8 @@ pub(super) fn nested_consume_columns(
 /// expression (direct/take/empty/all-absent) but shares the layer-wrap
 /// stack.
 fn ctb_layer_wrap(
-    shape: &EmitShape<'_>,
+    shape: &VecLayers,
+    layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
@@ -251,7 +337,7 @@ fn ctb_layer_wrap(
         let #inner_chunk: #pp::ArrayRef =
             #inner_rech.chunks()[0].clone();
     };
-    let wrap_layers = shape.layer_wraps(kind, pa_root);
+    let wrap_layers = layer_wraps(shape, layers, kind, pa_root);
     let seed_dtype = quote! { #inner_chunk.dtype().clone() };
     let dtype = idents::nested_col_dtype();
     let stack = shape_assemble_list_stack(
@@ -274,7 +360,8 @@ fn ctb_layer_wrap(
 /// 4-12% faster than the hoisted alternative — see comment in [`super::vec`]).
 fn pep_materialize(
     pep: &super::leaf_kind::PerElementPush,
-    shape: &EmitShape<'_>,
+    shape: &VecLayers,
+    layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     pa_root: &TokenStream,
     pp: &TokenStream,
@@ -293,7 +380,7 @@ fn pep_materialize(
     };
     let seed = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
     let seed_dtype = quote! { #seed_arrow_dtype_id };
-    let wrap_layers = shape.layer_wraps(kind, pa_root);
+    let wrap_layers = layer_wraps(shape, layers, kind, pa_root);
     let stack = shape_assemble_list_stack(
         seed,
         seed_dtype,
@@ -326,7 +413,8 @@ fn pep_materialize(
 ///   and `take` per inner column).
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
-    shape: &EmitShape<'_>,
+    shape: &VecLayers,
+    layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     pa_root: &TokenStream,
     pp: &TokenStream,
@@ -375,19 +463,20 @@ fn ctb_materialize(
             .extend_constant(#pp::AnyValue::Null, #total)?
     };
 
-    let series_direct = ctb_layer_wrap(shape, kind, &inner_col_direct, pp, pa_root);
-    let series_take = ctb_layer_wrap(shape, kind, &inner_col_take, pp, pa_root);
-    let series_empty = ctb_layer_wrap(shape, kind, &inner_col_empty, pp, pa_root);
-    let series_all_absent = ctb_layer_wrap(shape, kind, &inner_col_all_absent, pp, pa_root);
+    let series_direct = ctb_layer_wrap(shape, layers, kind, &inner_col_direct, pp, pa_root);
+    let series_take = ctb_layer_wrap(shape, layers, kind, &inner_col_take, pp, pa_root);
+    let series_empty = ctb_layer_wrap(shape, layers, kind, &inner_col_empty, pp, pa_root);
+    let series_all_absent =
+        ctb_layer_wrap(shape, layers, kind, &inner_col_all_absent, pp, pa_root);
 
     let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct);
     let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take);
     let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty);
     let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent);
 
-    let (validity_freeze, offsets_freeze) = shape.hoisted_freezes(kind, pa_root);
+    let (validity_freeze, offsets_freeze) = hoisted_freezes(shape, layers, kind, pa_root);
 
-    if shape.shape.has_inner_option() {
+    if shape.has_inner_option() {
         // 4-branch dispatch. The offsets-buffer freeze is emitted inside
         // each arm rather than hoisted above the dispatch: with the freeze
         // local to each branch, LLVM specializes register allocation around
@@ -444,7 +533,8 @@ fn pep_emit(
     pep: &super::leaf_kind::PerElementPush,
     access: &TokenStream,
     series_local: &syn::Ident,
-    shape: &EmitShape<'_>,
+    shape: &VecLayers,
+    layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
@@ -454,30 +544,30 @@ fn pep_emit(
     let leaf_bind = idents::leaf_value();
     let precount = build_precount(
         access,
-        shape.shape,
-        shape.layers,
+        shape,
+        layers,
         kind.precount_outer_some_prefix(),
         total,
         layer_counters,
     );
-    let leaf_body = pep_leaf_body(shape.shape, &leaf_bind, &pep.per_elem_push);
+    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
     let scan = build_scan(
         access,
-        shape.shape,
-        shape.layers,
+        shape,
+        layers,
         kind.scan_outer_some_prefix(),
         &leaf_body,
         &pep.leaf_offsets_post_push,
     );
 
     let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
-    let offsets_idents: Vec<&syn::Ident> = shape.layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = shape.layers.iter().map(|l| &l.validity_mb).collect();
+    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
+    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
     let validity_decls =
-        shape_validity_decls(shape.shape, &validity_idents, &counter_for_depth, pa_root);
+        shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
 
-    let materialize = pep_materialize(pep, shape, kind, pa_root, pp);
+    let materialize = pep_materialize(pep, shape, layers, kind, pa_root, pp);
     let storage_decls = &pep.storage_decls;
     let extra_imports = &pep.extra_imports;
 
@@ -502,7 +592,8 @@ fn pep_emit(
 fn ctb_emit(
     ctb: &CollectThenBulk<'_>,
     access: &TokenStream,
-    shape: &EmitShape<'_>,
+    shape: &VecLayers,
+    layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
@@ -515,35 +606,35 @@ fn ctb_emit(
 
     let precount = build_precount(
         access,
-        shape.shape,
-        shape.layers,
+        shape,
+        layers,
         kind.precount_outer_some_prefix(),
         total,
         layer_counters,
     );
-    let leaf_body = ctb_leaf_body(shape.shape, &flat, &positions);
-    let leaf_offsets_post_push = if shape.shape.has_inner_option() {
+    let leaf_body = ctb_leaf_body(shape, &flat, &positions);
+    let leaf_offsets_post_push = if shape.has_inner_option() {
         quote! { #positions.len() }
     } else {
         quote! { #flat.len() }
     };
     let scan = build_scan(
         access,
-        shape.shape,
-        shape.layers,
+        shape,
+        layers,
         kind.scan_outer_some_prefix(),
         &leaf_body,
         &leaf_offsets_post_push,
     );
 
     let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
-    let offsets_idents: Vec<&syn::Ident> = shape.layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = shape.layers.iter().map(|l| &l.validity_mb).collect();
+    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
+    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
     let validity_decls =
-        shape_validity_decls(shape.shape, &validity_idents, &counter_for_depth, pa_root);
+        shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
 
-    let positions_decl = if shape.shape.has_inner_option() {
+    let positions_decl = if shape.has_inner_option() {
         quote! {
             let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
                 ::std::vec::Vec::with_capacity(#total);
@@ -552,7 +643,7 @@ fn ctb_emit(
         TokenStream::new()
     };
 
-    let materialize = ctb_materialize(ctb, shape, kind, pa_root, pp);
+    let materialize = ctb_materialize(ctb, shape, layers, kind, pa_root, pp);
 
     quote! {{
         #precount
@@ -575,8 +666,8 @@ fn ctb_emit(
 ///   column pushes a list-wrapped Series onto `columns`.
 ///
 /// Both shapes replace the original `vec::vec_emit_decl` and the inlined
-/// body of `nested::nested_vec_encoder_general` (which now survives as a
-/// thin shim that builds a `LeafKind::CollectThenBulk` and delegates here).
+/// body that was in `nested::build_nested_encoder` for the
+/// `WrapperShape::Vec` arm.
 pub(super) fn vec_emit_general(
     kind: &LeafKind<'_>,
     access: &TokenStream,
@@ -587,14 +678,14 @@ pub(super) fn vec_emit_general(
     let pp = crate::codegen::polars_paths::prelude();
     let depth = shape.depth();
 
-    // Per-leaf-kind layer-ident factories. The per-element-push factory
-    // lives in [`super::vec`] (per-layer only); the collect-then-bulk one
-    // is here (per-(field, layer)).
-    let layers: Vec<LayerIdents> = match kind {
-        LeafKind::PerElementPush(_) => super::vec::vec_layer_idents(depth),
-        LeafKind::CollectThenBulk(_) => nested_layer_idents(idx, depth),
+    // Per-leaf-kind layer-ident factory: per-element-push uses flat-vec
+    // idents (no field namespacing); collect-then-bulk uses per-(field,
+    // layer) namespacing.
+    let field_idx = match kind {
+        LeafKind::PerElementPush(_) => None,
+        LeafKind::CollectThenBulk(_) => Some(idx),
     };
-    let emit_shape = EmitShape::new(shape, &layers);
+    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(field_idx, i)).collect();
 
     let total = match kind {
         LeafKind::PerElementPush(_) => idents::total_leaves(),
@@ -616,7 +707,8 @@ pub(super) fn vec_emit_general(
                 pep,
                 access,
                 &series_local,
-                &emit_shape,
+                shape,
+                &layers,
                 kind,
                 &layer_counters,
                 &total,
@@ -627,7 +719,8 @@ pub(super) fn vec_emit_general(
         LeafKind::CollectThenBulk(ctb) => ctb_emit(
             ctb,
             access,
-            &emit_shape,
+            shape,
+            &layers,
             kind,
             &layer_counters,
             &total,

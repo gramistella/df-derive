@@ -59,10 +59,10 @@ use super::idents;
 use super::collapse_options_to_ref;
 
 /// Unified per-layer identifier bundle shared by the flat-vec path and the
-/// nested-struct path. The two paths construct these via their own per-path
-/// factories (`vec_layer_idents`, `nested_layer_idents`) — the factories
-/// differ only in which `idents::*` helpers they call (vec is per-layer;
-/// nested is per-(field-idx, layer)). Once built, every consumer (scan
+/// nested-struct path. Both paths construct these via the shared
+/// `emit::layer_idents` factory, which dispatches on `field_idx:
+/// Option<usize>` between the per-layer (per-element-push) and per-(field,
+/// layer) (collect-then-bulk) ident sets. Once built, every consumer (scan
 /// walker, precount walker, offsets-decl helper, validity-decl helper,
 /// final-assemble) reads from the same shape.
 pub(super) struct LayerIdents {

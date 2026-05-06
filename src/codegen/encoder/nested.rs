@@ -18,7 +18,7 @@
 //! pushes one Series per inner schema column onto the call site's `columns`
 //! vec, with the parent name prefixed onto each inner column name.
 
-use crate::ir::{VecLayers, WrapperShape};
+use crate::ir::WrapperShape;
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -215,42 +215,12 @@ fn nested_option_encoder_impl(ctx: &NestedLeafCtx<'_>, match_expr: &TokenStream)
     }
 }
 
-// --- Generalized depth-N nested encoder ---
-
-/// Build the depth-N nested vec encoder for an arbitrary [`VecLayers`].
-/// Handles per-layer outer-Option (validity bitmap), inner-Option
-/// (per-element positions + scatter via `IdxCa::take`), and any mix
-/// thereof. Replaces the seven hand-written shape variants.
-///
-/// Delegates the depth-N scaffolding (precount, storage, scan, assemble)
-/// to the unified [`vec_emit_general`]; constructs a
-/// [`LeafKind::CollectThenBulk`] payload from the field's type/trait
-/// plumbing.
-fn nested_vec_encoder_general(ctx: &NestedLeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let NestedLeafCtx {
-        base: BaseCtx { access, idx, name },
-        ty,
-        columnar_trait,
-        to_df_trait,
-        pa_root: _,
-    } = *ctx;
-    let ctb = CollectThenBulk {
-        ty,
-        columnar_trait,
-        to_df_trait,
-        name,
-        idx,
-    };
-    let kind = LeafKind::CollectThenBulk(ctb);
-    let columnar = vec_emit_general(&kind, access, idx, shape);
-    Encoder::Multi { columnar }
-}
-
 /// Top-level dispatcher for the nested-struct/generic encoder paths.
 /// After Step 4 this covers every wrapper stack the parser accepts —
 /// the `[]` and `[Option]` shapes use dedicated leaf encoders; every
 /// `Vec`-bearing shape (including deep nestings, mid-stack `Option`s,
-/// outer-list validity) routes through the depth-N general encoder.
+/// outer-list validity) routes through the depth-N general encoder via
+/// [`vec_emit_general`].
 pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> Encoder {
     match wrapper {
         WrapperShape::Leaf { option_layers: 0 } => nested_leaf_encoder(ctx),
@@ -284,6 +254,17 @@ pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> 
             };
             nested_option_encoder_collapsed(&new_ctx, layers)
         }
-        WrapperShape::Vec(shape) => nested_vec_encoder_general(ctx, shape),
+        WrapperShape::Vec(shape) => {
+            let ctb = CollectThenBulk {
+                ty: ctx.ty,
+                columnar_trait: ctx.columnar_trait,
+                to_df_trait: ctx.to_df_trait,
+                name: ctx.base.name,
+                idx: ctx.base.idx,
+            };
+            let kind = LeafKind::CollectThenBulk(ctb);
+            let columnar = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, shape);
+            Encoder::Multi { columnar }
+        }
     }
 }

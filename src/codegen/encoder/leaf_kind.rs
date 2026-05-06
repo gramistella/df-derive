@@ -1,47 +1,18 @@
 //! Leaf-kind abstraction for the depth-N `Vec`-bearing emitter.
 //!
-//! The encoder IR has two leaf kinds (per `docs/encoder-ir.md`):
+//! [`LeafKind`] dispatches the unified emitter
+//! [`super::emit::vec_emit_general`] between two payload shapes:
+//! `PerElementPush` (primitive leaves: typed-buffer push per row, one
+//! `Series` out) and `CollectThenBulk` (nested struct / generic leaves:
+//! gather `&T` refs, one `columnar_from_refs` call, per-inner-column
+//! list-array stacking).
 //!
-//! - **Per-element-push**: primitive leaves (numeric, `String`, `Bool`,
-//!   `Decimal`, `DateTime`, ...) accumulate one value per row inside a
-//!   tight loop and produce one Polars `Series`.
-//! - **Collect-then-bulk**: nested user structs and generic `T` parameters
-//!   accumulate `&Inner` references across all rows, then dispatch a single
-//!   `<Inner as Columnar>::columnar_from_refs(&refs)` call to materialize
-//!   every inner column at once.
-//!
-//! Both kinds share the depth-N walker primitives in [`super::shape_walk`]
-//! (precount, scan, layer-idents, offsets-decl, validity-decl, list-array
-//! stacking). They differ along several dimensions:
-//!
-//! | Concern                | per-element-push          | collect-then-bulk        |
-//! | ---------------------- | ------------------------- | ------------------------ |
-//! | Leaf storage           | `Vec<#native>` / MBVA / bitmap | `Vec<&T>` (+ `Vec<Option<IdxSize>>`) |
-//! | Per-elem push          | typed buffer push          | `&v` ref push (+ scatter)  |
-//! | Offsets-buf own policy | Move (single-use)          | Clone (shared across arms) |
-//! | Freeze placement       | interleaved per layer      | hoisted above branch dispatch |
-//! | Dispatch arms          | 1 (always direct)          | 2 (no-IO) or 4 (with-IO)    |
-//! | Output cardinality     | one `Series` push          | for-loop over inner schema   |
-//! | Inner-option layers    | unbounded                  | `<= 1` (debug-asserted)      |
-//!
-//! [`LeafKind`] captures these differences behind one type. The unified
-//! emitter [`super::emit::vec_emit_general`] dispatches on `LeafKind` to
-//! shape the storage decls, per-row push, post-scan materialization, and
-//! per-layer wrap-policy.
-//!
-//! Bool-d1-bare carve-out: depth-1 `Vec<bool>` with no inner Option and no
-//! outer Option layers takes a bespoke path in [`super::vec`] (flat
-//! `Vec<bool>` + `BooleanArray::from_slice`, faster than bit-packing for
-//! the all-non-null case). The carve-out lives outside `LeafKind` and
-//! bypasses `vec_emit_general` entirely.
+//! See `docs/encoder-ir.md` for the conceptual model.
 
 use proc_macro2::TokenStream;
-use quote::quote;
-
-use crate::ir::VecLayers;
 
 use super::idents;
-use super::shape_walk::{LayerIdents, LayerWrap, OwnPolicy};
+use super::shape_walk::OwnPolicy;
 
 /// Per-element-push leaf payload — describes a primitive leaf's storage,
 /// per-row push, leaf-array materialization, and post-push offsets-counter
@@ -157,113 +128,3 @@ impl LeafKind<'_> {
     }
 }
 
-/// Per-emitter "shape × leaf-kind" intermediates the unified emitter passes
-/// down to materialization. Captures the per-layer ident bundle and the
-/// `VecLayers` so leaf-kind-specific post-scan emission helpers don't have to
-/// recompute them.
-pub(super) struct EmitShape<'a> {
-    pub shape: &'a VecLayers,
-    pub layers: &'a [LayerIdents],
-}
-
-impl<'a> EmitShape<'a> {
-    pub(super) const fn new(shape: &'a VecLayers, layers: &'a [LayerIdents]) -> Self {
-        Self { shape, layers }
-    }
-
-    pub(super) const fn depth(&self) -> usize {
-        self.shape.depth()
-    }
-
-    /// Build the per-layer `LayerWrap` slice the shared list-stack helper
-    /// consumes. Each layer's `freeze_decl` is empty for the
-    /// collect-then-bulk path (freezes hoisted above) and contains the
-    /// `OffsetsBuffer::try_from(...)?` plus optional `Bitmap::from(...)`
-    /// for the per-element-push path (freezes interleaved with each wrap).
-    pub(super) fn layer_wraps(
-        &self,
-        kind: &LeafKind<'_>,
-        pa_root: &TokenStream,
-    ) -> Vec<LayerWrap<'_>> {
-        let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(self.depth());
-        for (cur, layer) in self.layers.iter().enumerate() {
-            let buf_id = &layer.offsets_buf;
-            let validity_bm = if self.shape.layers[cur].has_outer_validity() {
-                Some(&layer.validity_bm)
-            } else {
-                None
-            };
-            let freeze_decl = if kind.freeze_hoisted() {
-                TokenStream::new()
-            } else {
-                let offsets = &layer.offsets;
-                let mut fd = quote! {
-                    let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
-                        #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-                };
-                if let Some(bm_id) = validity_bm {
-                    let validity_mb = &layer.validity_mb;
-                    fd.extend(quote! {
-                        let #bm_id: #pa_root::bitmap::Bitmap =
-                            <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                                #pa_root::bitmap::MutableBitmap,
-                            >>::from(#validity_mb);
-                    });
-                }
-                fd
-            };
-            out.push(LayerWrap {
-                offsets_buf: kind.layer_own_policy(buf_id),
-                validity_bm,
-                freeze_decl,
-            });
-        }
-        out
-    }
-
-    /// Build the hoisted-freeze pair for the collect-then-bulk path:
-    /// converts each layer's `MutableBitmap` to `Bitmap` (where the layer
-    /// has an outer Option) and each layer's `Vec<i64>` to
-    /// `OffsetsBuffer<i64>`. Returns empty token streams for the
-    /// per-element-push path (freezes interleaved per-layer instead).
-    ///
-    /// The pair is `(validity_freeze, offsets_freeze)` — the call site
-    /// emits validity first (any outer-Option arms reference the frozen
-    /// `Bitmap` lifetime) then offsets at the head of each branch.
-    pub(super) fn hoisted_freezes(
-        &self,
-        kind: &LeafKind<'_>,
-        pa_root: &TokenStream,
-    ) -> (TokenStream, TokenStream) {
-        if !kind.freeze_hoisted() {
-            return (TokenStream::new(), TokenStream::new());
-        }
-        let mut validity_freeze: Vec<TokenStream> = Vec::new();
-        for (i, layer) in self.layers.iter().enumerate() {
-            if !self.shape.layers[i].has_outer_validity() {
-                continue;
-            }
-            let mb = &layer.validity_mb;
-            let bm = &layer.validity_bm;
-            validity_freeze.push(quote! {
-                let #bm: #pa_root::bitmap::Bitmap =
-                    <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                        #pa_root::bitmap::MutableBitmap,
-                    >>::from(#mb);
-            });
-        }
-        let mut offsets_freeze: Vec<TokenStream> = Vec::new();
-        for layer in self.layers {
-            let offsets = &layer.offsets;
-            let buf = &layer.offsets_buf;
-            offsets_freeze.push(quote! {
-                let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-                    #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-            });
-        }
-        (
-            quote! { #(#validity_freeze)* },
-            quote! { #(#offsets_freeze)* },
-        )
-    }
-}

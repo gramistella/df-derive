@@ -18,7 +18,6 @@ use super::emit::vec_emit_general;
 use super::idents;
 use super::leaf::{LeafBuilder, validity_into_option};
 use super::leaf_kind::{LeafKind, PerElementPush};
-use super::shape_walk::LayerIdents;
 use super::{Encoder, LeafCtx, leaf};
 
 // --- Vec combinator ---
@@ -105,27 +104,6 @@ fn bool_leaf_array_tokens(
             )
         }
     }
-}
-
-/// Per-`Vec` layer ident set for the flat-vec path. Layer `i` is the
-/// `i`-th `Vec` from the outside; layer `depth-1` is the innermost (its
-/// `offsets` track flat-leaf counts; deeper layers' `offsets` track
-/// child-list counts). The `validity_mb` field is allocated only when
-/// `has_outer_validity` for that layer.
-///
-/// Exposed `pub(super)` so the unified emitter in
-/// [`super::emit::vec_emit_general`] can reuse the per-element-push path's
-/// per-layer ident factory.
-pub(super) fn vec_layer_idents(depth: usize) -> Vec<LayerIdents> {
-    (0..depth)
-        .map(|i| LayerIdents {
-            offsets: idents::vec_layer_offsets(i),
-            offsets_buf: idents::vec_layer_offsets_buf(i),
-            validity_mb: idents::vec_layer_validity(i),
-            validity_bm: idents::vec_layer_validity_bm(i),
-            bind: idents::vec_layer_bind(i),
-        })
-        .collect()
 }
 
 /// The expression that becomes `<offsets>.push(<expr> as i64)` at the

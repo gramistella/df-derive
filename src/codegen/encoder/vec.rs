@@ -14,13 +14,12 @@ use crate::ir::{DateTimeUnit, PrimitiveTransform};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::emit::vec_emit_general;
 use super::idents;
 use super::leaf::{LeafSpec, validity_into_option};
-use super::shape_walk::{
-    LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, shape_assemble_list_stack,
-    shape_offsets_decls, shape_validity_decls,
-};
-use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, collapse_options_to_ref, leaf};
+use super::leaf_kind::{LeafKind, PerElementPush};
+use super::shape_walk::LayerIdents;
+use super::{Encoder, LeafCtx, LeafShape, StringyBase, VecShape, leaf};
 
 // --- Vec combinator ---
 
@@ -113,7 +112,11 @@ fn bool_leaf_array_tokens(
 /// `offsets` track flat-leaf counts; deeper layers' `offsets` track
 /// child-list counts). The `validity_mb` field is allocated only when
 /// `has_outer_validity` for that layer.
-fn vec_layer_idents(depth: usize) -> Vec<LayerIdents> {
+///
+/// Exposed `pub(super)` so the unified emitter in
+/// [`super::emit::vec_emit_general`] can reuse the per-element-push path's
+/// per-layer ident factory.
+pub(super) fn vec_layer_idents(depth: usize) -> Vec<LayerIdents> {
     (0..depth)
         .map(|i| LayerIdents {
             offsets: idents::vec_layer_offsets(i),
@@ -123,251 +126,6 @@ fn vec_layer_idents(depth: usize) -> Vec<LayerIdents> {
             bind: idents::vec_layer_bind(i),
         })
         .collect()
-}
-
-/// Build the entire `vec(inner)` (or deeper) emit block for a normalized
-/// [`VecShape`]. Emits a single `let __df_derive_field_series_<idx> = { ... };`
-/// declaration the caller splices into the populator's pre-loop decls.
-///
-/// The bulk-fusion contract: regardless of depth, the leaf storage (flat
-/// values buffer + optional validity bitmap) is allocated and populated
-/// once; the layer stack adds one `LargeListArray::new` per `Vec` wrapper
-/// and one `MutableBitmap` per layer that has an outer-`Option`.
-fn vec_emit_decl(
-    ctx: &LeafCtx<'_>,
-    spec: &VecLeafSpec,
-    shape: &VecShape,
-    leaf_dtype_tokens: &TokenStream,
-) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-    let pp = crate::codegen::polars_paths::prelude();
-    let access = ctx.base.access;
-    let series_local = vec_encoder_series_local(ctx.base.idx);
-    let leaf_bind = idents::leaf_value();
-    let layers = vec_layer_idents(shape.depth());
-
-    let (precount_decls, leaf_capacity_expr) = vec_precount_pieces(access, shape, &layers);
-    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) = build_vec_leaf_pieces(
-        spec,
-        shape.has_inner_option(),
-        &leaf_capacity_expr,
-        &pa_root,
-    );
-    // Decimal mantissa rescale dispatches through the `Decimal128Encode`
-    // trait via dot syntax — the trait must be in scope so method
-    // resolution finds it. Anonymous `use ... as _;` keeps the user's
-    // namespace clean. Other `Numeric` variants and `StringLike` / `Bool`
-    // don't reference any user trait.
-    let extra_imports = if let VecLeafSpec::Numeric {
-        needs_decimal_import: true,
-        ..
-    } = spec
-    {
-        let trait_path = ctx.decimal128_encode_trait;
-        quote! { use #trait_path as _; }
-    } else {
-        TokenStream::new()
-    };
-
-    let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
-    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
-    let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
-    let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
-    let validity_decls =
-        shape_validity_decls(shape, &validity_idents, &counter_for_depth, &pa_root);
-    let push_loops = build_vec_push_loops(
-        access,
-        shape,
-        &layers,
-        &leaf_bind,
-        &per_elem_push,
-        &leaf_offsets_post_push,
-    );
-    let final_assemble = vec_final_assemble(shape, &layers, leaf_dtype_tokens, &pa_root, &pp);
-
-    quote! {
-        let #series_local: #pp::Series = {
-            #extra_imports
-            #precount_decls
-            #leaf_storage_decls
-            #offsets_decls
-            #validity_decls
-            #push_loops
-            #leaf_arr_expr
-            #final_assemble
-        };
-    }
-}
-
-/// Precount loop + leaf-capacity expression for the depth-N bulk-vec emit.
-/// Returns `(decls, leaf_capacity)` — the leaf capacity is the running total
-/// of leaf elements summed across every nested `Vec` layer of every outer row.
-///
-/// Routes through the shared [`ShapePrecount`] walker; the per-row body
-/// mirrors `build_vec_push_loops` so precount and scan walk the same
-/// `Some/None` arms in lock-step. Layers with `has_outer_validity` skip both
-/// the layer-counter increment and the recursion on `None`, matching the
-/// runtime push logic that records a repeat-offset for the null cell.
-fn vec_precount_pieces(
-    access: &TokenStream,
-    shape: &VecShape,
-    layers: &[LayerIdents],
-) -> (TokenStream, TokenStream) {
-    let depth = shape.depth();
-    let total_leaves = idents::total_leaves();
-    let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
-        .map(idents::vec_layer_total)
-        .collect();
-    let pre = ShapePrecount {
-        shape,
-        access,
-        layers,
-        outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
-        total_counter: &total_leaves,
-        layer_counters: &layer_counters,
-    }
-    .build();
-    (pre, quote! { #total_leaves })
-}
-
-/// Build the nested for-loop push body for the depth-N vec emit. Routes
-/// through the shared [`ShapeScan`] walker (in `shape_walk`); the per-leaf
-/// loop body splices `per_elem_push` and handles `inner_option_layers > 1`
-/// via `collapse_options_to_ref`.
-fn build_vec_push_loops(
-    access: &TokenStream,
-    shape: &VecShape,
-    layers: &[LayerIdents],
-    leaf_bind: &syn::Ident,
-    per_elem_push: &TokenStream,
-    leaf_offsets_post_push: &TokenStream,
-) -> TokenStream {
-    // The deepest-layer for-loop. The per_elem_push body expects
-    // `__df_derive_v` to be either:
-    // - `&T` directly (no inner-Option), bound by the for-loop, or
-    // - `Option<&T>` (inner-Option), with the per-elem push then matching it.
-    // To support `inner_option_layers > 1`, we collapse the for-loop binding
-    // through `as_ref().and_then` into a single `Option<&T>` before splicing
-    // the push body. The bare for-loop binding is `__df_derive_v_raw` and
-    // the collapsed one becomes `__df_derive_v`.
-    let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
-        if shape.has_inner_option() {
-            if shape.inner_option_layers == 1 {
-                quote! {
-                    for #leaf_bind in #vec_bind.iter() {
-                        #per_elem_push
-                    }
-                }
-            } else {
-                let raw_bind = idents::leaf_value_raw();
-                let collapsed =
-                    collapse_options_to_ref(&quote! { #raw_bind }, shape.inner_option_layers);
-                quote! {
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind: ::std::option::Option<_> = #collapsed;
-                        #per_elem_push
-                    }
-                }
-            }
-        } else {
-            quote! {
-                for #leaf_bind in #vec_bind.iter() {
-                    #per_elem_push
-                }
-            }
-        }
-    };
-    ShapeScan {
-        shape,
-        access,
-        layers,
-        outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
-        leaf_body: &leaf_body,
-        leaf_offsets_post_push,
-    }
-    .build()
-}
-
-/// Stack `depth` `LargeListArray::new` layers and route the outermost one
-/// through `__df_derive_assemble_list_series_unchecked` via the shared
-/// [`shape_assemble_list_stack`] helper.
-///
-/// Builds a per-layer `freeze_decl` that the helper splices in just before
-/// each layer's wrap (the freeze and the wrap stay co-located the way the
-/// pre-refactor emission did — hoisting the freezes outside the wrap loop
-/// is semantically identical but reproducibly regresses depth-N benches by
-/// 4-12%). The leaf's arrow dtype is captured to a named local before the
-/// leaf is boxed into an `ArrayRef` so the dtype access keeps its static
-/// dispatch shape.
-fn vec_final_assemble(
-    shape: &VecShape,
-    layers: &[LayerIdents],
-    leaf_dtype_tokens: &TokenStream,
-    pa_root: &TokenStream,
-    pp: &TokenStream,
-) -> TokenStream {
-    let depth = shape.depth();
-    let mut wrap_layers: Vec<LayerWrap<'_>> = Vec::with_capacity(depth);
-    for (cur, layer) in layers.iter().enumerate() {
-        let offsets = &layer.offsets;
-        let buf_id = &layer.offsets_buf;
-        let mut freeze_decl = quote! {
-            let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
-                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-        };
-        let validity_bm = if shape.layers[cur].has_outer_validity() {
-            let validity_mb = &layer.validity_mb;
-            let bm_id = &layer.validity_bm;
-            freeze_decl.extend(quote! {
-                let #bm_id: #pa_root::bitmap::Bitmap =
-                    <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                        #pa_root::bitmap::MutableBitmap,
-                    >>::from(#validity_mb);
-            });
-            Some(bm_id)
-        } else {
-            None
-        };
-        // The flat-vec path freezes each per-layer offsets buffer once and
-        // then uses it in exactly one `LargeListArray::new` (no shared
-        // dispatch arms, no per-column iteration), so the helper can move
-        // it into the wrap. The freeze itself is interleaved with the
-        // wrap via [`LayerWrap::freeze_decl`]: hoisting all freezes above
-        // the wrap loop reproducibly regresses depth-N benches by 4-12%
-        // even though the resulting state is identical, so we replicate
-        // the pre-refactor ordering layer-by-layer.
-        wrap_layers.push(LayerWrap {
-            offsets_buf: OwnPolicy::Move(buf_id),
-            validity_bm,
-            freeze_decl,
-        });
-    }
-    let leaf_arr = idents::leaf_arr();
-    // Capture the leaf's arrow dtype to a named local BEFORE boxing the
-    // leaf — `Box::new(#leaf_arr) as ArrayRef` moves the typed leaf, so
-    // a post-box `Array::dtype(&leaf)` would no longer compile, and a
-    // post-box `Array::dtype(&seed)` would dispatch through the boxed
-    // trait object's vtable (a virtual call that doesn't inline and
-    // reproducibly regresses several depth-N benches by 5-12%).
-    let seed_arrow_dtype_id = idents::seed_arrow_dtype();
-    let seed_dtype_decl = quote! {
-        let #seed_arrow_dtype_id: #pa_root::datatypes::ArrowDataType =
-            #pa_root::array::Array::dtype(&#leaf_arr).clone();
-    };
-    let seed = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
-    let seed_dtype = quote! { #seed_arrow_dtype_id };
-    let stack = shape_assemble_list_stack(
-        seed,
-        seed_dtype,
-        &wrap_layers,
-        leaf_dtype_tokens.clone(),
-        &idents::vec_layer_list_arr,
-    );
-    quote! {
-        #seed_dtype_decl
-        #stack
-    }
 }
 
 /// The expression that becomes `<offsets>.push(<expr> as i64)` at the
@@ -508,9 +266,9 @@ fn numeric_leaf_pieces(
     };
     // The bare and inner-Option arms both reference `__df_derive_v` — the
     // bare arm gets it from the loop binding directly (the for-loop in
-    // `vec_emit_decl` binds the leaf as `__df_derive_v`), the option arm
-    // gets it from the `Some(v)` pattern. Sharing one `value_expr` avoids
-    // two near-duplicate per-spec expressions.
+    // `emit::pep_leaf_body` binds the leaf as `__df_derive_v`), the option
+    // arm gets it from the `Some(v)` pattern. Sharing one `value_expr`
+    // avoids two near-duplicate per-spec expressions.
     // Push expressions match the legacy `try_gen_*` emitters' exact token
     // shape. Two distinct shapes survive in the legacy emitters:
     //
@@ -696,6 +454,15 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 /// The block is scoped so the per-field intermediate buffers (offsets vecs,
 /// validity bitmaps, the field Series itself) are confined to the field's
 /// scope, matching the pre-Step-4 emission shape.
+///
+/// Lowers `VecLeafSpec` (the per-element-push leaf description local to
+/// this file) into [`LeafKind::PerElementPush`] and routes through the
+/// unified [`vec_emit_general`]. The lowering is mechanical: the storage
+/// decls / per-elem push / leaf-array build / offsets-push expression are
+/// already shaped by `build_vec_leaf_pieces`; the leaf logical dtype and
+/// optional decimal-trait import live in this file's encoder gateways
+/// (`vec_encoder_decimal` etc) and ride into the unified emitter via the
+/// `PerElementPush` payload.
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -703,7 +470,9 @@ fn vec_encoder(
     leaf_dtype: &TokenStream,
 ) -> Encoder {
     let series_local = vec_encoder_series_local(ctx.base.idx);
-    let decl = vec_emit_decl(ctx, spec, shape, leaf_dtype);
+    let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
+    let kind = LeafKind::PerElementPush(pep);
+    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, shape);
     let name = ctx.base.name;
     let named = idents::field_named_series();
     let columnar = quote! {
@@ -714,6 +483,49 @@ fn vec_encoder(
         }
     };
     Encoder::Multi { columnar }
+}
+
+/// Lower a `VecLeafSpec` into a [`PerElementPush`] payload the unified
+/// emitter consumes. The leaf-capacity expression is `__df_derive_total_leaves`
+/// (the precount loop's leaf-element accumulator); `build_vec_leaf_pieces`
+/// returns storage decls keyed off it. The decimal-trait import is the
+/// only `extra_imports` payload used today (the `Decimal` leaf needs the
+/// `Decimal128Encode` trait in scope so `try_to_i128_mantissa` resolves
+/// via dot syntax).
+fn lower_to_pep(
+    ctx: &LeafCtx<'_>,
+    spec: &VecLeafSpec,
+    shape: &VecShape,
+    leaf_dtype: &TokenStream,
+) -> PerElementPush {
+    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let total_leaves = idents::total_leaves();
+    let leaf_capacity_expr = quote! { #total_leaves };
+    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) = build_vec_leaf_pieces(
+        spec,
+        shape.has_inner_option(),
+        &leaf_capacity_expr,
+        &pa_root,
+    );
+    let extra_imports = if let VecLeafSpec::Numeric {
+        needs_decimal_import: true,
+        ..
+    } = spec
+    {
+        let trait_path = ctx.decimal128_encode_trait;
+        quote! { use #trait_path as _; }
+    } else {
+        TokenStream::new()
+    };
+    let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
+    PerElementPush {
+        per_elem_push,
+        storage_decls: leaf_storage_decls,
+        leaf_arr_expr,
+        leaf_offsets_post_push,
+        extra_imports,
+        leaf_logical_dtype: leaf_dtype.clone(),
+    }
 }
 
 /// Bare-bool variant of the vec encoder. At depth 1 with no inner-Option and

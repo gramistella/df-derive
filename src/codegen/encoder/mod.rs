@@ -25,8 +25,10 @@
 //! sees them — the runtime semantics match because the only observable null
 //! is whichever bit is the outermost Polars validity.
 
+mod emit;
 pub(in crate::codegen) mod idents;
 mod leaf;
+mod leaf_kind;
 mod nested;
 mod option;
 mod shape_walk;

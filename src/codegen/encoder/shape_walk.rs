@@ -1,10 +1,11 @@
 //! Shared shape-walker for the `[Vec, ...]` push/scan body.
 //!
-//! Both the flat-vec path (`vec::build_vec_push_loops`) and the nested-struct
-//! path (`nested::build_nested_scan_body`) walk the same `VecShape` recursively.
-//! They differ only at the deepest layer (push to a typed buffer vs. push a
-//! ref into a `Vec<&T>` plus optional position scatter) and in a few naming
-//! choices (outer-Some bind name prefix, leaf-binding ident, the per-layer
+//! The unified emitter (`emit::vec_emit_general`) drives both per-element-push
+//! and collect-then-bulk paths through these primitives, parameterized by
+//! `LeafKind`. The two paths walk the same `VecShape` recursively and differ
+//! only at the deepest layer (push to a typed buffer vs. push a ref into a
+//! `Vec<&T>` plus optional position scatter) and in a few naming choices
+//! (outer-Some bind name prefix, leaf-binding ident, the per-layer
 //! offsets-push value at the innermost layer).
 //!
 //! [`ShapeScan`] captures all of those decision points behind one struct so

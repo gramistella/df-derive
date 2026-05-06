@@ -59,7 +59,7 @@ pub(in crate::codegen) fn primitive_str_scratch(idx: usize) -> Ident {
     format_ident!("__df_derive_str_{}", idx)
 }
 
-/// Per-field local for the assembled Series produced by `vec_emit_decl` —
+/// Per-field local for the assembled Series produced by `emit::pep_emit` —
 /// one per (field, depth) combination, namespaced by `idx` so two adjacent
 /// fields don't collide.
 pub(in crate::codegen) fn vec_field_series(idx: usize) -> Ident {
@@ -173,7 +173,7 @@ pub(in crate::codegen) const NESTED_OUTER_SOME_PREFIX: &str = "__df_derive_n_som
 pub(in crate::codegen) const NESTED_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_n_pre_some_";
 
 /// Per-layer `LargeListArray` ident produced by the nested encoder's
-/// `build_nested_layer_wrap`.
+/// `emit::ctb_layer_wrap`.
 pub(in crate::codegen) fn nested_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_n_arr_{}", layer)
 }
@@ -354,13 +354,13 @@ pub(in crate::codegen) fn nested_inner_full() -> Ident {
 }
 
 /// Per-column rechunked inner Series local in the depth-N nested-Vec
-/// encoder's `build_nested_layer_wrap` — feeds the layer-wrap stack a
+/// encoder's `emit::ctb_layer_wrap` — feeds the layer-wrap stack a
 /// single contiguous `ArrayRef`.
 pub(in crate::codegen) fn nested_inner_col() -> Ident {
     format_ident!("__df_derive_inner_col")
 }
 
-/// Per-column post-rechunk Series local in `build_nested_layer_wrap`. Holds
+/// Per-column post-rechunk Series local in `emit::ctb_layer_wrap`. Holds
 /// the result of `inner_col.rechunk()` so the layer-wrap stack can pull
 /// `chunks()[0].clone()` as the seed `ArrayRef`.
 pub(in crate::codegen) fn nested_inner_rech() -> Ident {

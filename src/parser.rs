@@ -317,6 +317,30 @@ fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
     })
 }
 
+/// Run the per-field pipeline (override parsing, type analysis, leaf-spec
+/// resolution, wrapper normalization) and produce the corresponding `FieldIR`.
+/// Named and tuple arms share this body; they only differ in how `name_ident`
+/// and `field_index` are derived from the surrounding `Fields` shape.
+fn process_field(
+    field: &syn::Field,
+    name_ident: Ident,
+    field_index: Option<usize>,
+    generic_params: &[Ident],
+) -> Result<FieldIR, syn::Error> {
+    let display_name = name_ident.to_string();
+    let override_ = parse_field_override(field, &display_name)?;
+    let analyzed = analyze_type(&field.ty, generic_params)?;
+    let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
+    let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
+    Ok(FieldIR {
+        name: name_ident,
+        field_index,
+        leaf_spec,
+        wrapper_shape,
+        field_ty: field.ty.clone(),
+    })
+}
+
 /// Parse a `syn::DeriveInput` into the IR consumed by codegen.
 ///
 /// Returns a `syn::Error` for non-struct inputs (enums, unions). Tuple structs
@@ -347,43 +371,19 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     match &data_struct.fields {
         Fields::Named(named) => {
             for field in &named.named {
-                let field_name_ident = field
+                let name_ident = field
                     .ident
                     .as_ref()
                     .expect("named fields must have ident")
                     .clone();
-
-                let display_name = field_name_ident.to_string();
-                let override_ = parse_field_override(field, &display_name)?;
-                let analyzed = analyze_type(&field.ty, &generic_params)?;
-                let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
-                let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
-                fields_ir.push(FieldIR {
-                    name: field_name_ident,
-                    field_index: None,
-                    leaf_spec,
-                    wrapper_shape,
-                    field_ty: field.ty.clone(),
-                });
+                fields_ir.push(process_field(field, name_ident, None, &generic_params)?);
             }
         }
         Fields::Unit => {}
         Fields::Unnamed(unnamed) => {
             for (index, field) in unnamed.unnamed.iter().enumerate() {
-                let field_name_ident = format_ident!("field_{}", index);
-
-                let display_name = field_name_ident.to_string();
-                let override_ = parse_field_override(field, &display_name)?;
-                let analyzed = analyze_type(&field.ty, &generic_params)?;
-                let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
-                let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
-                fields_ir.push(FieldIR {
-                    name: field_name_ident,
-                    field_index: Some(index),
-                    leaf_spec,
-                    wrapper_shape,
-                    field_ty: field.ty.clone(),
-                });
+                let name_ident = format_ident!("field_{}", index);
+                fields_ir.push(process_field(field, name_ident, Some(index), &generic_params)?);
             }
         }
     }

@@ -148,10 +148,7 @@ pub fn build_field_emit(
     it_ident: &Ident,
 ) -> FieldEmit {
     match classify_field(field) {
-        FieldRoute::Nested { type_path } => {
-            let pa_root = super::polars_paths::polars_arrow_root();
-            build_nested_emit(field, config, idx, &type_path, &pa_root)
-        }
+        FieldRoute::Nested { type_path } => build_nested_emit(field, config, idx, &type_path),
         FieldRoute::Primitive => build_primitive_emit(field, config, idx, it_ident),
     }
 }
@@ -161,7 +158,6 @@ fn build_nested_emit(
     config: &super::MacroConfig,
     idx: usize,
     type_path: &TokenStream,
-    pa_root: &TokenStream,
 ) -> FieldEmit {
     // The nested encoder paths run their own `iter().map(|__df_derive_it| ...)`
     // loops to build their flat ref vec, so the access expression is
@@ -179,7 +175,6 @@ fn build_nested_emit(
         ty: type_path,
         columnar_trait: &config.columnar_trait_path,
         to_df_trait: &config.to_dataframe_trait_path,
-        pa_root,
     };
     let enc = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
     let Encoder::Multi { columnar } = enc else {

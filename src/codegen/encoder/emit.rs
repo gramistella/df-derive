@@ -1,4 +1,4 @@
-//! Unified depth-N `Vec`-bearing emitter parameterized by [`LeafKind`].
+//! Unified shape-aware emitter parameterized by [`LeafKind`].
 //!
 //! [`vec_emit_general`] is the single place that ties together the
 //! depth-N walker primitives ([`ShapePrecount`], [`ShapeScan`],
@@ -6,12 +6,19 @@
 //! [`shape_assemble_list_stack`]). It dispatches on [`LeafKind`] for the
 //! points where per-element-push and collect-then-bulk genuinely diverge.
 //!
+//! The collect-then-bulk path also accepts the depth-0 (`Leaf`) wrapper —
+//! a bare nested struct or a single/multi-`Option<Nested>` — and routes it
+//! through the same scan-and-materialize machinery the depth-N path uses,
+//! degenerating the list-array stack to a direct Series clone (`layers
+//! is_empty`) and using `items.len()` rather than the precount `total` for
+//! the all-absent arm length (precount has no leaves to count at depth 0).
+//!
 //! See `docs/encoder-ir.md` for the conceptual model.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::VecLayers;
+use crate::ir::{VecLayers, WrapperShape};
 
 use super::collapse_options_to_ref;
 use super::idents;
@@ -280,9 +287,10 @@ fn ctb_leaf_body<'a>(
 
 /// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
 /// and pushes each inner-Series-yielding expression onto `columns` with the
-/// parent name prefixed. Used by both the bare/option-leaf nested encoders
-/// and the collect-then-bulk vec encoder.
-pub(super) fn nested_consume_columns(
+/// parent name prefixed. Shared by every dispatch arm of [`ctb_materialize`]
+/// (depth-0 direct/take/null and depth-N empty/direct/take/all-absent), with
+/// each arm supplying a different per-column inner-Series expression.
+fn nested_consume_columns(
     parent_name: &str,
     to_df_trait: &TokenStream,
     ty: &TokenStream,
@@ -320,6 +328,11 @@ pub(super) fn nested_consume_columns(
 /// post-scan branches; each branch supplies a different inner-column
 /// expression (direct/take/empty/all-absent) but shares the layer-wrap
 /// stack.
+///
+/// At depth 0 (`layers.is_empty()`) the helper degenerates to the
+/// `inner_col_expr` unchanged — the depth-0 shape (bare/option `Nested`) has
+/// no list layers, so rechunking and stacking would just round-trip the
+/// inner Series through `chunks()[0]`.
 fn ctb_layer_wrap(
     shape: &VecLayers,
     layers: &[LayerIdents],
@@ -328,6 +341,9 @@ fn ctb_layer_wrap(
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> TokenStream {
+    if layers.is_empty() {
+        return inner_col_expr.clone();
+    }
     let inner_chunk = idents::nested_inner_chunk();
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
@@ -399,20 +415,26 @@ fn pep_materialize(
 /// Materialize the post-scan tokens for the collect-then-bulk leaf kind:
 /// freeze offsets/validity once above the dispatch (the freezes are read
 /// per-arm and per-inner-schema-column, so re-freezing inside each arm
-/// would waste work), branch on `(total, flat.len())` to 2 or 4 arms, and
-/// per arm iterate the inner schema to wrap each per-column inner Series
-/// in N `LargeListArray::new` layers.
+/// would waste work), branch on `(total, flat.len())` to 1, 2, 3, or 4
+/// arms (depending on shape), and per arm iterate the inner schema to wrap
+/// each per-column inner Series in N `LargeListArray::new` layers (zero
+/// layers at depth 0 — see [`ctb_layer_wrap`]).
 ///
 /// Branch shapes:
-/// - `has_inner_option == false`: 2 branches — empty (no leaves) or direct
-///   (every leaf is Some, dispatch through `columnar_from_refs` once).
-/// - `has_inner_option == true`: 4 branches — `total == 0` (no leaf slots
-///   at all), `flat.is_empty() && total > 0` (every leaf slot was None;
-///   typed-null Series of length `total`), `flat.len() == total` (every
-///   slot was Some; direct), else mixed (build `IdxCa` from `positions`
-///   and `take` per inner column).
+/// - depth 0, bare (`Leaf { option_layers: 0 }`): 1 branch — direct
+///   (every row contributes one leaf, no per-row Option to skip).
+/// - depth 0, option (`Leaf { option_layers >= 1 }`): 3 branches —
+///   `flat.is_empty()` (every row was None; typed-null Series of length
+///   `items.len()`), `flat.len() == items.len()` (every row was Some;
+///   direct), else mixed (`IdxCa::take` per column).
+/// - depth >= 1, no inner-Option: 2 branches — empty (no leaves) or direct.
+/// - depth >= 1, with inner-Option: 4 branches — `total == 0` (no leaf
+///   slots), `flat.is_empty() && total > 0` (all leaves None; typed-null
+///   Series of length `total`), `flat.len() == total` (all Some; direct),
+///   else mixed (`IdxCa::take` per column).
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
+    wrapper: &WrapperShape,
     shape: &VecLayers,
     layers: &[LayerIdents],
     kind: &LeafKind<'_>,
@@ -452,15 +474,17 @@ fn ctb_materialize(
     let inner_col_empty = quote! {
         #pp::Series::new_empty("".into(), #dtype)
     };
-    // All-absent: every element slot is `None`, but the outer offsets are
-    // non-zero (each outer row carries inner-Vec lengths > 0). The inner
-    // chunk must be a typed-null Series of length `total` so the offsets
-    // buffer's max value (which equals `total`) doesn't exceed the chunk's
-    // length. Without inner-Option, this branch is unreachable — zero
-    // total leaves implies zero outer-list members.
+    // Depth 0 has no offsets to constrain the null length, so the all-absent
+    // arm there uses `items.len()` (one row per outer position). Depth >= 1
+    // sizes the typed-null chunk to `total` (sum of inner-Vec lengths) so
+    // the offsets buffer's max value doesn't exceed the chunk's length.
+    let absent_len: TokenStream = match wrapper {
+        WrapperShape::Leaf { .. } => quote! { items.len() },
+        WrapperShape::Vec(_) => quote! { #total },
+    };
     let inner_col_all_absent = quote! {
         #pp::Series::new_empty("".into(), #dtype)
-            .extend_constant(#pp::AnyValue::Null, #total)?
+            .extend_constant(#pp::AnyValue::Null, #absent_len)?
     };
 
     let series_direct = ctb_layer_wrap(shape, layers, kind, &inner_col_direct, pp, pa_root);
@@ -476,49 +500,81 @@ fn ctb_materialize(
 
     let (validity_freeze, offsets_freeze) = hoisted_freezes(shape, layers, kind, pa_root);
 
-    if shape.has_inner_option() {
-        // 4-branch dispatch. The offsets-buffer freeze is emitted inside
-        // each arm rather than hoisted above the dispatch: with the freeze
-        // local to each branch, LLVM specializes register allocation around
-        // the heavily-inlined `columnar_from_refs` on the hot direct/take
-        // paths instead of treating the `OffsetsBuffer` construction as a
-        // global obligation.
-        quote! {
-            #validity_freeze
-            if #total == 0 {
-                #offsets_freeze
-                #consume_empty
-            } else if #flat.is_empty() {
-                #offsets_freeze
-                #consume_all_absent
-            } else if #flat.len() == #total {
+    match wrapper {
+        WrapperShape::Leaf { option_layers: 0 } => {
+            // Bare nested struct: every row contributes one ref. One arm.
+            quote! {
                 let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                #offsets_freeze
                 #consume_direct
-            } else {
-                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                let #take: #pp::IdxCa =
-                    <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                        "".into(),
-                        #positions.iter().copied(),
-                    );
-                #offsets_freeze
-                #consume_take
             }
         }
-    } else {
-        // No inner-Option: total == flat.len(). Two branches: empty when
-        // flat is empty (no leaves), direct otherwise. Same
-        // freeze-inside-branch rationale as the four-arm case above.
-        quote! {
-            #validity_freeze
-            if #flat.is_empty() {
-                #offsets_freeze
-                #consume_empty
-            } else {
-                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                #offsets_freeze
-                #consume_direct
+        WrapperShape::Leaf { .. } => {
+            // Option<...<Option<Nested>>>: 3-arm dispatch. No `total == 0`
+            // arm because depth-0 has no offsets buffer to size — the empty
+            // (zero-rows) and all-absent arms collapse into one
+            // (`flat.is_empty()` covers both, with null length `items.len()`).
+            quote! {
+                if #flat.is_empty() {
+                    #consume_all_absent
+                } else if #flat.len() == items.len() {
+                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #consume_direct
+                } else {
+                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    let #take: #pp::IdxCa =
+                        <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                            "".into(),
+                            #positions.iter().copied(),
+                        );
+                    #consume_take
+                }
+            }
+        }
+        WrapperShape::Vec(_) if shape.has_inner_option() => {
+            // 4-branch dispatch. The offsets-buffer freeze is emitted inside
+            // each arm rather than hoisted above the dispatch: with the freeze
+            // local to each branch, LLVM specializes register allocation around
+            // the heavily-inlined `columnar_from_refs` on the hot direct/take
+            // paths instead of treating the `OffsetsBuffer` construction as a
+            // global obligation.
+            quote! {
+                #validity_freeze
+                if #total == 0 {
+                    #offsets_freeze
+                    #consume_empty
+                } else if #flat.is_empty() {
+                    #offsets_freeze
+                    #consume_all_absent
+                } else if #flat.len() == #total {
+                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #offsets_freeze
+                    #consume_direct
+                } else {
+                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    let #take: #pp::IdxCa =
+                        <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                            "".into(),
+                            #positions.iter().copied(),
+                        );
+                    #offsets_freeze
+                    #consume_take
+                }
+            }
+        }
+        WrapperShape::Vec(_) => {
+            // No inner-Option: total == flat.len(). Two branches: empty when
+            // flat is empty (no leaves), direct otherwise. Same
+            // freeze-inside-branch rationale as the four-arm case above.
+            quote! {
+                #validity_freeze
+                if #flat.is_empty() {
+                    #offsets_freeze
+                    #consume_empty
+                } else {
+                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #offsets_freeze
+                    #consume_direct
+                }
             }
         }
     }
@@ -584,14 +640,70 @@ fn pep_emit(
     }
 }
 
+/// Build the depth-0 (`WrapperShape::Leaf`) row scan for the collect-then-bulk
+/// path. At depth 0 every row contributes at most one leaf, so the body is a
+/// straight per-row push (`option_layers == 0`) or a per-row Option match
+/// (`option_layers >= 1`) without any inner-Vec iteration. For
+/// `option_layers >= 2` the access expression is pre-collapsed to
+/// `Option<&T>` via [`collapse_options_to_ref`]; the depth >= 1 walker does
+/// the equivalent collapse via [`ShapeScan::build_layer`].
+fn ctb_leaf_scan_depth0(
+    access: &TokenStream,
+    flat: &syn::Ident,
+    positions: &syn::Ident,
+    option_layers: usize,
+) -> TokenStream {
+    let it = idents::populator_iter();
+    let v = idents::leaf_value();
+    if option_layers == 0 {
+        quote! {
+            for #it in items {
+                #flat.push(&(#access));
+            }
+        }
+    } else {
+        let pp = crate::codegen::polars_paths::prelude();
+        // `option_layers == 1`: match `&Option<T>` directly. `>= 2`:
+        // collapse to `Option<&T>` first, then match by value. Mirrors
+        // `ShapeScan::build_layer`'s opt_layers branch on outer-Vec layers.
+        let match_expr = if option_layers == 1 {
+            quote! { &(#access) }
+        } else {
+            let chain = collapse_options_to_ref(access, option_layers);
+            quote! { (#chain) }
+        };
+        quote! {
+            for #it in items {
+                match #match_expr {
+                    ::std::option::Option::Some(#v) => {
+                        #positions.push(::std::option::Option::Some(
+                            #flat.len() as #pp::IdxSize,
+                        ));
+                        #flat.push(#v);
+                    }
+                    ::std::option::Option::None => {
+                        #positions.push(::std::option::Option::None);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Build the collect-then-bulk emit body. The collect-then-bulk path emits
 /// directly into `columns` rather than producing a single Series local —
 /// the for-loop over inner schema columns runs `columns.push(...)` per
 /// inner column. Returns the entire `{ ... }` block.
+///
+/// At depth 0 (`WrapperShape::Leaf`) the precount / offsets / validity decls
+/// drop out and the scan runs per-row (one push per row); the dispatch in
+/// [`ctb_materialize`] uses `items.len()` rather than `total` for the
+/// all-absent arm length.
 #[allow(clippy::too_many_arguments)]
 fn ctb_emit(
     ctb: &CollectThenBulk<'_>,
     access: &TokenStream,
+    wrapper: &WrapperShape,
     shape: &VecLayers,
     layers: &[LayerIdents],
     kind: &LeafKind<'_>,
@@ -604,50 +716,79 @@ fn ctb_emit(
     let positions = idents::nested_positions(ctb.idx);
     let ty = ctb.ty;
 
-    let precount = build_precount(
-        access,
-        shape,
-        layers,
-        kind.precount_outer_some_prefix(),
-        total,
-        layer_counters,
-    );
-    let leaf_body = ctb_leaf_body(shape, &flat, &positions);
-    let leaf_offsets_post_push = if shape.has_inner_option() {
-        quote! { #positions.len() }
-    } else {
-        quote! { #flat.len() }
+    // Per-shape scan + sizing. At depth 0 the precount loop and per-layer
+    // offsets/validity decls are vacuous, so the scan is the entire driver;
+    // depth >= 1 routes through the shared shape walkers.
+    let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
+        WrapperShape::Leaf { option_layers } => {
+            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers);
+            (
+                TokenStream::new(),
+                scan,
+                TokenStream::new(),
+                TokenStream::new(),
+                quote! { items.len() },
+            )
+        }
+        WrapperShape::Vec(_) => {
+            let precount = build_precount(
+                access,
+                shape,
+                layers,
+                kind.precount_outer_some_prefix(),
+                total,
+                layer_counters,
+            );
+            let leaf_body = ctb_leaf_body(shape, &flat, &positions);
+            let leaf_offsets_post_push = if shape.has_inner_option() {
+                quote! { #positions.len() }
+            } else {
+                quote! { #flat.len() }
+            };
+            let scan = build_scan(
+                access,
+                shape,
+                layers,
+                kind.scan_outer_some_prefix(),
+                &leaf_body,
+                &leaf_offsets_post_push,
+            );
+            let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
+            let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
+            let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
+            let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
+            let validity_decls =
+                shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
+            (
+                precount,
+                scan,
+                offsets_decls,
+                validity_decls,
+                quote! { #total },
+            )
+        }
     };
-    let scan = build_scan(
-        access,
-        shape,
-        layers,
-        kind.scan_outer_some_prefix(),
-        &leaf_body,
-        &leaf_offsets_post_push,
-    );
 
-    let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
-    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
-    let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
-    let validity_decls =
-        shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
-
-    let positions_decl = if shape.has_inner_option() {
+    // `positions` is needed whenever any row can be absent: at depth 0 with
+    // any outer Option, or at depth >= 1 with an inner Option above the leaf.
+    let needs_positions = match wrapper {
+        WrapperShape::Leaf { option_layers } => *option_layers > 0,
+        WrapperShape::Vec(_) => shape.has_inner_option(),
+    };
+    let positions_decl = if needs_positions {
         quote! {
             let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
-                ::std::vec::Vec::with_capacity(#total);
+                ::std::vec::Vec::with_capacity(#flat_capacity);
         }
     } else {
         TokenStream::new()
     };
 
-    let materialize = ctb_materialize(ctb, shape, layers, kind, pa_root, pp);
+    let materialize = ctb_materialize(ctb, wrapper, shape, layers, kind, pa_root, pp);
 
     quote! {{
         #precount
-        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#total);
+        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#flat_capacity);
         #positions_decl
         #offsets_decls
         #validity_decls
@@ -656,27 +797,39 @@ fn ctb_emit(
     }}
 }
 
-/// Unified depth-N `Vec`-bearing emitter. Produces:
+/// Unified shape-aware emitter. Produces:
 ///
-/// - For [`LeafKind::PerElementPush`]: a `let __df_derive_field_series_<idx>: Series = { ... };`
-///   declaration plus the `with_name(...)` rename and `columns.push(...)`,
-///   wrapped in a `{ ... }` block scoping the per-field intermediates.
+/// - For [`LeafKind::PerElementPush`] over [`WrapperShape::Vec`]: a
+///   `let __df_derive_field_series_<idx>: Series = { ... };` declaration
+///   plus the `with_name(...)` rename and `columns.push(...)`, wrapped in
+///   a `{ ... }` block scoping the per-field intermediates. The PEP path
+///   never reaches this with a `Leaf` wrapper — `build_encoder` routes
+///   `Leaf` shapes through the per-leaf builders directly.
 /// - For [`LeafKind::CollectThenBulk`]: a `{ ... }` block that scans the
-///   field, dispatches on `(total, flat.len())`, and per inner schema
-///   column pushes a list-wrapped Series onto `columns`.
-///
-/// Both shapes replace the original `vec::vec_emit_decl` and the inlined
-/// body that was in `nested::build_nested_encoder` for the
-/// `WrapperShape::Vec` arm.
+///   field and per inner schema column pushes a (depth >= 1: list-wrapped;
+///   depth 0: direct) Series onto `columns`. Handles every nested-struct /
+///   generic wrapper shape — the bare `Nested`, `Option<...<Nested>>`, and
+///   any `Vec`-bearing stack.
 pub(super) fn vec_emit_general(
     kind: &LeafKind<'_>,
     access: &TokenStream,
     idx: usize,
-    shape: &VecLayers,
+    wrapper: &WrapperShape,
 ) -> TokenStream {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let pp = crate::codegen::polars_paths::prelude();
-    let depth = shape.depth();
+    let depth = wrapper.vec_depth();
+    // The walker needs a `VecLayers` even at depth 0; synthesize an empty
+    // one for the `Leaf` wrapper case so the layer/precount helpers fall
+    // out to no-ops.
+    let empty_shape = VecLayers {
+        layers: Vec::new(),
+        inner_option_layers: 0,
+    };
+    let shape: &VecLayers = match wrapper {
+        WrapperShape::Leaf { .. } => &empty_shape,
+        WrapperShape::Vec(s) => s,
+    };
 
     // Per-leaf-kind layer-ident factory: per-element-push uses flat-vec
     // idents (no field namespacing); collect-then-bulk uses per-(field,
@@ -700,8 +853,8 @@ pub(super) fn vec_emit_general(
             .collect(),
     };
 
-    match kind {
-        LeafKind::PerElementPush(pep) => {
+    match (kind, wrapper) {
+        (LeafKind::PerElementPush(pep), WrapperShape::Vec(_)) => {
             let series_local = idents::vec_field_series(idx);
             pep_emit(
                 pep,
@@ -716,9 +869,10 @@ pub(super) fn vec_emit_general(
                 &pp,
             )
         }
-        LeafKind::CollectThenBulk(ctb) => ctb_emit(
+        (LeafKind::CollectThenBulk(ctb), _) => ctb_emit(
             ctb,
             access,
+            wrapper,
             shape,
             &layers,
             kind,
@@ -726,6 +880,10 @@ pub(super) fn vec_emit_general(
             &total,
             &pa_root,
             &pp,
+        ),
+        (LeafKind::PerElementPush(_), WrapperShape::Leaf { .. }) => unreachable!(
+            "df-derive: PerElementPush leaves with WrapperShape::Leaf route through \
+             vec::build_leaf, not vec_emit_general — see build_encoder",
         ),
     }
 }

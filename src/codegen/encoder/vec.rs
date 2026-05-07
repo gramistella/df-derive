@@ -10,7 +10,7 @@
 //! to a primitive leaf encoder — because it sits at the leaf/vec boundary
 //! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::ir::{DateTimeUnit, LeafSpec, StringyBase, VecLayers};
+use crate::ir::{DateTimeUnit, LeafSpec, StringyBase, VecLayers, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -441,7 +441,8 @@ fn vec_encoder(
     let series_local = vec_encoder_series_local(ctx.base.idx);
     let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
     let kind = LeafKind::PerElementPush(pep);
-    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, shape);
+    let wrapper = WrapperShape::Vec(shape.clone());
+    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, &wrapper);
     let name = ctx.base.name;
     let named = idents::field_named_series();
     let columnar = quote! {

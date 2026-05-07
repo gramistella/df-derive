@@ -464,32 +464,16 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
 /// context) borrows from `items`. `StringyBase` carries the type-path
 /// information (`String`, the field's struct ident, or a generic-parameter
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
-/// the UFCS path.
+/// the UFCS path — both are produced by [`super::stringy_value_expr`].
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase) -> LeafBuilder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
-    // Bare `String` base (with redundant `as_str`) and `as_str` on a
-    // non-string base have different push expressions: `String`'s `&String`
-    // deref-coerces to `&str` so the plain `&` form works there; non-string
-    // bases need UFCS through the type path.
-    let (bare_push, option_push) = if base.is_string() {
-        (
-            quote! { #buf.push(&(#access)); },
-            quote! { #buf.push((#access).as_deref()); },
-        )
-    } else {
-        let ty_path = super::stringy_base_ty_path(base);
-        (
-            quote! { #buf.push(<#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#access))); },
-            quote! {
-                #buf.push(
-                    (#access).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
-                );
-            },
-        )
-    };
+    let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
+    let option_value = super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
+    let bare_push = quote! { #buf.push(#bare_value); };
+    let option_push = quote! { #buf.push(#option_value); };
     let series_finish = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
     LeafBuilder {
         bare: LeafArm {

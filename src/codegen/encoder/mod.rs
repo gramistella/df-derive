@@ -74,6 +74,83 @@ pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream
     }
 }
 
+/// Which `StringyBase` value-expression shape the caller needs. The `as_str`
+/// leaf path produces `&str` / `Option<&str>` from a field access in three
+/// distinct contexts (bare leaf push, single-Option leaf push, multi-Option
+/// collapsed push) and the vec(`as_str`) path produces a `&str` from a
+/// per-row binding inside the leaf push body. Each shape branches on
+/// `StringyBase::is_string()` the same way — `String` deref-coerces or uses
+/// `String::as_str`, non-`String` bases UFCS through `<T as AsRef<str>>`.
+pub(super) enum StringyExprKind {
+    /// Leaf push for `WrapperShape::Leaf { option_layers: 0 }`. Materializes
+    /// `&str`-coerceable from a field access. `String`: `&(#binding)` (relies
+    /// on `&String -> &str` deref-coercion). Non-`String`: UFCS
+    /// `<TyPath as AsRef<str>>::as_ref(&(#binding))`.
+    Bare,
+    /// Leaf push for `WrapperShape::Leaf { option_layers: 1 }`. Materializes
+    /// `Option<&str>` from a `&Option<T>` field access. `String`:
+    /// `(#binding).as_deref()`. Non-`String`:
+    /// `(#binding).as_ref().map(<TyPath as AsRef<str>>::as_ref)`.
+    OptionDeref,
+    /// Multi-Option leaf push (`option_layers >= 2`) — operates on a
+    /// pre-collapsed `Option<&T>` binding. `String`:
+    /// `(#binding).map(String::as_str)`. Non-`String`:
+    /// `(#binding).map(<TyPath as AsRef<str>>::as_ref)`.
+    CollapsedOption,
+    /// Vec(`as_str`) per-row leaf push body. The binding is `&T` (loop
+    /// variable). `String`: `#binding.as_str()`. Non-`String`:
+    /// `<TyPath as AsRef<str>>::as_ref(#binding)`.
+    MbvaValue,
+}
+
+/// Build the value expression for an `as_str`-style leaf at a given call
+/// site. Centralizes the `is_string()` branch shared by the leaf builder
+/// (`leaf::as_str_leaf`), the multi-Option wrapper
+/// (`option::wrap_multi_option_as_str`), and the vec combinator
+/// (`vec::vec_encoder_as_str`). See [`StringyExprKind`] for the four
+/// shapes the helper produces.
+pub(super) fn stringy_value_expr(
+    base: &crate::ir::StringyBase,
+    binding: &TokenStream,
+    kind: StringyExprKind,
+) -> TokenStream {
+    let is_string = base.is_string();
+    match kind {
+        StringyExprKind::Bare => {
+            if is_string {
+                quote! { &(#binding) }
+            } else {
+                let ty_path = stringy_base_ty_path(base);
+                quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(&(#binding)) }
+            }
+        }
+        StringyExprKind::OptionDeref => {
+            if is_string {
+                quote! { (#binding).as_deref() }
+            } else {
+                let ty_path = stringy_base_ty_path(base);
+                quote! { (#binding).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref) }
+            }
+        }
+        StringyExprKind::CollapsedOption => {
+            if is_string {
+                quote! { (#binding).map(::std::string::String::as_str) }
+            } else {
+                let ty_path = stringy_base_ty_path(base);
+                quote! { (#binding).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref) }
+            }
+        }
+        StringyExprKind::MbvaValue => {
+            if is_string {
+                quote! { #binding.as_str() }
+            } else {
+                let ty_path = stringy_base_ty_path(base);
+                quote! { <#ty_path as ::core::convert::AsRef<str>>::as_ref(#binding) }
+            }
+        }
+    }
+}
+
 /// Build an expression that collapses `n` `Option` layers above a base
 /// expression into a single `Option<&Inner>`. `base` must already be a
 /// reference (or place expression that auto-derefs to a reference). For

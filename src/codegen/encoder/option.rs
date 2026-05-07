@@ -85,25 +85,20 @@ pub(super) fn wrap_multi_option_primitive(
 /// buffer + finish as the single-Option `as_str` arm, but the per-row push
 /// collapses the stacked `Option`s into a single `Option<&str>` borrowed
 /// from the original field — the buffer's borrow needs to live for the
-/// whole pass, which a per-row local owning `String` cannot provide.
+/// whole pass, which a per-row local owning `String` cannot provide. The
+/// `String`-vs-UFCS branch is shared with the single-Option leaf and the
+/// vec(`as_str`) path through [`super::stringy_value_expr`].
 fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let collapsed_ref = collapse_options_to_ref(ctx.base.access, layers);
-    let push = if base.is_string() {
-        // For `String` base, `&String` deref-coerces to `&str`, so the
-        // collapsed `Option<&String>` maps to `Option<&str>` directly via
-        // `String::as_str`.
-        quote! { #buf.push((#collapsed_ref).map(::std::string::String::as_str)); }
-    } else {
-        let ty_path = super::stringy_base_ty_path(base);
-        quote! {
-            #buf.push(
-                (#collapsed_ref).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref)
-            );
-        }
-    };
+    let value = super::stringy_value_expr(
+        base,
+        &collapsed_ref,
+        super::StringyExprKind::CollapsedOption,
+    );
+    let push = quote! { #buf.push(#value); };
     let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
     Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],

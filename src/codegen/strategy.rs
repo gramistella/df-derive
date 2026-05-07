@@ -159,7 +159,7 @@ fn build_nested_emit(
     idx: usize,
     type_path: &TokenStream,
 ) -> FieldEmit {
-    // The nested encoder paths run their own `iter().map(|__df_derive_it| ...)`
+    // The nested encoder paths run their own `for __df_derive_it in items`
     // loops to build their flat ref vec, so the access expression is
     // hard-rooted at the centralized populator-iter ident regardless of the
     // call site's outer-loop binding.

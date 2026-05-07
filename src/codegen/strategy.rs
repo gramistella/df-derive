@@ -34,28 +34,31 @@ enum FieldRoute {
     Nested { type_path: TokenStream },
 }
 
-/// Single source of truth for primitive-vs-nested routing. `Struct`/`Generic`
-/// without a stringy override (`as_str`/`as_string`) goes to the nested
-/// encoder; everything else (including `as_str` / `as_string` over a struct
-/// or generic — which produces a `String` column, not a nested struct
-/// column) stays primitive. The parser's legality matrix folds the stringy
-/// overrides into `LeafSpec::AsStr`/`LeafSpec::AsString`, so the destructure
-/// over `LeafSpec` is structurally exhaustive — no `is_stringy` bridge.
-fn classify_field(field: &FieldIR) -> FieldRoute {
-    match &field.leaf_spec {
-        LeafSpec::Struct(id, args) => FieldRoute::Nested {
-            type_path: build_type_path(id, args.as_ref()),
-        },
-        LeafSpec::Generic(id) => FieldRoute::Nested {
-            type_path: quote! { #id },
-        },
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString
-        | LeafSpec::AsStr(_) => FieldRoute::Primitive,
+impl LeafSpec {
+    /// Single source of truth for primitive-vs-nested routing.
+    /// `Struct`/`Generic` without a stringy override (`as_str`/`as_string`)
+    /// goes to the nested encoder; everything else (including `as_str` /
+    /// `as_string` over a struct or generic — which produces a `String`
+    /// column, not a nested struct column) stays primitive. The parser's
+    /// legality matrix folds the stringy overrides into
+    /// `LeafSpec::AsStr`/`LeafSpec::AsString`, so the destructure here is
+    /// structurally exhaustive — no `is_stringy` bridge.
+    fn route(&self) -> FieldRoute {
+        match self {
+            Self::Struct(id, args) => FieldRoute::Nested {
+                type_path: build_type_path(id, args.as_ref()),
+            },
+            Self::Generic(id) => FieldRoute::Nested {
+                type_path: quote! { #id },
+            },
+            Self::Numeric(_)
+            | Self::String
+            | Self::Bool
+            | Self::DateTime(_)
+            | Self::Decimal { .. }
+            | Self::AsString
+            | Self::AsStr(_) => FieldRoute::Primitive,
+        }
     }
 }
 
@@ -92,7 +95,7 @@ pub(super) enum EmitMode {
 /// pre-refactor `build_schema_entries` / `build_empty_series` emissions.
 fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
     let name = field.name.to_string();
-    match (classify_field(field), mode) {
+    match (field.leaf_spec.route(), mode) {
         (FieldRoute::Nested { type_path }, EmitMode::SchemaEntries) => {
             super::nested::generate_schema_entries_for_struct(
                 &type_path,
@@ -147,7 +150,7 @@ pub fn build_field_emit(
     idx: usize,
     it_ident: &Ident,
 ) -> FieldEmit {
-    match classify_field(field) {
+    match field.leaf_spec.route() {
         FieldRoute::Nested { type_path } => build_nested_emit(field, config, idx, &type_path),
         FieldRoute::Primitive => build_primitive_emit(field, config, idx, it_ident),
     }

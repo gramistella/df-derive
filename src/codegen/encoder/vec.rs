@@ -598,6 +598,18 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecLayers, base: &StringyBase) 
 
 // --- Top-level dispatcher pieces ---
 
+/// Shared `unreachable!` body for primitive-only leaf dispatchers
+/// (`build_leaf`, `try_build_vec_encoder`). `Struct` / `Generic` leaves
+/// never reach these dispatchers because `super::strategy::LeafSpec::route`
+/// routes them through `build_nested_encoder` instead.
+fn unreachable_struct_in_primitive_dispatcher(fn_name: &str) -> ! {
+    unreachable!(
+        "df-derive: {fn_name} reached with Struct/Generic leaf — those \
+         route through build_nested_encoder via the FieldRoute split in \
+         `super::strategy::LeafSpec::route`",
+    )
+}
+
 /// Build the depth-N `vec(inner)` encoder for every leaf shape. The
 /// [`LeafSpec`] already encodes the parser's accept set, so the match
 /// below is exhaustive by construction — `Struct`/`Generic` leaves never
@@ -664,11 +676,9 @@ pub(super) fn try_build_vec_encoder(
         // the value expression goes through UFCS (`AsRef<str>`) instead of
         // `String::as_str`. Bytes are copied into the view array once.
         LeafSpec::AsStr(stringy) => vec_encoder_as_str(ctx, vec_shape, stringy),
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => unreachable!(
-            "df-derive: try_build_vec_encoder reached with Struct/Generic leaf — \
-             those route through build_nested_encoder via the FieldRoute split \
-             in `super::strategy::classify_field`",
-        ),
+        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
+            unreachable_struct_in_primitive_dispatcher("try_build_vec_encoder")
+        }
     }
 }
 
@@ -756,7 +766,7 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
 
 /// Build the leaf-encoder bundle for a primitive `LeafSpec`. Total over the
 /// primitive variants of `LeafSpec` — `Struct`/`Generic` cannot reach this
-/// dispatcher because `super::strategy::classify_field` routes them through
+/// dispatcher because `super::strategy::LeafSpec::route` routes them through
 /// `build_nested_encoder`. The fixed-width and `ISize`/`USize` numeric
 /// variants both route to `numeric_leaf`; the widening info is carried
 /// inline on `NumericKind`, so the two provenances yield distinct push
@@ -770,10 +780,8 @@ pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> LeafBuilder {
         LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale),
         LeafSpec::AsString => leaf::as_string_leaf(ctx),
         LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy),
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => unreachable!(
-            "df-derive: build_leaf reached with Struct/Generic leaf — those \
-             route through build_nested_encoder via the FieldRoute split in \
-             `super::strategy::classify_field`",
-        ),
+        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
+            unreachable_struct_in_primitive_dispatcher("build_leaf")
+        }
     }
 }

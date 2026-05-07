@@ -481,6 +481,20 @@ fn ctb_materialize(
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
 
+    // Hoisted decls reused across match arms. Their splice positions
+    // (relative to `#offsets_freeze` / `#validity_freeze`) are bench-stable
+    // and must not be reordered.
+    let df_decl = quote! {
+        let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+    };
+    let take_decl = quote! {
+        let #take: #pp::IdxCa =
+            <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                "".into(),
+                #positions.iter().copied(),
+            );
+    };
+
     // Per-column inner-Series expressions for the four branches (or two,
     // when no inner Option). The list-array wrap is identical across
     // branches; only the seed expression differs.
@@ -528,7 +542,7 @@ fn ctb_materialize(
         WrapperShape::Leaf { option_layers: 0 } => {
             // Bare nested struct: every row contributes one ref. One arm.
             quote! {
-                let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                #df_decl
                 #consume_direct
             }
         }
@@ -541,15 +555,11 @@ fn ctb_materialize(
                 if #flat.is_empty() {
                     #consume_all_absent
                 } else if #flat.len() == items.len() {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #df_decl
                     #consume_direct
                 } else {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                    let #take: #pp::IdxCa =
-                        <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                            "".into(),
-                            #positions.iter().copied(),
-                        );
+                    #df_decl
+                    #take_decl
                     #consume_take
                 }
             }
@@ -570,16 +580,12 @@ fn ctb_materialize(
                     #offsets_freeze
                     #consume_all_absent
                 } else if #flat.len() == #total {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #df_decl
                     #offsets_freeze
                     #consume_direct
                 } else {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-                    let #take: #pp::IdxCa =
-                        <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                            "".into(),
-                            #positions.iter().copied(),
-                        );
+                    #df_decl
+                    #take_decl
                     #offsets_freeze
                     #consume_take
                 }
@@ -595,7 +601,7 @@ fn ctb_materialize(
                     #offsets_freeze
                     #consume_empty
                 } else {
-                    let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+                    #df_decl
                     #offsets_freeze
                     #consume_direct
                 }

@@ -6,12 +6,13 @@
 //! Per-field codegen folds the wrapper stack right-to-left over the leaf to
 //! assemble the final emission.
 //!
-//! Each `LeafBuilder` carries two arms — `bare` for the unwrapped shape and
-//! `option` for the `[Option]` shape. The split lets the `bool` leaf
-//! override the option case with a 3-arm match (so `Some(false)` is a true
-//! no-op against a values bitmap pre-filled with `false`) and lets each
-//! leaf pick the right buffer/finish layout for its option semantics
-//! without leaking a runtime "is-this-supplied?" check into the dispatcher.
+//! Each leaf builder emits a single `LeafArm` selected by an explicit
+//! [`leaf::LeafArmKind`] — `Bare` for the unwrapped shape, `Option` for the
+//! `[Option]` shape. The split lets the `bool` leaf override the option case
+//! with a 3-arm match (so `Some(false)` is a true no-op against a values
+//! bitmap pre-filled with `false`) and lets each leaf pick the right
+//! buffer/finish layout for its option semantics without leaking a runtime
+//! "is-this-supplied?" check into the dispatcher.
 //!
 //! `Vec`-bearing wrappers are normalized into a [`crate::ir::VecLayers`]
 //! (one entry per `Vec` layer; each entry tracks whether an outer `Option`
@@ -220,7 +221,7 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
                 decls,
                 push,
                 series,
-            } = vec::build_leaf(leaf, ctx).bare;
+            } = vec::build_leaf(leaf, ctx, leaf::LeafArmKind::Bare);
             Encoder::Leaf {
                 decls,
                 push,
@@ -232,7 +233,7 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
                 decls,
                 push,
                 series,
-            } = vec::build_leaf(leaf, ctx).option;
+            } = vec::build_leaf(leaf, ctx, leaf::LeafArmKind::Option);
             Encoder::Leaf {
                 decls,
                 push,

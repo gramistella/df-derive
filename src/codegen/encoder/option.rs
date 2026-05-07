@@ -11,7 +11,7 @@ use crate::ir::{LeafSpec, StringyBase};
 use quote::quote;
 
 use super::idents;
-use super::leaf::{LeafArm, LeafBuilder, vec_decl};
+use super::leaf::{LeafArm, LeafArmKind, vec_decl};
 use super::{BaseCtx, Encoder, LeafCtx, collapse_options_to_ref};
 
 /// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
@@ -63,14 +63,11 @@ pub(super) fn wrap_multi_option_primitive(
         },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
     };
-    let LeafBuilder {
-        option: LeafArm {
-            decls,
-            push,
-            series,
-        },
-        ..
-    } = super::vec::build_leaf(leaf, &new_ctx);
+    let LeafArm {
+        decls,
+        push,
+        series,
+    } = super::vec::build_leaf(leaf, &new_ctx, LeafArmKind::Option);
     Encoder::Leaf {
         decls,
         push: quote! {

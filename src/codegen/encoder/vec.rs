@@ -16,7 +16,7 @@ use quote::quote;
 
 use super::emit::vec_emit_general;
 use super::idents;
-use super::leaf::{LeafBuilder, validity_into_option};
+use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
 use super::leaf_kind::{LeafKind, PerElementPush};
 use super::{Encoder, LeafCtx, leaf};
 
@@ -764,22 +764,24 @@ fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
-/// Build the leaf-encoder bundle for a primitive `LeafSpec`. Total over the
-/// primitive variants of `LeafSpec` — `Struct`/`Generic` cannot reach this
-/// dispatcher because `super::strategy::LeafSpec::route` routes them through
-/// `build_nested_encoder`. The fixed-width and `ISize`/`USize` numeric
-/// variants both route to `numeric_leaf`; the widening info is carried
-/// inline on `NumericKind`, so the two provenances yield distinct push
-/// tokens without needing distinct dispatcher arms.
-pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> LeafBuilder {
+/// Build a single arm of the leaf encoder for a primitive `LeafSpec`. The
+/// `kind` parameter selects between the unwrapped (`Bare`) and `[Option]`
+/// (`Option`) shapes — only the requested arm is constructed. Total over
+/// the primitive variants of `LeafSpec` — `Struct`/`Generic` cannot reach
+/// this dispatcher because `super::strategy::LeafSpec::route` routes them
+/// through `build_nested_encoder`. The fixed-width and `ISize`/`USize`
+/// numeric variants both route to `numeric_leaf`; the widening info is
+/// carried inline on `NumericKind`, so the two provenances yield distinct
+/// push tokens without needing distinct dispatcher arms.
+pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) -> LeafArm {
     match leaf {
-        LeafSpec::Numeric(kind) => leaf::numeric_leaf(ctx, *kind),
-        LeafSpec::String => leaf::string_leaf(ctx),
-        LeafSpec::Bool => leaf::bool_leaf(ctx),
-        LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit),
-        LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale),
-        LeafSpec::AsString => leaf::as_string_leaf(ctx),
-        LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy),
+        LeafSpec::Numeric(num_kind) => leaf::numeric_leaf(ctx, *num_kind, kind),
+        LeafSpec::String => leaf::string_leaf(ctx, kind),
+        LeafSpec::Bool => leaf::bool_leaf(ctx, kind),
+        LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit, kind),
+        LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale, kind),
+        LeafSpec::AsString => leaf::as_string_leaf(ctx, kind),
+        LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
             unreachable_struct_in_primitive_dispatcher("build_leaf")
         }

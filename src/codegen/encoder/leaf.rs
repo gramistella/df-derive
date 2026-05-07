@@ -1,11 +1,12 @@
 //! Primitive leaf builders + shared decl helpers.
 //!
-//! Each `*_leaf` here returns a [`LeafBuilder`] carrying both the bare-leaf
-//! and `[Option]` shape pieces (decls, push, finish). The dispatcher in
-//! [`super::mod`] selects `spec.bare` for `WrapperShape::Leaf { option_layers:
-//! 0 }` and `spec.option` for `option_layers == 1`. Deeper Option stacks
-//! reuse `spec.option` after collapsing the access into a single
-//! `Option<&T>` (Polars folds every nested None into one validity bit).
+//! Each `*_leaf` here returns a single [`LeafArm`] selected by an explicit
+//! [`LeafArmKind`]: `Bare` for the unwrapped shape, `Option` for the
+//! `[Option]` shape. The dispatcher in [`super::mod`] selects `Bare` for
+//! `WrapperShape::Leaf { option_layers: 0 }` and `Option` for
+//! `option_layers == 1`. Deeper Option stacks reuse the `Option` arm after
+//! collapsing the access into a single `Option<&T>` (Polars folds every
+//! nested None into one validity bit).
 
 use crate::ir::{DateTimeUnit, LeafSpec, NumericKind, StringyBase};
 use proc_macro2::TokenStream;
@@ -14,25 +15,28 @@ use quote::quote;
 use super::LeafCtx;
 use super::idents;
 
-/// Per-leaf bundle of token streams. Every primitive leaf carries both a
-/// bare-shape [`LeafArm`] and an `[Option]`-shape [`LeafArm`]. The split lets
-/// each leaf override the option-shape per-row work (e.g. the bool 3-arm
-/// match against a pre-filled values bitmap, the string-like MBVA + bitmap
-/// pair, the bool inner-Option bit-packed values bitmap) without leaking a
+/// Selects which arm a leaf builder emits. The split lets each leaf
+/// override the option-shape per-row work (e.g. the bool 3-arm match
+/// against a pre-filled values bitmap, the string-like MBVA + bitmap pair,
+/// the bool inner-Option bit-packed values bitmap) without leaking a
 /// runtime "is-this-supplied?" check into the dispatcher.
-///
-/// Distinct from [`crate::ir::LeafSpec`] (which classifies the unwrapped
-/// element type at parse time). This builder bundle is the encoder-internal
-/// product of the dispatch over a `LeafSpec` plus a `LeafCtx`.
-pub(super) struct LeafBuilder {
-    pub bare: LeafArm,
-    pub option: LeafArm,
+#[derive(Clone, Copy)]
+pub(super) enum LeafArmKind {
+    /// Unwrapped shape — `WrapperShape::Leaf { option_layers: 0 }`.
+    Bare,
+    /// `[Option]` shape — `WrapperShape::Leaf { option_layers: 1 }`, plus
+    /// the multi-Option leaf wrapper after access collapse.
+    Option,
 }
 
-/// One arm (bare or `[Option]`) of a [`LeafBuilder`]. `decls` is emitted once
-/// before the per-row loop; `push` is spliced inside the loop; `series` is
-/// an expression that evaluates to a `polars::prelude::Series` after the
-/// loop.
+/// One arm (bare or `[Option]`) emitted by a `*_leaf` builder. `decls` is
+/// emitted once before the per-row loop; `push` is spliced inside the loop;
+/// `series` is an expression that evaluates to a `polars::prelude::Series`
+/// after the loop.
+///
+/// Distinct from [`crate::ir::LeafSpec`] (which classifies the unwrapped
+/// element type at parse time). This is the encoder-internal product of the
+/// dispatch over a `LeafSpec` plus a `LeafCtx` plus a [`LeafArmKind`].
 pub(super) struct LeafArm {
     pub decls: Vec<TokenStream>,
     pub push: TokenStream,
@@ -117,7 +121,7 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 /// `MutableBitmap` + `PrimitiveArray::new`. When `info.widen_from` is `Some`,
 /// the bare push reads the field as `(#access) as #target` and the
 /// validity-arm `Some` push extracts via `(*v) as #target`.
-pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind) -> LeafBuilder {
+pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKind) -> LeafArm {
     let info = crate::codegen::type_registry::numeric_info_for(kind);
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -128,69 +132,73 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind) -> LeafBuilder 
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
 
-    // Wrap the cloned access expression in `{ ... }` to match the legacy
-    // primitive emitter's exact token shape. The block wrap is a syntactic
-    // no-op (the expression evaluates identically), but the legacy
-    // `try_gen_*` path emitted it and benches like `01_top_level_vec` and
-    // `vec_vec_i32` are sensitive to the resulting MIR shape — emitting
-    // `push(x.clone())` instead of `push({ x.clone() })` reproducibly
-    // regresses these tight loops by 5-12% even though rustc/LLVM should
-    // see equivalent MIR. Match the legacy shape exactly.
-    //
-    // Widening (`isize`/`usize` → `i64`/`u64`) casts the field expression to
-    // `info.native` (the storage type), not to `info.widen_from` (the
-    // source type) — `widen_from.is_some()` is just the gating signal.
-    let bare_value = if info.widen_from.is_some() {
-        quote! { ((#access) as #native) }
-    } else {
-        quote! { (#access).clone() }
-    };
-    let bare_push = quote! { #buf.push({ #bare_value }); };
-    let bare_series = quote! {
-        #pp::IntoSeries::into_series(#chunked::from_vec(#name.into(), #buf))
-    };
-    // `Some` arm pushes the value (validity pre-filled to `true` is wrong —
-    // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
-    // `<#native>::default()` and `validity.push(false)`. Splitting value vs
-    // validity into independent pushes lets the compiler vectorize cleanly.
-    let v = idents::leaf_value();
-    let some_push_value = if info.widen_from.is_some() {
-        quote! { (#v as #native) }
-    } else {
-        quote! { #v }
-    };
-    let option_push = quote! {
-        match #access {
-            ::std::option::Option::Some(#v) => {
-                #buf.push(#some_push_value);
-                #validity.push(true);
-            }
-            ::std::option::Option::None => {
-                #buf.push(<#native as ::std::default::Default>::default());
-                #validity.push(false);
+    match arm {
+        LeafArmKind::Bare => {
+            // Wrap the cloned access expression in `{ ... }` to match the legacy
+            // primitive emitter's exact token shape. The block wrap is a syntactic
+            // no-op (the expression evaluates identically), but the legacy
+            // `try_gen_*` path emitted it and benches like `01_top_level_vec` and
+            // `vec_vec_i32` are sensitive to the resulting MIR shape — emitting
+            // `push(x.clone())` instead of `push({ x.clone() })` reproducibly
+            // regresses these tight loops by 5-12% even though rustc/LLVM should
+            // see equivalent MIR. Match the legacy shape exactly.
+            //
+            // Widening (`isize`/`usize` → `i64`/`u64`) casts the field expression to
+            // `info.native` (the storage type), not to `info.widen_from` (the
+            // source type) — `widen_from.is_some()` is just the gating signal.
+            let bare_value = if info.widen_from.is_some() {
+                quote! { ((#access) as #native) }
+            } else {
+                quote! { (#access).clone() }
+            };
+            let bare_push = quote! { #buf.push({ #bare_value }); };
+            let bare_series = quote! {
+                #pp::IntoSeries::into_series(#chunked::from_vec(#name.into(), #buf))
+            };
+            LeafArm {
+                decls: vec![vec_decl(&buf, native)],
+                push: bare_push,
+                series: bare_series,
             }
         }
-    };
-    let valid_opt = validity_into_option(&validity);
-    let option_series = quote! {{
-        let arr = #pa_root::array::PrimitiveArray::<#native>::new(
-            <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-            #buf.into(),
-            #valid_opt,
-        );
-        #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
-    }};
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![vec_decl(&buf, native)],
-            push: bare_push,
-            series: bare_series,
-        },
-        option: LeafArm {
-            decls: vec![vec_decl(&buf, native), mb_decl(&validity)],
-            push: option_push,
-            series: option_series,
-        },
+        LeafArmKind::Option => {
+            // `Some` arm pushes the value (validity pre-filled to `true` is wrong —
+            // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
+            // `<#native>::default()` and `validity.push(false)`. Splitting value vs
+            // validity into independent pushes lets the compiler vectorize cleanly.
+            let v = idents::leaf_value();
+            let some_push_value = if info.widen_from.is_some() {
+                quote! { (#v as #native) }
+            } else {
+                quote! { #v }
+            };
+            let option_push = quote! {
+                match #access {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push(#some_push_value);
+                        #validity.push(true);
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push(<#native as ::std::default::Default>::default());
+                        #validity.push(false);
+                    }
+                }
+            };
+            let valid_opt = validity_into_option(&validity);
+            let option_series = quote! {{
+                let arr = #pa_root::array::PrimitiveArray::<#native>::new(
+                    <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
+                    #buf.into(),
+                    #valid_opt,
+                );
+                #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
+            }};
+            LeafArm {
+                decls: vec![vec_decl(&buf, native), mb_decl(&validity)],
+                push: option_push,
+                series: option_series,
+            }
+        }
     }
 }
 
@@ -200,46 +208,50 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind) -> LeafBuilder 
 /// MBVA + parallel `MutableBitmap` (pre-filled `true`) + row counter; `Some`
 /// pushes the borrowed `&str` (no validity work), `None` pushes "" and flips
 /// a single bit via the safe `MutableBitmap::set`.
-pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
+pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
 
-    let v = idents::leaf_value();
-    let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
-    let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
-    let option_push = quote! {
-        match &(#access) {
-            ::std::option::Option::Some(#v) => {
-                #buf.push_value_ignore_validity(#v.as_str());
-            }
-            ::std::option::Option::None => {
-                #buf.push_value_ignore_validity("");
-                #validity.set(#row_idx, false);
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
+            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
+            LeafArm {
+                decls: vec![mbva_decl(&buf)],
+                push: bare_push,
+                series: bare_series,
             }
         }
-        #row_idx += 1;
-    };
-    let valid_opt = validity_into_option(&validity);
-    let option_series =
-        string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![mbva_decl(&buf)],
-            push: bare_push,
-            series: bare_series,
-        },
-        option: LeafArm {
-            decls: vec![
-                mbva_decl(&buf),
-                mb_decl_filled(&validity, true),
-                row_idx_decl(&row_idx),
-            ],
-            push: option_push,
-            series: option_series,
-        },
+        LeafArmKind::Option => {
+            let v = idents::leaf_value();
+            let option_push = quote! {
+                match &(#access) {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push_value_ignore_validity(#v.as_str());
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push_value_ignore_validity("");
+                        #validity.set(#row_idx, false);
+                    }
+                }
+                #row_idx += 1;
+            };
+            let valid_opt = validity_into_option(&validity);
+            let option_series =
+                string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
+            LeafArm {
+                decls: vec![
+                    mbva_decl(&buf),
+                    mb_decl_filled(&validity, true),
+                    row_idx_decl(&row_idx),
+                ],
+                push: option_push,
+                series: option_series,
+            }
+        }
     }
 }
 
@@ -250,7 +262,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
 /// `false` + `MutableBitmap` validity pre-filled `true` + row counter); the
 /// 3-arm match makes `Some(false)` zero work, `Some(true)` flips a value
 /// bit, `None` flips a validity bit.
-pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
+pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
@@ -259,78 +271,93 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
 
-    let bare_push = quote! { #buf.push({ (#access).clone() }); };
-    let bare_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    let option_push = quote! {
-        match (#access) {
-            ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
-            ::std::option::Option::Some(false) => {}
-            ::std::option::Option::None => { #validity.set(#row_idx, false); }
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_push = quote! { #buf.push({ (#access).clone() }); };
+            let bare_series =
+                quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
+            LeafArm {
+                decls: vec![vec_decl(&buf, &quote! { bool })],
+                push: bare_push,
+                series: bare_series,
+            }
         }
-        #row_idx += 1;
-    };
-    let valid_opt = validity_into_option(&validity);
-    let option_series = quote! {{
-        let arr = #pa_root::array::BooleanArray::new(
-            #pa_root::datatypes::ArrowDataType::Boolean,
-            ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#buf),
-            #valid_opt,
-        );
-        #pp::IntoSeries::into_series(
-            #pp::BooleanChunked::with_chunk(#name.into(), arr),
-        )
-    }};
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { bool })],
-            push: bare_push,
-            series: bare_series,
-        },
-        option: LeafArm {
-            decls: vec![
-                mb_decl_filled(&buf, false),
-                mb_decl_filled(&validity, true),
-                row_idx_decl(&row_idx),
-            ],
-            push: option_push,
-            series: option_series,
-        },
+        LeafArmKind::Option => {
+            let option_push = quote! {
+                match (#access) {
+                    ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
+                    ::std::option::Option::Some(false) => {}
+                    ::std::option::Option::None => { #validity.set(#row_idx, false); }
+                }
+                #row_idx += 1;
+            };
+            let valid_opt = validity_into_option(&validity);
+            let option_series = quote! {{
+                let arr = #pa_root::array::BooleanArray::new(
+                    #pa_root::datatypes::ArrowDataType::Boolean,
+                    ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#buf),
+                    #valid_opt,
+                );
+                #pp::IntoSeries::into_series(
+                    #pp::BooleanChunked::with_chunk(#name.into(), arr),
+                )
+            }};
+            LeafArm {
+                decls: vec![
+                    mb_decl_filled(&buf, false),
+                    mb_decl_filled(&validity, true),
+                    row_idx_decl(&row_idx),
+                ],
+                push: option_push,
+                series: option_series,
+            }
+        }
     }
 }
 
 /// Build push tokens for a `Vec<...>` (or `Vec<Option<...>>`) buffer that
 /// holds the result of a per-row mapped expression — used by `Decimal` and
 /// `DateTime` leaves which share the same shape (`buf.push({ mapped })` for
-/// bare, `match Some/None => Some(mapped)/None` for option).
-fn mapped_push_pair(ctx: &LeafCtx<'_>, leaf: &LeafSpec) -> (TokenStream, TokenStream) {
+/// bare, `match Some/None => Some(mapped)/None` for option). Returns the
+/// arm-specific push expression.
+fn mapped_push(ctx: &LeafCtx<'_>, leaf: &LeafSpec, arm: LeafArmKind) -> TokenStream {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let decimal_trait = ctx.decimal128_encode_trait;
-    let v = idents::leaf_value();
-    let mapped_bare =
-        crate::codegen::type_registry::map_primitive_expr(access, leaf, decimal_trait);
-    let mapped_some = {
-        let some_var = quote! { #v };
-        crate::codegen::type_registry::map_primitive_expr(&some_var, leaf, decimal_trait)
-    };
-    let bare_push = quote! { #buf.push({ #mapped_bare }); };
-    let option_push = quote! {
-        match &(#access) {
-            ::std::option::Option::Some(#v) => {
-                #buf.push(::std::option::Option::Some({ #mapped_some }));
-            }
-            ::std::option::Option::None => {
-                #buf.push(::std::option::Option::None);
+    match arm {
+        LeafArmKind::Bare => {
+            let mapped_bare =
+                crate::codegen::type_registry::map_primitive_expr(access, leaf, decimal_trait);
+            quote! { #buf.push({ #mapped_bare }); }
+        }
+        LeafArmKind::Option => {
+            let v = idents::leaf_value();
+            let some_var = quote! { #v };
+            let mapped_some =
+                crate::codegen::type_registry::map_primitive_expr(&some_var, leaf, decimal_trait);
+            quote! {
+                match &(#access) {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push(::std::option::Option::Some({ #mapped_some }));
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push(::std::option::Option::None);
+                    }
+                }
             }
         }
-    };
-    (bare_push, option_push)
+    }
 }
 
 /// `Decimal` leaf with a `DecimalToInt128` transform. Bare: `Vec<i128>` +
 /// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
 /// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
-pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafBuilder {
+pub(super) fn decimal_leaf(
+    ctx: &LeafCtx<'_>,
+    precision: u8,
+    scale: u8,
+    arm: LeafArmKind,
+) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
@@ -338,29 +365,33 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafB
     let p = precision as usize;
     let s = scale as usize;
     let leaf = LeafSpec::Decimal { precision, scale };
-    let (bare_push, option_push) = mapped_push_pair(ctx, &leaf);
-    let bare_series = quote! {{
-        let ca = #int128::from_vec(#name.into(), #buf);
-        #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
-    }};
-    let option_series = quote! {{
-        let ca = <#int128 as #pp::NewChunkedArray<_, _>>::from_iter_options(
-            #name.into(),
-            #buf.into_iter(),
-        );
-        #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
-    }};
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { i128 })],
-            push: bare_push,
-            series: bare_series,
-        },
-        option: LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i128> })],
-            push: option_push,
-            series: option_series,
-        },
+    let push = mapped_push(ctx, &leaf, arm);
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_series = quote! {{
+                let ca = #int128::from_vec(#name.into(), #buf);
+                #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
+            }};
+            LeafArm {
+                decls: vec![vec_decl(&buf, &quote! { i128 })],
+                push,
+                series: bare_series,
+            }
+        }
+        LeafArmKind::Option => {
+            let option_series = quote! {{
+                let ca = <#int128 as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                    #name.into(),
+                    #buf.into_iter(),
+                );
+                #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
+            }};
+            LeafArm {
+                decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i128> })],
+                push,
+                series: option_series,
+            }
+        }
     }
 }
 
@@ -368,27 +399,27 @@ pub(super) fn decimal_leaf(ctx: &LeafCtx<'_>, precision: u8, scale: u8) -> LeafB
 /// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
 /// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
 /// + cast); only the element type changes.
-pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafBuilder {
+pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let leaf = LeafSpec::DateTime(unit);
-    let (bare_push, option_push) = mapped_push_pair(ctx, &leaf);
+    let push = mapped_push(ctx, &leaf, arm);
     let dtype = leaf.dtype();
     let series_finish = quote! {{
         let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
         s = s.cast(&#dtype)?;
         s
     }};
-    LeafBuilder {
-        bare: LeafArm {
+    match arm {
+        LeafArmKind::Bare => LeafArm {
             decls: vec![vec_decl(&buf, &quote! { i64 })],
-            push: bare_push,
-            series: series_finish.clone(),
+            push,
+            series: series_finish,
         },
-        option: LeafArm {
+        LeafArmKind::Option => LeafArm {
             decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i64> })],
-            push: option_push,
+            push,
             series: series_finish,
         },
     }
@@ -398,65 +429,69 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafBuilde
 /// each row clears the scratch, runs `Display::fmt` into it, then pushes the
 /// resulting `&str` to the view array (which copies the bytes). Option arm
 /// adds the validity bitmap pair on top of the same MBVA + scratch layout.
-pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
+pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
-
-    let v = idents::leaf_value();
-    let bare_push = quote! {
-        {
-            use ::std::fmt::Write as _;
-            #scratch.clear();
-            ::std::write!(&mut #scratch, "{}", &(#access)).unwrap();
-            #buf.push_value_ignore_validity(#scratch.as_str());
-        }
-    };
-    let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
-    let option_push = quote! {
-        match &(#access) {
-            ::std::option::Option::Some(#v) => {
-                use ::std::fmt::Write as _;
-                #scratch.clear();
-                ::std::write!(&mut #scratch, "{}", #v).unwrap();
-                #buf.push_value_ignore_validity(#scratch.as_str());
-            }
-            ::std::option::Option::None => {
-                #buf.push_value_ignore_validity("");
-                #validity.set(#row_idx, false);
-            }
-        }
-        #row_idx += 1;
-    };
-    let valid_opt = validity_into_option(&validity);
-    let option_series =
-        string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
     let scratch_decl =
         quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); };
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![mbva_decl(&buf), scratch_decl.clone()],
-            push: bare_push,
-            series: bare_series,
-        },
-        // Option-arm decl ordering matches the prior shared
-        // `option_for_string_like` emission: MBVA first, then the `as_string`
-        // scratch as an "extra decl", then the validity bitmap and row
-        // counter. `as_string` has a `String` scratch on top of the MBVA
-        // pair and we preserve that ordering here.
-        option: LeafArm {
-            decls: vec![
-                mbva_decl(&buf),
-                scratch_decl,
-                mb_decl_filled(&validity, true),
-                row_idx_decl(&row_idx),
-            ],
-            push: option_push,
-            series: option_series,
-        },
+
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_push = quote! {
+                {
+                    use ::std::fmt::Write as _;
+                    #scratch.clear();
+                    ::std::write!(&mut #scratch, "{}", &(#access)).unwrap();
+                    #buf.push_value_ignore_validity(#scratch.as_str());
+                }
+            };
+            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() });
+            LeafArm {
+                decls: vec![mbva_decl(&buf), scratch_decl],
+                push: bare_push,
+                series: bare_series,
+            }
+        }
+        LeafArmKind::Option => {
+            let v = idents::leaf_value();
+            let option_push = quote! {
+                match &(#access) {
+                    ::std::option::Option::Some(#v) => {
+                        use ::std::fmt::Write as _;
+                        #scratch.clear();
+                        ::std::write!(&mut #scratch, "{}", #v).unwrap();
+                        #buf.push_value_ignore_validity(#scratch.as_str());
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push_value_ignore_validity("");
+                        #validity.set(#row_idx, false);
+                    }
+                }
+                #row_idx += 1;
+            };
+            let valid_opt = validity_into_option(&validity);
+            let option_series =
+                string_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
+            // Option-arm decl ordering matches the prior shared
+            // `option_for_string_like` emission: MBVA first, then the `as_string`
+            // scratch as an "extra decl", then the validity bitmap and row
+            // counter. `as_string` has a `String` scratch on top of the MBVA
+            // pair and we preserve that ordering here.
+            LeafArm {
+                decls: vec![
+                    mbva_decl(&buf),
+                    scratch_decl,
+                    mb_decl_filled(&validity, true),
+                    row_idx_decl(&row_idx),
+                ],
+                push: option_push,
+                series: option_series,
+            }
+        }
     }
 }
 
@@ -465,26 +500,31 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>) -> LeafBuilder {
 /// information (`String`, the field's struct ident, or a generic-parameter
 /// ident) and lets the bare-`String` deref-coercion path stay distinct from
 /// the UFCS path — both are produced by [`super::stringy_value_expr`].
-pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase) -> LeafBuilder {
+pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
-    let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
-    let option_value = super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
-    let bare_push = quote! { #buf.push(#bare_value); };
-    let option_push = quote! { #buf.push(#option_value); };
     let series_finish = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
-    LeafBuilder {
-        bare: LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { &str })],
-            push: bare_push,
-            series: series_finish.clone(),
-        },
-        option: LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
-            push: option_push,
-            series: series_finish,
-        },
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
+            let bare_push = quote! { #buf.push(#bare_value); };
+            LeafArm {
+                decls: vec![vec_decl(&buf, &quote! { &str })],
+                push: bare_push,
+                series: series_finish,
+            }
+        }
+        LeafArmKind::Option => {
+            let option_value =
+                super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
+            let option_push = quote! { #buf.push(#option_value); };
+            LeafArm {
+                decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
+                push: option_push,
+                series: series_finish,
+            }
+        }
     }
 }

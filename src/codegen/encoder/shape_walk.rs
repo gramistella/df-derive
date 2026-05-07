@@ -58,6 +58,18 @@ use crate::ir::VecLayers;
 use super::idents;
 use super::collapse_options_to_ref;
 
+/// Collapse `opt_layers` `Option` levels above `bind` to a single
+/// `Option<&Inner>`. For `opt_layers == 1` returns the bind unchanged so
+/// default binding modes can match `&Option<Vec<...>>` directly without an
+/// explicit `.as_ref()` (which LLVM doesn't always eliminate).
+fn collapse_or_clone_bind(bind: &TokenStream, opt_layers: usize) -> TokenStream {
+    if opt_layers == 1 {
+        bind.clone()
+    } else {
+        collapse_options_to_ref(bind, opt_layers)
+    }
+}
+
 /// Unified per-layer identifier bundle shared by the flat-vec path and the
 /// nested-struct path. Both paths construct these via the shared
 /// `emit::layer_idents` factory, which dispatches on `field_idx:
@@ -166,11 +178,7 @@ impl ShapeScan<'_> {
             // binding modes match `&Option<Vec<...>>` directly without an
             // explicit `.as_ref()` call, which LLVM doesn't always
             // eliminate — so we keep the bind unchanged in that case.
-            let collapsed = if opt_layers == 1 {
-                bind.clone()
-            } else {
-                collapse_options_to_ref(bind, opt_layers)
-            };
+            let collapsed = collapse_or_clone_bind(bind, opt_layers);
             quote! {
                 match #collapsed {
                     ::std::option::Option::Some(#inner_vec_bind) => {
@@ -275,11 +283,7 @@ impl ShapePrecount<'_> {
         if opt_layers > 0 {
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner = self.build_iter(cur, &quote! { #inner_vec_bind });
-            let collapsed = if opt_layers == 1 {
-                bind.clone()
-            } else {
-                collapse_options_to_ref(bind, opt_layers)
-            };
+            let collapsed = collapse_or_clone_bind(bind, opt_layers);
             quote! {
                 if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
                     #inner

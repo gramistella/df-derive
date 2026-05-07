@@ -116,6 +116,14 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
     }
 }
 
+/// Build a Series via `<Series as NamedFrom<_, _>>::new(name.into(), &buf)`.
+/// The `.into()` and the `&` borrow are part of the emitted shape and are
+/// preserved by callers that splice this into a larger expression.
+pub(super) fn named_from_buf(name: &str, buf: &syn::Ident) -> TokenStream {
+    let pp = crate::codegen::polars_paths::prelude();
+    quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) }
+}
+
 // --- Leaf builders ---
 
 /// Numeric primitive leaf — covers fixed-width (`i8/.../f64`) and the
@@ -278,8 +286,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     match arm {
         LeafArmKind::Bare => {
             let bare_push = quote! { #buf.push({ (#access).clone() }); };
-            let bare_series =
-                quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
+            let bare_series = named_from_buf(name, &buf);
             LeafArm {
                 decls: vec![vec_decl(&buf, &quote! { bool })],
                 push: bare_push,
@@ -406,12 +413,12 @@ pub(super) fn decimal_leaf(
 pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
     let leaf = LeafSpec::DateTime(unit);
     let push = mapped_push(ctx, &leaf, arm);
     let dtype = leaf.dtype();
+    let series_new = named_from_buf(name, &buf);
     let series_finish = quote! {{
-        let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
+        let mut s = #series_new;
         s = s.cast(&#dtype)?;
         s
     }};
@@ -508,8 +515,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
-    let series_finish = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
+    let series_finish = named_from_buf(name, &buf);
     match arm {
         LeafArmKind::Bare => {
             let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);

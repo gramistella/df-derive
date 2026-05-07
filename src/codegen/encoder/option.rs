@@ -11,7 +11,7 @@ use crate::ir::{LeafSpec, StringyBase};
 use quote::quote;
 
 use super::idents;
-use super::leaf::{LeafArm, LeafArmKind, vec_decl};
+use super::leaf::{LeafArm, LeafArmKind, named_from_buf, vec_decl};
 use super::{BaseCtx, Encoder, LeafCtx, collapse_options_to_ref};
 
 /// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
@@ -88,7 +88,6 @@ pub(super) fn wrap_multi_option_primitive(
 fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
     let collapsed_ref = collapse_options_to_ref(ctx.base.access, layers);
     let value = super::stringy_value_expr(
         base,
@@ -96,7 +95,7 @@ fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize
         super::StringyExprKind::CollapsedOption,
     );
     let push = quote! { #buf.push(#value); };
-    let finish_series = quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) };
+    let finish_series = named_from_buf(name, &buf);
     Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
         push,

@@ -16,7 +16,7 @@ use quote::quote;
 
 use super::emit::vec_emit_general;
 use super::idents;
-use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
+use super::leaf::{LeafArm, LeafArmKind, mb_decl_filled, validity_into_option};
 use super::leaf_kind::{LeafKind, PerElementPush};
 use super::{Encoder, LeafCtx, leaf};
 
@@ -177,15 +177,10 @@ fn bool_bare_leaf_pieces(
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
     let leaf_idx = idents::vec_leaf_idx();
-    let b = idents::bitmap_builder();
     let v = idents::leaf_value();
+    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false);
     let storage = quote! {
-        let mut #values_ident: #pa_root::bitmap::MutableBitmap = {
-            let mut #b =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            #b.extend_constant(#leaf_capacity_expr, false);
-            #b
-        };
+        #values_decl
         let mut #leaf_idx: usize = 0;
     };
     let push = quote! {
@@ -211,21 +206,16 @@ fn numeric_leaf_pieces(
 ) -> (TokenStream, TokenStream, TokenStream) {
     let flat = idents::vec_flat();
     let validity = idents::bool_validity();
-    let b = idents::bitmap_builder();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     // Numeric / Decimal / DateTime: `Vec<#native>` flat values.
     // Inner-Option carries a parallel `MutableBitmap` pre-filled `true`.
     let storage = if has_inner_option {
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
         quote! {
             let mut #flat: ::std::vec::Vec<#native> =
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-            let mut #validity: #pa_root::bitmap::MutableBitmap = {
-                let mut #b =
-                    #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-                #b.extend_constant(#leaf_capacity_expr, true);
-                #b
-            };
+            #validity_decl
         }
     } else {
         quote! {
@@ -300,7 +290,6 @@ fn string_like_leaf_pieces(
     let view_buf = idents::vec_view_buf();
     let validity = idents::bool_validity();
     let leaf_idx = idents::vec_leaf_idx();
-    let b = idents::bitmap_builder();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     // String / to_string / as_str: `MutableBinaryViewArray<str>` flat values.
@@ -316,13 +305,9 @@ fn string_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
         storage_parts.push(quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap = {
-                let mut #b =
-                    #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-                #b.extend_constant(#leaf_capacity_expr, true);
-                #b
-            };
+            #validity_decl
             let mut #leaf_idx: usize = 0;
         });
     }
@@ -370,25 +355,16 @@ fn bool_inner_option_leaf_pieces(
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
     let leaf_idx = idents::vec_leaf_idx();
-    let b = idents::bitmap_builder();
     let v = idents::leaf_value();
     // Bool with inner-Option only — bare bool is served by
     // `vec_encoder_bool_bare`. Bit-packed values bitmap (pre-filled `false`)
     // + parallel validity bitmap (pre-filled `true`) + leaf index counter so
     // `set(i, ...)` lands on the right bit.
+    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false);
+    let validity_decl = mb_decl_filled(&validity_ident, leaf_capacity_expr, true);
     let storage = quote! {
-        let mut #values_ident: #pa_root::bitmap::MutableBitmap = {
-            let mut #b =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            #b.extend_constant(#leaf_capacity_expr, false);
-            #b
-        };
-        let mut #validity_ident: #pa_root::bitmap::MutableBitmap = {
-            let mut #b =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
-            #b.extend_constant(#leaf_capacity_expr, true);
-            #b
-        };
+        #values_decl
+        #validity_decl
         let mut #leaf_idx: usize = 0;
     };
     let push = quote! {

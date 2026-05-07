@@ -63,14 +63,18 @@ pub(super) fn mb_decl(ident: &syn::Ident) -> TokenStream {
     }
 }
 
-/// `let mut #ident: MutableBitmap = MutableBitmap pre-filled with #value over items.len();`
-pub(super) fn mb_decl_filled(ident: &syn::Ident, value: bool) -> TokenStream {
+/// `let mut #ident: MutableBitmap = MutableBitmap pre-filled with #value over #capacity;`
+pub(super) fn mb_decl_filled(
+    ident: &syn::Ident,
+    capacity: &TokenStream,
+    value: bool,
+) -> TokenStream {
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let b = idents::bitmap_builder();
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap = {
-            let mut #b = #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
-            #b.extend_constant(items.len(), #value);
+            let mut #b = #pa_root::bitmap::MutableBitmap::with_capacity(#capacity);
+            #b.extend_constant(#capacity, #value);
             #b
         };
     }
@@ -245,7 +249,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf),
-                    mb_decl_filled(&validity, true),
+                    mb_decl_filled(&validity, &quote! { items.len() }, true),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -304,8 +308,8 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }};
             LeafArm {
                 decls: vec![
-                    mb_decl_filled(&buf, false),
-                    mb_decl_filled(&validity, true),
+                    mb_decl_filled(&buf, &quote! { items.len() }, false),
+                    mb_decl_filled(&validity, &quote! { items.len() }, true),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -485,7 +489,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 decls: vec![
                     mbva_decl(&buf),
                     scratch_decl,
-                    mb_decl_filled(&validity, true),
+                    mb_decl_filled(&validity, &quote! { items.len() }, true),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,

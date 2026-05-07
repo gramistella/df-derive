@@ -685,11 +685,7 @@ pub(super) fn try_build_vec_encoder(
 fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
     let pp = crate::codegen::polars_paths::prelude();
     let v = idents::leaf_value();
-    let unit_tokens = match unit {
-        DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
-        DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
-        DateTimeUnit::Nanoseconds => quote! { #pp::TimeUnit::Nanoseconds },
-    };
+    let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
     let leaf_dtype = quote! {
         #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
     };

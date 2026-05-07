@@ -66,7 +66,7 @@ pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
 }
 
 /// Tokens for `polars::prelude::TimeUnit::<variant>`.
-fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
+pub(super) fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
     let pp = super::polars_paths::prelude();
     match unit {
         DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },

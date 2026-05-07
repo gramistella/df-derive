@@ -53,6 +53,40 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
     )
 }
 
+/// Freeze a per-layer `Vec<i64>` into an `OffsetsBuffer<i64>` (single
+/// statement). Centralizes the token shape used by both the interleaved
+/// per-element-push path ([`layer_wraps`]) and the hoisted
+/// collect-then-bulk path ([`hoisted_freezes`]) — keep these byte-
+/// equivalent so the bench-stable interleaves in the encoder don't shift.
+fn freeze_offsets_buf(
+    buf: &syn::Ident,
+    offsets: &syn::Ident,
+    pa_root: &TokenStream,
+) -> TokenStream {
+    quote! {
+        let #buf: #pa_root::offset::OffsetsBuffer<i64> =
+            #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
+    }
+}
+
+/// Freeze a per-layer `MutableBitmap` into a `Bitmap` (single statement).
+/// Centralizes the token shape used by both the interleaved per-element-
+/// push path ([`layer_wraps`]) and the hoisted collect-then-bulk path
+/// ([`hoisted_freezes`]) — keep these byte-equivalent so the bench-stable
+/// interleaves in the encoder don't shift.
+fn freeze_validity_bitmap(
+    bm: &syn::Ident,
+    mb: &syn::Ident,
+    pa_root: &TokenStream,
+) -> TokenStream {
+    quote! {
+        let #bm: #pa_root::bitmap::Bitmap =
+            <#pa_root::bitmap::Bitmap as ::core::convert::From<
+                #pa_root::bitmap::MutableBitmap,
+            >>::from(#mb);
+    }
+}
+
 /// Build the per-layer `LayerWrap` slice the shared list-stack helper
 /// consumes. Each layer's `freeze_decl` is empty for the
 /// collect-then-bulk path (freezes hoisted above) and contains the
@@ -75,19 +109,13 @@ fn layer_wraps<'a>(
         let freeze_decl = if kind.freeze_hoisted() {
             TokenStream::new()
         } else {
-            let offsets = &layer.offsets;
-            let mut fd = quote! {
-                let #buf_id: #pa_root::offset::OffsetsBuffer<i64> =
-                    #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-            };
-            if let Some(bm_id) = validity_bm {
-                let validity_mb = &layer.validity_mb;
-                fd.extend(quote! {
-                    let #bm_id: #pa_root::bitmap::Bitmap =
-                        <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                            #pa_root::bitmap::MutableBitmap,
-                        >>::from(#validity_mb);
-                });
+            let mut fd = freeze_offsets_buf(buf_id, &layer.offsets, pa_root);
+            if validity_bm.is_some() {
+                fd.extend(freeze_validity_bitmap(
+                    &layer.validity_bm,
+                    &layer.validity_mb,
+                    pa_root,
+                ));
             }
             fd
         };
@@ -123,23 +151,19 @@ fn hoisted_freezes(
         if !shape.layers[i].has_outer_validity() {
             continue;
         }
-        let mb = &layer.validity_mb;
-        let bm = &layer.validity_bm;
-        validity_freeze.push(quote! {
-            let #bm: #pa_root::bitmap::Bitmap =
-                <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                    #pa_root::bitmap::MutableBitmap,
-                >>::from(#mb);
-        });
+        validity_freeze.push(freeze_validity_bitmap(
+            &layer.validity_bm,
+            &layer.validity_mb,
+            pa_root,
+        ));
     }
     let mut offsets_freeze: Vec<TokenStream> = Vec::new();
     for layer in layers {
-        let offsets = &layer.offsets;
-        let buf = &layer.offsets_buf;
-        offsets_freeze.push(quote! {
-            let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-        });
+        offsets_freeze.push(freeze_offsets_buf(
+            &layer.offsets_buf,
+            &layer.offsets,
+            pa_root,
+        ));
     }
     (
         quote! { #(#validity_freeze)* },

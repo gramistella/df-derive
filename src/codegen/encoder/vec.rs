@@ -261,14 +261,13 @@ fn numeric_leaf_pieces(
         }
     };
     let leaf_arr_expr = if has_inner_option {
+        let valid_opt = validity_into_option(&validity);
         quote! {
             let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
                 #pa_root::array::PrimitiveArray::<#native>::new(
                     <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
                     #flat.into(),
-                    ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
-                        #validity,
-                    ),
+                    #valid_opt,
                 );
         }
     } else {
@@ -331,14 +330,11 @@ fn string_like_leaf_pieces(
         }
     };
     let leaf_arr_expr = if has_inner_option {
+        let valid_opt = validity_into_option(&validity);
         quote! {
             let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf
                 .freeze()
-                .with_validity(
-                    ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
-                        #validity,
-                    ),
-                );
+                .with_validity(#valid_opt);
         }
     } else {
         quote! {

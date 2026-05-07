@@ -47,7 +47,7 @@ pub(super) fn wrap_multi_option_primitive(
     // through `.copied()`; everything else through `.cloned()`. The local
     // shadows the field for the inner option-leaf machinery so its existing
     // `match #access { Some(v) => ... }` push body just works.
-    let materializer = if is_copy_leaf_spec(leaf) {
+    let materializer = if leaf.is_copy() {
         quote! { .copied() }
     } else {
         quote! { .cloned() }
@@ -110,12 +110,4 @@ fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize
         push,
         series: finish_series,
     }
-}
-
-/// `Copy` test for the multi-Option per-row materializer. Numeric leaves
-/// (including `ISize`/`USize`) and `Bool` are `Copy`; `String`, `DateTime`,
-/// `Decimal`, `as_string`, and the `as_str` borrow path are not (and
-/// `as_str` takes its own branch above before reaching this helper).
-const fn is_copy_leaf_spec(leaf: &LeafSpec) -> bool {
-    matches!(leaf, LeafSpec::Numeric(_) | LeafSpec::Bool)
 }

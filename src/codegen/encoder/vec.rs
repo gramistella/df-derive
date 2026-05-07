@@ -37,10 +37,10 @@ use super::{Encoder, LeafCtx, leaf};
 ///
 /// `Bool` carries no extra fields because the bit-packed values bitmap and
 /// the no-validity / pre-filled-validity arrays are constructed the same way
-/// regardless of context — the only knob is `has_inner_option`. Bare bool
-/// (`Vec<bool>` / `Vec<Vec<bool>>`) follows a different layout entirely
-/// (flat `Vec<bool>` for depth 1, bit-packed bitmap for depth 2) and is
-/// served by a dedicated builder, not this enum.
+/// regardless of context — the only knob is `has_inner_option`, which is
+/// already passed alongside the spec. The depth-1 bare-bool fast path
+/// (flat `Vec<bool>` + `BooleanArray::from_slice`) is served by a
+/// dedicated builder ahead of this enum, not by an extra variant.
 enum VecLeafSpec {
     /// Numeric (i8/i16/.../f64) and the single-`i128`/`i64` transform leaves
     /// (`Decimal` -> `i128`, `DateTime` -> `i64`). All share
@@ -67,15 +67,13 @@ enum VecLeafSpec {
         value_expr: TokenStream,
         extra_decls: Vec<TokenStream>,
     },
-    /// Inner-Option bool — bit-packed values bitmap (pre-filled `false`)
-    /// plus a parallel validity bitmap (pre-filled `true`). Bare bool is
-    /// served separately because it gets a flat `Vec<bool>` at depth 1.
+    /// Bool over a bit-packed `MutableBitmap` values buffer. The
+    /// `has_inner_option` flag selects the inner-Option layout (parallel
+    /// validity bitmap pre-filled `true`) versus the bare layout
+    /// (no validity bitmap). Depth-1 bare-bool with no outer-Option layer
+    /// uses a flat `Vec<bool>` fast path and is served by
+    /// `vec_encoder_bool_bare` directly, not this enum.
     Bool,
-    /// Bare bool — bit-packed values bitmap (pre-filled `false`), no
-    /// inner-Option. Used for depth >= 2 (and any shape that has an outer
-    /// validity layer above the bool leaf, since the depth-1 fast path
-    /// requires both no inner option and no outer option).
-    BoolBare,
 }
 
 /// Bool-specific helper: returns the leaf-array construction tokens given
@@ -118,7 +116,7 @@ fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
     match spec {
         VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
         VecLeafSpec::StringLike { .. } => quote! { #view_buf.len() },
-        VecLeafSpec::Bool | VecLeafSpec::BoolBare => quote! { #leaf_idx },
+        VecLeafSpec::Bool => quote! { #leaf_idx },
     }
 }
 
@@ -159,18 +157,11 @@ fn build_vec_leaf_pieces(
             pa_root,
         ),
         VecLeafSpec::Bool => {
-            debug_assert!(
-                has_inner_option,
-                "VecLeafSpec::Bool only handles the inner-Option case",
-            );
-            bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root)
-        }
-        VecLeafSpec::BoolBare => {
-            debug_assert!(
-                !has_inner_option,
-                "VecLeafSpec::BoolBare only handles the no-inner-Option case",
-            );
-            bool_bare_leaf_pieces(leaf_capacity_expr, pa_root)
+            if has_inner_option {
+                bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root)
+            } else {
+                bool_bare_leaf_pieces(leaf_capacity_expr, pa_root)
+            }
         }
     }
 }
@@ -509,8 +500,9 @@ fn lower_to_pep(
 /// Bare-bool variant of the vec encoder. At depth 1 with no inner-Option and
 /// no outer-Option layers, uses `BooleanArray::from_slice` (bulk, no
 /// bit-packing). For deeper or option-bearing shapes, routes through the
-/// generalized `vec_encoder` with `VecLeafSpec::BoolBare` (a bit-packed
-/// `MutableBitmap` set per element).
+/// generalized `vec_encoder` with `VecLeafSpec::Bool` — the
+/// `has_inner_option` flag (`false` here) selects the bare bit-packed
+/// `MutableBitmap` layout inside `build_vec_leaf_pieces`.
 fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     if shape.depth() == 1 && !shape.any_outer_validity() {
         let pa_root = crate::codegen::polars_paths::polars_arrow_root();
@@ -531,7 +523,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     }
     let pp = crate::codegen::polars_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
-    vec_encoder(ctx, &VecLeafSpec::BoolBare, shape, &leaf_dtype)
+    vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
 
 /// `Vec<bool>` body: `Vec::extend` per outer row into a flat `Vec<bool>`,

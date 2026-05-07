@@ -75,42 +75,45 @@ fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
     }
 }
 
-/// Compile-time element-level dtype for a `LeafSpec`, BEFORE the wrapper
-/// stack adds `List<>` envelopes. The encoder also calls this directly when
-/// it needs the leaf's logical dtype for the cast / typed-null path.
-///
-/// `AsStr` shares the `String` arm because attribute stringification
-/// (`as_string`) and borrowing (`as_str`) both materialize as `String`. The
-/// borrowing path emits `Vec<&str>` buffers directly and bypasses this
-/// fallback element type, but keeping them aligned means a stray code
-/// path that doesn't yet handle `AsStr` degrades to allocating, not panicking.
-pub(super) fn leaf_dtype(leaf: &LeafSpec) -> TokenStream {
-    let pp = super::polars_paths::prelude();
-    let dt = quote! { #pp::DataType };
-    match leaf {
-        LeafSpec::Numeric(kind) => numeric_info_for(*kind).dtype,
-        LeafSpec::String | LeafSpec::AsString | LeafSpec::AsStr(_) => quote! { #dt::String },
-        LeafSpec::Bool => quote! { #dt::Boolean },
-        LeafSpec::DateTime(unit) => {
-            let unit = time_unit_tokens(*unit);
-            quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
+impl LeafSpec {
+    /// Compile-time element-level dtype for this leaf, BEFORE the wrapper
+    /// stack adds `List<>` envelopes. The encoder also calls this directly
+    /// when it needs the leaf's logical dtype for the cast / typed-null path.
+    ///
+    /// `AsStr` shares the `String` arm because attribute stringification
+    /// (`as_string`) and borrowing (`as_str`) both materialize as `String`.
+    /// The borrowing path emits `Vec<&str>` buffers directly and bypasses
+    /// this fallback element type, but keeping them aligned means a stray
+    /// code path that doesn't yet handle `AsStr` degrades to allocating,
+    /// not panicking.
+    pub(super) fn dtype(&self) -> TokenStream {
+        let pp = super::polars_paths::prelude();
+        let dt = quote! { #pp::DataType };
+        match self {
+            Self::Numeric(kind) => numeric_info_for(*kind).dtype,
+            Self::String | Self::AsString | Self::AsStr(_) => quote! { #dt::String },
+            Self::Bool => quote! { #dt::Boolean },
+            Self::DateTime(unit) => {
+                let unit = time_unit_tokens(*unit);
+                quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
+            }
+            Self::Decimal { precision, scale } => {
+                let p = *precision as usize;
+                let s = *scale as usize;
+                quote! { #dt::Decimal(#p, #s) }
+            }
+            Self::Struct(..) | Self::Generic(_) => quote! { #dt::Null },
         }
-        LeafSpec::Decimal { precision, scale } => {
-            let p = *precision as usize;
-            let s = *scale as usize;
-            quote! { #dt::Decimal(#p, #s) }
-        }
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => quote! { #dt::Null },
     }
 }
 
 /// Full-field dtype: leaf dtype wrapped in `List<>` envelopes for each
 /// `Vec` layer in the wrapper stack. Consumers that want the leaf-only
 /// dtype (e.g. the encoder's per-leaf logical-dtype payload) call
-/// `leaf_dtype` directly.
+/// [`LeafSpec::dtype`] directly.
 pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape) -> TokenStream {
     let pp = super::polars_paths::prelude();
-    let elem_dtype = leaf_dtype(leaf);
+    let elem_dtype = leaf.dtype();
     super::polars_paths::wrap_list_layers_compile_time(&pp, elem_dtype, wrapper.vec_depth())
 }
 

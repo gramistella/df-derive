@@ -136,6 +136,18 @@ pub enum LeafSpec {
     Generic(Ident),
 }
 
+impl LeafSpec {
+    /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
+    /// (including `ISize`/`USize`) and `Bool` are `Copy`; `String`,
+    /// `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow path are
+    /// not. The `AsStr` path takes its own branch in the multi-Option
+    /// wrapper before reaching this helper, so its `false` answer here is
+    /// only consulted on dead arms.
+    pub const fn is_copy(&self) -> bool {
+        matches!(self, Self::Numeric(_) | Self::Bool)
+    }
+}
+
 /// One `Vec` layer in a normalized wrapper stack. Outermost layer first.
 /// `option_layers_above` is the count of consecutive `Option` wrappers
 /// immediately above this `Vec`. Zero means no list-level validity. `>0`

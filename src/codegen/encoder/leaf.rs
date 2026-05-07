@@ -374,7 +374,7 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit) -> LeafBuilde
     let pp = crate::codegen::polars_paths::prelude();
     let leaf = LeafSpec::DateTime(unit);
     let (bare_push, option_push) = mapped_push_pair(ctx, &leaf);
-    let dtype = crate::codegen::type_registry::leaf_dtype(&leaf);
+    let dtype = leaf.dtype();
     let series_finish = quote! {{
         let mut s = <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf);
         s = s.cast(&#dtype)?;

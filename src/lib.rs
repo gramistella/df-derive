@@ -332,6 +332,31 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
+/// Parse a `key = "path::Trait"` attribute value into a `syn::Path`, with a
+/// uniform error message of the form `"invalid {label} path: {e}"`. Callers
+/// pass the full noun phrase (e.g., `"trait"`, `"columnar trait"`,
+/// `"decimal128_encode trait"`) so the existing user-facing strings are
+/// preserved verbatim.
+fn parse_trait_path_attr(
+    meta: &syn::meta::ParseNestedMeta<'_>,
+    label: &str,
+) -> syn::Result<syn::Path> {
+    let lit: syn::LitStr = meta.value()?.parse()?;
+    syn::parse_str(&lit.value())
+        .map_err(|e| meta.error(format!("invalid {label} path: {e}")))
+}
+
+/// Clone `path` and replace the last segment's identifier with `name`,
+/// preserving the original span. Used to derive sibling trait paths
+/// (`Columnar`, `Decimal128Encode`) from a user-supplied `ToDataFrame` path.
+fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
+    let mut new_path = path.clone();
+    if let Some(last_segment) = new_path.segments.last_mut() {
+        last_segment.ident = syn::Ident::new(name, last_segment.ident.span());
+    }
+    new_path
+}
+
 /// Derive `ToDataFrame` for structs and tuple structs to generate fast conversions to Polars.
 ///
 /// What this macro generates (paths configurable via `#[df_derive(...)]`):
@@ -406,9 +431,7 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         if attr.path().is_ident("df_derive") {
             let parse_res = attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("trait") {
-                    let lit: syn::LitStr = meta.value()?.parse()?;
-                    let path: syn::Path = syn::parse_str(&lit.value())
-                        .map_err(|e| meta.error(format!("invalid trait path: {e}")))?;
+                    let path = parse_trait_path_attr(&meta, "trait")?;
                     to_df_trait_path_ts = quote! { #path };
 
                     // Infer the `Columnar` trait path by rebasing the
@@ -426,10 +449,7 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
                     // proc-macro itself is the source of truth for the
                     // user-facing contract; this comment is a maintenance
                     // note for the inference site.
-                    let mut columnar_path = path.clone();
-                    if let Some(last_segment) = columnar_path.segments.last_mut() {
-                        last_segment.ident = syn::Ident::new("Columnar", last_segment.ident.span());
-                    }
+                    let columnar_path = rebase_last_segment(&path, "Columnar");
                     columnar_trait_path_ts = quote! { #columnar_path };
 
                     // Same inference for `Decimal128Encode`: rebase the
@@ -438,24 +458,15 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
                     // separate attributes. The same source-order rule
                     // applies — `decimal128_encode = "..."` only wins if
                     // written after `trait = "..."`.
-                    let mut decimal_path = path;
-                    if let Some(last_segment) = decimal_path.segments.last_mut() {
-                        last_segment.ident =
-                            syn::Ident::new("Decimal128Encode", last_segment.ident.span());
-                    }
+                    let decimal_path = rebase_last_segment(&path, "Decimal128Encode");
                     decimal128_encode_trait_path_ts = quote! { #decimal_path };
                     Ok(())
                 } else if meta.path.is_ident("columnar") {
-                    let lit: syn::LitStr = meta.value()?.parse()?;
-                    let path: syn::Path = syn::parse_str(&lit.value())
-                        .map_err(|e| meta.error(format!("invalid columnar trait path: {e}")))?;
+                    let path = parse_trait_path_attr(&meta, "columnar trait")?;
                     columnar_trait_path_ts = quote! { #path };
                     Ok(())
                 } else if meta.path.is_ident("decimal128_encode") {
-                    let lit: syn::LitStr = meta.value()?.parse()?;
-                    let path: syn::Path = syn::parse_str(&lit.value()).map_err(|e| {
-                        meta.error(format!("invalid decimal128_encode trait path: {e}"))
-                    })?;
+                    let path = parse_trait_path_attr(&meta, "decimal128_encode trait")?;
                     decimal128_encode_trait_path_ts = quote! { #path };
                     Ok(())
                 } else {

@@ -38,6 +38,7 @@ fn tests() {
     t.pass("tests/pass/33-vec-option-vec-mid-stack.rs");
     t.pass("tests/pass/34-doubly-optional-primitive.rs");
     t.pass("tests/pass/35-isize-usize.rs");
+    t.pass("tests/pass/36-as-binary-attribute.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -51,4 +52,13 @@ fn tests() {
     t.compile_fail("tests/fail/104-fail-decimal-precision-out-of-range.rs");
     t.compile_fail("tests/fail/105-fail-decimal-with-as-string.rs");
     t.compile_fail("tests/fail/106-fail-as-str-on-non-string-base.rs");
+    t.compile_fail("tests/fail/107-fail-as-binary-bare-u8.rs");
+    t.compile_fail("tests/fail/108-fail-as-binary-option-u8.rs");
+    t.compile_fail("tests/fail/109-fail-as-binary-vec-option-u8.rs");
+    t.compile_fail("tests/fail/110-fail-as-binary-non-u8-leaf.rs");
+    t.compile_fail("tests/fail/111-fail-as-binary-on-string.rs");
+    t.compile_fail("tests/fail/112-fail-as-binary-with-as-string.rs");
+    t.compile_fail("tests/fail/113-fail-as-binary-with-as-str.rs");
+    t.compile_fail("tests/fail/114-fail-as-binary-with-decimal.rs");
+    t.compile_fail("tests/fail/115-fail-as-binary-with-time-unit.rs");
 }

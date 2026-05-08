@@ -194,11 +194,30 @@ Selection rule: if your field's type implements `AsRef<str>`, prefer `as_str` �
 
 `Vec<T>` and `Option<Vec<T>>` shapes also benefit — the inner `Series` is built from a borrowed `&str` iterator, so there is no per-element clone either.
 
+#### Byte blobs: `#[df_derive(as_binary)]`
+
+For fields representing opaque byte blobs, opt into a Polars `Binary` column with `#[df_derive(as_binary)]`. Without the attribute, `Vec<u8>` continues to materialize as `List(UInt8)`; the attribute is the single decision point for choosing the byte-blob representation.
+
+```rust
+#[derive(ToDataFrame)]
+#[df_derive(trait = "crate::dataframe::ToDataFrame")]
+struct Record {
+    #[df_derive(as_binary)] payload: Vec<u8>,                 // Binary
+    #[df_derive(as_binary)] maybe_payload: Option<Vec<u8>>,   // Binary (nullable)
+    #[df_derive(as_binary)] payloads: Vec<Vec<u8>>,           // List(Binary)
+    #[df_derive(as_binary)] sparse: Vec<Option<Vec<u8>>>,     // List(Binary), per-element nullable
+    #[df_derive(as_binary)] outer_opt: Option<Vec<Vec<u8>>>,  // List(Binary), nullable outer
+}
+```
+
+Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`. Rejected at compile time: bare `u8`, `Option<u8>`, `Vec<Option<u8>>` (BinaryView cannot carry per-byte nulls), and any non-`u8` leaf (e.g. `Vec<i32>`, `String`). The attribute is mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and `time_unit = "..."`.
+
 ## Supported types
 
 - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`
 - **Time**: `chrono::DateTime<Utc>` → materialized as `Datetime(Milliseconds, None)`
 - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)`
+- **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
 - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`)
 - **Tuple structs**: unnamed fields are emitted as `field_{index}`

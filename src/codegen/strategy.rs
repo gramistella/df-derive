@@ -57,7 +57,8 @@ impl LeafSpec {
             | Self::DateTime(_)
             | Self::Decimal { .. }
             | Self::AsString
-            | Self::AsStr(_) => FieldRoute::Primitive,
+            | Self::AsStr(_)
+            | Self::Binary => FieldRoute::Primitive,
         }
     }
 }

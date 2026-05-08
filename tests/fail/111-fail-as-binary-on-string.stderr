@@ -1,0 +1,6 @@
+error: field `s` has `as_binary` but its base type is not `u8`; `as_binary` requires a `Vec<u8>` shape (the innermost `Vec` becomes the Binary blob). Change the field type or drop the attribute.
+ --> tests/fail/111-fail-as-binary-on-string.rs:7:5
+  |
+7 | /     #[df_derive(as_binary)]
+8 | |     s: String,
+  | |_____________^

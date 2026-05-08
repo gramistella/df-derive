@@ -93,6 +93,7 @@ impl LeafSpec {
             Self::Numeric(kind) => numeric_info_for(*kind).dtype,
             Self::String | Self::AsString | Self::AsStr(_) => quote! { #dt::String },
             Self::Bool => quote! { #dt::Boolean },
+            Self::Binary => quote! { #dt::Binary },
             Self::DateTime(unit) => {
                 let unit = time_unit_tokens(*unit);
                 quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
@@ -195,6 +196,7 @@ pub fn map_primitive_expr(
         LeafSpec::Numeric(_)
         | LeafSpec::String
         | LeafSpec::Bool
+        | LeafSpec::Binary
         | LeafSpec::Struct(..)
         | LeafSpec::Generic(_) => quote! { (#var).clone() },
     }

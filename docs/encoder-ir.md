@@ -144,6 +144,12 @@ directly. The shapes that go through the direct-array path:
   `columnar_from_refs` produces inner Series chunks that are stitched
   into stacked `LargeListArray`s without round-tripping through Series
   builders.
+- The `Binary` leaf opted into by `#[df_derive(as_binary)]` accumulates
+  through `MutableBinaryViewArray<[u8]>` and freezes into a
+  `BinaryViewArray`, parallel to the `String` leaf's `Utf8ViewArray`
+  path. Inner-Option arms add a parallel `MutableBitmap` validity
+  buffer and push an empty slice on `None`, exactly as the
+  `String`-with-inner-`Option` path does.
 
 These paths win consistently — usually 5×, sometimes 60× — because they
 avoid: Series-name allocation, dtype reinterpretation, validity-bitmap
@@ -161,12 +167,21 @@ encoder keeps the collection for shapes where benches show it helps.
 ## Coverage
 
 The encoder is total on parser-validated input: every primitive shape — bare
-numeric / `String` / `Bool` / `Decimal` / `DateTime` leaves, arbitrary
-`Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack including
-`[Option, Vec, ...]` and deeper nestings — flows through the encoder IR.
-Combinations the parser cannot construct (e.g. `DateTimeToInt` on a
-non-`DateTime` base, `as_str` on a non-stringy base) panic in `build_leaf`
-rather than returning `None`.
+numeric / `String` / `Bool` / `Binary` / `Decimal` / `DateTime` leaves,
+arbitrary `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack
+including `[Option, Vec, ...]` and deeper nestings — flows through the
+encoder IR. Combinations the parser cannot construct (e.g. `DateTimeToInt`
+on a non-`DateTime` base, `as_str` on a non-stringy base, `as_binary` on a
+non-`Vec<u8>` shape) panic in `build_leaf` rather than returning `None`.
+
+The `Binary` leaf is opt-in via `#[df_derive(as_binary)]` on a `Vec<u8>`
+shape; the parser strips the innermost `Vec` from the wrapper stack and
+substitutes the `Binary` leaf in place of the `u8` numeric leaf, so the
+encoder sees the same shape it would for any other byte-blob primitive
+(bare, `Option`, or one outer `Vec` layer for `Vec<Vec<u8>>` and
+`Vec<Option<Vec<u8>>>`). The default behavior — `Vec<u8>` without the
+attribute — remains a numeric `List(UInt8)` shape, so the opt-in is the
+single decision point for choosing between the two representations.
 
 Two implementation notes worth recording for future reference:
 

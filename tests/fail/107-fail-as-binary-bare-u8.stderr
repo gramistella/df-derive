@@ -1,0 +1,6 @@
+error: field `one_byte` has `as_binary` but its type is a single `u8`; `as_binary` requires a `Vec<u8>` shape — bare `u8` is a single byte, not a binary blob. Wrap the field in `Vec<u8>` to opt into Binary.
+ --> tests/fail/107-fail-as-binary-bare-u8.rs:7:5
+  |
+7 | /     #[df_derive(as_binary)]
+8 | |     one_byte: u8,
+  | |________________^

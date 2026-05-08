@@ -1,5 +1,6 @@
 use crate::ir::{
-    DateTimeUnit, FieldIR, LeafSpec, StringyBase, StructIR, VecLayerSpec, VecLayers, WrapperShape,
+    DateTimeUnit, FieldIR, LeafSpec, NumericKind, StringyBase, StructIR, VecLayerSpec, VecLayers,
+    WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -15,6 +16,7 @@ enum FieldOverride {
     None,
     AsStr,
     AsString,
+    AsBinary,
     Decimal { precision: u8, scale: u8 },
     TimeUnit(DateTimeUnit),
 }
@@ -110,6 +112,12 @@ fn override_conflict(
              pick one — `decimal(...)` only applies to `rust_decimal::Decimal`, \
              `time_unit` only applies to `chrono::DateTime<Utc>`"
         ),
+        (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
+            "field `{field_display_name}` combines `as_binary` with another override; \
+             `as_binary` produces a Binary column over a `Vec<u8>` shape and is \
+             mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and \
+             `time_unit = \"...\"` — drop one"
+        ),
         (FieldOverride::None, _)
         | (_, FieldOverride::None)
         | (FieldOverride::AsStr, FieldOverride::AsStr)
@@ -137,6 +145,7 @@ fn set_override(
         (FieldOverride::None, _)
         | (FieldOverride::AsStr, FieldOverride::AsStr)
         | (FieldOverride::AsString, FieldOverride::AsString)
+        | (FieldOverride::AsBinary, FieldOverride::AsBinary)
         | (FieldOverride::Decimal { .. }, FieldOverride::Decimal { .. })
         | (FieldOverride::TimeUnit(_), FieldOverride::TimeUnit(_)) => {
             *override_ = incoming;
@@ -163,6 +172,8 @@ fn parse_field_override(
                     set_override(field, field_display_name, &mut override_, FieldOverride::AsString)
                 } else if meta.path.is_ident("as_str") {
                     set_override(field, field_display_name, &mut override_, FieldOverride::AsStr)
+                } else if meta.path.is_ident("as_binary") {
+                    set_override(field, field_display_name, &mut override_, FieldOverride::AsBinary)
                 } else if meta.path.is_ident("decimal") {
                     let (precision, scale) = parse_decimal_attr(&meta)?;
                     set_override(
@@ -181,7 +192,7 @@ fn parse_field_override(
                     )
                 } else {
                     Err(meta.error(
-                        "unknown key in #[df_derive(...)] field attribute; expected `as_str`, `as_string`, `decimal(precision = N, scale = N)`, or `time_unit = \"ms\"|\"us\"|\"ns\"`",
+                        "unknown key in #[df_derive(...)] field attribute; expected `as_str`, `as_string`, `as_binary`, `decimal(precision = N, scale = N)`, or `time_unit = \"ms\"|\"us\"|\"ns\"`",
                     ))
                 }
             })?;
@@ -199,6 +210,9 @@ fn parse_field_override(
 ///
 /// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
 /// one `LeafSpec` per parser-accepted pair — no `unreachable!` arms downstream.
+/// `AsBinary` is handled in [`process_field`] before this function runs
+/// because it also rewrites the wrapper stack (strips the innermost `Vec`),
+/// so it cannot be expressed as a `(base, override) -> LeafSpec` mapping.
 fn parse_leaf_spec(
     field: &syn::Field,
     field_display_name: &str,
@@ -235,6 +249,9 @@ fn parse_leaf_spec(
                 ),
             )),
         },
+        FieldOverride::AsBinary => unreachable!(
+            "AsBinary handled by process_field before parse_leaf_spec runs"
+        ),
         FieldOverride::Decimal { precision, scale } => match base {
             AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
                 precision: *precision,
@@ -317,6 +334,66 @@ fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
     })
 }
 
+/// Validate an `as_binary` field's analyzed `(base, wrappers)` pair and,
+/// on success, produce the rewritten `(LeafSpec::Binary, wrappers')` pair —
+/// `wrappers'` is `wrappers` with the innermost `Vec` stripped, since the
+/// `Vec<u8>` collapses into the leaf itself.
+///
+/// Accepts the shapes spelled out in the public docstring on `as_binary`:
+/// `Vec<u8>` / `Option<Vec<u8>>` / `Vec<Vec<u8>>` / `Vec<Option<Vec<u8>>>`
+/// / `Option<Vec<Vec<u8>>>` and so on. Rejects bare `u8`, `Option<u8>`,
+/// `Vec<Option<u8>>` (`BinaryView` cannot carry per-byte nulls), and any
+/// non-`u8` leaf with a tailored error message anchored at the field span.
+fn parse_as_binary_shape(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: &AnalyzedBase,
+    wrappers: &[RawWrapper],
+) -> Result<(LeafSpec, Vec<RawWrapper>), syn::Error> {
+    let bare_u8_msg = || {
+        format!(
+            "field `{field_display_name}` has `as_binary` but its type is a single `u8`; \
+             `as_binary` requires a `Vec<u8>` shape — bare `u8` is a single byte, not \
+             a binary blob. Wrap the field in `Vec<u8>` to opt into Binary."
+        )
+    };
+    let inner_option_msg = || {
+        format!(
+            "field `{field_display_name}` has `as_binary` but the wrapper stack places an \
+             `Option` between the `Vec` and the `u8` leaf; BinaryView cannot carry \
+             per-byte nulls. Use `Vec<u8>` directly (drop the inner `Option`)."
+        )
+    };
+    let wrong_base_msg = || {
+        format!(
+            "field `{field_display_name}` has `as_binary` but its base type is not `u8`; \
+             `as_binary` requires a `Vec<u8>` shape (the innermost `Vec` becomes the \
+             Binary blob). Change the field type or drop the attribute."
+        )
+    };
+    if !matches!(base, AnalyzedBase::Numeric(NumericKind::U8)) {
+        return Err(syn::Error::new_spanned(field, wrong_base_msg()));
+    }
+    match wrappers.last() {
+        None => Err(syn::Error::new_spanned(field, bare_u8_msg())),
+        Some(RawWrapper::Option) => {
+            // Either bare `Option<u8>` (single `Option` wrapper) or any deeper
+            // stack ending in `Option`-immediately-above-`u8`. Both share the
+            // "no per-byte nulls" rejection.
+            if wrappers.len() == 1 {
+                Err(syn::Error::new_spanned(field, bare_u8_msg()))
+            } else {
+                Err(syn::Error::new_spanned(field, inner_option_msg()))
+            }
+        }
+        Some(RawWrapper::Vec) => {
+            let mut trimmed = wrappers.to_vec();
+            trimmed.pop();
+            Ok((LeafSpec::Binary, trimmed))
+        }
+    }
+}
+
 /// Run the per-field pipeline (override parsing, type analysis, leaf-spec
 /// resolution, wrapper normalization) and produce the corresponding `FieldIR`.
 /// Named and tuple arms share this body; they only differ in how `name_ident`
@@ -330,8 +407,14 @@ fn process_field(
     let display_name = name_ident.to_string();
     let override_ = parse_field_override(field, &display_name)?;
     let analyzed = analyze_type(&field.ty, generic_params)?;
-    let leaf_spec = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
-    let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
+    let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
+        let (leaf, trimmed) =
+            parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
+        (leaf, normalize_wrappers(&trimmed))
+    } else {
+        let leaf = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
+        (leaf, normalize_wrappers(&analyzed.wrappers))
+    };
     Ok(FieldIR {
         name: name_ident,
         field_index,

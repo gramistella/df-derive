@@ -1,0 +1,6 @@
+error: field `bytes` has `as_binary` but the wrapper stack places an `Option` between the `Vec` and the `u8` leaf; BinaryView cannot carry per-byte nulls. Use `Vec<u8>` directly (drop the inner `Option`).
+ --> tests/fail/109-fail-as-binary-vec-option-u8.rs:7:5
+  |
+7 | /     #[df_derive(as_binary)]
+8 | |     bytes: Vec<Option<u8>>,
+  | |__________________________^

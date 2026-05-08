@@ -130,6 +130,12 @@ pub enum LeafSpec {
     /// distinguishes the bare-`String` deref-coercion path from the UFCS
     /// path used for non-`String` `AsRef<str>` types.
     AsStr(StringyBase),
+    /// `#[df_derive(as_binary)]` — route a `Vec<u8>` shape through a Polars
+    /// `Binary` column instead of the default `List(UInt8)`. The parser
+    /// strips the innermost `Vec` from the wrapper stack and replaces the
+    /// `Numeric(U8)` leaf with this variant; the encoder then materializes
+    /// each row's bytes via `MutableBinaryViewArray::<[u8]>`.
+    Binary,
     /// Concrete user-defined struct type, no stringy transform.
     Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
     /// Generic type parameter declared on the enclosing struct.
@@ -139,10 +145,10 @@ pub enum LeafSpec {
 impl LeafSpec {
     /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
     /// (including `ISize`/`USize`) and `Bool` are `Copy`; `String`,
-    /// `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow path are
-    /// not. The `AsStr` path takes its own branch in the multi-Option
-    /// wrapper before reaching this helper, so its `false` answer here is
-    /// only consulted on dead arms.
+    /// `Binary`, `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow
+    /// path are not. The `AsStr` path takes its own branch in the multi-
+    /// Option wrapper before reaching this helper, so its `false` answer
+    /// here is only consulted on dead arms.
     pub const fn is_copy(&self) -> bool {
         matches!(self, Self::Numeric(_) | Self::Bool)
     }

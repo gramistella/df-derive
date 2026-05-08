@@ -141,6 +141,10 @@
 //!   override per-field with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
 //! - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)` by default; override per-field with
 //!   `#[df_derive(decimal(precision = N, scale = N))]`
+//! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; the
+//!   default for `Vec<u8>` (no attribute) remains `List(UInt8)`. See the field-level attribute
+//!   list below for accepted shapes (`Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
+//!   `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`).
 //! - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
 //! - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`,
 //!   yielding prefixed list columns)
@@ -395,6 +399,12 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
 ///   conversion. Same column type as `as_string` but avoids the per-row allocation. The two
 ///   attributes are mutually exclusive on a given field.
+/// - Field-level: `#[df_derive(as_binary)]` to route a `Vec<u8>` field through a Polars `Binary`
+///   column instead of the default `List(UInt8)`. Accepted shapes: `Vec<u8>`,
+///   `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`, and `Option<Vec<Vec<u8>>>` —
+///   bare `u8`, `Option<u8>`, `Vec<Option<u8>>` (`BinaryView` cannot carry per-byte nulls), and
+///   non-`u8` leaves are rejected at parse time. Mutually exclusive with `as_str`,
+///   `as_string`, `decimal(...)`, and `time_unit = "..."`.
 /// - Field-level: `#[df_derive(decimal(precision = N, scale = N))]` to choose the
 ///   `Decimal(precision, scale)` dtype produced for a `rust_decimal::Decimal` field. Polars
 ///   requires `1 <= precision <= 38`; `scale` may not exceed `precision`.

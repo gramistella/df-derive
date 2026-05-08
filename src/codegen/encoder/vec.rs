@@ -67,6 +67,13 @@ enum VecLeafSpec {
         value_expr: TokenStream,
         extra_decls: Vec<TokenStream>,
     },
+    /// `Binary` (`#[df_derive(as_binary)]` over `Vec<Vec<u8>>` /
+    /// `Vec<Option<Vec<u8>>>`) over `MutableBinaryViewArray<[u8]>`.
+    /// `value_expr` materializes an `AsRef<[u8]>` from the `__df_derive_v`
+    /// binding (the loop binds `&Vec<u8>` so the expression is just
+    /// `&#v[..]`). Parallel to `StringLike` but freezes a `BinaryViewArray`
+    /// instead of a `Utf8ViewArray`.
+    BinaryLike { value_expr: TokenStream },
     /// Bool over a bit-packed `MutableBitmap` values buffer. The
     /// `has_inner_option` flag selects the inner-Option layout (parallel
     /// validity bitmap pre-filled `true`) versus the bare layout
@@ -115,7 +122,9 @@ fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
     let leaf_idx = idents::vec_leaf_idx();
     match spec {
         VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
-        VecLeafSpec::StringLike { .. } => quote! { #view_buf.len() },
+        VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
+            quote! { #view_buf.len() }
+        }
         VecLeafSpec::Bool => quote! { #leaf_idx },
     }
 }
@@ -156,6 +165,9 @@ fn build_vec_leaf_pieces(
             leaf_capacity_expr,
             pa_root,
         ),
+        VecLeafSpec::BinaryLike { value_expr } => {
+            binary_like_leaf_pieces(value_expr, has_inner_option, leaf_capacity_expr, pa_root)
+        }
         VecLeafSpec::Bool => {
             if has_inner_option {
                 bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root)
@@ -339,6 +351,68 @@ fn string_like_leaf_pieces(
     } else {
         quote! {
             let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf.freeze();
+        }
+    };
+    (storage, push, leaf_arr_expr)
+}
+
+/// Byte-blob analogue of [`string_like_leaf_pieces`]. Accumulates into
+/// `MutableBinaryViewArray<[u8]>` and freezes into `BinaryViewArray`. The
+/// `None` arm pushes an empty slice (`&[][..]`) so the bitmap-pair layout
+/// matches `string_like_leaf_pieces` byte-for-byte modulo the leaf type.
+fn binary_like_leaf_pieces(
+    value_expr: &TokenStream,
+    has_inner_option: bool,
+    leaf_capacity_expr: &TokenStream,
+    pa_root: &TokenStream,
+) -> (TokenStream, TokenStream, TokenStream) {
+    let view_buf = idents::vec_view_buf();
+    let validity = idents::bool_validity();
+    let leaf_idx = idents::vec_leaf_idx();
+    let v = idents::leaf_value();
+    let leaf_arr = idents::leaf_arr();
+    let mut storage_parts: Vec<TokenStream> = Vec::new();
+    storage_parts.push(quote! {
+        let mut #view_buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
+            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
+    });
+    if has_inner_option {
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
+        storage_parts.push(quote! {
+            #validity_decl
+            let mut #leaf_idx: usize = 0;
+        });
+    }
+    let storage = quote! { #(#storage_parts)* };
+    let empty = quote! { &[][..] };
+    let push = if has_inner_option {
+        quote! {
+            match #v {
+                ::std::option::Option::Some(#v) => {
+                    #view_buf.push_value_ignore_validity({ #value_expr });
+                }
+                ::std::option::Option::None => {
+                    #view_buf.push_value_ignore_validity(#empty);
+                    #validity.set(#leaf_idx, false);
+                }
+            }
+            #leaf_idx += 1;
+        }
+    } else {
+        quote! {
+            #view_buf.push_value_ignore_validity({ #value_expr });
+        }
+    };
+    let leaf_arr_expr = if has_inner_option {
+        let valid_opt = validity_into_option(&validity);
+        quote! {
+            let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf
+                .freeze()
+                .with_validity(#valid_opt);
+        }
+    } else {
+        quote! {
+            let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf.freeze();
         }
     };
     (storage, push, leaf_arr_expr)
@@ -630,6 +704,17 @@ pub(super) fn try_build_vec_encoder(
             };
             vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
         }
+        LeafSpec::Binary => {
+            // The loop binds `&Vec<u8>` (or `&Option<Vec<u8>>` in the
+            // inner-Option arm, then `Some(v)` rebinds to `&Vec<u8>`); slicing
+            // produces a `&[u8]` accepted by `MutableBinaryViewArray<[u8]>`.
+            let pp = crate::codegen::polars_paths::prelude();
+            let leaf_dtype = quote! { #pp::DataType::Binary };
+            let spec = VecLeafSpec::BinaryLike {
+                value_expr: quote! { &#v[..] },
+            };
+            vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
+        }
         LeafSpec::Bool => {
             if vec_shape.has_inner_option() {
                 let pp = crate::codegen::polars_paths::prelude();
@@ -750,6 +835,7 @@ pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) 
         LeafSpec::Numeric(num_kind) => leaf::numeric_leaf(ctx, *num_kind, kind),
         LeafSpec::String => leaf::string_leaf(ctx, kind),
         LeafSpec::Bool => leaf::bool_leaf(ctx, kind),
+        LeafSpec::Binary => leaf::binary_leaf(ctx, kind),
         LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit, kind),
         LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale, kind),
         LeafSpec::AsString => leaf::as_string_leaf(ctx, kind),

@@ -108,3 +108,7 @@ harness = false
 [[bench]]
 name = "17_vec_vec_struct"
 harness = false
+
+[[bench]]
+name = "18_as_binary"
+harness = false

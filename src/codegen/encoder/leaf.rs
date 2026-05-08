@@ -94,6 +94,18 @@ pub(super) fn mbva_decl(buf: &syn::Ident) -> TokenStream {
     }
 }
 
+/// `let mut #buf: MutableBinaryViewArray<[u8]> = MutableBinaryViewArray::<[u8]>::with_capacity(items.len());`
+/// — the byte-blob analogue of [`mbva_decl`]. Used by the `Binary` leaf
+/// (`#[df_derive(as_binary)]` over `Vec<u8>`) to build a `BinaryView` column
+/// without round-tripping through a `Vec<&[u8]>` intermediate.
+pub(super) fn mbva_bytes_decl(buf: &syn::Ident) -> TokenStream {
+    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    quote! {
+        let mut #buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
+            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(items.len());
+    }
+}
+
 /// Convert a `MutableBitmap` validity buffer into the `Option<Bitmap>`
 /// `with_chunk` / `with_validity` arms expect. `MutableBitmap -> Option<Bitmap>`
 /// collapses to `None` when no bits are unset, preserving the no-null fast path.
@@ -112,6 +124,17 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
     quote! {
         #pp::IntoSeries::into_series(
             #pp::StringChunked::with_chunk(#name.into(), { #arr_expr }),
+        )
+    }
+}
+
+/// Build a Series via `into_series(BinaryChunked::with_chunk(name, arr))`.
+/// Byte-blob analogue of [`string_chunked_series`].
+pub(super) fn binary_chunked_series(name: &str, arr_expr: &TokenStream) -> TokenStream {
+    let pp = crate::codegen::polars_paths::prelude();
+    quote! {
+        #pp::IntoSeries::into_series(
+            #pp::BinaryChunked::with_chunk(#name.into(), { #arr_expr }),
         )
     }
 }
@@ -257,6 +280,60 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf),
+                    mb_decl_filled(&validity, &quote! { items.len() }, true),
+                    row_idx_decl(&row_idx),
+                ],
+                push: option_push,
+                series: option_series,
+            }
+        }
+    }
+}
+
+/// `Binary` leaf — `#[df_derive(as_binary)]` over a `Vec<u8>` shape. Bare
+/// arm: `MutableBinaryViewArray<[u8]>` accumulator, mirrors the `String`
+/// path's MBVA bypass (no `Vec<&[u8]>` round-trip). Option arm: MBVA +
+/// parallel `MutableBitmap` (pre-filled `true`) + row counter; `Some`
+/// pushes the borrowed `&[u8]` (no validity work), `None` pushes an empty
+/// slice and flips a single bit via `MutableBitmap::set`.
+pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
+    let buf = idents::primitive_buf(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
+    let row_idx = idents::primitive_row_idx(ctx.base.idx);
+    let access = ctx.base.access;
+    let name = ctx.base.name;
+
+    match arm {
+        LeafArmKind::Bare => {
+            let bare_push = quote! { #buf.push_value_ignore_validity(&(#access)); };
+            let bare_series = binary_chunked_series(name, &quote! { #buf.freeze() });
+            LeafArm {
+                decls: vec![mbva_bytes_decl(&buf)],
+                push: bare_push,
+                series: bare_series,
+            }
+        }
+        LeafArmKind::Option => {
+            let v = idents::leaf_value();
+            let empty = quote! { &[][..] };
+            let option_push = quote! {
+                match &(#access) {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push_value_ignore_validity(&#v[..]);
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push_value_ignore_validity(#empty);
+                        #validity.set(#row_idx, false);
+                    }
+                }
+                #row_idx += 1;
+            };
+            let valid_opt = validity_into_option(&validity);
+            let option_series =
+                binary_chunked_series(name, &quote! { #buf.freeze().with_validity(#valid_opt) });
+            LeafArm {
+                decls: vec![
+                    mbva_bytes_decl(&buf),
                     mb_decl_filled(&validity, &quote! { items.len() }, true),
                     row_idx_decl(&row_idx),
                 ],

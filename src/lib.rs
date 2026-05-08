@@ -162,6 +162,12 @@
 //! - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`,
 //!   yielding prefixed list columns)
 //! - **Tuple structs**: unnamed fields are emitted as `field_{index}`
+//! - **Tuple-typed fields**: `(A, B)`, `(A, B, C)`, `Option<(A, B)>`, `Vec<(A, B)>`,
+//!   `Vec<Option<(A, B)>>`, `Option<Vec<(A, B)>>`, and nested tuples `((A, B), C)` flatten to
+//!   one column per element with `<field>.field_<i>` names. The unit type `()` is rejected
+//!   (zero-column fields would break the parser's invariant). Field-level attributes
+//!   (`as_str`, `as_string`, `as_binary`, `decimal`, `time_unit`) do not apply to tuple
+//!   fields — hoist into a named struct if per-element attributes are needed.
 //!
 //! ## Column naming
 //!

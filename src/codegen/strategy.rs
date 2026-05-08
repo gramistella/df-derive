@@ -17,7 +17,7 @@ use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_type_
 /// every field's `decls` ahead of the per-row push loop, splices every
 /// field's `push` inside the loop, and concatenates every field's
 /// `builders` after the loop to assemble the final `columns: Vec<Column>`.
-pub struct FieldEmit {
+pub(in crate::codegen) struct FieldEmit {
     pub decls: Vec<TokenStream>,
     pub push: TokenStream,
     pub builders: Vec<TokenStream>,
@@ -28,10 +28,13 @@ pub struct FieldEmit {
 /// strings, decimals, dates, plus stringy-transformed structs/generics).
 /// `Nested` covers concrete structs and generic type parameters that
 /// resolve to one Polars column per inner schema entry — `type_path` is
-/// the splicable `Foo::<M>` / `T` token stream.
-enum FieldRoute {
+/// the splicable `Foo::<M>` / `T` token stream. `Tuple` covers tuple-typed
+/// fields where each element contributes its own column(s); the parent
+/// wrapper stack distributes across every element column at codegen time.
+pub(in crate::codegen) enum FieldRoute {
     Primitive,
     Nested { type_path: TokenStream },
+    Tuple,
 }
 
 impl LeafSpec {
@@ -51,6 +54,7 @@ impl LeafSpec {
             Self::Generic(id) => FieldRoute::Nested {
                 type_path: quote! { #id },
             },
+            Self::Tuple(_) => FieldRoute::Tuple,
             Self::Numeric(_)
             | Self::String
             | Self::Bool
@@ -99,7 +103,7 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
 /// share the Primitive-vs-Nested classification; only the leaf token shape
 /// (and the runtime accumulator inside [`super::nested`]) varies.
 #[derive(Clone, Copy)]
-pub(super) enum EmitMode {
+pub(in crate::codegen) enum EmitMode {
     SchemaEntries,
     EmptyRows,
 }
@@ -135,6 +139,12 @@ fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
             let pp = super::polars_paths::prelude();
             quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
         }
+        (FieldRoute::Tuple, _) => {
+            let LeafSpec::Tuple(elements) = &field.leaf_spec else {
+                unreachable!("FieldRoute::Tuple implies LeafSpec::Tuple")
+            };
+            super::encoder::build_tuple_field_entries(field, elements, mode)
+        }
     }
 }
 
@@ -169,6 +179,12 @@ pub fn build_field_emit(
     match field.leaf_spec.route() {
         FieldRoute::Nested { type_path } => build_nested_emit(field, config, idx, &type_path),
         FieldRoute::Primitive => build_primitive_emit(field, config, idx, it_ident),
+        FieldRoute::Tuple => {
+            let LeafSpec::Tuple(elements) = &field.leaf_spec else {
+                unreachable!("FieldRoute::Tuple implies LeafSpec::Tuple")
+            };
+            super::encoder::build_tuple_field_emit(field, config, idx, elements)
+        }
     }
 }
 

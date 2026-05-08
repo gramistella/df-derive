@@ -399,6 +399,83 @@ pub(in crate::codegen) fn collapse_option_param() -> Ident {
     format_ident!("__df_derive_o")
 }
 
+// --- Tuple-emitter idents -------------------------------------------------
+//
+// The tuple emitter operates on a per-field, per-element-column basis with
+// its own custom shape walker (see `super::tuple`). It uses a distinct
+// `__df_derive_t_*` prefix family to keep its locals from colliding with
+// the primitive/nested encoder paths inside the same generated function.
+// Every ident the tuple emitter introduces must come from this section.
+
+/// Per-(field, layer) offsets vec ident for the tuple emitter.
+pub(in crate::codegen) fn tuple_layer_offsets(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_off_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) frozen `OffsetsBuffer<i64>` ident for the tuple emitter.
+pub(in crate::codegen) fn tuple_layer_offsets_buf(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_off_buf_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) `MutableBitmap` outer-validity ident for the tuple
+/// emitter.
+pub(in crate::codegen) fn tuple_layer_validity_mb(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_valmb_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) frozen `Bitmap` outer-validity ident for the tuple
+/// emitter.
+pub(in crate::codegen) fn tuple_layer_validity_bm(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_valbm_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) iteration binding for the tuple emitter.
+pub(in crate::codegen) fn tuple_layer_bind(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_bind_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) precount counter ident for the tuple emitter.
+pub(in crate::codegen) fn tuple_layer_total(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_t_total_{}_{}", field_idx, layer)
+}
+
+/// Per-(field, layer) `LargeListArray` ident produced by the tuple
+/// emitter's materialization step.
+pub(in crate::codegen) fn tuple_layer_list_arr(layer: usize) -> Ident {
+    format_ident!("__df_derive_t_arr_{}", layer)
+}
+
+/// Outer-Some bind name for the tuple emitter's scan walker. Format is
+/// `__df_derive_t_some_<layer>` — the layer index identifies the wrapper
+/// position.
+pub(in crate::codegen) fn tuple_outer_some_bind(layer: usize) -> Ident {
+    format_ident!("__df_derive_t_some_{}", layer)
+}
+
+/// Outer-Some bind name for the tuple emitter's precount walker. Format is
+/// `__df_derive_t_pre_some_<layer>` — distinct from the scan walker's
+/// prefix so the two loops can coexist without name shadowing.
+pub(in crate::codegen) fn tuple_pre_outer_some_bind(layer: usize) -> Ident {
+    format_ident!("__df_derive_t_pre_some_{}", layer)
+}
+
+/// Closure parameter for the tuple-element projection lambda
+/// (`.map(|__df_derive_t| ...)`). Local to the lambda; centralized so the
+/// safety-net scanner sees a single source.
+pub(in crate::codegen) fn tuple_proj_param() -> Ident {
+    format_ident!("__df_derive_t")
+}
+
+/// Per-row inner-Option binding for the tuple emitter's nested-element
+/// flat-collect path. Equivalent to [`nested_maybe`] but namespaced so the
+/// tuple emitter's collect-then-bulk pieces don't collide with the
+/// nested-struct encoder's locals when both fire in the same generated
+/// function.
+pub(in crate::codegen) fn tuple_nested_inner_v() -> Ident {
+    format_ident!("__df_derive_inner_v")
+}
+
+
 // --- Helpers for `quote!` ergonomics --------------------------------------
 
 /// Returns a closure that produces the flat-vec precount counter token

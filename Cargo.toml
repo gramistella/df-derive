@@ -120,3 +120,7 @@ harness = false
 [[bench]]
 name = "20_smart_pointers"
 harness = false
+
+[[bench]]
+name = "21_tuple_fields"
+harness = false

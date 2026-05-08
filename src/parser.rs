@@ -1,6 +1,6 @@
 use crate::ir::{
     DateTimeUnit, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase, StructIR,
-    VecLayerSpec, VecLayers, WrapperShape,
+    TupleElement, VecLayerSpec, VecLayers, WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -220,6 +220,9 @@ fn parse_leaf_spec(
     override_: &FieldOverride,
     base: AnalyzedBase,
 ) -> Result<LeafSpec, syn::Error> {
+    if let AnalyzedBase::Tuple(_) = &base {
+        reject_attrs_on_tuple(field, field_display_name, override_)?;
+    }
     match override_ {
         FieldOverride::None => Ok(default_leaf_for_base(base)),
         FieldOverride::AsString => Ok(LeafSpec::AsString),
@@ -236,10 +239,42 @@ fn parse_leaf_spec(
     }
 }
 
+/// Reject every field-level override on a tuple-typed field with a
+/// per-attribute message. Attributes apply to a single column's leaf
+/// classification and have no per-element selector, so `as_str` / `as_string`
+/// / `as_binary` / `decimal(...)` / `time_unit = "..."` over a tuple is
+/// always ambiguous. The fix is to hoist the tuple into a named struct
+/// where per-element attributes can be applied at field level.
+fn reject_attrs_on_tuple(
+    field: &syn::Field,
+    field_display_name: &str,
+    override_: &FieldOverride,
+) -> Result<(), syn::Error> {
+    let attr = match override_ {
+        FieldOverride::None => return Ok(()),
+        FieldOverride::AsStr => "as_str",
+        FieldOverride::AsString => "as_string",
+        FieldOverride::AsBinary => "as_binary",
+        FieldOverride::Decimal { .. } => "decimal(...)",
+        FieldOverride::TimeUnit(_) => "time_unit = \"...\"",
+    };
+    Err(syn::Error::new_spanned(
+        field,
+        format!(
+            "field `{field_display_name}` has `{attr}` but its type is a tuple; \
+             field-level attributes do not apply to multi-column tuple fields. \
+             Hoist the tuple into a named struct that derives \
+             `ToDataFrame` if you need per-element attributes."
+        ),
+    ))
+}
+
 /// Map an analyzed base to its default `LeafSpec` (no override declared).
 /// Each base picks the parser-injected default semantics — `Milliseconds`
 /// for `DateTime<Utc>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
-/// etc.
+/// etc. Tuple bases recurse: each element runs through the same default
+/// pipeline (no field-level overrides apply at element level — the
+/// parser rejects them on the parent field).
 fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
     match base {
         AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
@@ -262,6 +297,30 @@ fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
         },
         AnalyzedBase::Struct(ident, args) => LeafSpec::Struct(ident, args),
         AnalyzedBase::Generic(ident) => LeafSpec::Generic(ident),
+        AnalyzedBase::Tuple(elements) => {
+            let lowered = elements
+                .into_iter()
+                .map(analyzed_to_tuple_element)
+                .collect();
+            LeafSpec::Tuple(lowered)
+        }
+    }
+}
+
+/// Lower one analyzed tuple element to its IR form. Recurses into nested
+/// tuples (`((i32, String), bool)`), preserves smart-pointer counts on the
+/// element, and normalizes the element's wrapper stack independently of the
+/// parent's. Field-level attributes are not applied here — they are rejected
+/// on the parent field by [`reject_attrs_on_tuple`] before this runs.
+fn analyzed_to_tuple_element(analyzed: crate::type_analysis::AnalyzedType) -> TupleElement {
+    let leaf_spec = default_leaf_for_base(analyzed.base);
+    let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
+    TupleElement {
+        leaf_spec,
+        wrapper_shape,
+        field_ty: analyzed.field_ty,
+        outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
+        inner_smart_ptr_depth: analyzed.inner_smart_ptr_depth,
     }
 }
 
@@ -274,7 +333,12 @@ fn parse_leaf_as_str(
         AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
         AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
-        AnalyzedBase::Numeric(_)
+        // Tuple bases reach this dispatcher only when `parse_leaf_spec`'s
+        // upstream `reject_attrs_on_tuple` was bypassed, which it isn't —
+        // but the match must be exhaustive on `AnalyzedBase`. Surface a
+        // distinct error if it ever does fire.
+        AnalyzedBase::Tuple(_)
+        | AnalyzedBase::Numeric(_)
         | AnalyzedBase::Bool
         | AnalyzedBase::DateTimeUtc
         | AnalyzedBase::NaiveDate
@@ -476,6 +540,12 @@ fn process_field(
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let inner_smart_ptr_depth = analyzed.inner_smart_ptr_depth;
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
+        // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
+        // only checks the leaf base, but the tuple itself fails the same
+        // multi-column attribute rule as every other field-level attribute.
+        if matches!(analyzed.base, AnalyzedBase::Tuple(_)) {
+            reject_attrs_on_tuple(field, &display_name, &override_)?;
+        }
         let (leaf, trimmed) =
             parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
         (leaf, normalize_wrappers(&trimmed))

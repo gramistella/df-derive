@@ -91,6 +91,18 @@ pub(super) fn wrap_list_layers_compile_time(
     dt
 }
 
+/// Same as [`wrap_list_layers_compile_time`] but visible to the encoder
+/// submodule. Sub-encoders (the tuple emitter under `encoder/tuple.rs`)
+/// need the same wrap behavior; bumping visibility avoids re-exporting the
+/// helper across the codegen boundary.
+pub(in crate::codegen) fn wrap_list_layers_compile_time_pub(
+    pp: &TokenStream,
+    inner: TokenStream,
+    layers: usize,
+) -> TokenStream {
+    wrap_list_layers_compile_time(pp, inner, layers)
+}
+
 /// Emit a runtime `for _ in 0..layers` loop that wraps a runtime `DataType`
 /// variable in `layers` `List<>` envelopes. Returns an empty token stream
 /// when `layers == 0` so the caller does not emit `for _ in 0..0`, which

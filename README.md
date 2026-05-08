@@ -127,6 +127,10 @@ cargo run
 - **Vec of primitives and structs**: becomes Polars `List` columns; `Vec<Nested>` becomes multiple `outer.subfield` list columns
 - **`Option<T>`**: null-aware materialization for both scalars and lists
 - **Tuple structs**: supported; columns are named `field_0`, `field_1`, ...
+- **Tuple-typed fields**: `pair: (A, B)` flattens to `pair.field_0`, `pair.field_1`. Outer
+  `Option`/`Vec` distribute across element columns: `Vec<(A, B)>` produces parallel `List`
+  columns. Nested tuples and smart-pointer composition both work. Unit `()` is rejected.
+  Field-level attributes don't apply to tuple fields (hoist into a named struct instead).
 - **Empty structs**: produce `(1, 0)` for instances and `(0, 0)` for empty frames
 - **Schema discovery**: `T::schema() -> Vec<(String, DataType)>`
 - **Columnar batch conversion**: `[T]::to_dataframe()` via the `Columnar` implementation
@@ -224,12 +228,14 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 - **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<Box<i32>>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `Cow<'_, str>` and `Cow<'_, [T]>` are rejected at parse time — write `String` / `Vec<T>` directly.
 - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`)
 - **Tuple structs**: unnamed fields are emitted as `field_{index}`
+- **Tuple-typed fields**: tuples like `(A, B)`, `Option<(A, B)>`, `Vec<(A, B)>`, and nested `((A, B), C)` flatten to one column per element with `<field>.field_<i>` names. The outer wrapper distributes across every element column. Unit `()` and field-level attributes (`as_str`, `decimal`, `time_unit`, …) are rejected on tuple fields.
 
 ## Column naming
 
 - Named struct fields: `field_name`
 - Nested structs: `outer.inner` (recursively)
 - Vec of custom structs: `vec_field.subfield` (list dtype)
+- Tuple-typed fields: `field.field_0`, `field.field_1` (recursively for nested tuples)
 - Tuple structs: `field_0`, `field_1`, ...
 
 ## Generated API
@@ -355,7 +361,7 @@ struct WithEnums {
 
 ## Limitations and guidance
 
-- **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported.
+- **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported. The rejection error suggests `Vec<(K, V)>` as a workaround — that conversion now works directly (tuple-typed fields are supported).
 - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields.
 - **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar` bounds on every type parameter, so any concrete instantiation must satisfy those traits. The unit type `()` can be used as a payload to contribute zero columns.
 - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`.

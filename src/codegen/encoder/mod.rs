@@ -35,6 +35,7 @@ mod leaf_kind;
 mod nested;
 mod option;
 mod shape_walk;
+mod tuple;
 mod vec;
 
 use crate::ir::{LeafSpec, WrapperShape};
@@ -43,6 +44,10 @@ use quote::quote;
 use syn::Ident;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
+pub use tuple::{
+    build_field_emit as build_tuple_field_emit,
+    build_field_entries as build_tuple_field_entries,
+};
 
 /// Build the type-as-path token stream for a struct/generic field. For a
 /// struct referenced without args (e.g. `Address`) this is the bare ident;

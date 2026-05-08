@@ -1,0 +1,6 @@
+error: field `pair` has `decimal(...)` but its type is a tuple; field-level attributes do not apply to multi-column tuple fields. Hoist the tuple into a named struct that derives `ToDataFrame` if you need per-element attributes.
+ --> tests/fail/125-fail-decimal-on-tuple.rs:7:5
+  |
+7 | /     #[df_derive(decimal(precision = 10, scale = 2))]
+8 | |     pair: (i32, String),
+  | |_______________________^

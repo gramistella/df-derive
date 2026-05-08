@@ -110,6 +110,15 @@ impl LeafSpec {
                 quote! { #dt::Decimal(#p, #s) }
             }
             Self::Struct(..) | Self::Generic(_) => quote! { #dt::Null },
+            // Tuples don't have a single leaf dtype — each element produces
+            // its own column with its own dtype. The strategy router routes
+            // tuple fields through the dedicated tuple emitter, which calls
+            // [`crate::ir::LeafSpec::dtype`] only on the per-element leaves.
+            Self::Tuple(_) => unreachable!(
+                "df-derive: LeafSpec::dtype reached with Tuple leaf — tuple fields \
+                 route through the tuple emitter, which never reduces a tuple to a \
+                 single dtype",
+            ),
         }
     }
 }
@@ -254,5 +263,13 @@ pub fn map_primitive_expr(
         | LeafSpec::Binary
         | LeafSpec::Struct(..)
         | LeafSpec::Generic(_) => quote! { (#var).clone() },
+        // Tuples never reach `map_primitive_expr`: the tuple emitter routes
+        // each element's leaf through this helper independently, never the
+        // tuple's `LeafSpec::Tuple` itself.
+        LeafSpec::Tuple(_) => unreachable!(
+            "df-derive: map_primitive_expr reached with Tuple leaf — tuple fields \
+             route through the tuple emitter, which calls map_primitive_expr only \
+             on per-element leaves",
+        ),
     }
 }

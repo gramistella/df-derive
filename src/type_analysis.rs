@@ -59,12 +59,24 @@ pub enum AnalyzedBase {
     Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
+    /// Tuple-typed base, with each element recursively analyzed. Empty
+    /// tuples (`()`) are rejected at parse time — they contribute zero
+    /// columns. Field-level attributes are rejected on every tuple base
+    /// because per-element attribute selection isn't expressible at the
+    /// field level.
+    Tuple(Vec<AnalyzedType>),
 }
 
 #[derive(Clone)]
 pub struct AnalyzedType {
     pub base: AnalyzedBase,
     pub wrappers: Vec<RawWrapper>,
+    /// Original syntactic type token for this analyzed type. The parser
+    /// preserves it so per-element trait-bound asserts (`as_str` const-fn
+    /// asserts on tuple elements with stringy bases) anchor at the user's
+    /// element-type span. For the top-level field, this is the user's field
+    /// type; for tuple elements, this is the element's own type.
+    pub field_ty: syn::Type,
     /// Number of smart-pointer layers (`Box` / `Rc` / `Arc` / `Cow`) peeled
     /// off the field type ABOVE the first wrapper (`Option` / `Vec`). These
     /// layers are dereffed at the access expression itself — `it.field`
@@ -210,20 +222,39 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
         ));
     }
 
-    let base = analyze_base_type(current_type, generic_params)
-        .ok_or_else(|| syn::Error::new_spanned(current_type, "Unsupported field type"))?;
+    let base = analyze_base_type(current_type, generic_params)?;
 
     Ok(AnalyzedType {
         base,
         wrappers,
         outer_smart_ptr_depth,
         inner_smart_ptr_depth,
+        field_ty: ty.clone(),
     })
 }
 
-fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<AnalyzedBase> {
+fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase, syn::Error> {
+    // Tuple bases recurse into element analyses. The empty tuple `()` is
+    // rejected here — a unit-typed field contributes zero columns, which
+    // collides with the parser's invariant that every field produces at
+    // least one schema entry.
+    if let Type::Tuple(tup) = ty {
+        if tup.elems.is_empty() {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "df-derive does not support unit-typed (`()`) fields; \
+                 they contribute zero columns. Remove the field or replace \
+                 it with a non-unit type.",
+            ));
+        }
+        let mut elements: Vec<AnalyzedType> = Vec::with_capacity(tup.elems.len());
+        for elem in &tup.elems {
+            elements.push(analyze_type(elem, generic_params)?);
+        }
+        return Ok(AnalyzedBase::Tuple(elements));
+    }
     if is_datetime_utc(ty) {
-        return Some(AnalyzedBase::DateTimeUtc);
+        return Ok(AnalyzedBase::DateTimeUtc);
     }
     // Disambiguate `Duration` first (qualified-path matches) — both bases
     // share the last segment `Duration`, so naive last-segment matching is
@@ -232,10 +263,10 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<AnalyzedBase
     // qualified (e.g. `std::time::Duration` or `chrono::Duration`).
     if let Type::Path(type_path) = ty {
         if is_std_duration(type_path) {
-            return Some(AnalyzedBase::StdDuration);
+            return Ok(AnalyzedBase::StdDuration);
         }
         if is_chrono_duration(type_path) {
-            return Some(AnalyzedBase::ChronoDuration);
+            return Ok(AnalyzedBase::ChronoDuration);
         }
     }
     if let Type::Path(type_path) = ty
@@ -282,9 +313,9 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<AnalyzedBase
                 }
             }
         };
-        return Some(base);
+        return Ok(base);
     }
-    None
+    Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }
 
 /// Detect `std::time::Duration` or `core::time::Duration` by walking the

@@ -818,6 +818,11 @@ pub(super) fn try_build_vec_encoder(
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
             unreachable_struct_in_primitive_dispatcher("try_build_vec_encoder")
         }
+        LeafSpec::Tuple(_) => unreachable!(
+            "df-derive: try_build_vec_encoder reached with Tuple leaf — tuple \
+             fields route through the tuple emitter, not the primitive vec \
+             dispatcher",
+        ),
     }
 }
 
@@ -973,5 +978,9 @@ pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) 
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
             unreachable_struct_in_primitive_dispatcher("build_leaf")
         }
+        LeafSpec::Tuple(_) => unreachable!(
+            "df-derive: build_leaf reached with Tuple leaf — tuple fields route \
+             through the tuple emitter, not the primitive leaf dispatcher",
+        ),
     }
 }

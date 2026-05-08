@@ -1,0 +1,5 @@
+error: df-derive does not support unit-typed (`()`) fields; they contribute zero columns. Remove the field or replace it with a non-unit type.
+ --> tests/fail/121-fail-unit-tuple-field.rs:7:14
+  |
+7 |     nothing: (),
+  |              ^^

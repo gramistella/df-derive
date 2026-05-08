@@ -41,6 +41,7 @@ fn tests() {
     t.pass("tests/pass/36-as-binary-attribute.rs");
     t.pass("tests/pass/37-naive-and-duration.rs");
     t.pass("tests/pass/38-smart-pointers.rs");
+    t.pass("tests/pass/39-tuple-fields.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -68,4 +69,10 @@ fn tests() {
     t.compile_fail("tests/fail/118-fail-time-unit-on-naive-time.rs");
     t.compile_fail("tests/fail/119-fail-cow-str.rs");
     t.compile_fail("tests/fail/120-fail-cow-slice.rs");
+    t.compile_fail("tests/fail/121-fail-unit-tuple-field.rs");
+    t.compile_fail("tests/fail/122-fail-as-str-on-tuple.rs");
+    t.compile_fail("tests/fail/123-fail-as-string-on-tuple.rs");
+    t.compile_fail("tests/fail/124-fail-as-binary-on-tuple.rs");
+    t.compile_fail("tests/fail/125-fail-decimal-on-tuple.rs");
+    t.compile_fail("tests/fail/126-fail-time-unit-on-tuple.rs");
 }

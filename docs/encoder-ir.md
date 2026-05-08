@@ -184,6 +184,57 @@ inner types collapse the autoderef chain at `str`'s unstable inherent
 existing leaves all expect sized inner shapes. Users should write `String`
 or `Vec<T>` directly for those cases.
 
+## Tuple fields
+
+A field whose type is a tuple flattens into one column per primitive leaf
+contained in the tuple, recursively. Element columns are named
+`<field>.field_<i>`, mirroring the dot-notation convention nested-struct
+fields use. Field-level attributes (`as_str`, `as_string`, `as_binary`,
+`decimal`, `time_unit`) do not apply to tuple-typed fields — attributes
+select a single leaf classification, and a tuple field has multiple leaves.
+Users who need per-element attributes hoist the tuple into a named struct.
+
+The unit type `()` is rejected at parse time. A unit-typed field would
+contribute zero columns, which collides with the parser's invariant that
+every field produces at least one schema entry. This is also why the
+HashMap-rejection hint pointing at `Vec<(K, V)>` is now actionable: the
+manual conversion compiles.
+
+The parent field's outer wrapper stack distributes across every element
+column. Three composition rules:
+
+- **No parent wrappers** (bare `(A, B)`, possibly with smart pointers
+  peeled off the parent field). Each element column reaches its leaf via
+  a static projection `(parent_access).<i>`. Smart-pointer derefs around
+  the element type stack on top of the projection.
+- **Parent has only `Option`s** (`Option<(A, B)>`,
+  `Option<...<Option<(A, B)>>>`). The parent's collapsed Options become
+  one row-level validity bit; per row, the projection is a `.map(|t|
+  &t.<i>)` lambda that yields `Option<&Inner>` (or `Option<Inner>` for
+  `Copy` primitive leaves). The element's own wrappers compose under
+  this single Option layer.
+- **Parent has at least one `Vec`** (`Vec<(A, B)>`,
+  `Vec<Option<(A, B)>>`, `Option<Vec<(A, B)>>`, …). The composed wrapper
+  stack is parent + element layers. The projection happens at the
+  parent/element boundary: when the element has no own wrappers, it's
+  applied at the per-element value expression (`flat.push((*v).<i>)`);
+  when the element has its own `Vec` layers, the iteration source at the
+  boundary projects (`for w in v.<i>.iter()`).
+
+The tuple emitter is its own per-element-push pipeline, parallel to the
+primitive-vec emitter — it owns its layer-namespaced offsets/validity
+buffers and replicates the bulk-fusion invariant on the composed shape.
+Sharing a leaf-pieces builder with the primitive path keeps every leaf
+kind (numeric / String / Bool / Decimal / DateTime / NaiveDate /
+NaiveTime / Duration / Binary) supported without duplication.
+
+Nested tuples (`((A, B), C)`) compose recursively with the static
+projection path: each level appends its `.<i>` to the access expression
+and projects into the inner tuple's elements. Tuple elements that are
+themselves nested-struct types (`(Inner, i32)`) route through the standard
+nested-struct collect-then-bulk pipeline with a synthesized access that
+includes the projection.
+
 ## Coverage
 
 The encoder is total on parser-validated input: every primitive shape — bare

@@ -126,6 +126,31 @@ impl StringyBase {
     }
 }
 
+/// One element of a tuple-typed field. Each element contributes one or more
+/// columns to the parent struct's flattened layout (one column per primitive
+/// leaf; multiple per nested struct or further tuple). The `outer_smart_ptr_depth`
+/// and `inner_smart_ptr_depth` fields are scoped to this element's own
+/// peeled wrappers — the parent struct's smart-pointer counts on the tuple
+/// field itself live on the surrounding `FieldIR`.
+#[derive(Clone)]
+pub struct TupleElement {
+    /// Element's leaf classification. Every primitive leaf and nested-struct
+    /// leaf is permitted; further `LeafSpec::Tuple` permits arbitrary nesting.
+    pub leaf_spec: LeafSpec,
+    /// Element's wrapper shape — `Option`s and `Vec`s peeled off the element
+    /// type itself, before parent wrappers are composed.
+    pub wrapper_shape: WrapperShape,
+    /// Element's own type token (preserved for span-anchored asserts on
+    /// future per-element diagnostics — currently unused because field-level
+    /// attributes are rejected on tuple-typed fields).
+    #[allow(dead_code)]
+    pub field_ty: syn::Type,
+    /// Smart-pointer depth above any wrapper in the element type.
+    pub outer_smart_ptr_depth: usize,
+    /// Smart-pointer depth below a wrapper in the element type.
+    pub inner_smart_ptr_depth: usize,
+}
+
 /// Per-leaf semantic shape — the encoder's vocabulary for the unwrapped
 /// element type after the parser has folded `(base, override)` through its
 /// legality matrix. Each variant corresponds to exactly one leaf builder in
@@ -184,6 +209,14 @@ pub enum LeafSpec {
     Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
+    /// Tuple-typed field. Each element contributes its own column(s) under a
+    /// `<field_name>.field_<elem_idx>` prefix, in declaration order. The
+    /// outer wrapper stack on the parent field (Option / Vec) distributes
+    /// across every element column; the element's own wrappers compose with
+    /// the parent's at codegen time. Field-level attributes (`as_str`,
+    /// `decimal(...)`, etc.) are rejected on tuple-typed fields — the parser
+    /// surfaces a per-attribute error pointing at the field span.
+    Tuple(Vec<TupleElement>),
 }
 
 impl LeafSpec {
@@ -202,6 +235,16 @@ impl LeafSpec {
                 | Self::NaiveTime
                 | Self::Duration { .. }
         )
+    }
+
+    /// True for `LeafSpec::Tuple`. Tuples are routed through a dedicated
+    /// multi-column emission path that doesn't share a leaf builder with the
+    /// primitive or nested-struct dispatchers; centralizing the test makes
+    /// the routing decisions in `super::strategy::LeafSpec::route` and the
+    /// parser's tuple-attribute rejections trivially structurally exhaustive.
+    #[allow(dead_code)]
+    pub const fn is_tuple(&self) -> bool {
+        matches!(self, Self::Tuple(_))
     }
 }
 

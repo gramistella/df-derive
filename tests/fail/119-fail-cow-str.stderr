@@ -1,0 +1,5 @@
+error: df-derive does not support `Cow<'_, str>` or `Cow<'_, [T]>` (unsized inner types). Use the owned type directly: `String` for borrowed strings, `Vec<T>` for borrowed slices.
+ --> tests/fail/119-fail-cow-str.rs:8:8
+  |
+8 |     s: Cow<'static, str>,
+  |        ^^^^^^^^^^^^^^^^^

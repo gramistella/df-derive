@@ -116,3 +116,7 @@ harness = false
 [[bench]]
 name = "19_naive_and_duration"
 harness = false
+
+[[bench]]
+name = "20_smart_pointers"
+harness = false

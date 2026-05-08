@@ -62,6 +62,11 @@ pub(super) fn wrap_multi_option_primitive(
             name: ctx.base.name,
         },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
+        // The collapsed local has type `Option<Inner>`. If `Inner` is a
+        // smart-pointer (e.g. `Box<i32>` came from
+        // `Option<Option<Box<i32>>>`), the inner leaf binding still needs
+        // those derefs — propagate the field's count.
+        inner_smart_ptr_depth: ctx.inner_smart_ptr_depth,
     };
     let LeafArm {
         decls,

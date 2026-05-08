@@ -11,8 +11,13 @@ use crate::core::dataframe::ToDataFrameVec;
 struct TreeNode {
     id: u32,
     value: String,
-    // Note: Direct self-reference would create infinite recursion
-    // So we use Option<Box<T>> pattern or just the data without children
+    // Note: Direct self-reference would create infinite recursion at
+    // schema()-resolution time even though `Box<T>` peels transparently
+    // for ordinary nested structs. The macro emits a recursive
+    // `<Self as ToDataFrame>::schema()` call when materializing the inner
+    // schema columns of a nested-struct field, which doesn't terminate
+    // for self-referential types. Use foreign-key fields (`parent_id`) or
+    // a separate flat representation for tree-like data.
     parent_id: Option<u32>,
     depth: u32,
 }

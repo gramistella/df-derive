@@ -2,10 +2,24 @@ use crate::ir::{LeafSpec, StructIR};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-/// Peel `Option<...>` and `Vec<...>` wrappers off a field type to find the
-/// leaf used by codegen. Mirrors the wrapper-stripping in
-/// `type_analysis::analyze_type` so the leaf type used in the trait-bound
-/// assert matches the codegen's notion of the element type.
+/// Peel transparent wrappers off a field type to find the leaf used in
+/// codegen trait-bound asserts. Strips `Option`/`Vec`/`Box`/`Rc`/`Arc`
+/// (last-segment ident match) so the assert sees the same leaf type
+/// `analyze_type` resolves to. Mirrors the peel in
+/// `type_analysis::analyze_type`; if either falls out of sync the
+/// `as_str` const-assert points at the wrong type — `Box<String>` would
+/// successfully assert `Box<String>: AsRef<str>` (true) but `Vec<Box<NoAsRef>>`
+/// would silently pass the assert because `Box<NoAsRef>` doesn't implement
+/// `AsRef<str>` and the user wouldn't see the error here. Cow is omitted
+/// because `Cow<str>` substitutes to `String` in `analyze_type` and the
+/// assert at the substituted type is what we want — but `peel_to_leaf`
+/// returns a borrowed `&Type`, and the substituted `String` is only
+/// synthesized inside `analyze_type`, so we approximate by leaving Cow
+/// in place and rely on `Cow<str>: AsRef<str>` (true) plus
+/// `Cow<OwnedT>: AsRef<OwnedT>` (false in general — `as_str` over a Cow
+/// of a non-stringy struct would still emit a tighter error at the UFCS
+/// call site downstream). The Cow + `as_str` combination is unusual; the
+/// approximation is a safe-enough trade-off for the helper's scope.
 fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
     fn extract_inner<'a>(ty: &'a syn::Type, name: &str) -> Option<&'a syn::Type> {
         if let syn::Type::Path(tp) = ty
@@ -25,6 +39,18 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
             continue;
         }
         if let Some(inner) = extract_inner(cur, "Vec") {
+            cur = inner;
+            continue;
+        }
+        if let Some(inner) = extract_inner(cur, "Box") {
+            cur = inner;
+            continue;
+        }
+        if let Some(inner) = extract_inner(cur, "Rc") {
+            cur = inner;
+            continue;
+        }
+        if let Some(inner) = extract_inner(cur, "Arc") {
             cur = inner;
             continue;
         }

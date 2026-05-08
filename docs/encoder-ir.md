@@ -164,6 +164,26 @@ register state of the tight populator loop in a way LLVM optimizes well;
 removing it can move the iterator into a less friendly representation. The
 encoder keeps the collection for shapes where benches show it helps.
 
+## Smart-pointer transparency
+
+`Box<T>`, `Rc<T>`, `Arc<T>`, and `Cow<'_, T>` (with sized inner) peel off
+the field type at parse time without contributing to the wrapper stack. The
+encoder operates on the inner type; the column shape, schema dtype, and
+runtime materialization are identical to the bare-T field. The smart-pointer
+layers count separately (split into "outer" — above any wrapper — and
+"inner" — below a wrapper but above the leaf) so the codegen can emit the
+right `*` derefs at the access expression and at the per-element leaf
+binding. Most leaf push sites already work via method-call autoderef
+(`arc_string.as_str()` resolves through `Deref`); the explicit derefs are
+only needed where pattern-binding-by-value or numeric `as` casts skip
+autoderef.
+
+`Cow<'_, str>` and `Cow<'_, [T]>` are rejected at parse time. The unsized
+inner types collapse the autoderef chain at `str`'s unstable inherent
+`as_str()` method (or the lack of `Vec`-shaped iteration for `[T]`); the
+existing leaves all expect sized inner shapes. Users should write `String`
+or `Vec<T>` directly for those cases.
+
 ## Coverage
 
 The encoder is total on parser-validated input: every primitive shape — bare

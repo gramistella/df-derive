@@ -201,6 +201,13 @@ pub struct BaseCtx<'a> {
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub decimal128_encode_trait: &'a TokenStream,
+    /// Smart-pointer layers (`Box`/`Rc`/`Arc`/`Cow`) sitting between a
+    /// wrapper (`Option`/`Vec`) and the leaf type. The leaf push body
+    /// applies this many `*` derefs to the per-element binding so primitive
+    /// pushes see the inner value, not the smart pointer. Most leaves work
+    /// without explicit derefs (method-call autoderef handles `arc.as_str()`
+    /// etc.) but pattern-binding-by-value sites need the unwrap.
+    pub inner_smart_ptr_depth: usize,
 }
 
 // --- Top-level dispatcher ---

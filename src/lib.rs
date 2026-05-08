@@ -153,6 +153,12 @@
 //!   list below for accepted shapes (`Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
 //!   `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`).
 //! - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
+//! - **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, and `Cow<'_, T>` with sized inner peel
+//!   transparently — they have no semantic effect on the column shape. `Option<Box<i32>>` resolves
+//!   to the same `Int32` schema as `Option<i32>`; `Vec<Arc<String>>` to `List<String>`;
+//!   `Box<Vec<f64>>` to `List<Float64>`; `Cow<'static, NaiveDate>` to `Date`. `Cow<'_, str>` and
+//!   `Cow<'_, [T]>` are rejected at parse time (their unsized inner types break the autoderef chain
+//!   in several leaf paths) — use `String` / `Vec<T>` directly.
 //! - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`,
 //!   yielding prefixed list columns)
 //! - **Tuple structs**: unnamed fields are emitted as `field_{index}`

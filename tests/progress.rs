@@ -40,6 +40,7 @@ fn tests() {
     t.pass("tests/pass/35-isize-usize.rs");
     t.pass("tests/pass/36-as-binary-attribute.rs");
     t.pass("tests/pass/37-naive-and-duration.rs");
+    t.pass("tests/pass/38-smart-pointers.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -65,4 +66,6 @@ fn tests() {
     t.compile_fail("tests/fail/116-fail-bare-duration-ambiguous.rs");
     t.compile_fail("tests/fail/117-fail-time-unit-on-naive-date.rs");
     t.compile_fail("tests/fail/118-fail-time-unit-on-naive-time.rs");
+    t.compile_fail("tests/fail/119-fail-cow-str.rs");
+    t.compile_fail("tests/fail/120-fail-cow-slice.rs");
 }

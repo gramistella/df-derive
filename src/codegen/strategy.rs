@@ -69,8 +69,15 @@ impl LeafSpec {
 /// `<it>.<field>` — the field-access expression rooted at a per-row
 /// iterator binding. Used by every emit path that needs to reach into
 /// the per-row item.
+///
+/// Wraps the raw access in `field.outer_smart_ptr_depth` explicit `*`
+/// derefs so `Box<isize> as i64` and `match &(box_option) { Some(_) => ... }`
+/// see the inner value: numeric `as` casts and pattern positions don't
+/// trigger `Deref` autoderef, so the codegen has to peel manually. Inner
+/// smart pointers (below a wrapper) are dereffed at the per-element leaf
+/// binding instead — see `LeafCtx::inner_smart_ptr_depth`.
 fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
-    field.field_index.map_or_else(
+    let raw = field.field_index.map_or_else(
         || {
             let id = &field.name;
             quote! { #it_ident.#id }
@@ -79,7 +86,12 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
             let li = syn::Index::from(i);
             quote! { #it_ident.#li }
         },
-    )
+    );
+    let mut out = raw;
+    for _ in 0..field.outer_smart_ptr_depth {
+        out = quote! { (*(#out)) };
+    }
+    out
 }
 
 /// Whether a per-field emission produces schema entries (`(name, dtype)`
@@ -218,6 +230,7 @@ fn build_primitive_emit(
             name: &name,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        inner_smart_ptr_depth: field.inner_smart_ptr_depth,
     };
     let enc = encoder::build_encoder(&field.leaf_spec, &field.wrapper_shape, &leaf_ctx);
     match enc {

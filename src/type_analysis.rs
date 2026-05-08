@@ -65,13 +65,41 @@ pub enum AnalyzedBase {
 pub struct AnalyzedType {
     pub base: AnalyzedBase,
     pub wrappers: Vec<RawWrapper>,
+    /// Number of smart-pointer layers (`Box` / `Rc` / `Arc` / `Cow`) peeled
+    /// off the field type ABOVE the first wrapper (`Option` / `Vec`). These
+    /// layers are dereffed at the access expression itself — `it.field`
+    /// becomes `(*(*(it.field)))` for two outer Boxes — so the rest of the
+    /// codegen sees a clean wrapper stack over the inner type.
+    pub outer_smart_ptr_depth: usize,
+    /// Number of smart-pointer layers peeled BELOW some wrapper but above
+    /// the leaf. These cannot be dereffed at the access (you can't deref
+    /// `Option<Box<T>>` or `Vec<Arc<T>>`) — instead the encoder injects an
+    /// extra deref at the per-element binding inside leaf push bodies.
+    /// Method-call autoderef handles most cases (e.g. `arc_string.as_str()`
+    /// resolves through Deref), but pattern-binding-by-value sites
+    /// (`match #access { Some(v) => buf.push(v); ... }` for numerics) need
+    /// the extra `*` to extract the inner value.
+    pub inner_smart_ptr_depth: usize,
 }
 
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
+    let mut outer_smart_ptr_depth: usize = 0;
+    let mut inner_smart_ptr_depth: usize = 0;
     let mut current_type = ty;
 
-    // Loop to peel off wrappers in any order
+    // Loop to peel off wrappers in any order. Option/Vec push onto the
+    // wrapper stack; Box/Rc/Arc/Cow are transparent — they bump the outer
+    // depth (codegen rewrites the access expression) before any wrapper is
+    // seen, and the inner depth (codegen injects deref at the per-element
+    // leaf binding) once a wrapper has been pushed.
+    let bump_smart_ptr = |outer: &mut usize, inner: &mut usize, wrappers: &[RawWrapper]| {
+        if wrappers.is_empty() {
+            *outer += 1;
+        } else {
+            *inner += 1;
+        }
+    };
     loop {
         if let Some(inner_ty) = extract_inner_type(current_type, "Option") {
             wrappers.push(RawWrapper::Option);
@@ -81,6 +109,54 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
         if let Some(inner_ty) = extract_inner_type(current_type, "Vec") {
             wrappers.push(RawWrapper::Vec);
             current_type = inner_ty;
+            continue;
+        }
+        if let Some(inner_ty) = extract_inner_type(current_type, "Box") {
+            bump_smart_ptr(
+                &mut outer_smart_ptr_depth,
+                &mut inner_smart_ptr_depth,
+                &wrappers,
+            );
+            current_type = inner_ty;
+            continue;
+        }
+        if let Some(inner_ty) = extract_inner_type(current_type, "Rc") {
+            bump_smart_ptr(
+                &mut outer_smart_ptr_depth,
+                &mut inner_smart_ptr_depth,
+                &wrappers,
+            );
+            current_type = inner_ty;
+            continue;
+        }
+        if let Some(inner_ty) = extract_inner_type(current_type, "Arc") {
+            bump_smart_ptr(
+                &mut outer_smart_ptr_depth,
+                &mut inner_smart_ptr_depth,
+                &wrappers,
+            );
+            current_type = inner_ty;
+            continue;
+        }
+        if let Some(action) = peel_cow(current_type) {
+            match action {
+                CowPeel::Rebind(inner) => {
+                    bump_smart_ptr(
+                        &mut outer_smart_ptr_depth,
+                        &mut inner_smart_ptr_depth,
+                        &wrappers,
+                    );
+                    current_type = inner;
+                }
+                CowPeel::UnsizedReject => {
+                    return Err(syn::Error::new_spanned(
+                        current_type,
+                        "df-derive does not support `Cow<'_, str>` or `Cow<'_, [T]>` \
+                         (unsized inner types). Use the owned type directly: \
+                         `String` for borrowed strings, `Vec<T>` for borrowed slices.",
+                    ));
+                }
+            }
             continue;
         }
         // No more wrappers found, break the loop
@@ -107,25 +183,6 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
             "HashSet" => Some(
                 "df-derive does not support `HashSet` fields. Convert to \
                  `Vec<T>` (order will be set-defined, not insertion-defined).",
-            ),
-            "Box" => Some(
-                "df-derive does not support `Box` fields. Use the inner type \
-                 directly; df-derive copies values during conversion, so `Box` \
-                 only adds heap indirection without changing the column shape.",
-            ),
-            "Rc" => Some(
-                "df-derive does not support `Rc` fields. Use the inner type \
-                 directly; df-derive copies values during conversion, so the \
-                 reference count cannot be preserved into a Polars column.",
-            ),
-            "Arc" => Some(
-                "df-derive does not support `Arc` fields. Use the inner type \
-                 directly; df-derive copies values during conversion, so the \
-                 reference count cannot be preserved into a Polars column.",
-            ),
-            "Cow" => Some(
-                "df-derive does not support `Cow` fields. Use the owned type \
-                 directly; the conversion always materializes owned values.",
             ),
             _ => None,
         };
@@ -156,7 +213,12 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
     let base = analyze_base_type(current_type, generic_params)
         .ok_or_else(|| syn::Error::new_spanned(current_type, "Unsupported field type"))?;
 
-    Ok(AnalyzedType { base, wrappers })
+    Ok(AnalyzedType {
+        base,
+        wrappers,
+        outer_smart_ptr_depth,
+        inner_smart_ptr_depth,
+    })
 }
 
 fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Option<AnalyzedBase> {
@@ -296,6 +358,66 @@ fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
         return Some(inner_ty);
     }
     None
+}
+
+/// Outcome of peeling a `Cow<'a, T>` layer. Cow's first generic argument is
+/// the lifetime, not the inner type, so the standard `extract_inner_type`
+/// helper (which keys on `args.first()`) cannot be used. The two unsized
+/// inner forms (`str` and `[T]`) are rejected at parse time with an
+/// actionable hint pointing at the owned form (`String` / `Vec<T>`); the
+/// sized inner case rebinds and continues the peel loop.
+enum CowPeel<'a> {
+    /// `Cow<'a, OwnedT>` where `OwnedT: Sized` — rebind to `OwnedT`.
+    Rebind(&'a Type),
+    /// `Cow<'a, str>` or `Cow<'a, [T]>` — the inner is unsized. The
+    /// existing codegen invariants (every leaf method-call path resolves
+    /// through `AsRef<str>` or `Deref` autoderef) collapse around `str`'s
+    /// unstable inherent `as_str()` and `[T]`'s lack of `Vec`-shaped
+    /// methods, so the parser rejects these forms at parse time. Use the
+    /// owned type directly (`String` or `Vec<T>`).
+    UnsizedReject,
+}
+
+/// Peel a `Cow<'a, T>` layer if the type is one. Last-segment ident match
+/// (mirrors `extract_inner_type`'s leniency for qualified paths like
+/// `std::borrow::Cow`). Returns `None` for non-Cow types.
+fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
+    let type_path = if let Type::Path(tp) = ty {
+        tp
+    } else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Cow" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    // Cow takes `<'a, T>` — find the first `Type` argument (skipping
+    // the leading lifetime). Defensive against generic-syntax variation:
+    // any GenericArgument::Type wins regardless of position.
+    let inner_ty = args.args.iter().find_map(|a| match a {
+        GenericArgument::Type(t) => Some(t),
+        _ => None,
+    })?;
+    // `Cow<str>` or `Cow<[T]>` — unsized inner, reject at parse time.
+    // The autoderef chain for `Cow<str>::as_str()` ends at `str`'s
+    // unstable inherent method, and `Cow<[T]>` needs Vec-shaped iteration
+    // we don't synthesize. Users should use `String` / `Vec<T>` directly.
+    if let Type::Path(inner_path) = inner_ty
+        && inner_path.qself.is_none()
+        && inner_path.path.segments.len() == 1
+        && let Some(seg) = inner_path.path.segments.last()
+        && seg.ident == "str"
+        && matches!(seg.arguments, PathArguments::None)
+    {
+        return Some(CowPeel::UnsizedReject);
+    }
+    if matches!(inner_ty, Type::Slice(_)) {
+        return Some(CowPeel::UnsizedReject);
+    }
+    Some(CowPeel::Rebind(inner_ty))
 }
 
 /// Detect a `chrono::DateTime<Utc>` field by ident only.

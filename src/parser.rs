@@ -473,6 +473,8 @@ fn process_field(
     let display_name = name_ident.to_string();
     let override_ = parse_field_override(field, &display_name)?;
     let analyzed = analyze_type(&field.ty, generic_params)?;
+    let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
+    let inner_smart_ptr_depth = analyzed.inner_smart_ptr_depth;
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
         let (leaf, trimmed) =
             parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
@@ -487,6 +489,8 @@ fn process_field(
         leaf_spec,
         wrapper_shape,
         field_ty: field.ty.clone(),
+        outer_smart_ptr_depth,
+        inner_smart_ptr_depth,
     })
 }
 

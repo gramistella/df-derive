@@ -221,6 +221,7 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)`
 - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
+- **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<Box<i32>>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `Cow<'_, str>` and `Cow<'_, [T]>` are rejected at parse time — write `String` / `Vec<T>` directly.
 - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`)
 - **Tuple structs**: unnamed fields are emitted as `field_{index}`
 

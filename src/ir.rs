@@ -34,6 +34,22 @@ pub struct FieldIR {
     /// source span, putting compiler errors at the field declaration rather
     /// than deep in macro expansion.
     pub field_ty: syn::Type,
+    /// Number of smart-pointer layers (`Box`/`Rc`/`Arc`/`Cow`) peeled at
+    /// the OUTER position — above any `Option`/`Vec` wrapper. The codegen
+    /// wraps the raw field access in this many `*` derefs so numeric `as`
+    /// casts and pattern matches see the deref-coerced inner value
+    /// (autoderef does not fire across `as` casts or pattern positions).
+    pub outer_smart_ptr_depth: usize,
+    /// Number of smart-pointer layers peeled at the INNER position — below
+    /// some wrapper but above the leaf. Cannot be applied to the access
+    /// expression directly (you can't deref `Option<Box<T>>` or
+    /// `Vec<Arc<T>>`); instead the encoder injects an extra `*` at the
+    /// per-element leaf binding so primitive pushes see the inner value
+    /// rather than the smart pointer. Most leaves auto-deref through method
+    /// calls (`arc_string.as_str()` works), but pattern-binding-by-value
+    /// arms (`match #access { Some(v) => buf.push(v) }` for numerics)
+    /// don't, so the explicit deref is needed there.
+    pub inner_smart_ptr_depth: usize,
 }
 
 /// Datetime time unit chosen via `#[df_derive(time_unit = "ms"|"us"|"ns")]`.

@@ -44,6 +44,18 @@ pub enum DateTimeUnit {
     Nanoseconds,
 }
 
+/// Source of a `Duration` field — distinguishes `std::time::Duration` (whose
+/// component reads are `as_nanos()` / `as_micros()` / `as_millis()`, all
+/// returning `u128` and requiring fallible narrowing to `i64`) from
+/// `chrono::Duration` / `chrono::TimeDelta` (whose reads are
+/// `num_nanoseconds()` / `num_microseconds()` / `num_milliseconds()`, the
+/// first two returning `Option<i64>` and the third returning `i64` directly).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DurationSource {
+    Std,
+    Chrono,
+}
+
 /// Numeric primitive kind. Carries the static information the encoder needs
 /// (variant tag for chunked-array / dtype dispatch, plus widening info for
 /// `isize`/`usize`) without binding to any token-stream representation.
@@ -119,6 +131,22 @@ pub enum LeafSpec {
     /// chrono call used to derive the i64 mantissa and the
     /// `DataType::Datetime(...)` schema dtype.
     DateTime(DateTimeUnit),
+    /// `chrono::NaiveDate` — materializes as `DataType::Date` (i32 days
+    /// since 1970-01-01). No unit choice — `Date` has a fixed encoding.
+    NaiveDate,
+    /// `chrono::NaiveTime` — materializes as `DataType::Time` (i64
+    /// nanoseconds since midnight). No unit choice — `Time` has a fixed
+    /// encoding.
+    NaiveTime,
+    /// `std::time::Duration` or `chrono::Duration` (alias for
+    /// `chrono::TimeDelta`) materialized as `DataType::Duration(unit)`.
+    /// `source` selects the per-row mapping shape (std uses `as_nanos()`
+    /// etc. which return `u128` and require fallible narrowing; chrono uses
+    /// `num_nanoseconds()` etc.).
+    Duration {
+        unit: DateTimeUnit,
+        source: DurationSource,
+    },
     /// `rust_decimal::Decimal` with the chosen `Decimal(precision, scale)`
     /// dtype. `1 <= precision <= 38`; `scale <= precision`.
     Decimal { precision: u8, scale: u8 },
@@ -144,13 +172,20 @@ pub enum LeafSpec {
 
 impl LeafSpec {
     /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
-    /// (including `ISize`/`USize`) and `Bool` are `Copy`; `String`,
-    /// `Binary`, `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow
-    /// path are not. The `AsStr` path takes its own branch in the multi-
-    /// Option wrapper before reaching this helper, so its `false` answer
-    /// here is only consulted on dead arms.
+    /// (including `ISize`/`USize`), `Bool`, `NaiveDate`, `NaiveTime`, and
+    /// `Duration` are `Copy`; `String`, `Binary`, `DateTime`, `Decimal`,
+    /// `AsString`, and the `AsStr` borrow path are not. The `AsStr` path
+    /// takes its own branch in the multi-Option wrapper before reaching this
+    /// helper, so its `false` answer here is only consulted on dead arms.
     pub const fn is_copy(&self) -> bool {
-        matches!(self, Self::Numeric(_) | Self::Bool)
+        matches!(
+            self,
+            Self::Numeric(_)
+                | Self::Bool
+                | Self::NaiveDate
+                | Self::NaiveTime
+                | Self::Duration { .. }
+        )
     }
 }
 

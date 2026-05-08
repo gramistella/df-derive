@@ -8,7 +8,7 @@
 //! collapsing the access into a single `Option<&T>` (Polars folds every
 //! nested None into one validity bit).
 
-use crate::ir::{DateTimeUnit, LeafSpec, NumericKind, StringyBase};
+use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, StringyBase};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -488,10 +488,47 @@ pub(super) fn decimal_leaf(
 /// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
 /// + cast); only the element type changes.
 pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmKind) -> LeafArm {
+    mapped_cast_leaf(ctx, &LeafSpec::DateTime(unit), &quote! { i64 }, arm)
+}
+
+/// `NaiveDate` leaf — i32 days since 1970-01-01. Bare: `Vec<i32>` +
+/// `Series::new` + cast to `Date`. Option: `Vec<Option<i32>>`. Shape
+/// matches `datetime_leaf` modulo native type / cast dtype.
+pub(super) fn naive_date_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
+    mapped_cast_leaf(ctx, &LeafSpec::NaiveDate, &quote! { i32 }, arm)
+}
+
+/// `NaiveTime` leaf — i64 nanoseconds since midnight. Bare: `Vec<i64>` +
+/// `Series::new` + cast to `Time`.
+pub(super) fn naive_time_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
+    mapped_cast_leaf(ctx, &LeafSpec::NaiveTime, &quote! { i64 }, arm)
+}
+
+/// `Duration` leaf (std or chrono) — i64 ticks, unit decided at parse time.
+/// Bare: `Vec<i64>` + `Series::new` + cast to `Duration(unit)`.
+pub(super) fn duration_leaf(
+    ctx: &LeafCtx<'_>,
+    unit: DateTimeUnit,
+    source: DurationSource,
+    arm: LeafArmKind,
+) -> LeafArm {
+    mapped_cast_leaf(ctx, &LeafSpec::Duration { unit, source }, &quote! { i64 }, arm)
+}
+
+/// Shared body of every `Vec<#native>` + `Series::new` + `.cast(&dtype)?`
+/// leaf — `DateTime`, `NaiveDate`, `NaiveTime`, both Duration variants.
+/// Each caller passes the leaf spec (drives `mapped_push` and the cast
+/// dtype) and the native storage type; arm selection swaps between
+/// `Vec<#native>` and `Vec<Option<#native>>`.
+fn mapped_cast_leaf(
+    ctx: &LeafCtx<'_>,
+    leaf: &LeafSpec,
+    native: &TokenStream,
+    arm: LeafArmKind,
+) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
-    let leaf = LeafSpec::DateTime(unit);
-    let push = mapped_push(ctx, &leaf, arm);
+    let push = mapped_push(ctx, leaf, arm);
     let dtype = leaf.dtype();
     let series_new = named_from_buf(name, &buf);
     let series_finish = quote! {{
@@ -501,12 +538,12 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmK
     }};
     match arm {
         LeafArmKind::Bare => LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { i64 })],
+            decls: vec![vec_decl(&buf, native)],
             push,
             series: series_finish,
         },
         LeafArmKind::Option => LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i64> })],
+            decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<#native> })],
             push,
             series: series_finish,
         },

@@ -1,4 +1,4 @@
-use crate::ir::{DateTimeUnit, LeafSpec, NumericKind, WrapperShape};
+use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -98,6 +98,12 @@ impl LeafSpec {
                 let unit = time_unit_tokens(*unit);
                 quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
             }
+            Self::NaiveDate => quote! { #dt::Date },
+            Self::NaiveTime => quote! { #dt::Time },
+            Self::Duration { unit, .. } => {
+                let unit = time_unit_tokens(*unit);
+                quote! { #dt::Duration(#unit) }
+            }
             Self::Decimal { precision, scale } => {
                 let p = *precision as usize;
                 let s = *scale as usize;
@@ -141,6 +147,55 @@ pub fn map_primitive_expr(
                 }
             }
         },
+        LeafSpec::NaiveDate => quote! {
+            ((#var).signed_duration_since(
+                ::chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            ).num_days() as i32)
+        },
+        LeafSpec::NaiveTime => quote! {
+            {
+                use ::chrono::Timelike as _;
+                ((#var).num_seconds_from_midnight() as i64) * 1_000_000_000
+                    + ((#var).nanosecond() as i64)
+            }
+        },
+        LeafSpec::Duration { unit, source } => {
+            let pp = super::polars_paths::prelude();
+            match source {
+                DurationSource::Std => match unit {
+                    DateTimeUnit::Nanoseconds => quote! {
+                        i64::try_from((#var).as_nanos()).map_err(|_| #pp::polars_err!(
+                            ComputeError: "df-derive: std::time::Duration value out of i64 ns range"
+                        ))?
+                    },
+                    DateTimeUnit::Microseconds => quote! {
+                        i64::try_from((#var).as_micros()).map_err(|_| #pp::polars_err!(
+                            ComputeError: "df-derive: std::time::Duration value out of i64 us range"
+                        ))?
+                    },
+                    DateTimeUnit::Milliseconds => quote! {
+                        i64::try_from((#var).as_millis()).map_err(|_| #pp::polars_err!(
+                            ComputeError: "df-derive: std::time::Duration value out of i64 ms range"
+                        ))?
+                    },
+                },
+                DurationSource::Chrono => match unit {
+                    DateTimeUnit::Nanoseconds => quote! {
+                        (#var).num_nanoseconds().ok_or_else(|| #pp::polars_err!(
+                            ComputeError: "df-derive: chrono::Duration value out of i64 ns range"
+                        ))?
+                    },
+                    DateTimeUnit::Microseconds => quote! {
+                        (#var).num_microseconds().ok_or_else(|| #pp::polars_err!(
+                            ComputeError: "df-derive: chrono::Duration value out of i64 us range"
+                        ))?
+                    },
+                    // `num_milliseconds()` is infallible (returns i64
+                    // directly) — no `?` needed.
+                    DateTimeUnit::Milliseconds => quote! { (#var).num_milliseconds() },
+                },
+            }
+        }
         LeafSpec::AsString => {
             quote! { (#var).to_string() }
         }

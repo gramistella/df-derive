@@ -1,10 +1,10 @@
 use crate::ir::{
-    DateTimeUnit, FieldIR, LeafSpec, NumericKind, StringyBase, StructIR, VecLayerSpec, VecLayers,
-    WrapperShape,
+    DateTimeUnit, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase, StructIR,
+    VecLayerSpec, VecLayers, WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
-    RawWrapper, analyze_type,
+    DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
 };
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
@@ -110,7 +110,8 @@ fn override_conflict(
         | (FieldOverride::TimeUnit(_), FieldOverride::Decimal { .. }) => format!(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
              pick one — `decimal(...)` only applies to `rust_decimal::Decimal`, \
-             `time_unit` only applies to `chrono::DateTime<Utc>`"
+             `time_unit` only applies to `chrono::DateTime<Utc>`, \
+             `std::time::Duration`, or `chrono::Duration`"
         ),
         (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
             "field `{field_display_name}` combines `as_binary` with another override; \
@@ -220,71 +221,136 @@ fn parse_leaf_spec(
     base: AnalyzedBase,
 ) -> Result<LeafSpec, syn::Error> {
     match override_ {
-        FieldOverride::None => Ok(match base {
-            AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
-            AnalyzedBase::String => LeafSpec::String,
-            AnalyzedBase::Bool => LeafSpec::Bool,
-            AnalyzedBase::DateTimeUtc => LeafSpec::DateTime(DEFAULT_DATETIME_UNIT),
-            AnalyzedBase::Decimal => LeafSpec::Decimal {
-                precision: DEFAULT_DECIMAL_PRECISION,
-                scale: DEFAULT_DECIMAL_SCALE,
-            },
-            AnalyzedBase::Struct(ident, args) => LeafSpec::Struct(ident, args),
-            AnalyzedBase::Generic(ident) => LeafSpec::Generic(ident),
-        }),
+        FieldOverride::None => Ok(default_leaf_for_base(base)),
         FieldOverride::AsString => Ok(LeafSpec::AsString),
-        FieldOverride::AsStr => match base {
-            AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
-            AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
-            AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
-            AnalyzedBase::Numeric(_)
-            | AnalyzedBase::Bool
-            | AnalyzedBase::DateTimeUtc
-            | AnalyzedBase::Decimal => Err(syn::Error::new_spanned(
-                field,
-                format!(
-                    "field `{field_display_name}` has `as_str` but its base type does not implement \
-                     `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
-                     generic type parameters — drop the attribute or change the field type"
-                ),
-            )),
-        },
+        FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
         FieldOverride::AsBinary => unreachable!(
             "AsBinary handled by process_field before parse_leaf_spec runs"
         ),
-        FieldOverride::Decimal { precision, scale } => match base {
-            AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
-                precision: *precision,
-                scale: *scale,
-            }),
-            AnalyzedBase::Numeric(_)
-            | AnalyzedBase::String
-            | AnalyzedBase::Bool
-            | AnalyzedBase::DateTimeUtc
-            | AnalyzedBase::Struct(..)
-            | AnalyzedBase::Generic(_) => Err(syn::Error::new_spanned(
-                field,
-                format!(
-                    "field `{field_display_name}` has `decimal(...)` but its base type is not \
-                     `rust_decimal::Decimal`; remove the attribute or change the field type"
-                ),
-            )),
+        FieldOverride::Decimal { precision, scale } => {
+            parse_leaf_decimal(field, field_display_name, &base, *precision, *scale)
+        }
+        FieldOverride::TimeUnit(unit) => {
+            parse_leaf_time_unit(field, field_display_name, &base, *unit)
+        }
+    }
+}
+
+/// Map an analyzed base to its default `LeafSpec` (no override declared).
+/// Each base picks the parser-injected default semantics — `Milliseconds`
+/// for `DateTime<Utc>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
+/// etc.
+fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
+    match base {
+        AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
+        AnalyzedBase::String => LeafSpec::String,
+        AnalyzedBase::Bool => LeafSpec::Bool,
+        AnalyzedBase::DateTimeUtc => LeafSpec::DateTime(DEFAULT_DATETIME_UNIT),
+        AnalyzedBase::NaiveDate => LeafSpec::NaiveDate,
+        AnalyzedBase::NaiveTime => LeafSpec::NaiveTime,
+        AnalyzedBase::StdDuration => LeafSpec::Duration {
+            unit: DEFAULT_DURATION_UNIT,
+            source: DurationSource::Std,
         },
-        FieldOverride::TimeUnit(unit) => match base {
-            AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(*unit)),
-            AnalyzedBase::Numeric(_)
-            | AnalyzedBase::String
-            | AnalyzedBase::Bool
-            | AnalyzedBase::Decimal
-            | AnalyzedBase::Struct(..)
-            | AnalyzedBase::Generic(_) => Err(syn::Error::new_spanned(
-                field,
-                format!(
-                    "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                     not `chrono::DateTime<Utc>`; remove the attribute or change the field type"
-                ),
-            )),
+        AnalyzedBase::ChronoDuration => LeafSpec::Duration {
+            unit: DEFAULT_DURATION_UNIT,
+            source: DurationSource::Chrono,
         },
+        AnalyzedBase::Decimal => LeafSpec::Decimal {
+            precision: DEFAULT_DECIMAL_PRECISION,
+            scale: DEFAULT_DECIMAL_SCALE,
+        },
+        AnalyzedBase::Struct(ident, args) => LeafSpec::Struct(ident, args),
+        AnalyzedBase::Generic(ident) => LeafSpec::Generic(ident),
+    }
+}
+
+fn parse_leaf_as_str(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: AnalyzedBase,
+) -> Result<LeafSpec, syn::Error> {
+    match base {
+        AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
+        AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
+        AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
+        AnalyzedBase::Numeric(_)
+        | AnalyzedBase::Bool
+        | AnalyzedBase::DateTimeUtc
+        | AnalyzedBase::NaiveDate
+        | AnalyzedBase::NaiveTime
+        | AnalyzedBase::StdDuration
+        | AnalyzedBase::ChronoDuration
+        | AnalyzedBase::Decimal => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_str` but its base type does not implement \
+                 `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
+                 generic type parameters — drop the attribute or change the field type"
+            ),
+        )),
+    }
+}
+
+fn parse_leaf_decimal(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: &AnalyzedBase,
+    precision: u8,
+    scale: u8,
+) -> Result<LeafSpec, syn::Error> {
+    match base {
+        AnalyzedBase::Decimal => Ok(LeafSpec::Decimal { precision, scale }),
+        _ => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `decimal(...)` but its base type is not \
+                 `rust_decimal::Decimal`; remove the attribute or change the field type"
+            ),
+        )),
+    }
+}
+
+fn parse_leaf_time_unit(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: &AnalyzedBase,
+    unit: DateTimeUnit,
+) -> Result<LeafSpec, syn::Error> {
+    match base {
+        AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(unit)),
+        AnalyzedBase::StdDuration => Ok(LeafSpec::Duration {
+            unit,
+            source: DurationSource::Std,
+        }),
+        AnalyzedBase::ChronoDuration => Ok(LeafSpec::Duration {
+            unit,
+            source: DurationSource::Chrono,
+        }),
+        AnalyzedBase::NaiveDate => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
+                 `chrono::NaiveDate`, which has a fixed encoding (i32 days since 1970-01-01) \
+                 and offers no unit choice — remove the attribute"
+            ),
+        )),
+        AnalyzedBase::NaiveTime => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
+                 `chrono::NaiveTime`, which has a fixed encoding (i64 nanoseconds since \
+                 midnight) and offers no unit choice — remove the attribute"
+            ),
+        )),
+        _ => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
+                 not `chrono::DateTime<Utc>`, `std::time::Duration`, or `chrono::Duration`; \
+                 remove the attribute or change the field type"
+            ),
+        )),
     }
 }
 

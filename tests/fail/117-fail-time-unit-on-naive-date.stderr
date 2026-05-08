@@ -1,0 +1,6 @@
+error: field `when` has `time_unit = "..."` but its base type is `chrono::NaiveDate`, which has a fixed encoding (i32 days since 1970-01-01) and offers no unit choice — remove the attribute
+  --> tests/fail/117-fail-time-unit-on-naive-date.rs:9:5
+   |
+ 9 | /     #[df_derive(time_unit = "ms")]
+10 | |     when: NaiveDate,
+   | |___________________^

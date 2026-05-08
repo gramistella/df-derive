@@ -1,0 +1,6 @@
+error: field `at` has `time_unit = "..."` but its base type is `chrono::NaiveTime`, which has a fixed encoding (i64 nanoseconds since midnight) and offers no unit choice — remove the attribute
+  --> tests/fail/118-fail-time-unit-on-naive-time.rs:9:5
+   |
+ 9 | /     #[df_derive(time_unit = "us")]
+10 | |     at: NaiveTime,
+   | |_________________^

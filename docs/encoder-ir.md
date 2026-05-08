@@ -167,12 +167,26 @@ encoder keeps the collection for shapes where benches show it helps.
 ## Coverage
 
 The encoder is total on parser-validated input: every primitive shape — bare
-numeric / `String` / `Bool` / `Binary` / `Decimal` / `DateTime` leaves,
-arbitrary `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack
-including `[Option, Vec, ...]` and deeper nestings — flows through the
-encoder IR. Combinations the parser cannot construct (e.g. `DateTimeToInt`
-on a non-`DateTime` base, `as_str` on a non-stringy base, `as_binary` on a
-non-`Vec<u8>` shape) panic in `build_leaf` rather than returning `None`.
+numeric / `String` / `Bool` / `Binary` / `Decimal` / `DateTime` / `Date` /
+`Time` / `Duration` leaves, arbitrary `Option<…<Option<T>>>` stacks, and
+every vec-bearing wrapper stack including `[Option, Vec, ...]` and deeper
+nestings — flows through the encoder IR. Combinations the parser cannot
+construct (e.g. `DateTimeToInt` on a non-`DateTime` base, `as_str` on a
+non-stringy base, `as_binary` on a non-`Vec<u8>` shape) panic in
+`build_leaf` rather than returning `None`.
+
+The temporal leaf family — `DateTime`, `Date`, `Time`, `Duration` — all
+share the same shape: a per-row mapping expression produces an `i32` (Date)
+or `i64` (DateTime / Time / Duration) physical, accumulated into a
+`Vec<i32>` or `Vec<i64>`, then handed to `Series::new` and finished with
+`.cast(&dtype)?`. Polars's runtime cast-from-numeric short-circuits when
+the source numeric type is the dtype's natural physical, so no copy
+happens. The unit attribute (`#[df_derive(time_unit = "ms"|"us"|"ns")]`)
+applies to the two leaves with a unit choice — `DateTime` and `Duration` —
+and is rejected for `Date` and `Time` (both have a fixed encoding). Std
+and chrono `Duration` differ only in the per-row mapping expression
+(fallible `as_nanos()`/`u128`-narrowing for std, `num_nanoseconds()` /
+`Option<i64>` for chrono); the leaf and vec-leaf shapes are identical.
 
 The `Binary` leaf is opt-in via `#[df_derive(as_binary)]` on a `Vec<u8>`
 shape; the parser strips the innermost `Vec` from the wrapper stack and

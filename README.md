@@ -215,7 +215,9 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 ## Supported types
 
 - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`
-- **Time**: `chrono::DateTime<Utc>` → materialized as `Datetime(Milliseconds, None)`
+- **Time**: `chrono::DateTime<Utc>` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
+- **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01), `chrono::NaiveTime` → `Time` (i64 ns since midnight). Both have fixed encodings — `time_unit` is not accepted.
+- **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration` or `chrono::Duration`.
 - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)`
 - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order

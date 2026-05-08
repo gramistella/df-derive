@@ -55,6 +55,9 @@ impl LeafSpec {
             | Self::String
             | Self::Bool
             | Self::DateTime(_)
+            | Self::NaiveDate
+            | Self::NaiveTime
+            | Self::Duration { .. }
             | Self::Decimal { .. }
             | Self::AsString
             | Self::AsStr(_)

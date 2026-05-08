@@ -25,7 +25,7 @@ proc-macro-crate = "3.5.0"
 
 [dev-dependencies]
 trybuild = "1.0.116"
-polars = { version = "0.53.0", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }
 polars-arrow = "0.53.0"
 chrono = { version = "0.4.41", features = ["serde"] }
 rust_decimal = { version = "1.41.0", features = ["serde"] }
@@ -111,4 +111,8 @@ harness = false
 
 [[bench]]
 name = "18_as_binary"
+harness = false
+
+[[bench]]
+name = "19_naive_and_duration"
 harness = false

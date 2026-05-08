@@ -10,7 +10,7 @@
 //! to a primitive leaf encoder — because it sits at the leaf/vec boundary
 //! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::ir::{DateTimeUnit, LeafSpec, StringyBase, VecLayers, WrapperShape};
+use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, StringyBase, VecLayers, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -725,6 +725,11 @@ pub(super) fn try_build_vec_encoder(
             }
         }
         LeafSpec::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
+        LeafSpec::NaiveDate => vec_encoder_naive_date(ctx, vec_shape),
+        LeafSpec::NaiveTime => vec_encoder_naive_time(ctx, vec_shape),
+        LeafSpec::Duration { unit, source } => {
+            vec_encoder_duration(ctx, *unit, *source, vec_shape)
+        }
         LeafSpec::Decimal { precision, scale } => {
             vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
         }
@@ -776,6 +781,51 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers
         ctx,
         shape,
         &LeafSpec::DateTime(unit),
+        quote! { i64 },
+        leaf_dtype,
+        false,
+    )
+}
+
+fn vec_encoder_naive_date(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
+    let pp = crate::codegen::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::Date };
+    vec_encoder_mapped_numeric(
+        ctx,
+        shape,
+        &LeafSpec::NaiveDate,
+        quote! { i32 },
+        leaf_dtype,
+        false,
+    )
+}
+
+fn vec_encoder_naive_time(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
+    let pp = crate::codegen::polars_paths::prelude();
+    let leaf_dtype = quote! { #pp::DataType::Time };
+    vec_encoder_mapped_numeric(
+        ctx,
+        shape,
+        &LeafSpec::NaiveTime,
+        quote! { i64 },
+        leaf_dtype,
+        false,
+    )
+}
+
+fn vec_encoder_duration(
+    ctx: &LeafCtx<'_>,
+    unit: DateTimeUnit,
+    source: DurationSource,
+    shape: &VecLayers,
+) -> Encoder {
+    let pp = crate::codegen::polars_paths::prelude();
+    let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
+    let leaf_dtype = quote! { #pp::DataType::Duration(#unit_tokens) };
+    vec_encoder_mapped_numeric(
+        ctx,
+        shape,
+        &LeafSpec::Duration { unit, source },
         quote! { i64 },
         leaf_dtype,
         false,
@@ -837,6 +887,9 @@ pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) 
         LeafSpec::Bool => leaf::bool_leaf(ctx, kind),
         LeafSpec::Binary => leaf::binary_leaf(ctx, kind),
         LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit, kind),
+        LeafSpec::NaiveDate => leaf::naive_date_leaf(ctx, kind),
+        LeafSpec::NaiveTime => leaf::naive_time_leaf(ctx, kind),
+        LeafSpec::Duration { unit, source } => leaf::duration_leaf(ctx, *unit, *source, kind),
         LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale, kind),
         LeafSpec::AsString => leaf::as_string_leaf(ctx, kind),
         LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),

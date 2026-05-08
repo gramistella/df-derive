@@ -139,6 +139,13 @@
 //!   `f32`, `f64`
 //! - **Time**: `chrono::DateTime<Utc>` → materialized as `Datetime(Milliseconds, None)` by default;
 //!   override per-field with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
+//! - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01),
+//!   `chrono::NaiveTime` → `Time` (i64 ns since midnight). Both have fixed encodings; `time_unit`
+//!   is not accepted on either.
+//! - **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`)
+//!   → `Duration(Nanoseconds)` by default; override per-field with
+//!   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as
+//!   ambiguous — use `std::time::Duration` or `chrono::Duration` to disambiguate.
 //! - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)` by default; override per-field with
 //!   `#[df_derive(decimal(precision = N, scale = N))]`
 //! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; the
@@ -382,6 +389,11 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Primitive types: `String`, `bool`, integer types, `f32`, `f64`
 /// - `chrono::DateTime<Utc>` (default: `Datetime(Milliseconds, None)`; override with
 ///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`)
+/// - `chrono::NaiveDate` (`Date`, i32 days since 1970-01-01) and `chrono::NaiveTime`
+///   (`Time`, i64 ns since midnight); both have fixed encodings, no unit override.
+/// - `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) →
+///   `Duration(Nanoseconds)` by default; override with
+///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` is ambiguous and rejected.
 /// - `rust_decimal::Decimal` (default: `Decimal(38, 10)`; override with
 ///   `#[df_derive(decimal(precision = N, scale = N))]`)
 ///
@@ -409,14 +421,18 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   `Decimal(precision, scale)` dtype produced for a `rust_decimal::Decimal` field. Polars
 ///   requires `1 <= precision <= 38`; `scale` may not exceed `precision`.
 /// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
-///   `Datetime(unit, None)` dtype produced for a `chrono::DateTime<Utc>` field. The chrono call
-///   used to derive the i64 (`timestamp_millis` / `timestamp_micros` / `timestamp_nanos_opt`)
-///   matches the chosen unit, so values are not silently truncated. `time_unit = "ns"` is
-///   fallible on dates outside chrono's supported nanosecond range (~1677–2262); the conversion
-///   surfaces a `PolarsError` rather than silently corrupting data.
-/// - The `decimal(...)` and `time_unit = "..."` attributes can only be applied to their matching
-///   base types (`Decimal` and `DateTime<Utc>`, respectively) and cannot be combined with
-///   `as_str`/`as_string` on the same field.
+///   `Datetime(unit, None)` / `Duration(unit)` dtype for a temporal field. Accepted bases are
+///   `chrono::DateTime<Utc>`, `std::time::Duration`, and `chrono::Duration`. The chrono / std
+///   call used to derive the i64 matches the chosen unit, so values are not silently truncated.
+///   `time_unit = "ns"` on `DateTime<Utc>` is fallible on dates outside chrono's supported
+///   nanosecond range (~1677–2262); `time_unit = "ns"`/`"us"` on `chrono::Duration` is fallible
+///   when the duration overflows i64 in the chosen unit; on `std::time::Duration` every unit is
+///   fallible (the value type is `u128`). All failures surface as `PolarsError::ComputeError`
+///   rather than silently corrupting data. `time_unit` is rejected on `chrono::NaiveDate` and
+///   `chrono::NaiveTime` (both have fixed encodings).
+/// - The `decimal(...)` attribute can only be applied to `rust_decimal::Decimal` and cannot be
+///   combined with `as_str`/`as_string`/`time_unit` on the same field. The `time_unit = "..."`
+///   attribute is also mutually exclusive with `as_str`/`as_string`.
 ///
 /// Notes:
 ///

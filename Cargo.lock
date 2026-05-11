@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "df-derive-runtime"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "polars",
  "polars-arrow",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "df-derive-test-harness"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "polars",
  "rust_decimal",

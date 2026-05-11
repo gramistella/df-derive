@@ -23,7 +23,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
-use super::{BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder, build_type_path};
+use super::{
+    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder, build_type_path,
+};
 
 // ============================================================================
 // Schema / empty-rows
@@ -53,7 +55,12 @@ fn build_tuple_entries(
     let mut per_elem: Vec<TokenStream> = Vec::with_capacity(elements.len());
     for (i, elem) in elements.iter().enumerate() {
         let elem_prefix = format!("{column_prefix}.field_{i}");
-        per_elem.push(build_element_entries(elem, &elem_prefix, outer_layers, mode));
+        per_elem.push(build_element_entries(
+            elem,
+            &elem_prefix,
+            outer_layers,
+            mode,
+        ));
     }
     match mode {
         EmitMode::SchemaEntries => quote! {
@@ -124,13 +131,11 @@ fn element_nested_entries(
     mode: EmitMode,
 ) -> TokenStream {
     match mode {
-        EmitMode::SchemaEntries => {
-            crate::codegen::nested::generate_schema_entries_for_struct(
-                type_path,
-                column_prefix,
-                total_layers,
-            )
-        }
+        EmitMode::SchemaEntries => crate::codegen::nested::generate_schema_entries_for_struct(
+            type_path,
+            column_prefix,
+            total_layers,
+        ),
         EmitMode::EmptyRows => {
             crate::codegen::nested::nested_empty_series_row(type_path, column_prefix, total_layers)
         }
@@ -984,7 +989,6 @@ fn parse_field_idx_from_prefix(prefix: &str) -> usize {
         .expect("emit_inner_tuple's column_prefix should end in `field_<i>`")
 }
 
-
 // ============================================================================
 // Standard-encoder dispatch (no parent wrapper or Option-only parent)
 // ============================================================================
@@ -1058,12 +1062,11 @@ fn emit_via_standard_encoder(
             let it = idents::populator_iter();
             let named = idents::field_named_series();
             let series_local = idents::vec_field_series(field_idx);
-            let _ = pp;
             quote! {
                 {
                     #(#decls)*
                     for #it in items { #push }
-                    let #series_local: ::polars::prelude::Series = #series;
+                    let #series_local: #pp::Series = #series;
                     let #named = #series_local.with_name(#column_prefix.into());
                     columns.push(#named.into());
                 }
@@ -1600,8 +1603,11 @@ fn build_leaf_projection_value_expr(
             Some(ref_projected)
         }
         LeafSpec::Binary => None,
-        LeafSpec::AsString | LeafSpec::AsStr(_) | LeafSpec::Struct(..)
-        | LeafSpec::Generic(_) | LeafSpec::Tuple(_) => None,
+        LeafSpec::AsString
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Struct(..)
+        | LeafSpec::Generic(_)
+        | LeafSpec::Tuple(_) => None,
     }
 }
 
@@ -1655,8 +1661,7 @@ fn build_primitive_leaf_pieces(
                         quote! { *#v }
                     }
                 } else {
-                    let v_chain =
-                        super::leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
+                    let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
                     if kind.is_widened() {
                         let target = &info.native;
                         quote! { (#v_chain as #target) }
@@ -1813,8 +1818,7 @@ fn build_primitive_leaf_pieces(
                         #leaf_idx += 1;
                     }
                 } else {
-                    let v_chain =
-                        super::leaf::apply_inner_derefs(&quote! { #v }, inner_derefs);
+                    let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, inner_derefs);
                     quote! {
                         match #v {
                             ::std::option::Option::Some(#v) => {
@@ -1884,9 +1888,7 @@ fn build_primitive_leaf_pieces(
             // shapes, it's the standard for-loop binding `__df_derive_v`.
             // The Some-arm rebinds `__df_derive_v` so the override is
             // only consulted at the bare arm.
-            let receiver_bare = leaf_value_expr
-                .cloned()
-                .unwrap_or_else(|| quote! { #v });
+            let receiver_bare = leaf_value_expr.cloned().unwrap_or_else(|| quote! { #v });
             let mapped_v = crate::codegen::type_registry::map_primitive_expr(
                 &receiver_bare,
                 leaf,

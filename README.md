@@ -68,7 +68,11 @@ mod dataframe {
     }
 
     pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>;
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
     }
 
     pub trait ToDataFrameVec {
@@ -119,7 +123,7 @@ Run it:
 cargo run
 ```
 
-> **Skip the boilerplate.** The `dataframe` module above is the same on every project that doesn't already use a `paft` runtime. The sibling crate `df-derive-runtime` ships it (and the reference `Decimal128Encode for rust_decimal::Decimal` impl) so you don't have to inline it yourself. Add `df-derive-runtime = "0.1"` to your `[dependencies]` and replace the `#[df_derive(...)]` attribute's trait path with `df_derive_runtime::dataframe::ToDataFrame`. See the [Using `df-derive-runtime`](#using-df-derive-runtime) section below for the full snippet.
+> **Skip the boilerplate.** The `dataframe` module above is the same on every project that doesn't already use a `paft` runtime. The sibling crate `df-derive-runtime` ships it (and the reference `Decimal128Encode for rust_decimal::Decimal` impl) so you don't have to inline it yourself. Add `df-derive-runtime = "0.3"` to your `[dependencies]` and replace the `#[df_derive(...)]` attribute's trait path with `df_derive_runtime::dataframe::ToDataFrame`. See the [Using `df-derive-runtime`](#using-df-derive-runtime) section below for the full snippet.
 
 ## Features
 
@@ -129,8 +133,10 @@ cargo run
 - **Tuple structs**: supported; columns are named `field_0`, `field_1`, ...
 - **Tuple-typed fields**: `pair: (A, B)` flattens to `pair.field_0`, `pair.field_1`. Outer
   `Option`/`Vec` distribute across element columns: `Vec<(A, B)>` produces parallel `List`
-  columns. Nested tuples and smart-pointer composition both work. Unit `()` is rejected.
-  Field-level attributes don't apply to tuple fields (hoist into a named struct instead).
+  columns. Nested tuples work when the outer tuple is not itself wrapped; use a named struct
+  for nested tuple shapes inside an outer `Option` or `Vec`. Smart-pointer composition works.
+  Unit `()` is rejected. Field-level attributes don't apply to tuple fields (hoist into a
+  named struct instead).
 - **Empty structs**: produce `(1, 0)` for instances and `(0, 0)` for empty frames
 - **Schema discovery**: `T::schema() -> Vec<(String, DataType)>`
 - **Columnar batch conversion**: `[T]::to_dataframe()` via the `Columnar` implementation
@@ -228,7 +234,7 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 - **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<Box<i32>>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `Cow<'_, str>` and `Cow<'_, [T]>` are rejected at parse time — write `String` / `Vec<T>` directly.
 - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`)
 - **Tuple structs**: unnamed fields are emitted as `field_{index}`
-- **Tuple-typed fields**: tuples like `(A, B)`, `Option<(A, B)>`, `Vec<(A, B)>`, and nested `((A, B), C)` flatten to one column per element with `<field>.field_<i>` names. The outer wrapper distributes across every element column. Unit `()` and field-level attributes (`as_str`, `decimal`, `time_unit`, …) are rejected on tuple fields.
+- **Tuple-typed fields**: tuples like `(A, B)`, `Option<(A, B)>`, `Vec<(A, B)>`, and unwrapped nested `((A, B), C)` flatten to one column per element with `<field>.field_<i>` names. The outer wrapper distributes across every element column for non-nested tuples. Nested tuples inside an outer `Option` or `Vec` are rejected; hoist the inner tuple into a named struct. Unit `()` and field-level attributes (`as_str`, `decimal`, `time_unit`, …) are rejected on tuple fields.
 
 ## Column naming
 
@@ -247,7 +253,8 @@ For every `#[derive(ToDataFrame)]` type `T` the macro generates implementations 
   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
 - `Columnar` for `T`:
-  - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
+  - `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`
+  - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>` is expected as a trait default that delegates to `columnar_from_refs`
 
 ## Examples
 
@@ -391,7 +398,9 @@ MIT. See `LICENSE`.
 
 This crate currently resolves default trait paths to a `dataframe` module under the `paft` ecosystem. Concretely, it attempts to implement:
 
-- `paft::dataframe::ToDataFrame`, `paft::dataframe::Columnar`, and `paft::dataframe::Decimal128Encode` (or `paft-core::dataframe::...`) if those crates are present.
+- `paft::dataframe::ToDataFrame`, `paft::dataframe::Columnar`, and `paft::dataframe::Decimal128Encode` if the `paft` facade is present.
+- `paft_utils::dataframe::ToDataFrame`, `paft_utils::dataframe::Columnar`, and `paft_utils::dataframe::Decimal128Encode` if `paft-utils` is present without the facade.
+- `crate::core::dataframe::...` as a local fallback for projects that keep their dataframe traits in a `core::dataframe` module and do not use paft.
 
 You can override these paths for any runtime by annotating your type with `#[df_derive(...)]`:
 
@@ -417,12 +426,14 @@ struct MyType { /* fields */ }
 
 ### Using `df-derive-runtime`
 
-If you don't already have a `paft` runtime, depend on the sibling crate `df-derive-runtime` instead of inlining the trait module yourself. It ships the canonical `ToDataFrame` / `Columnar` / `ToDataFrameVec` / `Decimal128Encode` traits, the `()` impls used by generic `Wrapper<()>` shapes, and the reference `Decimal128Encode for rust_decimal::Decimal` impl (gated behind the `rust_decimal` feature, which is enabled by default).
+If you don't already have a `paft` runtime, depend on `df-derive-runtime` instead of inlining the trait module yourself.
+
+The derive macro only generates impls; it does not own the traits those impls target. That is deliberate, because paft users already have a `paft::dataframe` trait module. For everyone else, `df-derive-runtime` is the small canonical trait module: it ships `ToDataFrame`, `Columnar`, `ToDataFrameVec`, `Decimal128Encode`, the `()` impls used by generic `Wrapper<()>` shapes, and the reference `Decimal128Encode for rust_decimal::Decimal` impl (gated behind the `rust_decimal` feature, which is enabled by default).
 
 ```toml
 [dependencies]
 df-derive = "0.3"
-df-derive-runtime = "0.1"
+df-derive-runtime = "0.3"
 ```
 
 ```rust
@@ -436,7 +447,7 @@ The `Columnar` and `Decimal128Encode` paths are auto-inferred from the `trait` a
 If you don't need the `rust_decimal` reference impl (e.g. you ship your own `Decimal128Encode for MyDecimal` and don't pull in `rust_decimal`), turn the feature off:
 
 ```toml
-df-derive-runtime = { version = "0.1", default-features = false }
+df-derive-runtime = { version = "0.3", default-features = false }
 ```
 
 ## Custom decimal backends
@@ -453,7 +464,7 @@ The implementer rescales the value to the schema scale and returns the mantissa 
 
 **Rounding contract (load-bearing).** Implementations MUST use round-half-to-even (banker's rounding) on scale-down. Polars' own `str_to_dec128` rounds that way, so backends that disagree on tie-breaking (e.g., `rust_decimal::Decimal::rescale` rounds half-away-from-zero) would produce different bytes than the historical `to_string + cast` path the codegen replaced. Sticking to round-half-to-even keeps the column byte-identical across decimal backends.
 
-**Default discovery.** The codegen looks for `Decimal128Encode` next to the `ToDataFrame` and `Columnar` traits — i.e. by default `paft::dataframe::Decimal128Encode` (or `paft-core::dataframe::...`), and otherwise the `dataframe` module the user pointed `trait = "..."` at. So, in the common case, the migration path is "add an `impl Decimal128Encode for MyDecimal` next to your existing `ToDataFrame` impls; no derive attribute needed".
+**Default discovery.** The codegen looks for `Decimal128Encode` next to the `ToDataFrame` and `Columnar` traits — by default `paft::dataframe::Decimal128Encode`, then `paft_utils::dataframe::Decimal128Encode`, then `crate::core::dataframe::Decimal128Encode` as a non-paft local fallback. If you point `trait = "..."` at your own `ToDataFrame`, the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last path segment. So, in the common case, the migration path is "add an `impl Decimal128Encode for MyDecimal` next to your existing `ToDataFrame` impls; no derive attribute needed".
 
 **Per-derive override.** If your decimal trait lives somewhere else, point at it explicitly:
 
@@ -468,25 +479,4 @@ struct Tx { /* … */ }
 
 **Backend status.** `paft-decimal` (planned) provides `Decimal128Encode` impls for `rust_decimal::Decimal` and `bigdecimal::BigDecimal` so projects can mix backends without writing the rescale themselves. Until then, the sibling crate `df-derive-runtime` ships the reference `Decimal128Encode for rust_decimal::Decimal` impl behind a default-on `rust_decimal` feature — depend on it (see [Using `df-derive-runtime`](#using-df-derive-runtime) above) and the codegen finds the impl via the auto-inferred `df_derive_runtime::dataframe::Decimal128Encode` path. A copy-paste-ready inline form also lives in `tests/common.rs` for projects that prefer not to take the dependency.
 
-**Validating a custom backend (`df-derive-test-harness`).** Backend authors can guard against silently-wrong rounding by calling the contract harness from their own test suite. The harness sibling crate exposes a single function that cross-checks any `try_to_i128_mantissa` impl against polars's own `str_to_dec128` over a battery of inputs covering positive and negative half-tie boundaries, scale-up, scale-down, very-large magnitudes near `i128::MAX`, and scale-up overflow. A backend that gets banker's rounding wrong (e.g. `rust_decimal::Decimal::rescale`'s half-away-from-zero) compiles and runs cleanly, so this harness is the only mechanical check that catches the bug class before it reaches a consumer's column bytes.
-
-```toml
-[dev-dependencies]
-df-derive-test-harness = "0.1"
-```
-
-```rust,ignore
-use df_derive_test_harness::assert_decimal128_encode_contract;
-use my_runtime::Decimal128Encode;
-use std::str::FromStr as _;
-
-#[test]
-fn my_decimal_matches_polars_rounding() {
-    assert_decimal128_encode_contract(|literal, target_scale| {
-        let value = MyDecimal::from_str(literal).unwrap();
-        <MyDecimal as Decimal128Encode>::try_to_i128_mantissa(&value, target_scale)
-    });
-}
-```
-
-The closure form sidesteps any trait-bound dance — the harness does not import your `Decimal128Encode` trait, and you do not need `From<&str>` on your decimal type. On a contract violation the harness panics with the input literal, the target `(precision, scale)`, and both mantissa values, so the failure points directly at the rounding direction that diverged.
+The repository also contains an unpublished `df-derive-test-harness` workspace crate that validates the reference decimal implementation against Polars. It is intentionally not part of the public release surface for v0.3.0.

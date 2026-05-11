@@ -25,15 +25,16 @@
 //!
 //! # When to use this crate
 //!
-//! Add this crate when you want the macro's default trait surface but do
-//! not have a `paft` ecosystem dependency. The macro's default discovery
-//! cascade still tries `paft` / `paft-utils` / `paft-core` first; this
-//! crate is for the everything-else case.
+//! Add this crate when you want the macro's trait surface but do not have a
+//! `paft` ecosystem dependency. The macro's default discovery cascade tries
+//! the `paft` facade first, then `paft-utils`, then a local
+//! `crate::core::dataframe` fallback; this crate is for projects that prefer
+//! an explicit, canonical runtime path instead of local trait boilerplate.
 //!
 //! ```toml
 //! [dependencies]
 //! df-derive = "0.3"
-//! df-derive-runtime = "0.1"
+//! df-derive-runtime = "0.3"
 //! ```
 //!
 //! ```ignore
@@ -54,11 +55,8 @@
 //! The `Decimal128Encode` contract requires round-half-to-even (banker's
 //! rounding) on scale-down. The reference `rust_decimal::Decimal` impl in
 //! this crate honours that contract; it is byte-equivalent to the
-//! historical `tests/common.rs` impl and is exercised by the
-//! `df-derive-test-harness` contract battery. Backend authors writing their
-//! own `Decimal128Encode` impl should call
-//! `df_derive_test_harness::assert_decimal128_encode_contract` to verify
-//! their rounding direction matches polars's `str_to_dec128`.
+//! historical `tests/common.rs` impl and is exercised by this repository's
+//! unpublished `df-derive-test-harness` workspace crate.
 //!
 //! [`df-derive`]: https://docs.rs/df-derive
 
@@ -177,11 +175,8 @@ pub mod dataframe {
     /// `checked_mul` overflow-to-`None` on scale-up. This impl is verified
     /// against polars's `str_to_dec128` on a battery of inputs covering
     /// half-tie boundaries (positive and negative), large magnitudes, and
-    /// scale-up overflow by the contract harness in
-    /// [`df-derive-test-harness`](https://docs.rs/df-derive-test-harness).
-    /// Backend authors writing their own `Decimal128Encode` impl should
-    /// call `df_derive_test_harness::assert_decimal128_encode_contract`
-    /// from their own test suite to prove the same.
+    /// scale-up overflow by this repository's unpublished
+    /// `df-derive-test-harness` workspace crate.
     #[cfg(feature = "rust_decimal")]
     impl Decimal128Encode for rust_decimal::Decimal {
         #[inline]

@@ -55,8 +55,8 @@ use quote::{format_ident, quote};
 
 use crate::ir::VecLayers;
 
-use super::idents;
 use super::collapse_options_to_ref;
+use super::idents;
 
 /// Collapse `opt_layers` `Option` levels above `bind` to a single
 /// `Option<&Inner>`. For `opt_layers == 1` returns the bind unchanged so

@@ -1,7 +1,7 @@
 //! Generic structs (v0.3.0).
 //!
 //! `#[derive(ToDataFrame)]` accepts type parameters, default type parameters,
-//! and multiple generics. The macro injects `ToDataFrame + Columnar + Clone`
+//! and multiple generics. The macro injects `ToDataFrame + Columnar`
 //! bounds on every type parameter, so any concrete instantiation must satisfy
 //! those traits. The unit type `()` can be used as a payload to contribute
 //! zero columns.
@@ -21,7 +21,7 @@ struct Meta {
 }
 
 // No explicit `T: Clone` bounds below — `#[derive(Clone)]` adds its own, and
-// the derive macro auto-injects `ToDataFrame + Columnar + Clone` on every type
+// the derive macro auto-injects `ToDataFrame + Columnar` on every type
 // parameter for the impl blocks it generates.
 
 #[derive(ToDataFrame, Clone)]
@@ -109,7 +109,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     );
 
     // 3. Multiple generic parameters. Each parameter gets the standard bound
-    //    set (`ToDataFrame + Columnar + Clone`) injected by the macro.
+    //    set (`ToDataFrame + Columnar`) injected by the macro.
     let pair = Pair {
         name: "trade-1".into(),
         left: Meta {

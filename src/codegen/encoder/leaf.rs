@@ -592,7 +592,12 @@ pub(super) fn duration_leaf(
     source: DurationSource,
     arm: LeafArmKind,
 ) -> LeafArm {
-    mapped_cast_leaf(ctx, &LeafSpec::Duration { unit, source }, &quote! { i64 }, arm)
+    mapped_cast_leaf(
+        ctx,
+        &LeafSpec::Duration { unit, source },
+        &quote! { i64 },
+        arm,
+    )
 }
 
 /// Shared body of every `Vec<#native>` + `Series::new` + `.cast(&dtype)?`

@@ -804,9 +804,7 @@ pub(super) fn try_build_vec_encoder(
         LeafSpec::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
         LeafSpec::NaiveDate => vec_encoder_naive_date(ctx, vec_shape),
         LeafSpec::NaiveTime => vec_encoder_naive_time(ctx, vec_shape),
-        LeafSpec::Duration { unit, source } => {
-            vec_encoder_duration(ctx, *unit, *source, vec_shape)
-        }
+        LeafSpec::Duration { unit, source } => vec_encoder_duration(ctx, *unit, *source, vec_shape),
         LeafSpec::Decimal { precision, scale } => {
             vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
         }

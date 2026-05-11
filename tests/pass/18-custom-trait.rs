@@ -49,7 +49,8 @@ mod my_traits {
 }
 
 // == STRUCT A: Uses the default path ==
-// Note: The derive macro will find `paft` or `paft-core` first if they are dependencies.
+// Note: The derive macro will find the current paft facade or utilities crate first
+// if either is a dependency.
 // Since they aren't here, it will fall back to a path like `crate::core::dataframe`.
 // The `#[df_derive]` attribute allows us to override this to use our test traits.
 // To test the default logic properly, we must tell it to use our `common` module.

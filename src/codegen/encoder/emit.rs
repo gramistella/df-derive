@@ -74,11 +74,7 @@ fn freeze_offsets_buf(
 /// push path ([`layer_wraps`]) and the hoisted collect-then-bulk path
 /// ([`hoisted_freezes`]) — keep these byte-equivalent so the bench-stable
 /// interleaves in the encoder don't shift.
-fn freeze_validity_bitmap(
-    bm: &syn::Ident,
-    mb: &syn::Ident,
-    pa_root: &TokenStream,
-) -> TokenStream {
+fn freeze_validity_bitmap(bm: &syn::Ident, mb: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
     quote! {
         let #bm: #pa_root::bitmap::Bitmap =
             <#pa_root::bitmap::Bitmap as ::core::convert::From<
@@ -528,8 +524,7 @@ fn ctb_materialize(
     let series_direct = ctb_layer_wrap(shape, layers, kind, &inner_col_direct, pp, pa_root);
     let series_take = ctb_layer_wrap(shape, layers, kind, &inner_col_take, pp, pa_root);
     let series_empty = ctb_layer_wrap(shape, layers, kind, &inner_col_empty, pp, pa_root);
-    let series_all_absent =
-        ctb_layer_wrap(shape, layers, kind, &inner_col_all_absent, pp, pa_root);
+    let series_all_absent = ctb_layer_wrap(shape, layers, kind, &inner_col_all_absent, pp, pa_root);
 
     let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct);
     let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take);
@@ -650,8 +645,7 @@ fn pep_emit(
     let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
     let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
     let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
-    let validity_decls =
-        shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
+    let validity_decls = shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
 
     let materialize = pep_materialize(pep, shape, layers, kind, pa_root, pp);
     let storage_decls = &pep.storage_decls;

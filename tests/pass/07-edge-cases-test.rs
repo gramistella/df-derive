@@ -3,7 +3,6 @@
 use df_derive::ToDataFrame;
 #[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::ToDataFrame;
 use crate::core::dataframe::ToDataFrameVec;
 
 // Multiple levels of nesting

@@ -348,7 +348,8 @@ where
             );
         };
         assert_eq!(
-            user_mantissa, polars_mantissa,
+            user_mantissa,
+            polars_mantissa,
             "Decimal128Encode contract violation: user impl returned `{user_mantissa}` but \
              polars wrote `{polars_mantissa}` for input `{literal}` -> Decimal({precision}, \
              {scale}). Case: {note}. The contract requires round-half-to-even (banker's \

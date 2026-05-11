@@ -45,8 +45,7 @@ use syn::Ident;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
 pub use tuple::{
-    build_field_emit as build_tuple_field_emit,
-    build_field_entries as build_tuple_field_entries,
+    build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
 };
 
 /// Build the type-as-path token stream for a struct/generic field. For a

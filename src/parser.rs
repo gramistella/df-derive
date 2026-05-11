@@ -227,9 +227,9 @@ fn parse_leaf_spec(
         FieldOverride::None => Ok(default_leaf_for_base(base)),
         FieldOverride::AsString => Ok(LeafSpec::AsString),
         FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
-        FieldOverride::AsBinary => unreachable!(
-            "AsBinary handled by process_field before parse_leaf_spec runs"
-        ),
+        FieldOverride::AsBinary => {
+            unreachable!("AsBinary handled by process_field before parse_leaf_spec runs")
+        }
         FieldOverride::Decimal { precision, scale } => {
             parse_leaf_decimal(field, field_display_name, &base, *precision, *scale)
         }
@@ -606,7 +606,12 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
         Fields::Unnamed(unnamed) => {
             for (index, field) in unnamed.unnamed.iter().enumerate() {
                 let name_ident = format_ident!("field_{}", index);
-                fields_ir.push(process_field(field, name_ident, Some(index), &generic_params)?);
+                fields_ir.push(process_field(
+                    field,
+                    name_ident,
+                    Some(index),
+                    &generic_params,
+                )?);
             }
         }
     }

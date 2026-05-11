@@ -475,7 +475,6 @@ pub(in crate::codegen) fn tuple_nested_inner_v() -> Ident {
     format_ident!("__df_derive_inner_v")
 }
 
-
 // --- Helpers for `quote!` ergonomics --------------------------------------
 
 /// Returns a closure that produces the flat-vec precount counter token

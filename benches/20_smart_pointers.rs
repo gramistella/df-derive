@@ -80,7 +80,11 @@ struct OptI32Box {
 }
 
 fn make_u64_plain() -> Vec<U64Plain> {
-    (0..N_ROWS).map(|i| U64Plain { v: vec![i as u64; 4] }).collect()
+    (0..N_ROWS)
+        .map(|i| U64Plain {
+            v: vec![i as u64; 4],
+        })
+        .collect()
 }
 fn make_u64_box() -> Vec<U64Box> {
     (0..N_ROWS)
@@ -134,7 +138,11 @@ fn make_date_box() -> Vec<DateBox> {
 fn make_opt_i32_plain() -> Vec<OptI32Plain> {
     (0..N_ROWS)
         .map(|i| OptI32Plain {
-            v: if i % 5 == 0 { None } else { Some(i32::try_from(i).unwrap()) },
+            v: if i % 5 == 0 {
+                None
+            } else {
+                Some(i32::try_from(i).unwrap())
+            },
         })
         .collect()
 }

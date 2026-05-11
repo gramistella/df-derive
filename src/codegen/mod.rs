@@ -28,6 +28,11 @@ pub struct MacroConfig {
 }
 
 pub fn resolve_paft_crate_path() -> TokenStream {
+    // Current paft layout:
+    // - `paft` facade re-exports `paft_utils::dataframe` as `paft::dataframe`
+    // - direct internal consumers use `paft_utils::dataframe`
+    // - non-paft projects can still get a convention-based fallback with
+    //   `crate::core::dataframe`
     match crate_name("paft") {
         Ok(FoundCrate::Name(name)) => {
             let ident = format_ident!("{}", name);

@@ -180,7 +180,7 @@ fn main() {
     println!("\n✅ #[df_derive(as_str)] attribute test completed successfully!");
 }
 
-// Generic-leaf `as_str`: the macro injects `T: ToDataFrame + Columnar + Clone`
+// Generic-leaf `as_str`: the macro injects `T: ToDataFrame + Columnar`
 // on every type parameter (struct-level — see `impl_parts_with_bounds`), so a
 // generic field with `as_str` requires `T` to satisfy those *plus* `AsRef<str>`
 // from the const-fn assert. The test's `LabelStr` derives `ToDataFrame` to

@@ -1,21 +1,21 @@
 [package]
 name = "df-derive-runtime"
-version = "0.1.0"
-edition = "2024"
-authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Canonical `dataframe` trait module and reference `Decimal128Encode for rust_decimal::Decimal` impl for use with `df-derive`."
-license = "MIT"
-repository = "https://github.com/gramistella/df-derive"
-homepage = "https://github.com/gramistella/df-derive"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/df-derive-runtime"
 readme = "../README.md"
 keywords = ["polars", "dataframe", "df-derive", "decimal"]
 categories = ["data-structures"]
 
 [dependencies]
-polars = { version = "0.53.0", features = ["timezones", "dtype-decimal"] }
-polars-arrow = "0.53.0"
-rust_decimal = { version = "1.41.0", features = ["serde"], optional = true }
+polars = { workspace = true, features = ["timezones", "dtype-decimal"] }
+polars-arrow.workspace = true
+rust_decimal = { workspace = true, optional = true }
 
 [features]
 default = ["rust_decimal"]

@@ -2,6 +2,9 @@
 
 Contract test harness for [`df-derive`]'s `Decimal128Encode` trait.
 
+This is an unpublished workspace crate used by the repository's own tests. It is
+not part of the public crates.io release surface.
+
 `df-derive` lowers `Decimal` fields straight to a polars
 `Decimal(precision, scale)` column by going through a user-pluggable trait:
 
@@ -25,14 +28,7 @@ overflow (where the contract requires `None`).
 
 ## Usage
 
-Add it as a dev-dep:
-
-```toml
-[dev-dependencies]
-df-derive-test-harness = "0.1"
-```
-
-Then call from a `#[test]` in your backend crate, passing a closure that
+Within this workspace, call from a `#[test]`, passing a closure that
 parses a literal and rescales it via your `Decimal128Encode` impl:
 
 ```rust,ignore
@@ -62,4 +58,4 @@ rounding direction that diverged.
 MIT, matching the parent crate.
 
 [`df-derive`]: https://docs.rs/df-derive
-[`assert_decimal128_encode_contract`]: https://docs.rs/df-derive-test-harness/latest/df_derive_test_harness/fn.assert_decimal128_encode_contract.html
+[`assert_decimal128_encode_contract`]: src/lib.rs

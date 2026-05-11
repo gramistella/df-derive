@@ -1,15 +1,30 @@
 [workspace]
 members = [".", "df-derive-runtime", "df-derive-test-harness"]
+resolver = "3"
 
-[package]
-name = "df-derive"
+[workspace.package]
 version = "0.3.0"
 edition = "2024"
 authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
-description = "Procedural derive macro for efficiently converting Rust structs into Polars DataFrames."
 license = "MIT"
 repository = "https://github.com/gramistella/df-derive"
 homepage = "https://github.com/gramistella/df-derive"
+
+[workspace.dependencies]
+polars = "0.53.0"
+polars-arrow = "0.53.0"
+rust_decimal = { version = "1.41.0", features = ["serde"] }
+df-derive-runtime = { version = "0.3.0", path = "df-derive-runtime" }
+
+[package]
+name = "df-derive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Procedural derive macro for efficiently converting Rust structs into Polars DataFrames."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/df-derive"
 keywords = ["polars", "dataframe", "proc-macro", "finance"]
 categories = ["data-structures", "finance"]
@@ -25,14 +40,14 @@ proc-macro-crate = "3.5.0"
 
 [dev-dependencies]
 trybuild = "1.0.116"
-polars = { version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }
-polars-arrow = "0.53.0"
+polars = { workspace = true, features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }
+polars-arrow.workspace = true
 chrono = { version = "0.4.41", features = ["serde"] }
-rust_decimal = { version = "1.41.0", features = ["serde"] }
+rust_decimal.workspace = true
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4"
 serde = { version = "1", features = ["derive"] }
-df-derive-runtime = { path = "df-derive-runtime" }
+df-derive-runtime.workspace = true
 
 [profile.bench]
 opt-level = 3

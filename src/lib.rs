@@ -163,9 +163,11 @@
 //!   yielding prefixed list columns)
 //! - **Tuple structs**: unnamed fields are emitted as `field_{index}`
 //! - **Tuple-typed fields**: `(A, B)`, `(A, B, C)`, `Option<(A, B)>`, `Vec<(A, B)>`,
-//!   `Vec<Option<(A, B)>>`, `Option<Vec<(A, B)>>`, and nested tuples `((A, B), C)` flatten to
-//!   one column per element with `<field>.field_<i>` names. The unit type `()` is rejected
-//!   (zero-column fields would break the parser's invariant). Field-level attributes
+//!   `Vec<Option<(A, B)>>`, `Option<Vec<(A, B)>>`, and unwrapped nested tuples
+//!   `((A, B), C)` flatten to one column per element with `<field>.field_<i>` names.
+//!   Nested tuples inside an outer `Option` or `Vec` are rejected; hoist the inner tuple
+//!   into a named struct. The unit type `()` is rejected (zero-column fields would break
+//!   the parser's invariant). Field-level attributes
 //!   (`as_str`, `as_string`, `as_binary`, `decimal`, `time_unit`) do not apply to tuple
 //!   fields — hoist into a named struct if per-element attributes are needed.
 //!
@@ -282,8 +284,9 @@
 //! ## Crate path override (about paft)
 //!
 //! By default, the macro resolves trait paths to a `dataframe` module under the `paft` ecosystem.
-//! Concretely, it attempts to implement `paft::dataframe::ToDataFrame` and
-//! `paft::dataframe::Columnar` (or `paft-core::dataframe::...`) if those crates are present. You can
+//! Concretely, it attempts the `paft` facade first (`paft::dataframe::...`), then
+//! `paft-utils` (`paft_utils::dataframe::...`), then a local `crate::core::dataframe`
+//! fallback for projects that keep dataframe traits there without using paft. You can
 //! override these paths for any runtime by annotating your type with `#[df_derive(...)]`:
 //!
 //! ```rust
@@ -365,8 +368,7 @@ fn parse_trait_path_attr(
     label: &str,
 ) -> syn::Result<syn::Path> {
     let lit: syn::LitStr = meta.value()?.parse()?;
-    syn::parse_str(&lit.value())
-        .map_err(|e| meta.error(format!("invalid {label} path: {e}")))
+    syn::parse_str(&lit.value()).map_err(|e| meta.error(format!("invalid {label} path: {e}")))
 }
 
 /// Clone `path` and replace the last segment's identifier with `name`,

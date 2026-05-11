@@ -20,14 +20,30 @@ All notable changes to this project will be documented in this file.
   tuple is not itself wrapped.
 - New `#[df_derive(as_str)]` field attribute borrows string-like values via
   `AsRef<str>`, avoiding per-row `String` allocation for supported shapes.
-- New `#[df_derive(as_binary)]` field attribute encodes byte-vector shapes as
-  Polars `Binary` instead of the default `List(UInt8)`.
-- `chrono::NaiveDate`, `chrono::NaiveTime`, `std::time::Duration`, and
-  `chrono::Duration` fields are supported.
-- `std::num::NonZero*` integer fields are supported and encode as their
-  underlying integer dtype.
+- New `#[df_derive(as_binary)]` field attribute encodes byte-buffer shapes
+  (`Vec<u8>`, `&[u8]`, and `Cow<'_, [u8]>`) as Polars `Binary` instead of the
+  default `List(UInt8)`.
+- New `#[df_derive(decimal(precision = N, scale = N))]` field attribute
+  overrides Decimal dtype precision/scale for supported decimal backend
+  shapes.
+- New `#[df_derive(time_unit = "ms"|"us"|"ns")]` field attribute overrides the
+  time unit for `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`,
+  `std::time::Duration`, `core::time::Duration`, and `chrono::Duration`.
+- Chrono support now includes `chrono::DateTime<Tz>` for non-UTC time zones,
+  `chrono::NaiveDateTime`, `chrono::NaiveDate`, and `chrono::NaiveTime`.
+  `DateTime<Tz>` values encode the UTC instant; timezone labels are not
+  preserved in the Polars dtype.
+- `std::time::Duration`, `core::time::Duration`, and `chrono::Duration`
+  fields are supported.
+- `i128`, `u128`, and `std::num::NonZero*` integer fields are supported.
+  NonZero integers encode as their underlying integer dtype.
+- Borrowed reference fields are supported: `&T` peels transparently, `&str`
+  is treated as a borrowed string leaf, and `&[u8]` is supported with
+  `#[df_derive(as_binary)]`.
 - `Box<T>`, `Rc<T>`, `Arc<T>`, and sized `Cow<'_, T>` wrappers peel
-  transparently before schema and encoder selection.
+  transparently before schema and encoder selection. `Cow<'_, str>` is
+  treated as a borrowed string leaf, and `Cow<'_, [u8]>` is supported with
+  `#[df_derive(as_binary)]`.
 - `df-derive-runtime` provides the canonical trait surface for non-paft
   projects, including the reference `Decimal128Encode for rust_decimal::Decimal`
   implementation.

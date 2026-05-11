@@ -94,14 +94,14 @@ pub(super) enum StringyExprKind {
     /// `<TyPath as AsRef<str>>::as_ref(&(#binding))`.
     Bare,
     /// Leaf push for `WrapperShape::Leaf { option_layers: 1 }`. Materializes
-    /// `Option<&str>` from a `&Option<T>` field access. `String`:
-    /// `(#binding).as_deref()`. Non-`String`:
-    /// `(#binding).as_ref().map(<TyPath as AsRef<str>>::as_ref)`.
+    /// `Option<&str>` from a `&Option<T>` field access. Both branches use
+    /// closures so deref coercions fire for transparent smart pointers
+    /// below the `Option` layer (`Option<Box<String>>`,
+    /// `Option<Arc<MyStringy>>`, etc.).
     OptionDeref,
     /// Multi-Option leaf push (`option_layers >= 2`) — operates on a
-    /// pre-collapsed `Option<&T>` binding. `String`:
-    /// `(#binding).map(String::as_str)`. Non-`String`:
-    /// `(#binding).map(<TyPath as AsRef<str>>::as_ref)`.
+    /// pre-collapsed `Option<&T>` binding. Uses closures for the same
+    /// deref-coercion reason as [`Self::OptionDeref`].
     CollapsedOption,
     /// Vec(`as_str`) per-row leaf push body. The binding is `&T` (loop
     /// variable). `String`: `#binding.as_str()`. Non-`String`:
@@ -131,19 +131,29 @@ pub(super) fn stringy_value_expr(
             }
         }
         StringyExprKind::OptionDeref => {
+            let v = idents::leaf_value();
             if is_string {
-                quote! { (#binding).as_deref() }
+                quote! { (#binding).as_ref().map(|#v| #v.as_str()) }
             } else {
                 let ty_path = stringy_base_ty_path(base);
-                quote! { (#binding).as_ref().map(<#ty_path as ::core::convert::AsRef<str>>::as_ref) }
+                quote! {
+                    (#binding).as_ref().map(|#v| {
+                        <#ty_path as ::core::convert::AsRef<str>>::as_ref(#v)
+                    })
+                }
             }
         }
         StringyExprKind::CollapsedOption => {
+            let v = idents::leaf_value();
             if is_string {
-                quote! { (#binding).map(::std::string::String::as_str) }
+                quote! { (#binding).map(|#v| #v.as_str()) }
             } else {
                 let ty_path = stringy_base_ty_path(base);
-                quote! { (#binding).map(<#ty_path as ::core::convert::AsRef<str>>::as_ref) }
+                quote! {
+                    (#binding).map(|#v| {
+                        <#ty_path as ::core::convert::AsRef<str>>::as_ref(#v)
+                    })
+                }
             }
         }
         StringyExprKind::MbvaValue => {

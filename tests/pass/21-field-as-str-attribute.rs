@@ -1,5 +1,8 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
+use std::borrow::Cow;
+use std::rc::Rc;
+use std::sync::Arc;
 #[path = "../common.rs"]
 mod core;
 use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
@@ -54,6 +57,16 @@ fn assert_list_strs(df: &DataFrame, col: &str, expected: &[&str]) {
             .collect();
         let expected_owned: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
         assert_eq!(vals, expected_owned);
+    } else {
+        panic!("expected List for {}, got {:?}", col, av)
+    }
+}
+
+fn assert_list_opt_strs(df: &DataFrame, col: &str, expected: &[Option<&str>]) {
+    let av = df.column(col).unwrap().get(0).unwrap();
+    if let AnyValue::List(inner) = av {
+        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        assert_eq!(vals, expected);
     } else {
         panic!("expected List for {}, got {:?}", col, av)
     }
@@ -174,6 +187,9 @@ fn main() {
     println!("\n🔄 Generic-leaf case: #[df_derive(as_str)] on a generic field type T...");
     test_generic_as_str();
 
+    println!("\n🔄 Smart-pointer composition with #[df_derive(as_str)]...");
+    test_smart_pointer_as_str();
+
     println!("\n🔄 Deep wrapper shapes: Vec<Vec<T>>, Vec<Option<T>>...");
     test_deep_wrappers();
 
@@ -289,6 +305,116 @@ fn test_generic_as_str() {
     } else {
         panic!("expected list for labels[1]");
     }
+}
+
+#[derive(ToDataFrame, Clone)]
+struct SmartPointerAsStr {
+    #[df_derive(as_str)]
+    boxed_label: Option<Box<LabelStr>>,
+    #[df_derive(as_str)]
+    nested_label: Option<Option<Arc<LabelStr>>>,
+    #[df_derive(as_str)]
+    cow_label: Cow<'static, LabelStr>,
+    #[df_derive(as_str)]
+    label_values: Vec<Option<Rc<LabelStr>>>,
+    #[df_derive(as_str)]
+    boxed_string: Option<Box<String>>,
+    #[df_derive(as_str)]
+    nested_string: Option<Option<Arc<String>>>,
+    #[df_derive(as_str)]
+    cow_string: Cow<'static, String>,
+    #[df_derive(as_str)]
+    string_values: Vec<Option<Arc<String>>>,
+}
+
+fn label(value: &str) -> LabelStr {
+    LabelStr {
+        label: value.to_string(),
+    }
+}
+
+fn test_smart_pointer_as_str() {
+    let item = SmartPointerAsStr {
+        boxed_label: Some(Box::new(label("ACTIVE"))),
+        nested_label: Some(Some(Arc::new(label("INACTIVE")))),
+        cow_label: Cow::Owned(label("COW_LABEL")),
+        label_values: vec![
+            Some(Rc::new(label("ACTIVE"))),
+            None,
+            Some(Rc::new(label("INACTIVE"))),
+        ],
+        boxed_string: Some(Box::new("boxed-string".to_string())),
+        nested_string: Some(Some(Arc::new("nested-string".to_string()))),
+        cow_string: Cow::Owned("cow-string".to_string()),
+        string_values: vec![
+            Some(Arc::new("left".to_string())),
+            None,
+            Some(Arc::new("right".to_string())),
+        ],
+    };
+
+    let df = item.clone().to_dataframe().unwrap();
+    assert_eq!(df.shape(), (1, 8));
+    assert_col_str(&df, "boxed_label", "ACTIVE");
+    assert_col_str(&df, "nested_label", "INACTIVE");
+    assert_col_str(&df, "cow_label", "COW_LABEL");
+    assert_list_opt_strs(
+        &df,
+        "label_values",
+        &[Some("ACTIVE"), None, Some("INACTIVE")],
+    );
+    assert_col_str(&df, "boxed_string", "boxed-string");
+    assert_col_str(&df, "nested_string", "nested-string");
+    assert_col_str(&df, "cow_string", "cow-string");
+    assert_list_opt_strs(&df, "string_values", &[Some("left"), None, Some("right")]);
+
+    let batch = vec![
+        item.clone(),
+        SmartPointerAsStr {
+            boxed_label: None,
+            nested_label: Some(None),
+            cow_label: Cow::Owned(label("BATCH_LABEL")),
+            label_values: vec![None, Some(Rc::new(label("ACTIVE")))],
+            boxed_string: None,
+            nested_string: Some(None),
+            cow_string: Cow::Owned("batch-string".to_string()),
+            string_values: vec![None, Some(Arc::new("batch-right".to_string()))],
+        },
+    ];
+    let df_batch = batch.as_slice().to_dataframe().unwrap();
+    assert_eq!(df_batch.shape(), (2, 8));
+    let boxed_labels: Vec<Option<&str>> = df_batch
+        .column("boxed_label")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(boxed_labels, vec![Some("ACTIVE"), None]);
+    let nested_labels: Vec<Option<&str>> = df_batch
+        .column("nested_label")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(nested_labels, vec![Some("INACTIVE"), None]);
+    let boxed_strings: Vec<Option<&str>> = df_batch
+        .column("boxed_string")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(boxed_strings, vec![Some("boxed-string"), None]);
+    let nested_strings: Vec<Option<&str>> = df_batch
+        .column("nested_string")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(nested_strings, vec![Some("nested-string"), None]);
 }
 
 // `Vec<Vec<T>>+as_str` and `Vec<Option<T>>+as_str` exercise depth-2 wrapper

@@ -13,7 +13,8 @@ All notable changes to this project will be documented in this file.
   `ToDataFrame + Columnar` bounds on each type parameter; it does not require
   user payload types to implement `Clone`.
 - The unit type `()` can be used as a generic payload to contribute zero
-  columns to the schema and DataFrame.
+  columns to the schema and DataFrame; direct `field: ()` fields remain
+  rejected.
 - Tuple-typed fields are supported, including `Option<(A, B)>`,
   `Vec<(A, B)>`, smart-pointer wrappers, and nested tuples when the outer
   tuple is not itself wrapped.

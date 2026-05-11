@@ -236,7 +236,8 @@
 //! - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields
 //! - **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar`
 //!   bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly
-//!   annotated with `decimal(...)`. Use `()` as a payload type to contribute zero columns.
+//!   annotated with `decimal(...)`. Use `()` as a generic payload type to contribute zero columns;
+//!   direct `field: ()` fields are rejected.
 //! - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`
 //!
 //! ## Performance notes
@@ -488,7 +489,8 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Enums are not supported for derive.
 /// - Generic structs are supported; the macro injects `ToDataFrame + Columnar`
 ///   bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly
-///   annotated with `decimal(...)`. The unit type `()` is a valid payload (zero columns).
+///   annotated with `decimal(...)`. The unit type `()` is a valid generic payload (zero columns);
+///   direct `field: ()` fields are rejected.
 /// - All nested custom structs must also derive `ToDataFrame`.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.

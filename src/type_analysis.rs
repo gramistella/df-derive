@@ -287,17 +287,19 @@ fn reject_bare_duration(current_type: &Type, generic_params: &[Ident]) -> Result
 }
 
 fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase, syn::Error> {
-    // Tuple bases recurse into element analyses. The empty tuple `()` is
-    // rejected here — a unit-typed field contributes zero columns, which
-    // collides with the parser's invariant that every field produces at
-    // least one schema entry.
+    // Tuple bases recurse into element analyses. A direct unit-typed field
+    // `field: ()` is rejected here because it would contribute zero columns,
+    // colliding with the parser's invariant that every syntactic field
+    // produces at least one schema entry. Generic payloads that instantiate to
+    // `()` are still supported through the runtime's `ToDataFrame for ()`.
     if let Type::Tuple(tup) = ty {
         if tup.elems.is_empty() {
             return Err(syn::Error::new_spanned(
                 ty,
-                "df-derive does not support unit-typed (`()`) fields; \
-                 they contribute zero columns. Remove the field or replace \
-                 it with a non-unit type.",
+                "df-derive does not support direct unit-typed (`()`) fields; \
+                 they would contribute zero columns. Remove the field, replace \
+                 it with a non-unit type, or use a generic payload such as \
+                 `field: M` with `M = ()`.",
             ));
         }
         let mut elements: Vec<AnalyzedType> = Vec::with_capacity(tup.elems.len());

@@ -1,4 +1,4 @@
-error: df-derive does not support unit-typed (`()`) fields; they contribute zero columns. Remove the field or replace it with a non-unit type.
+error: df-derive does not support direct unit-typed (`()`) fields; they would contribute zero columns. Remove the field, replace it with a non-unit type, or use a generic payload such as `field: M` with `M = ()`.
  --> tests/fail/121-fail-unit-tuple-field.rs:7:14
   |
 7 |     nothing: (),

@@ -62,10 +62,12 @@ pub mod dataframe {
         }
     }
 
-    // Unit-type support: a struct field of type `()` contributes zero columns.
-    // The `to_dataframe` / `columnar_to_dataframe` paths must still produce a
-    // DataFrame with the correct row count, so we use a temporary dummy column
-    // that is dropped immediately after construction.
+    // Unit-type support for generic payloads such as `Wrapper<()>`. Direct
+    // derived fields of type `()` are rejected by df-derive, but a generic
+    // field instantiated as `()` contributes zero columns. The
+    // `to_dataframe` / `columnar_to_dataframe` paths must still produce a
+    // DataFrame with the correct row count, so we use a temporary dummy
+    // column that is dropped immediately after construction.
     impl ToDataFrame for () {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
             let dummy = Series::new("_dummy".into(), &[0i32]);

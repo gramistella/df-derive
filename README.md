@@ -377,7 +377,7 @@ struct WithEnums {
 
 - **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported. The rejection error suggests `Vec<(K, V)>` as a workaround — that conversion now works directly (tuple-typed fields are supported).
 - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields.
-- **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar` bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly annotated with `decimal(...)`. The unit type `()` can be used as a payload to contribute zero columns.
+- **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar` bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly annotated with `decimal(...)`. The unit type `()` can be used as a generic payload to contribute zero columns; direct `field: ()` fields are rejected.
 - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`.
 
 ## Performance notes

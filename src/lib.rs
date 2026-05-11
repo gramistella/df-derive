@@ -10,7 +10,7 @@
 //! - Inspect the schema (column names and `DataType`s) at compile time via a generated method
 //!
 //! It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`, tuple structs,
-//! and key domain types like `chrono::DateTime<Utc>` and `rust_decimal::Decimal`.
+//! and key domain types like `chrono::DateTime<Utc>` and decimal backend paths named `Decimal`.
 //!
 //! ## Installation
 //!
@@ -151,8 +151,11 @@
 //!   → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override per-field
 //!   with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected
 //!   as ambiguous — use `std::time::Duration` or `chrono::Duration` to disambiguate.
-//! - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)` by default; override per-field with
-//!   `#[df_derive(decimal(precision = N, scale = N))]`
+//! - **Decimal**: any type path whose last segment is `Decimal` (for example
+//!   `rust_decimal::Decimal` or a facade such as `paft_decimal::Decimal`) → `Decimal(38, 10)`
+//!   by default. This implicit detection is syntax-based because proc macros cannot resolve
+//!   type aliases. For differently named decimal backends, use
+//!   `#[df_derive(decimal(precision = N, scale = N))]` and implement `Decimal128Encode`.
 //! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; the
 //!   default for `Vec<u8>` (no attribute) remains `List(UInt8)`. See the field-level attribute
 //!   list below for accepted shapes (`Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
@@ -222,8 +225,8 @@
 //! - **Unsupported container types**: maps/sets like `HashMap<_, _>` are not supported
 //! - **Enums**: derive on enums is not supported; use `#[df_derive(as_string)]` on enum fields
 //! - **Generics**: generic structs are supported. The macro injects `ToDataFrame + Columnar`
-//!   bounds on every type parameter, so any concrete instantiation must satisfy those traits.
-//!   Use `()` as a payload type to contribute zero columns.
+//!   bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly
+//!   annotated with `decimal(...)`. Use `()` as a payload type to contribute zero columns.
 //! - **All nested types must also derive**: if you nest a struct, it must also derive `ToDataFrame`
 //!
 //! ## Performance notes
@@ -415,8 +418,11 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) →
 ///   `Duration(Nanoseconds)` by default; override with
 ///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` is ambiguous and rejected.
-/// - `rust_decimal::Decimal` (default: `Decimal(38, 10)`; override with
-///   `#[df_derive(decimal(precision = N, scale = N))]`)
+/// - Decimal backends written with a final `Decimal` path segment, such as
+///   `rust_decimal::Decimal` or `paft_decimal::Decimal` (default: `Decimal(38, 10)`;
+///   override with `#[df_derive(decimal(precision = N, scale = N))]`). This is a
+///   syntax-level heuristic, not type resolution; differently named backends opt in with
+///   explicit `decimal(...)` and a `Decimal128Encode` impl.
 ///
 /// Attributes:
 ///
@@ -439,8 +445,9 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   non-`u8` leaves are rejected at parse time. Mutually exclusive with `as_str`,
 ///   `as_string`, `decimal(...)`, and `time_unit = "..."`.
 /// - Field-level: `#[df_derive(decimal(precision = N, scale = N))]` to choose the
-///   `Decimal(precision, scale)` dtype produced for a `rust_decimal::Decimal` field. Polars
-///   requires `1 <= precision <= 38`; `scale` may not exceed `precision`.
+///   `Decimal(precision, scale)` dtype for a path named `Decimal` or to explicitly opt a
+///   custom/generic decimal backend into `Decimal128Encode` dispatch. Polars requires
+///   `1 <= precision <= 38`; `scale` may not exceed `precision`.
 /// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
 ///   `Datetime(unit, None)` / `Duration(unit)` dtype for a temporal field. Accepted bases are
 ///   `chrono::DateTime<Utc>`, `std::time::Duration`, and `chrono::Duration`. The chrono / std
@@ -451,16 +458,18 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   fallible (the value type is `u128`). All failures surface as `PolarsError::ComputeError`
 ///   rather than silently corrupting data. `time_unit` is rejected on `chrono::NaiveDate` and
 ///   `chrono::NaiveTime` (both have fixed encodings).
-/// - The `decimal(...)` attribute can only be applied to `rust_decimal::Decimal` and cannot be
-///   combined with `as_str`/`as_string`/`time_unit` on the same field. The `time_unit = "..."`
-///   attribute is also mutually exclusive with `as_str`/`as_string`.
+/// - The `decimal(...)` attribute can only be applied to decimal backend candidates: type paths
+///   named `Decimal`, custom struct types, or generic type parameters that implement
+///   `Decimal128Encode`. It cannot be combined with `as_str`/`as_string`/`time_unit` on the same
+///   field. The `time_unit = "..."` attribute is also mutually exclusive with
+///   `as_str`/`as_string`.
 ///
 /// Notes:
 ///
 /// - Enums are not supported for derive.
 /// - Generic structs are supported; the macro injects `ToDataFrame + Columnar`
-///   bounds on every type parameter, so any concrete instantiation must satisfy
-///   those traits. The unit type `()` is a valid payload (zero columns).
+///   bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly
+///   annotated with `decimal(...)`. The unit type `()` is a valid payload (zero columns).
 /// - All nested custom structs must also derive `ToDataFrame`.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.

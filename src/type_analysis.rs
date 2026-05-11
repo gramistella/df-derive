@@ -10,8 +10,8 @@ pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
 /// `time_unit` override. Nanoseconds is the most-information-preserving
 /// choice and matches `polars-arrow`'s default `Duration` representation.
 pub const DEFAULT_DURATION_UNIT: DateTimeUnit = DateTimeUnit::Nanoseconds;
-/// Default `Decimal(precision, scale)` for `rust_decimal::Decimal` fields
-/// without an explicit `decimal(...)` override.
+/// Default `Decimal(precision, scale)` for fields whose written type path
+/// ends in `Decimal` and has no explicit `decimal(...)` override.
 pub const DEFAULT_DECIMAL_PRECISION: u8 = 38;
 /// Default scale paired with `DEFAULT_DECIMAL_PRECISION`.
 pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
@@ -53,6 +53,11 @@ pub enum AnalyzedBase {
     /// segment matching. Codegen uses the user's declared field-type tokens
     /// directly so type inference resolves the alias correctly.
     ChronoDuration,
+    /// Any path whose last segment is `Decimal`. This is deliberately
+    /// syntax-based: derive macros cannot resolve type aliases or prove this
+    /// is `rust_decimal::Decimal`, so projects such as paft can expose a
+    /// backend facade (`paft_decimal::Decimal`) and still get implicit decimal
+    /// support. Non-`Decimal` backend names opt in with `decimal(...)`.
     Decimal,
     /// Concrete user-defined struct, with optional angle-bracketed generic
     /// arguments at the field's use site (e.g. `<M>` in `Vec<Foo<M>>`).

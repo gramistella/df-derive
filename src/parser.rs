@@ -109,7 +109,7 @@ fn override_conflict(
         (FieldOverride::Decimal { .. }, FieldOverride::TimeUnit(_))
         | (FieldOverride::TimeUnit(_), FieldOverride::Decimal { .. }) => format!(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
-             pick one — `decimal(...)` only applies to `rust_decimal::Decimal`, \
+             pick one — `decimal(...)` applies to decimal backend candidates, \
              `time_unit` only applies to `chrono::DateTime<Utc>`, \
              `std::time::Duration`, or `chrono::Duration`"
         ),
@@ -206,7 +206,7 @@ fn parse_field_override(
 /// analyzed base type into the final `LeafSpec` carried on the IR. Performs
 /// base-type compatibility checks for every override variant and injects
 /// the default semantics (`DateTimeToInt(Milliseconds)` for
-/// `chrono::DateTime<Utc>`, `Decimal(38, 10)` for `rust_decimal::Decimal`)
+/// `chrono::DateTime<Utc>`, `Decimal(38, 10)` for paths named `Decimal`)
 /// when no override was declared.
 ///
 /// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
@@ -272,9 +272,12 @@ fn reject_attrs_on_tuple(
 /// Map an analyzed base to its default `LeafSpec` (no override declared).
 /// Each base picks the parser-injected default semantics — `Milliseconds`
 /// for `DateTime<Utc>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
-/// etc. Tuple bases recurse: each element runs through the same default
-/// pipeline (no field-level overrides apply at element level — the
-/// parser rejects them on the parent field).
+/// etc. The decimal default is intentionally syntax-based: proc macros see
+/// tokens, not resolved types, so a path whose last segment is `Decimal` is
+/// treated as a decimal backend while other names require an explicit
+/// `decimal(...)` attribute. Tuple bases recurse: each element runs through
+/// the same default pipeline (no field-level overrides apply at element
+/// level — the parser rejects them on the parent field).
 fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
     match base {
         AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
@@ -364,14 +367,34 @@ fn parse_leaf_decimal(
     scale: u8,
 ) -> Result<LeafSpec, syn::Error> {
     match base {
-        AnalyzedBase::Decimal => Ok(LeafSpec::Decimal { precision, scale }),
+        // `Decimal` by name is the implicit path (`rust_decimal::Decimal`,
+        // `paft_decimal::Decimal`, type aliases / re-exports, etc.). Proc
+        // macros cannot resolve whether a path is *actually* a decimal type,
+        // so the explicit `decimal(...)` attribute is the user assertion that
+        // a differently named custom/generic backend should use the same
+        // `Decimal128Encode` dispatch.
+        AnalyzedBase::Decimal | AnalyzedBase::Struct(_, _) | AnalyzedBase::Generic(_) => {
+            Ok(LeafSpec::Decimal { precision, scale })
+        }
         _ => Err(syn::Error::new_spanned(
             field,
             format!(
                 "field `{field_display_name}` has `decimal(...)` but its base type is not \
-                 `rust_decimal::Decimal`; remove the attribute or change the field type"
+                 a decimal backend candidate; `decimal(...)` applies to types named \
+                 `Decimal`, custom struct types, or generic type parameters that \
+                 implement `Decimal128Encode`"
             ),
         )),
+    }
+}
+
+fn decimal_generic_params_for_override(
+    override_: &FieldOverride,
+    base: &AnalyzedBase,
+) -> Vec<Ident> {
+    match (override_, base) {
+        (FieldOverride::Decimal { .. }, AnalyzedBase::Generic(ident)) => vec![ident.clone()],
+        _ => Vec::new(),
     }
 }
 
@@ -539,6 +562,7 @@ fn process_field(
     let analyzed = analyze_type(&field.ty, generic_params)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let inner_smart_ptr_depth = analyzed.inner_smart_ptr_depth;
+    let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
         // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
         // only checks the leaf base, but the tuple itself fails the same
@@ -559,6 +583,7 @@ fn process_field(
         leaf_spec,
         wrapper_shape,
         field_ty: field.ty.clone(),
+        decimal_generic_params,
         outer_smart_ptr_depth,
         inner_smart_ptr_depth,
     })

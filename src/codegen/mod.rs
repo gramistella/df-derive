@@ -121,17 +121,22 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 /// for splicing into an `impl` header. When the struct has type parameters, each
 /// one is augmented with the configured `ToDataFrame` and `Columnar` trait
 /// bounds so the generated method bodies can call those traits on the params.
+/// Generic parameters explicitly opted into `decimal(...)` also receive the
+/// configured `Decimal128Encode` bound.
 pub fn impl_parts_with_bounds(
-    generics: &syn::Generics,
+    ir: &StructIR,
     config: &MacroConfig,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let mut generics = generics.clone();
+    let mut generics = ir.generics.clone();
     let to_df_trait = &config.to_dataframe_trait_path;
     let columnar_trait = &config.columnar_trait_path;
+    let decimal_trait = &config.decimal128_encode_trait_path;
     let to_df_bound: syn::TypeParamBound =
         syn::parse2(quote! { #to_df_trait }).expect("trait path should parse as bound");
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
+    let decimal_bound: syn::TypeParamBound =
+        syn::parse2(quote! { #decimal_trait }).expect("trait path should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
     // `Columnar::columnar_from_refs`, and every primitive-vec branch in the
     // encoder IR borrows from the for-loop binding directly. A user with a
@@ -141,6 +146,13 @@ pub fn impl_parts_with_bounds(
     for tp in generics.type_params_mut() {
         tp.bounds.push(to_df_bound.clone());
         tp.bounds.push(columnar_bound.clone());
+        if ir
+            .fields
+            .iter()
+            .any(|f| f.decimal_generic_params.iter().any(|p| p == &tp.ident))
+        {
+            tp.bounds.push(decimal_bound.clone());
+        }
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     (

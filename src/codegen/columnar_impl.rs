@@ -48,8 +48,7 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let to_df_trait = &config.to_dataframe_trait_path;
     let pp = super::polars_paths::prelude();
     let it_ident = idents::populator_iter();
-    let (impl_generics, ty_generics, where_clause) =
-        super::impl_parts_with_bounds(&ir.generics, config);
+    let (impl_generics, ty_generics, where_clause) = super::impl_parts_with_bounds(ir, config);
 
     let (cf_decls, cf_pushes, cf_builders) = prepare_columnar_parts(ir, config, &it_ident);
 

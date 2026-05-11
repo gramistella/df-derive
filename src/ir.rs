@@ -34,6 +34,10 @@ pub struct FieldIR {
     /// source span, putting compiler errors at the field declaration rather
     /// than deep in macro expansion.
     pub field_ty: syn::Type,
+    /// Generic type parameters that were explicitly opted into decimal
+    /// encoding with `#[df_derive(decimal(...))]`. Codegen uses this to add
+    /// `Decimal128Encode` bounds only for the generic params that need them.
+    pub decimal_generic_params: Vec<Ident>,
     /// Number of smart-pointer layers (`Box`/`Rc`/`Arc`/`Cow`) peeled at
     /// the OUTER position — above any `Option`/`Vec` wrapper. The codegen
     /// wraps the raw field access in this many `*` derefs so numeric `as`
@@ -188,8 +192,10 @@ pub enum LeafSpec {
         unit: DateTimeUnit,
         source: DurationSource,
     },
-    /// `rust_decimal::Decimal` with the chosen `Decimal(precision, scale)`
-    /// dtype. `1 <= precision <= 38`; `scale <= precision`.
+    /// Decimal backend encoded through `Decimal128Encode` with the chosen
+    /// `Decimal(precision, scale)` dtype. Implicit detection is syntax-based
+    /// on a final `Decimal` path segment; explicit `decimal(...)` can opt in
+    /// custom/generic backend types.
     Decimal { precision: u8, scale: u8 },
     /// `#[df_derive(as_string)]` — convert any `Display` value to `String`
     /// at codegen time. Materializes as `DataType::String`.

@@ -43,6 +43,7 @@ fn tests() {
     t.pass("tests/pass/38-smart-pointers.rs");
     t.pass("tests/pass/39-tuple-fields.rs");
     t.pass("tests/pass/40-reversed-trait-overrides.rs");
+    t.pass("tests/pass/41-decimal-custom-backend-attr.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

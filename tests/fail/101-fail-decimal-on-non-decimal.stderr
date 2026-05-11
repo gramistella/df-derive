@@ -1,4 +1,4 @@
-error: field `not_a_decimal` has `decimal(...)` but its base type is not `rust_decimal::Decimal`; remove the attribute or change the field type
+error: field `not_a_decimal` has `decimal(...)` but its base type is not a decimal backend candidate; `decimal(...)` applies to types named `Decimal`, custom struct types, or generic type parameters that implement `Decimal128Encode`
  --> tests/fail/101-fail-decimal-on-non-decimal.rs:7:5
   |
 7 | /     #[df_derive(decimal(precision = 38, scale = 18))]

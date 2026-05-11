@@ -71,8 +71,7 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
 
 pub fn generate_helpers_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
-    let (impl_generics, ty_generics, where_clause) =
-        super::impl_parts_with_bounds(&ir.generics, config);
+    let (impl_generics, ty_generics, where_clause) = super::impl_parts_with_bounds(ir, config);
 
     // Per-field `AsRef<str>` assertions for `as_str` fields. Each assert is
     // a named `const` item inside the impl block (anonymous `const _:` is

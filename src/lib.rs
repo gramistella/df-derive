@@ -463,51 +463,24 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     // Parse helper attribute configuration (trait paths)
     let default_df_mod = codegen::resolve_paft_crate_path();
-    let mut to_df_trait_path_ts = quote! { #default_df_mod::ToDataFrame };
-    let mut columnar_trait_path_ts = quote! { #default_df_mod::Columnar };
-    let mut decimal128_encode_trait_path_ts = quote! { #default_df_mod::Decimal128Encode };
+    let mut to_df_trait_path: Option<syn::Path> = None;
+    let mut columnar_trait_path: Option<syn::Path> = None;
+    let mut decimal128_encode_trait_path: Option<syn::Path> = None;
 
     for attr in &ast.attrs {
         if attr.path().is_ident("df_derive") {
             let parse_res = attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("trait") {
                     let path = parse_trait_path_attr(&meta, "trait")?;
-                    to_df_trait_path_ts = quote! { #path };
-
-                    // Infer the `Columnar` trait path by rebasing the
-                    // final segment of the user-supplied `trait = "..."`
-                    // path. Convention: the parent module of the supplied
-                    // `ToDataFrame` path must also export a sibling
-                    // `Columnar` (and `Decimal128Encode`, below). This
-                    // keeps the typical case to a single attribute.
-                    // Unusual layouts opt out by passing
-                    // `columnar = "..."` explicitly; for that to win, the
-                    // user must write the explicit key after `trait =
-                    // "..."` because `parse_nested_meta` invokes this
-                    // callback in source order and later writes overwrite
-                    // earlier ones. The doc-comment block on the
-                    // proc-macro itself is the source of truth for the
-                    // user-facing contract; this comment is a maintenance
-                    // note for the inference site.
-                    let columnar_path = rebase_last_segment(&path, "Columnar");
-                    columnar_trait_path_ts = quote! { #columnar_path };
-
-                    // Same inference for `Decimal128Encode`: rebase the
-                    // trait path's final segment so a user who only sets
-                    // `trait = "..."` gets all three siblings without
-                    // separate attributes. The same source-order rule
-                    // applies — `decimal128_encode = "..."` only wins if
-                    // written after `trait = "..."`.
-                    let decimal_path = rebase_last_segment(&path, "Decimal128Encode");
-                    decimal128_encode_trait_path_ts = quote! { #decimal_path };
+                    to_df_trait_path = Some(path);
                     Ok(())
                 } else if meta.path.is_ident("columnar") {
                     let path = parse_trait_path_attr(&meta, "columnar trait")?;
-                    columnar_trait_path_ts = quote! { #path };
+                    columnar_trait_path = Some(path);
                     Ok(())
                 } else if meta.path.is_ident("decimal128_encode") {
                     let path = parse_trait_path_attr(&meta, "decimal128_encode trait")?;
-                    decimal128_encode_trait_path_ts = quote! { #path };
+                    decimal128_encode_trait_path = Some(path);
                     Ok(())
                 } else {
                     Err(meta.error("unsupported key in #[df_derive(...)] attribute"))
@@ -518,6 +491,28 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
             }
         }
     }
+
+    let to_df_trait_path_ts = match &to_df_trait_path {
+        Some(path) => quote! { #path },
+        None => quote! { #default_df_mod::ToDataFrame },
+    };
+    let columnar_trait_path_ts = match (&columnar_trait_path, &to_df_trait_path) {
+        (Some(path), _) => quote! { #path },
+        (None, Some(path)) => {
+            let columnar_path = rebase_last_segment(path, "Columnar");
+            quote! { #columnar_path }
+        }
+        (None, None) => quote! { #default_df_mod::Columnar },
+    };
+    let decimal128_encode_trait_path_ts = match (&decimal128_encode_trait_path, &to_df_trait_path) {
+        (Some(path), _) => quote! { #path },
+        (None, Some(path)) => {
+            let decimal_path = rebase_last_segment(path, "Decimal128Encode");
+            quote! { #decimal_path }
+        }
+        (None, None) => quote! { #default_df_mod::Decimal128Encode },
+    };
+
     let config = codegen::MacroConfig {
         to_dataframe_trait_path: to_df_trait_path_ts,
         columnar_trait_path: columnar_trait_path_ts,

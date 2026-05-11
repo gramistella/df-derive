@@ -187,8 +187,12 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             // (no Option/Vec) only see outer smart pointers, which the access
             // expression already dereffed via `it_access`.
             let _ = inner_derefs;
-            let bare_value = if info.widen_from.is_some() {
-                quote! { ((#access) as #native) }
+            let bare_value = if kind.is_nonzero() || info.widen_from.is_some() {
+                crate::codegen::type_registry::numeric_stored_value(
+                    kind,
+                    quote! { #access },
+                    native,
+                )
             } else {
                 quote! { (#access).clone() }
             };
@@ -222,11 +226,11 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             // keep the by-value match when no smart pointers are present).
             let v = idents::leaf_value();
             let option_push = if inner_derefs == 0 {
-                let some_push_value = if info.widen_from.is_some() {
-                    quote! { (#v as #native) }
-                } else {
-                    quote! { #v }
-                };
+                let some_push_value = crate::codegen::type_registry::numeric_stored_value(
+                    kind,
+                    quote! { #v },
+                    native,
+                );
                 quote! {
                     match #access {
                         ::std::option::Option::Some(#v) => {
@@ -244,11 +248,8 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
                 // produced by `.as_ref()`; then `inner_derefs` more derefs
                 // walk the smart-pointer chain to the leaf. Total: 1 + inner_derefs.
                 let v_inner = apply_inner_derefs(&quote! { #v }, inner_derefs + 1);
-                let some_push_value = if info.widen_from.is_some() {
-                    quote! { (#v_inner as #native) }
-                } else {
-                    quote! { #v_inner }
-                };
+                let some_push_value =
+                    crate::codegen::type_registry::numeric_stored_value(kind, v_inner, native);
                 quote! {
                     match (#access).as_ref() {
                         ::std::option::Option::Some(#v) => {

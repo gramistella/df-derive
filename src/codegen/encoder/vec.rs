@@ -750,20 +750,14 @@ pub(super) fn try_build_vec_encoder(
             // prototypes. With smart pointers we use `apply_inner_derefs`
             // because the parens are needed to compose multiple derefs.
             let value_expr = if inner_derefs == 0 {
-                if kind.is_widened() {
-                    let target = &info.native;
-                    quote! { (*#v as #target) }
-                } else {
-                    quote! { *#v }
-                }
+                crate::codegen::type_registry::numeric_stored_value(
+                    *kind,
+                    quote! { *#v },
+                    &info.native,
+                )
             } else {
                 let v_chain = leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
-                if kind.is_widened() {
-                    let target = &info.native;
-                    quote! { (#v_chain as #target) }
-                } else {
-                    quote! { #v_chain }
-                }
+                crate::codegen::type_registry::numeric_stored_value(*kind, v_chain, &info.native)
             };
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),

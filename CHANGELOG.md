@@ -23,6 +23,8 @@ All notable changes to this project will be documented in this file.
   Polars `Binary` instead of the default `List(UInt8)`.
 - `chrono::NaiveDate`, `chrono::NaiveTime`, `std::time::Duration`, and
   `chrono::Duration` fields are supported.
+- `std::num::NonZero*` integer fields are supported and encode as their
+  underlying integer dtype.
 - `Box<T>`, `Rc<T>`, `Arc<T>`, and sized `Cow<'_, T>` wrappers peel
   transparently before schema and encoder selection.
 - `df-derive-runtime` provides the canonical trait surface for non-paft

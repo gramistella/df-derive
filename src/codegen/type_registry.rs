@@ -49,7 +49,7 @@ pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
             widen_from,
         }
     };
-    match kind {
+    match kind.storage_kind() {
         NumericKind::I8 => info(quote! { i8 }, "Int8", None),
         NumericKind::I16 => info(quote! { i16 }, "Int16", None),
         NumericKind::I32 => info(quote! { i32 }, "Int32", None),
@@ -64,6 +64,40 @@ pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
         NumericKind::F64 => info(quote! { f64 }, "Float64", None),
         NumericKind::ISize => info(quote! { i64 }, "Int64", Some(quote! { isize })),
         NumericKind::USize => info(quote! { u64 }, "UInt64", Some(quote! { usize })),
+        NumericKind::NonZeroI8
+        | NumericKind::NonZeroI16
+        | NumericKind::NonZeroI32
+        | NumericKind::NonZeroI64
+        | NumericKind::NonZeroI128
+        | NumericKind::NonZeroISize
+        | NumericKind::NonZeroU8
+        | NumericKind::NonZeroU16
+        | NumericKind::NonZeroU32
+        | NumericKind::NonZeroU64
+        | NumericKind::NonZeroU128
+        | NumericKind::NonZeroUSize => {
+            unreachable!("storage_kind() strips NonZero variants before metadata lookup")
+        }
+    }
+}
+
+/// Convert a source numeric expression into the value stored in the Polars
+/// primitive lane. `NonZero*` values project through `.get()`, while
+/// platform-sized integer families cast to the fixed-width lane Polars uses.
+pub(super) fn numeric_stored_value(
+    kind: NumericKind,
+    source_value: TokenStream,
+    native: &TokenStream,
+) -> TokenStream {
+    let value = if kind.is_nonzero() {
+        quote! { (#source_value).get() }
+    } else {
+        source_value
+    };
+    if kind.is_widened() {
+        quote! { (#value as #native) }
+    } else {
+        value
     }
 }
 
@@ -140,6 +174,7 @@ pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape) -> TokenStream {
 /// `String`, `AsStr` → `&str` borrow). The bare `LeafSpec::*` arms
 /// (`Numeric` / `String` / `Bool` / `Struct` / `Generic`) clone the value
 /// directly — no transform applies. Returns the mapped per-row expression.
+#[allow(clippy::too_many_lines)]
 pub fn map_primitive_expr(
     var: &TokenStream,
     leaf: &LeafSpec,

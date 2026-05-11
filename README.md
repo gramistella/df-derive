@@ -226,7 +226,7 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 
 ## Supported types
 
-- **Primitives**: `String`, `&str`, `bool`, integer types (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `f32`, `f64`
+- **Primitives**: `String`, `&str`, `bool`, integer types (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `std::num::NonZero*` integer types, `f32`, `f64`
 - **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. `DateTime<Tz>` values are encoded as UTC instants; the textual timezone/offset is not preserved, so use `#[df_derive(as_string)]` if that representation matters.
 - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars `dtype-time`). Both have fixed encodings — `time_unit` is not accepted.
 - **Duration**: `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`.

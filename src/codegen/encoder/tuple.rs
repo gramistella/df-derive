@@ -1285,12 +1285,11 @@ fn build_leaf_projection_value_expr(
     match leaf {
         LeafSpec::Numeric(kind) => {
             let info = crate::codegen::type_registry::numeric_info_for(*kind);
-            if kind.is_widened() {
-                let target = &info.native;
-                Some(quote! { (#copy_projected as #target) })
-            } else {
-                Some(copy_projected)
-            }
+            Some(crate::codegen::type_registry::numeric_stored_value(
+                *kind,
+                copy_projected,
+                &info.native,
+            ))
         }
         LeafSpec::Bool => Some(copy_projected),
         LeafSpec::DateTime(_)
@@ -1376,20 +1375,18 @@ fn build_primitive_leaf_pieces(
             // pointer derefs).
             let value_expr = leaf_value_expr.cloned().unwrap_or_else(|| {
                 if inner_derefs == 0 {
-                    if kind.is_widened() {
-                        let target = &info.native;
-                        quote! { (*#v as #target) }
-                    } else {
-                        quote! { *#v }
-                    }
+                    crate::codegen::type_registry::numeric_stored_value(
+                        *kind,
+                        quote! { *#v },
+                        &info.native,
+                    )
                 } else {
                     let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
-                    if kind.is_widened() {
-                        let target = &info.native;
-                        quote! { (#v_chain as #target) }
-                    } else {
-                        quote! { #v_chain }
-                    }
+                    crate::codegen::type_registry::numeric_stored_value(
+                        *kind,
+                        v_chain,
+                        &info.native,
+                    )
                 }
             });
             let native = &info.native;

@@ -142,7 +142,8 @@
 //! ## Supported types
 //!
 //! - **Primitives**: `String`, `bool`, integer types
-//!   (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `f32`, `f64`
+//!   (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`),
+//!   `std::num::NonZero*` integer types, `f32`, `f64`
 //! - **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` → materialized as
 //!   `Datetime(Milliseconds, None)` by default; override per-field with
 //!   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. `DateTime<Tz>` values are encoded as UTC
@@ -422,7 +423,8 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Nested structs are flattened using dot notation (e.g., `outer.inner`)
 /// - Wrappers `Option<T>` and `Vec<T>` in any nesting order, with `Vec<Struct>` producing multiple
 ///   list columns with a `vec_field.subfield` prefix
-/// - Primitive types: `String`, `bool`, integer types including `i128`/`u128`, `f32`, `f64`
+/// - Primitive types: `String`, `bool`, integer types including `i128`/`u128`,
+///   `std::num::NonZero*` integer types, `f32`, `f64`
 /// - `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` (default:
 ///   `Datetime(Milliseconds, None)`; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`).
 ///   `DateTime<Tz>` stores the UTC instant; use `as_string` when the textual timezone/offset

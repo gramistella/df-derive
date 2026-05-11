@@ -79,7 +79,8 @@ pub enum DurationSource {
 
 /// Numeric primitive kind. Carries the static information the encoder needs
 /// (variant tag for chunked-array / dtype dispatch, plus widening info for
-/// `isize`/`usize`) without binding to any token-stream representation.
+/// `isize`/`usize` and `.get()` projection for `std::num::NonZero*`) without
+/// binding to any token-stream representation.
 /// Polars only has fixed-width integer lanes, so the platform-sized
 /// `ISize`/`USize` variants widen to `i64`/`u64` at the leaf push site.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,13 +101,75 @@ pub enum NumericKind {
     ISize,
     /// Widens to `u64`. The leaf push site reads `(*v) as u64`.
     USize,
+    /// `std::num::NonZeroI8`, encoded as its underlying `i8`.
+    NonZeroI8,
+    /// `std::num::NonZeroI16`, encoded as its underlying `i16`.
+    NonZeroI16,
+    /// `std::num::NonZeroI32`, encoded as its underlying `i32`.
+    NonZeroI32,
+    /// `std::num::NonZeroI64`, encoded as its underlying `i64`.
+    NonZeroI64,
+    /// `std::num::NonZeroI128`, encoded as its underlying `i128`.
+    NonZeroI128,
+    /// `std::num::NonZeroIsize`, encoded as widened `i64`.
+    NonZeroISize,
+    /// `std::num::NonZeroU8`, encoded as its underlying `u8`.
+    NonZeroU8,
+    /// `std::num::NonZeroU16`, encoded as its underlying `u16`.
+    NonZeroU16,
+    /// `std::num::NonZeroU32`, encoded as its underlying `u32`.
+    NonZeroU32,
+    /// `std::num::NonZeroU64`, encoded as its underlying `u64`.
+    NonZeroU64,
+    /// `std::num::NonZeroU128`, encoded as its underlying `u128`.
+    NonZeroU128,
+    /// `std::num::NonZeroUsize`, encoded as widened `u64`.
+    NonZeroUSize,
 }
 
 impl NumericKind {
+    /// Return the primitive storage kind a numeric-like Rust type maps to.
+    pub const fn storage_kind(self) -> Self {
+        match self {
+            Self::NonZeroI8 => Self::I8,
+            Self::NonZeroI16 => Self::I16,
+            Self::NonZeroI32 => Self::I32,
+            Self::NonZeroI64 => Self::I64,
+            Self::NonZeroI128 => Self::I128,
+            Self::NonZeroISize => Self::ISize,
+            Self::NonZeroU8 => Self::U8,
+            Self::NonZeroU16 => Self::U16,
+            Self::NonZeroU32 => Self::U32,
+            Self::NonZeroU64 => Self::U64,
+            Self::NonZeroU128 => Self::U128,
+            Self::NonZeroUSize => Self::USize,
+            other => other,
+        }
+    }
+
     /// True for `ISize`/`USize` (platform-sized integers widened at the
     /// codegen boundary).
     pub const fn is_widened(self) -> bool {
-        matches!(self, Self::ISize | Self::USize)
+        matches!(self.storage_kind(), Self::ISize | Self::USize)
+    }
+
+    /// True for the `std::num::NonZero*` integer family.
+    pub const fn is_nonzero(self) -> bool {
+        matches!(
+            self,
+            Self::NonZeroI8
+                | Self::NonZeroI16
+                | Self::NonZeroI32
+                | Self::NonZeroI64
+                | Self::NonZeroI128
+                | Self::NonZeroISize
+                | Self::NonZeroU8
+                | Self::NonZeroU16
+                | Self::NonZeroU32
+                | Self::NonZeroU64
+                | Self::NonZeroU128
+                | Self::NonZeroUSize
+        )
     }
 }
 
@@ -173,8 +236,9 @@ pub struct TupleElement {
 #[derive(Clone)]
 pub enum LeafSpec {
     /// Numeric primitive (`i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`/
-    /// `f32`/`f64`) and the platform-sized widened variants (`isize`/`usize`,
-    /// widened to `i64`/`u64` at the codegen boundary).
+    /// `f32`/`f64`), the platform-sized widened variants (`isize`/`usize`,
+    /// widened to `i64`/`u64` at the codegen boundary), and
+    /// `std::num::NonZero*` integer types encoded through `.get()`.
     Numeric(NumericKind),
     /// Bare `String` field, no transform.
     String,

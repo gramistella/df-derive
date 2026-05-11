@@ -199,23 +199,34 @@ impl ShapeScan<'_> {
         } else {
             let inner_bind = &self.layers[cur + 1].bind;
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
-            if let Some(projection) = self.projection.as_ref().filter(|p| cur + 1 == p.layer) {
-                let item_bind = format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
-                let projected =
-                    projected_layer_bind(&item_bind, projection, self.outer_some_prefix, cur);
-                quote! {
-                    for #item_bind in #vec_bind.iter() {
-                        let #inner_bind = #projected;
-                        #inner_layer_body
-                    }
-                }
-            } else {
-                quote! {
-                    for #inner_bind in #vec_bind.iter() {
-                        #inner_layer_body
-                    }
-                }
-            }
+            self.projection
+                .as_ref()
+                .filter(|p| cur + 1 == p.layer)
+                .map_or_else(
+                    || {
+                        quote! {
+                            for #inner_bind in #vec_bind.iter() {
+                                #inner_layer_body
+                            }
+                        }
+                    },
+                    |projection| {
+                        let item_bind =
+                            format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
+                        let projected = projected_layer_bind(
+                            &item_bind,
+                            projection,
+                            self.outer_some_prefix,
+                            cur,
+                        );
+                        quote! {
+                            for #item_bind in #vec_bind.iter() {
+                                let #inner_bind = #projected;
+                                #inner_layer_body
+                            }
+                        }
+                    },
+                )
         }
     }
 
@@ -336,25 +347,36 @@ impl ShapePrecount<'_> {
             let inner_bind = &self.layers[cur + 1].bind;
             let counter = &self.layer_counters[cur];
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
-            if let Some(projection) = self.projection.as_ref().filter(|p| cur + 1 == p.layer) {
-                let item_bind = format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
-                let projected =
-                    projected_layer_bind(&item_bind, projection, self.outer_some_prefix, cur);
-                quote! {
-                    for #item_bind in #vec_bind.iter() {
-                        let #inner_bind = #projected;
-                        #inner_layer_body
-                        #counter += 1;
-                    }
-                }
-            } else {
-                quote! {
-                    for #inner_bind in #vec_bind.iter() {
-                        #inner_layer_body
-                        #counter += 1;
-                    }
-                }
-            }
+            self.projection
+                .as_ref()
+                .filter(|p| cur + 1 == p.layer)
+                .map_or_else(
+                    || {
+                        quote! {
+                            for #inner_bind in #vec_bind.iter() {
+                                #inner_layer_body
+                                #counter += 1;
+                            }
+                        }
+                    },
+                    |projection| {
+                        let item_bind =
+                            format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
+                        let projected = projected_layer_bind(
+                            &item_bind,
+                            projection,
+                            self.outer_some_prefix,
+                            cur,
+                        );
+                        quote! {
+                            for #item_bind in #vec_bind.iter() {
+                                let #inner_bind = #projected;
+                                #inner_layer_body
+                                #counter += 1;
+                            }
+                        }
+                    },
+                )
         }
     }
 

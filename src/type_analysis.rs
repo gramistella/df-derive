@@ -127,7 +127,7 @@ pub struct AnalyzedType {
 }
 
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
-    let peeled = peel_type_wrappers(ty)?;
+    let peeled = peel_type_wrappers(ty);
 
     reject_unsupported_collection_type(peeled.current_type)?;
     reject_bare_duration(peeled.current_type, generic_params)?;
@@ -158,7 +158,7 @@ const fn bump_smart_ptr_depths(outer: &mut usize, inner: &mut usize, wrappers: &
     }
 }
 
-fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
+fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut outer_smart_ptr_depth: usize = 0;
     let mut inner_smart_ptr_depth: usize = 0;
@@ -225,12 +225,12 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
         break;
     }
 
-    Ok(PeeledType {
+    PeeledType {
         wrappers,
         current_type,
         outer_smart_ptr_depth,
         inner_smart_ptr_depth,
-    })
+    }
 }
 
 fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Error> {
@@ -353,6 +353,18 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
             "usize" => AnalyzedBase::Numeric(NumericKind::USize),
             "u32" => AnalyzedBase::Numeric(NumericKind::U32),
             "i32" => AnalyzedBase::Numeric(NumericKind::I32),
+            "NonZeroI8" => AnalyzedBase::Numeric(NumericKind::NonZeroI8),
+            "NonZeroI16" => AnalyzedBase::Numeric(NumericKind::NonZeroI16),
+            "NonZeroI32" => AnalyzedBase::Numeric(NumericKind::NonZeroI32),
+            "NonZeroI64" => AnalyzedBase::Numeric(NumericKind::NonZeroI64),
+            "NonZeroI128" => AnalyzedBase::Numeric(NumericKind::NonZeroI128),
+            "NonZeroIsize" => AnalyzedBase::Numeric(NumericKind::NonZeroISize),
+            "NonZeroU8" => AnalyzedBase::Numeric(NumericKind::NonZeroU8),
+            "NonZeroU16" => AnalyzedBase::Numeric(NumericKind::NonZeroU16),
+            "NonZeroU32" => AnalyzedBase::Numeric(NumericKind::NonZeroU32),
+            "NonZeroU64" => AnalyzedBase::Numeric(NumericKind::NonZeroU64),
+            "NonZeroU128" => AnalyzedBase::Numeric(NumericKind::NonZeroU128),
+            "NonZeroUsize" => AnalyzedBase::Numeric(NumericKind::NonZeroUSize),
             "bool" => AnalyzedBase::Bool,
             "Decimal" => AnalyzedBase::Decimal,
             // Last-segment ident matching, mirroring `is_chrono_datetime`'s

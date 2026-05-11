@@ -1,4 +1,4 @@
-error: bare `Duration` is ambiguous; use `std::time::Duration` or `chrono::Duration` to disambiguate
+error: bare `Duration` is ambiguous; use `std::time::Duration`, `core::time::Duration`, or `chrono::Duration` to disambiguate
   --> tests/fail/116-fail-bare-duration-ambiguous.rs:15:14
    |
 15 |     elapsed: Duration,

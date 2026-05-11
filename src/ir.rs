@@ -64,10 +64,10 @@ pub enum DateTimeUnit {
     Nanoseconds,
 }
 
-/// Source of a `Duration` field — distinguishes `std::time::Duration` (whose
-/// component reads are `as_nanos()` / `as_micros()` / `as_millis()`, all
-/// returning `u128` and requiring fallible narrowing to `i64`) from
-/// `chrono::Duration` / `chrono::TimeDelta` (whose reads are
+/// Source of a `Duration` field — distinguishes `std::time::Duration` /
+/// `core::time::Duration` (whose component reads are `as_nanos()` /
+/// `as_micros()` / `as_millis()`, all returning `u128` and requiring fallible
+/// narrowing to `i64`) from `chrono::Duration` / `chrono::TimeDelta` (whose reads are
 /// `num_nanoseconds()` / `num_microseconds()` / `num_milliseconds()`, the
 /// first two returning `Option<i64>` and the third returning `i64` directly).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,8 +183,9 @@ pub enum LeafSpec {
     /// nanoseconds since midnight). No unit choice — `Time` has a fixed
     /// encoding.
     NaiveTime,
-    /// `std::time::Duration` or `chrono::Duration` (alias for
-    /// `chrono::TimeDelta`) materialized as `DataType::Duration(unit)`.
+    /// `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`
+    /// (alias for `chrono::TimeDelta`) materialized as
+    /// `DataType::Duration(unit)`.
     /// `source` selects the per-row mapping shape (std uses `as_nanos()`
     /// etc. which return `u128` and require fallible narrowing; chrono uses
     /// `num_nanoseconds()` etc.).

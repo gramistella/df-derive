@@ -77,4 +77,5 @@ fn tests() {
     t.compile_fail("tests/fail/124-fail-as-binary-on-tuple.rs");
     t.compile_fail("tests/fail/125-fail-decimal-on-tuple.rs");
     t.compile_fail("tests/fail/126-fail-time-unit-on-tuple.rs");
+    t.compile_fail("tests/fail/127-fail-external-time-duration.rs");
 }

@@ -45,9 +45,10 @@ pub enum AnalyzedBase {
     /// `chrono::NaiveTime` — last-segment `NaiveTime` with no generic args
     /// matches, same leniency as [`Self::NaiveDate`].
     NaiveTime,
-    /// `std::time::Duration` (or `core::time::Duration`). Detected by path
-    /// segment matching to disambiguate from `chrono::Duration`; bare
-    /// `Duration` is rejected as ambiguous in [`analyze_type`].
+    /// Exactly `std::time::Duration` or `core::time::Duration`. Detected by
+    /// strict path matching to disambiguate from `chrono::Duration` and the
+    /// external `time::Duration`; bare `Duration` is rejected as ambiguous in
+    /// [`analyze_type`].
     StdDuration,
     /// `chrono::Duration` (alias for `chrono::TimeDelta`). Detected by path
     /// segment matching. Codegen uses the user's declared field-type tokens
@@ -244,8 +245,8 @@ fn reject_bare_duration(current_type: &Type, generic_params: &[Ident]) -> Result
     {
         return Err(syn::Error::new_spanned(
             current_type,
-            "bare `Duration` is ambiguous; use `std::time::Duration` or \
-             `chrono::Duration` to disambiguate",
+            "bare `Duration` is ambiguous; use `std::time::Duration`, \
+             `core::time::Duration`, or `chrono::Duration` to disambiguate",
         ));
     }
     Ok(())
@@ -278,7 +279,8 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     // share the last segment `Duration`, so naive last-segment matching is
     // insufficient. Bare `Duration` is rejected upstream in `analyze_type`,
     // not here, so the only `Duration` paths reaching this function are
-    // qualified (e.g. `std::time::Duration` or `chrono::Duration`).
+    // qualified (e.g. `std::time::Duration`, `core::time::Duration`, or
+    // `chrono::Duration`).
     if let Type::Path(type_path) = ty {
         if is_std_duration(type_path) {
             return Ok(AnalyzedBase::StdDuration);
@@ -336,29 +338,32 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }
 
-/// Detect `std::time::Duration` or `core::time::Duration` by walking the
-/// path segments. Matches when the path contains both a `time` segment and
-/// a final `Duration` segment, with a leading `std` or `core` (or a
-/// re-export shape that ends in `time::Duration` — same leniency as
-/// `is_datetime_utc`).
+/// Detect exactly `std::time::Duration` or `core::time::Duration`.
+///
+/// This is intentionally stricter than the `Decimal` heuristic. The Duration
+/// encoder emits inherent std/core methods such as `as_nanos()`, so accepting
+/// any path ending in `time::Duration` would accidentally capture the external
+/// `time` crate's signed duration type.
 fn is_std_duration(type_path: &TypePath) -> bool {
-    let segs: Vec<String> = type_path
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    if segs.last().is_none_or(|s| s != "Duration") {
+    if type_path.qself.is_some() || type_path.path.segments.len() != 3 {
         return false;
     }
-    // The reliable signal is `time` immediately preceding `Duration`. The
-    // only standard-library crates that nest `Duration` under a `time`
-    // module are `std::time` and `core::time`, so this is a precise match
-    // for the two stdlib paths plus any re-export that preserves the tail.
-    segs.iter()
-        .rev()
-        .nth(1)
-        .is_some_and(|s| s == "time" || s == "std" || s == "core")
+    let mut segments = type_path.path.segments.iter();
+    let Some(root) = segments.next() else {
+        return false;
+    };
+    let Some(module) = segments.next() else {
+        return false;
+    };
+    let Some(leaf) = segments.next() else {
+        return false;
+    };
+    matches!(root.ident.to_string().as_str(), "std" | "core")
+        && root.arguments.is_empty()
+        && module.ident == "time"
+        && module.arguments.is_empty()
+        && leaf.ident == "Duration"
+        && leaf.arguments.is_empty()
 }
 
 /// Detect `chrono::Duration` or `chrono::TimeDelta`. `chrono::Duration` is

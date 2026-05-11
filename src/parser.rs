@@ -111,7 +111,8 @@ fn override_conflict(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
              pick one — `decimal(...)` applies to decimal backend candidates, \
              `time_unit` only applies to `chrono::DateTime<Utc>`, \
-             `std::time::Duration`, or `chrono::Duration`"
+             `std::time::Duration`, `core::time::Duration`, or \
+             `chrono::Duration`"
         ),
         (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
             "field `{field_display_name}` combines `as_binary` with another override; \
@@ -434,8 +435,9 @@ fn parse_leaf_time_unit(
             field,
             format!(
                 "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 not `chrono::DateTime<Utc>`, `std::time::Duration`, or `chrono::Duration`; \
-                 remove the attribute or change the field type"
+                 not `chrono::DateTime<Utc>`, `std::time::Duration`, \
+                 `core::time::Duration`, or `chrono::Duration`; remove the \
+                 attribute or change the field type"
             ),
         )),
     }

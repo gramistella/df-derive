@@ -7,7 +7,8 @@ use chrono::{NaiveDate, NaiveTime};
 use polars::prelude::*;
 
 // Cover every accepted shape for the four new bases:
-//   NaiveDate / NaiveTime / std::time::Duration / chrono::Duration
+//   NaiveDate / NaiveTime / std::time::Duration / core::time::Duration /
+//   chrono::Duration
 // in their bare, Option, Vec<T>, Vec<Option<T>>, and Option<Vec<T>>
 // permutations, plus time_unit overrides on both Duration variants.
 
@@ -33,6 +34,7 @@ struct All {
     sd_vec: Vec<std::time::Duration>,
     sd_vec_opt: Vec<Option<std::time::Duration>>,
     sd_opt_vec: Option<Vec<std::time::Duration>>,
+    core_sd: ::core::time::Duration,
 
     // chrono::Duration
     cd: chrono::Duration,
@@ -184,6 +186,7 @@ fn main() {
         ],
         sd_vec_opt: vec![Some(std::time::Duration::from_nanos(42)), None],
         sd_opt_vec: Some(vec![std::time::Duration::from_nanos(123)]),
+        core_sd: ::core::time::Duration::from_nanos(3_000),
 
         cd: chrono::Duration::nanoseconds(1_000),
         cd_opt: Some(chrono::Duration::nanoseconds(2_500)),
@@ -239,6 +242,10 @@ fn main() {
         schema_dtype(&schema, "sd_vec"),
         DataType::List(Box::new(DataType::Duration(TimeUnit::Nanoseconds)))
     );
+    assert_eq!(
+        schema_dtype(&schema, "core_sd"),
+        DataType::Duration(TimeUnit::Nanoseconds)
+    );
 
     // time_unit overrides
     assert_eq!(
@@ -268,13 +275,17 @@ fn main() {
 
     println!("Single-row to_dataframe path...");
     let df = row0.clone().to_dataframe().unwrap();
-    assert_eq!(df.shape(), (1, 26));
+    assert_eq!(df.shape(), (1, 27));
 
     // Runtime dtype matches schema.
     assert_eq!(col_dtype(&df, "nd"), DataType::Date);
     assert_eq!(col_dtype(&df, "nt"), DataType::Time);
     assert_eq!(
         col_dtype(&df, "sd"),
+        DataType::Duration(TimeUnit::Nanoseconds)
+    );
+    assert_eq!(
+        col_dtype(&df, "core_sd"),
         DataType::Duration(TimeUnit::Nanoseconds)
     );
     assert_eq!(
@@ -322,6 +333,13 @@ fn main() {
             TimeUnit::Nanoseconds
         ),
         789
+    );
+    assert_eq!(
+        duration_value(
+            df.column("core_sd").unwrap().get(0).unwrap(),
+            TimeUnit::Nanoseconds
+        ),
+        3_000
     );
 
     // Confirm that a `time_unit = "ns"` field on chrono::Duration uses the
@@ -397,6 +415,7 @@ fn main() {
         sd_vec: vec![],
         sd_vec_opt: vec![None],
         sd_opt_vec: None,
+        core_sd: ::core::time::Duration::from_nanos(0),
 
         cd: chrono::Duration::zero(),
         cd_opt: None,
@@ -415,7 +434,7 @@ fn main() {
 
     let batch = vec![row0.clone(), row1.clone(), row0.clone()];
     let df_batch = batch.as_slice().to_dataframe().unwrap();
-    assert_eq!(df_batch.shape(), (3, 26));
+    assert_eq!(df_batch.shape(), (3, 27));
 
     // Schema preserved through columnar path.
     let bs = df_batch.schema();
@@ -423,6 +442,10 @@ fn main() {
     assert_eq!(bs.get("nt"), Some(&DataType::Time));
     assert_eq!(
         bs.get("sd"),
+        Some(&DataType::Duration(TimeUnit::Nanoseconds))
+    );
+    assert_eq!(
+        bs.get("core_sd"),
         Some(&DataType::Duration(TimeUnit::Nanoseconds))
     );
     assert_eq!(
@@ -467,12 +490,16 @@ fn main() {
 
     println!("Empty-DataFrame schema check...");
     let empty = All::empty_dataframe().unwrap();
-    assert_eq!(empty.shape(), (0, 26));
+    assert_eq!(empty.shape(), (0, 27));
     let es = empty.schema();
     assert_eq!(es.get("nd"), Some(&DataType::Date));
     assert_eq!(es.get("nt"), Some(&DataType::Time));
     assert_eq!(
         es.get("sd"),
+        Some(&DataType::Duration(TimeUnit::Nanoseconds))
+    );
+    assert_eq!(
+        es.get("core_sd"),
         Some(&DataType::Duration(TimeUnit::Nanoseconds))
     );
     assert_eq!(

@@ -147,10 +147,11 @@
 //! - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires
 //!   Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars
 //!   `dtype-time`). Both have fixed encodings; `time_unit` is not accepted on either.
-//! - **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`)
-//!   → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override per-field
-//!   with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected
-//!   as ambiguous — use `std::time::Duration` or `chrono::Duration` to disambiguate.
+//! - **Duration**: `std::time::Duration`, `core::time::Duration`, and `chrono::Duration`
+//!   (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars
+//!   `dtype-duration`); override per-field with `#[df_derive(time_unit = "ms"|"us"|"ns")]`.
+//!   Bare `Duration` (no qualifier) is rejected as ambiguous — use `std::time::Duration`,
+//!   `core::time::Duration`, or `chrono::Duration` to disambiguate.
 //! - **Decimal**: any type path whose last segment is `Decimal` (for example
 //!   `rust_decimal::Decimal` or a facade such as `paft_decimal::Decimal`) → `Decimal(38, 10)`
 //!   by default. This implicit detection is syntax-based because proc macros cannot resolve
@@ -415,8 +416,8 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`)
 /// - `chrono::NaiveDate` (`Date`, i32 days since 1970-01-01) and `chrono::NaiveTime`
 ///   (`Time`, i64 ns since midnight); both have fixed encodings, no unit override.
-/// - `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) →
-///   `Duration(Nanoseconds)` by default; override with
+/// - `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for
+///   `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default; override with
 ///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` is ambiguous and rejected.
 /// - Decimal backends written with a final `Decimal` path segment, such as
 ///   `rust_decimal::Decimal` or `paft_decimal::Decimal` (default: `Decimal(38, 10)`;
@@ -450,8 +451,9 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   `1 <= precision <= 38`; `scale` may not exceed `precision`.
 /// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
 ///   `Datetime(unit, None)` / `Duration(unit)` dtype for a temporal field. Accepted bases are
-///   `chrono::DateTime<Utc>`, `std::time::Duration`, and `chrono::Duration`. The chrono / std
-///   call used to derive the i64 matches the chosen unit, so values are not silently truncated.
+///   `chrono::DateTime<Utc>`, `std::time::Duration`, `core::time::Duration`, and
+///   `chrono::Duration`. The chrono / std call used to derive the i64 matches the chosen unit,
+///   so values are not silently truncated.
 ///   `time_unit = "ns"` on `DateTime<Utc>` is fallible on dates outside chrono's supported
 ///   nanosecond range (~1677–2262); `time_unit = "ns"`/`"us"` on `chrono::Duration` is fallible
 ///   when the duration overflows i64 in the chosen unit; on `std::time::Duration` every unit is

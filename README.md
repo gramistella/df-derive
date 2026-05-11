@@ -227,7 +227,7 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`
 - **Time**: `chrono::DateTime<Utc>` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
 - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars `dtype-time`). Both have fixed encodings — `time_unit` is not accepted.
-- **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration` or `chrono::Duration`.
+- **Duration**: `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`.
 - **Decimal**: any type path whose last segment is `Decimal` (for example
   `rust_decimal::Decimal` or a backend facade such as `paft_decimal::Decimal`)
   → `Decimal(38, 10)`. This implicit detection is syntax-based because proc

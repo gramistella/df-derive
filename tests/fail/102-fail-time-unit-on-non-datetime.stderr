@@ -1,4 +1,4 @@
-error: field `not_a_datetime` has `time_unit = "..."` but its base type is not `chrono::DateTime<Utc>`, `std::time::Duration`, or `chrono::Duration`; remove the attribute or change the field type
+error: field `not_a_datetime` has `time_unit = "..."` but its base type is not `chrono::DateTime<Utc>`, `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`; remove the attribute or change the field type
  --> tests/fail/102-fail-time-unit-on-non-datetime.rs:7:5
   |
 7 | /     #[df_derive(time_unit = "ns")]

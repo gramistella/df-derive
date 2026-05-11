@@ -159,17 +159,18 @@
 //!   by default. This implicit detection is syntax-based because proc macros cannot resolve
 //!   type aliases. For differently named decimal backends, use
 //!   `#[df_derive(decimal(precision = N, scale = N))]` and implement `Decimal128Encode`.
-//! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; the
-//!   default for `Vec<u8>` (no attribute) remains `List(UInt8)`. See the field-level attribute
-//!   list below for accepted shapes (`Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
-//!   `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`).
+//! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` or
+//!   `Cow<'_, [u8]>` shape; the default for `Vec<u8>` (no attribute) remains `List(UInt8)`, while
+//!   unannotated `Cow<'_, [u8]>` is rejected. See the field-level attribute list below for accepted
+//!   shapes (`Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`,
+//!   `Option<Vec<Vec<u8>>>`, and the same scalar/list shapes over `Cow<'_, [u8]>`).
 //! - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
 //! - **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, and `Cow<'_, T>` with sized inner peel
 //!   transparently — they have no semantic effect on the column shape. `Option<Box<i32>>` resolves
 //!   to the same `Int32` schema as `Option<i32>`; `Vec<Arc<String>>` to `List<String>`;
-//!   `Box<Vec<f64>>` to `List<Float64>`; `Cow<'static, NaiveDate>` to `Date`. `Cow<'_, str>` and
-//!   `Cow<'_, [T]>` are rejected at parse time (their unsized inner types break the autoderef chain
-//!   in several leaf paths) — use `String` / `Vec<T>` directly.
+//!   `Box<Vec<f64>>` to `List<Float64>`; `Cow<'static, NaiveDate>` to `Date`. `Cow<'_, str>` is a
+//!   borrowed string leaf by default. `Cow<'_, [u8]>` is supported with `#[df_derive(as_binary)]`;
+//!   other `Cow<'_, [T]>` slice forms are rejected — use `Vec<T>` for list columns.
 //! - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`,
 //!   yielding prefixed list columns)
 //! - **Tuple structs**: unnamed fields are emitted as `field_{index}`
@@ -442,11 +443,12 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
 ///   conversion. Same column type as `as_string` but avoids the per-row allocation. The two
 ///   attributes are mutually exclusive on a given field.
-/// - Field-level: `#[df_derive(as_binary)]` to route a `Vec<u8>` field through a Polars `Binary`
-///   column instead of the default `List(UInt8)`. Accepted shapes: `Vec<u8>`,
-///   `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`, and `Option<Vec<Vec<u8>>>` —
-///   bare `u8`, `Option<u8>`, `Vec<Option<u8>>` (`BinaryView` cannot carry per-byte nulls), and
-///   non-`u8` leaves are rejected at parse time. Mutually exclusive with `as_str`,
+/// - Field-level: `#[df_derive(as_binary)]` to route a `Vec<u8>` or `Cow<'_, [u8]>` field through a
+///   Polars `Binary` column instead of the default `List(UInt8)` for `Vec<u8>`. Accepted shapes:
+///   `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`,
+///   `Option<Vec<Vec<u8>>>`, and the same scalar/list shapes over `Cow<'_, [u8]>` — bare `u8`,
+///   `Option<u8>`, `Vec<Option<u8>>` (`BinaryView` cannot carry per-byte nulls), and non-`u8`
+///   leaves are rejected at parse time. Mutually exclusive with `as_str`,
 ///   `as_string`, `decimal(...)`, and `time_unit = "..."`.
 /// - Field-level: `#[df_derive(decimal(precision = N, scale = N))]` to choose the
 ///   `Decimal(precision, scale)` dtype for a path named `Decimal` or to explicitly opt a

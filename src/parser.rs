@@ -6,7 +6,7 @@ use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
     DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
 };
-use quote::format_ident;
+use quote::{ToTokens, format_ident};
 use syn::{Data, DeriveInput, Fields, Ident};
 
 /// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
@@ -225,7 +225,7 @@ fn parse_leaf_spec(
         reject_attrs_on_tuple(field, field_display_name, override_)?;
     }
     match override_ {
-        FieldOverride::None => Ok(default_leaf_for_base(base)),
+        FieldOverride::None => default_leaf_for_base(field, field_display_name, base, true),
         FieldOverride::AsString => Ok(LeafSpec::AsString),
         FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
         FieldOverride::AsBinary => {
@@ -279,35 +279,74 @@ fn reject_attrs_on_tuple(
 /// `decimal(...)` attribute. Tuple bases recurse: each element runs through
 /// the same default pipeline (no field-level overrides apply at element
 /// level — the parser rejects them on the parent field).
-fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
+fn unannotated_cow_bytes_error(field_display_name: &str, can_add_as_binary: bool) -> String {
+    if can_add_as_binary {
+        format!(
+            "field `{field_display_name}` uses `Cow<'_, [u8]>` without `as_binary`; \
+             add `#[df_derive(as_binary)]` to encode it as Binary, or use \
+             `Vec<u8>` if you want the default `List(UInt8)` representation"
+        )
+    } else {
+        format!(
+            "field `{field_display_name}` contains `Cow<'_, [u8]>` in a tuple element; \
+             tuple elements cannot be annotated with `as_binary`, so use `Vec<u8>` for \
+             the default `List(UInt8)` representation or hoist the bytes into a named \
+             struct field with `#[df_derive(as_binary)]`"
+        )
+    }
+}
+
+fn cow_slice_error(field_display_name: &str) -> String {
+    format!(
+        "field `{field_display_name}` uses `Cow<'_, [T]>`, but df-derive only \
+         supports `Cow<'_, [u8]>` with `#[df_derive(as_binary)]`; use `Vec<T>` \
+         for list columns"
+    )
+}
+
+fn default_leaf_for_base<S: ToTokens + ?Sized>(
+    span: &S,
+    field_display_name: &str,
+    base: AnalyzedBase,
+    can_add_as_binary: bool,
+) -> Result<LeafSpec, syn::Error> {
     match base {
-        AnalyzedBase::Numeric(kind) => LeafSpec::Numeric(kind),
-        AnalyzedBase::String => LeafSpec::String,
-        AnalyzedBase::Bool => LeafSpec::Bool,
-        AnalyzedBase::DateTimeUtc => LeafSpec::DateTime(DEFAULT_DATETIME_UNIT),
-        AnalyzedBase::NaiveDate => LeafSpec::NaiveDate,
-        AnalyzedBase::NaiveTime => LeafSpec::NaiveTime,
-        AnalyzedBase::NaiveDateTime => LeafSpec::NaiveDateTime(DEFAULT_DATETIME_UNIT),
-        AnalyzedBase::StdDuration => LeafSpec::Duration {
+        AnalyzedBase::Numeric(kind) => Ok(LeafSpec::Numeric(kind)),
+        AnalyzedBase::String => Ok(LeafSpec::String),
+        AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
+        AnalyzedBase::CowBytes => Err(syn::Error::new_spanned(
+            span,
+            unannotated_cow_bytes_error(field_display_name, can_add_as_binary),
+        )),
+        AnalyzedBase::CowSlice => Err(syn::Error::new_spanned(
+            span,
+            cow_slice_error(field_display_name),
+        )),
+        AnalyzedBase::Bool => Ok(LeafSpec::Bool),
+        AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(DEFAULT_DATETIME_UNIT)),
+        AnalyzedBase::NaiveDate => Ok(LeafSpec::NaiveDate),
+        AnalyzedBase::NaiveTime => Ok(LeafSpec::NaiveTime),
+        AnalyzedBase::NaiveDateTime => Ok(LeafSpec::NaiveDateTime(DEFAULT_DATETIME_UNIT)),
+        AnalyzedBase::StdDuration => Ok(LeafSpec::Duration {
             unit: DEFAULT_DURATION_UNIT,
             source: DurationSource::Std,
-        },
-        AnalyzedBase::ChronoDuration => LeafSpec::Duration {
+        }),
+        AnalyzedBase::ChronoDuration => Ok(LeafSpec::Duration {
             unit: DEFAULT_DURATION_UNIT,
             source: DurationSource::Chrono,
-        },
-        AnalyzedBase::Decimal => LeafSpec::Decimal {
+        }),
+        AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
             precision: DEFAULT_DECIMAL_PRECISION,
             scale: DEFAULT_DECIMAL_SCALE,
-        },
-        AnalyzedBase::Struct(ident, args) => LeafSpec::Struct(ident, args),
-        AnalyzedBase::Generic(ident) => LeafSpec::Generic(ident),
+        }),
+        AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::Struct(ident, args)),
+        AnalyzedBase::Generic(ident) => Ok(LeafSpec::Generic(ident)),
         AnalyzedBase::Tuple(elements) => {
-            let lowered = elements
+            let lowered: Result<Vec<_>, _> = elements
                 .into_iter()
-                .map(analyzed_to_tuple_element)
+                .map(|element| analyzed_to_tuple_element(element, field_display_name))
                 .collect();
-            LeafSpec::Tuple(lowered)
+            Ok(LeafSpec::Tuple(lowered?))
         }
     }
 }
@@ -317,16 +356,20 @@ fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
 /// element, and normalizes the element's wrapper stack independently of the
 /// parent's. Field-level attributes are not applied here — they are rejected
 /// on the parent field by [`reject_attrs_on_tuple`] before this runs.
-fn analyzed_to_tuple_element(analyzed: crate::type_analysis::AnalyzedType) -> TupleElement {
-    let leaf_spec = default_leaf_for_base(analyzed.base);
+fn analyzed_to_tuple_element(
+    analyzed: crate::type_analysis::AnalyzedType,
+    field_display_name: &str,
+) -> Result<TupleElement, syn::Error> {
+    let leaf_spec =
+        default_leaf_for_base(&analyzed.field_ty, field_display_name, analyzed.base, false)?;
     let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
-    TupleElement {
+    Ok(TupleElement {
         leaf_spec,
         wrapper_shape,
         field_ty: analyzed.field_ty,
         outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
         inner_smart_ptr_depth: analyzed.inner_smart_ptr_depth,
-    }
+    })
 }
 
 fn parse_leaf_as_str(
@@ -336,6 +379,7 @@ fn parse_leaf_as_str(
 ) -> Result<LeafSpec, syn::Error> {
     match base {
         AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
+        AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
         AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
         // Tuple bases reach this dispatcher only when `parse_leaf_spec`'s
@@ -344,6 +388,8 @@ fn parse_leaf_as_str(
         // distinct error if it ever does fire.
         AnalyzedBase::Tuple(_)
         | AnalyzedBase::Numeric(_)
+        | AnalyzedBase::CowBytes
+        | AnalyzedBase::CowSlice
         | AnalyzedBase::Bool
         | AnalyzedBase::DateTimeUtc
         | AnalyzedBase::NaiveDate
@@ -355,8 +401,8 @@ fn parse_leaf_as_str(
             field,
             format!(
                 "field `{field_display_name}` has `as_str` but its base type does not implement \
-                 `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or \
-                 generic type parameters — drop the attribute or change the field type"
+                 `AsRef<str>`; `as_str` only applies to `String`, `Cow<'_, str>`, custom struct \
+                 types, or generic type parameters — drop the attribute or change the field type"
             ),
         )),
     }
@@ -529,6 +575,18 @@ fn parse_as_binary_shape(
              Binary blob). Change the field type or drop the attribute."
         )
     };
+    let cow_slice_msg = || {
+        format!(
+            "field `{field_display_name}` has `as_binary` on `Cow<'_, [T]>`, but \
+             `as_binary` only supports `Cow<'_, [u8]>`; use `Vec<T>` for list columns"
+        )
+    };
+    if matches!(base, AnalyzedBase::CowBytes) {
+        return Ok((LeafSpec::Binary, wrappers.to_vec()));
+    }
+    if matches!(base, AnalyzedBase::CowSlice) {
+        return Err(syn::Error::new_spanned(field, cow_slice_msg()));
+    }
     if !matches!(base, AnalyzedBase::Numeric(NumericKind::U8)) {
         return Err(syn::Error::new_spanned(field, wrong_base_msg()));
     }

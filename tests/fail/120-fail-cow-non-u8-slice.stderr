@@ -1,0 +1,5 @@
+error: field `items` uses `Cow<'_, [T]>`, but df-derive only supports `Cow<'_, [u8]>` with `#[df_derive(as_binary)]`; use `Vec<T>` for list columns
+ --> tests/fail/120-fail-cow-non-u8-slice.rs:9:5
+  |
+9 |     items: Cow<'static, [i32]>,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^

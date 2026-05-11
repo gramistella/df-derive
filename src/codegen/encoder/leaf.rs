@@ -360,7 +360,8 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
 
     match arm {
         LeafArmKind::Bare => {
-            let bare_push = quote! { #buf.push_value_ignore_validity(&(#access)); };
+            let bytes = bytes_ref_expr(&quote! { &(#access) });
+            let bare_push = quote! { #buf.push_value_ignore_validity(#bytes); };
             let bare_series = binary_chunked_series(name, &quote! { #buf.freeze() });
             LeafArm {
                 decls: vec![mbva_bytes_decl(&buf)],
@@ -371,10 +372,11 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         LeafArmKind::Option => {
             let v = idents::leaf_value();
             let empty = quote! { &[][..] };
+            let bytes = bytes_ref_expr(&quote! { #v });
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
-                        #buf.push_value_ignore_validity(&#v[..]);
+                        #buf.push_value_ignore_validity(#bytes);
                     }
                     ::std::option::Option::None => {
                         #buf.push_value_ignore_validity(#empty);
@@ -397,6 +399,10 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }
         }
     }
+}
+
+fn bytes_ref_expr(binding: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    quote! { ::core::convert::AsRef::<[u8]>::as_ref(#binding) }
 }
 
 /// `bool` leaf. Bare arm: `Vec<bool>` + `Series::new`. Keeps the slow path

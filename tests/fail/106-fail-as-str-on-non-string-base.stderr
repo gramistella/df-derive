@@ -1,4 +1,4 @@
-error: field `not_a_string` has `as_str` but its base type does not implement `AsRef<str>`; `as_str` only applies to `String`, custom struct types, or generic type parameters — drop the attribute or change the field type
+error: field `not_a_string` has `as_str` but its base type does not implement `AsRef<str>`; `as_str` only applies to `String`, `Cow<'_, str>`, custom struct types, or generic type parameters — drop the attribute or change the field type
  --> tests/fail/106-fail-as-str-on-non-string-base.rs:7:5
   |
 7 | /     #[df_derive(as_str)]

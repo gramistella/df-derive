@@ -46,6 +46,7 @@ fn tests() {
     t.pass("tests/pass/41-decimal-custom-backend-attr.rs");
     t.pass("tests/pass/42-naive-datetime.rs");
     t.pass("tests/pass/43-i128-u128.rs");
+    t.pass("tests/pass/44-cow-unsized.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -71,8 +72,8 @@ fn tests() {
     t.compile_fail("tests/fail/116-fail-bare-duration-ambiguous.rs");
     t.compile_fail("tests/fail/117-fail-time-unit-on-naive-date.rs");
     t.compile_fail("tests/fail/118-fail-time-unit-on-naive-time.rs");
-    t.compile_fail("tests/fail/119-fail-cow-str.rs");
-    t.compile_fail("tests/fail/120-fail-cow-slice.rs");
+    t.compile_fail("tests/fail/119-fail-cow-bytes-without-as-binary.rs");
+    t.compile_fail("tests/fail/120-fail-cow-non-u8-slice.rs");
     t.compile_fail("tests/fail/121-fail-unit-tuple-field.rs");
     t.compile_fail("tests/fail/122-fail-as-str-on-tuple.rs");
     t.compile_fail("tests/fail/123-fail-as-string-on-tuple.rs");
@@ -80,4 +81,5 @@ fn tests() {
     t.compile_fail("tests/fail/125-fail-decimal-on-tuple.rs");
     t.compile_fail("tests/fail/126-fail-time-unit-on-tuple.rs");
     t.compile_fail("tests/fail/127-fail-external-time-duration.rs");
+    t.compile_fail("tests/fail/128-fail-cow-bytes-in-tuple.rs");
 }

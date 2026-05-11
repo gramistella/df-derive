@@ -782,13 +782,13 @@ pub(super) fn try_build_vec_encoder(
             vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
         }
         LeafSpec::Binary => {
-            // The loop binds `&Vec<u8>` (or `&Option<Vec<u8>>` in the
-            // inner-Option arm, then `Some(v)` rebinds to `&Vec<u8>`); slicing
-            // produces a `&[u8]` accepted by `MutableBinaryViewArray<[u8]>`.
+            // The loop binds a borrowed binary carrier (`&Vec<u8>` or
+            // `&Cow<'_, [u8]>`); `AsRef<[u8]>` produces the slice accepted by
+            // `MutableBinaryViewArray<[u8]>`.
             let pp = crate::codegen::polars_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::Binary };
             let spec = VecLeafSpec::BinaryLike {
-                value_expr: quote! { &#v[..] },
+                value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
             };
             vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
         }

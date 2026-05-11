@@ -206,7 +206,7 @@ Selection rule: if your field's type implements `AsRef<str>`, prefer `as_str` �
 
 #### Byte blobs: `#[df_derive(as_binary)]`
 
-For fields representing opaque byte blobs, opt into a Polars `Binary` column with `#[df_derive(as_binary)]`. Without the attribute, `Vec<u8>` continues to materialize as `List(UInt8)`; the attribute is the single decision point for choosing the byte-blob representation.
+For fields representing opaque byte blobs, opt into a Polars `Binary` column with `#[df_derive(as_binary)]`. Without the attribute, `Vec<u8>` continues to materialize as `List(UInt8)`, and `Cow<'_, [u8]>` is rejected with a hint to add the attribute; the attribute is the single decision point for choosing the byte-blob representation.
 
 ```rust
 #[derive(ToDataFrame)]
@@ -217,10 +217,11 @@ struct Record {
     #[df_derive(as_binary)] payloads: Vec<Vec<u8>>,           // List(Binary)
     #[df_derive(as_binary)] sparse: Vec<Option<Vec<u8>>>,     // List(Binary), per-element nullable
     #[df_derive(as_binary)] outer_opt: Option<Vec<Vec<u8>>>,  // List(Binary), nullable outer
+    #[df_derive(as_binary)] borrowed: std::borrow::Cow<'static, [u8]>, // Binary
 }
 ```
 
-Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`. Rejected at compile time: bare `u8`, `Option<u8>`, `Vec<Option<u8>>` (BinaryView cannot carry per-byte nulls), and any non-`u8` leaf (e.g. `Vec<i32>`, `String`). The attribute is mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and `time_unit = "..."`.
+Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`, plus the same scalar/list/nullable-list shapes over `Cow<'_, [u8]>`. Rejected at compile time: bare `u8`, `Option<u8>`, `Vec<Option<u8>>` (BinaryView cannot carry per-byte nulls), and any non-`u8` leaf (e.g. `Vec<i32>`, `Cow<'_, [i32]>`, `String`). The attribute is mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and `time_unit = "..."`.
 
 ## Supported types
 
@@ -234,9 +235,9 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
   macros cannot resolve type aliases. For differently named decimal backends,
   use `#[df_derive(decimal(precision = N, scale = S))]` and implement
   `Decimal128Encode`.
-- **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`
+- **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` or `Cow<'_, [u8]>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`, while unannotated `Cow<'_, [u8]>` is rejected
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
-- **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<Box<i32>>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `Cow<'_, str>` and `Cow<'_, [T]>` are rejected at parse time — write `String` / `Vec<T>` directly.
+- **Smart pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<Box<i32>>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `Cow<'_, str>` is treated as a borrowed string leaf by default. `Cow<'_, [u8]>` is supported with `#[df_derive(as_binary)]`; other `Cow<'_, [T]>` slice forms are rejected — use `Vec<T>` for list columns.
 - **Custom structs**: any other struct deriving `ToDataFrame` (supports nesting and `Vec<Nested>`)
 - **Tuple structs**: unnamed fields are emitted as `field_{index}`
 - **Tuple-typed fields**: tuples like `(A, B)`, `Option<(A, B)>`, `Vec<(A, B)>`, and unwrapped nested `((A, B), C)` flatten to one column per element with `<field>.field_<i>` names. The outer wrapper distributes across every element column for non-nested tuples. Nested tuples inside an outer `Option` or `Vec` are rejected; hoist the inner tuple into a named struct. Unit `()` and field-level attributes (`as_str`, `decimal`, `time_unit`, …) are rejected on tuple fields.

@@ -74,6 +74,7 @@ pub fn build_type_path(
 pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream {
     match base {
         crate::ir::StringyBase::String => quote! { ::std::string::String },
+        crate::ir::StringyBase::CowStr => quote! { ::std::borrow::Cow<'_, str> },
         crate::ir::StringyBase::Struct(ident, args) => build_type_path(ident, args.as_ref()),
         crate::ir::StringyBase::Generic(ident) => quote! { #ident },
     }
@@ -120,6 +121,31 @@ pub(super) fn stringy_value_expr(
     binding: &TokenStream,
     kind: StringyExprKind,
 ) -> TokenStream {
+    if matches!(base, crate::ir::StringyBase::CowStr) {
+        let v = idents::leaf_value();
+        return match kind {
+            StringyExprKind::Bare => {
+                quote! { ::core::convert::AsRef::<str>::as_ref(&(#binding)) }
+            }
+            StringyExprKind::OptionDeref => {
+                quote! {
+                    (#binding).as_ref().map(|#v| {
+                        ::core::convert::AsRef::<str>::as_ref(#v)
+                    })
+                }
+            }
+            StringyExprKind::CollapsedOption => {
+                quote! {
+                    (#binding).map(|#v| {
+                        ::core::convert::AsRef::<str>::as_ref(#v)
+                    })
+                }
+            }
+            StringyExprKind::MbvaValue => {
+                quote! { ::core::convert::AsRef::<str>::as_ref(#binding) }
+            }
+        };
+    }
     let is_string = base.is_string();
     match kind {
         StringyExprKind::Bare => {

@@ -35,6 +35,15 @@ pub enum RawWrapper {
 pub enum AnalyzedBase {
     Numeric(NumericKind),
     String,
+    /// `Cow<'_, str>` — kept as a semantic string leaf instead of peeling to
+    /// unsized `str` so codegen can borrow via `Cow::as_ref`.
+    CowStr,
+    /// `Cow<'_, [u8]>` — supported only with `#[df_derive(as_binary)]`.
+    CowBytes,
+    /// `Cow<'_, [T]>` for non-`u8` element types. Kept as a semantic base so
+    /// the parser can emit a domain-specific error instead of routing it as a
+    /// struct or generic fallback.
+    CowSlice,
     Bool,
     DateTimeUtc,
     /// `chrono::NaiveDate` — last-segment `NaiveDate` with no generic args
@@ -178,17 +187,10 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
                         &wrappers,
                     );
                     current_type = inner;
+                    continue;
                 }
-                CowPeel::UnsizedReject => {
-                    return Err(syn::Error::new_spanned(
-                        current_type,
-                        "df-derive does not support `Cow<'_, str>` or `Cow<'_, [T]>` \
-                         (unsized inner types). Use the owned type directly: \
-                         `String` for borrowed strings, `Vec<T>` for borrowed slices.",
-                    ));
-                }
+                CowPeel::KeepAsSemanticBase => break,
             }
-            continue;
         }
         // No more wrappers found, break the loop
         break;
@@ -285,6 +287,9 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     // qualified (e.g. `std::time::Duration`, `core::time::Duration`, or
     // `chrono::Duration`).
     if let Type::Path(type_path) = ty {
+        if let Some(base) = analyze_cow_base(type_path) {
+            return Ok(base);
+        }
         if is_std_duration(type_path) {
             return Ok(AnalyzedBase::StdDuration);
         }
@@ -421,20 +426,15 @@ fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
 
 /// Outcome of peeling a `Cow<'a, T>` layer. Cow's first generic argument is
 /// the lifetime, not the inner type, so the standard `extract_inner_type`
-/// helper (which keys on `args.first()`) cannot be used. The two unsized
-/// inner forms (`str` and `[T]`) are rejected at parse time with an
-/// actionable hint pointing at the owned form (`String` / `Vec<T>`); the
-/// sized inner case rebinds and continues the peel loop.
+/// helper (which keys on `args.first()`) cannot be used. Sized inner types
+/// rebind and continue the transparent smart-pointer peel; unsized `str` and
+/// `[T]` stay as semantic Cow leaves for parser-level domain decisions.
 enum CowPeel<'a> {
     /// `Cow<'a, OwnedT>` where `OwnedT: Sized` — rebind to `OwnedT`.
     Rebind(&'a Type),
-    /// `Cow<'a, str>` or `Cow<'a, [T]>` — the inner is unsized. The
-    /// existing codegen invariants (every leaf method-call path resolves
-    /// through `AsRef<str>` or `Deref` autoderef) collapse around `str`'s
-    /// unstable inherent `as_str()` and `[T]`'s lack of `Vec`-shaped
-    /// methods, so the parser rejects these forms at parse time. Use the
-    /// owned type directly (`String` or `Vec<T>`).
-    UnsizedReject,
+    /// `Cow<'a, str>` or `Cow<'a, [T]>` — keep the Cow as the analyzed leaf
+    /// so later parser/codegen stages can apply domain-specific semantics.
+    KeepAsSemanticBase,
 }
 
 /// Peel a `Cow<'a, T>` layer if the type is one. Last-segment ident match
@@ -448,33 +448,69 @@ fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
     if segment.ident != "Cow" {
         return None;
     }
+    let inner_ty = cow_inner_type(type_path)?;
+    if is_bare_str_type(inner_ty) {
+        return Some(CowPeel::KeepAsSemanticBase);
+    }
+    if matches!(inner_ty, Type::Slice(_)) {
+        return Some(CowPeel::KeepAsSemanticBase);
+    }
+    Some(CowPeel::Rebind(inner_ty))
+}
+
+fn cow_inner_type(type_path: &TypePath) -> Option<&Type> {
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Cow" {
+        return None;
+    }
     let PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
-    // Cow takes `<'a, T>` — find the first `Type` argument (skipping
-    // the leading lifetime). Defensive against generic-syntax variation:
-    // any GenericArgument::Type wins regardless of position.
-    let inner_ty = args.args.iter().find_map(|a| match a {
+    // Cow takes `<'a, T>` — find the first `Type` argument (skipping the
+    // leading lifetime). Defensive against generic-syntax variation: any
+    // GenericArgument::Type wins regardless of position.
+    args.args.iter().find_map(|a| match a {
         GenericArgument::Type(t) => Some(t),
         _ => None,
-    })?;
-    // `Cow<str>` or `Cow<[T]>` — unsized inner, reject at parse time.
-    // The autoderef chain for `Cow<str>::as_str()` ends at `str`'s
-    // unstable inherent method, and `Cow<[T]>` needs Vec-shaped iteration
-    // we don't synthesize. Users should use `String` / `Vec<T>` directly.
-    if let Type::Path(inner_path) = inner_ty
+    })
+}
+
+fn is_bare_str_type(ty: &Type) -> bool {
+    if let Type::Path(inner_path) = ty
         && inner_path.qself.is_none()
         && inner_path.path.segments.len() == 1
         && let Some(seg) = inner_path.path.segments.last()
-        && seg.ident == "str"
-        && matches!(seg.arguments, PathArguments::None)
     {
-        return Some(CowPeel::UnsizedReject);
+        return seg.ident == "str" && matches!(seg.arguments, PathArguments::None);
     }
-    if matches!(inner_ty, Type::Slice(_)) {
-        return Some(CowPeel::UnsizedReject);
+    false
+}
+
+fn is_u8_type(ty: &Type) -> bool {
+    if let Type::Path(inner_path) = ty
+        && inner_path.qself.is_none()
+        && inner_path.path.segments.len() == 1
+        && let Some(seg) = inner_path.path.segments.last()
+    {
+        return seg.ident == "u8" && matches!(seg.arguments, PathArguments::None);
     }
-    Some(CowPeel::Rebind(inner_ty))
+    false
+}
+
+fn analyze_cow_base(type_path: &TypePath) -> Option<AnalyzedBase> {
+    let inner_ty = cow_inner_type(type_path)?;
+    if is_bare_str_type(inner_ty) {
+        return Some(AnalyzedBase::CowStr);
+    }
+    if let Type::Slice(slice) = inner_ty {
+        if is_u8_type(&slice.elem) {
+            Some(AnalyzedBase::CowBytes)
+        } else {
+            Some(AnalyzedBase::CowSlice)
+        }
+    } else {
+        None
+    }
 }
 
 /// Detect a `chrono::DateTime<Utc>` field by ident only.

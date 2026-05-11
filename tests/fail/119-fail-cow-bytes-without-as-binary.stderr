@@ -1,0 +1,5 @@
+error: field `bs` uses `Cow<'_, [u8]>` without `as_binary`; add `#[df_derive(as_binary)]` to encode it as Binary, or use `Vec<u8>` if you want the default `List(UInt8)` representation
+ --> tests/fail/119-fail-cow-bytes-without-as-binary.rs:9:5
+  |
+9 |     bs: Cow<'static, [u8]>,
+  |     ^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: field `pair` contains `Cow<'_, [u8]>` in a tuple element; tuple elements cannot be annotated with `as_binary`, so use `Vec<u8>` for the default `List(UInt8)` representation or hoist the bytes into a named struct field with `#[df_derive(as_binary)]`
+ --> tests/fail/128-fail-cow-bytes-in-tuple.rs:9:12
+  |
+9 |     pair: (Cow<'static, [u8]>, i32),
+  |            ^^^^^^^^^^^^^^^^^^

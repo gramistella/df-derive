@@ -1,11 +1,12 @@
-use df_derive::ToDataFrame;
 use std::borrow::Cow;
+
+use df_derive::ToDataFrame;
 #[path = "../common.rs"]
 mod core;
 
 #[derive(ToDataFrame)]
 struct Bad {
-    s: Cow<'static, str>,
+    bs: Cow<'static, [u8]>,
 }
 
 fn main() {}

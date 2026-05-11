@@ -1,8 +1,7 @@
 // Smart-pointer transparency: `Box<T>`, `Rc<T>`, `Arc<T>`, and `Cow<'a, T>`
 // (with sized inner) peel transparently at parse time and produce the same
-// column shape as the inner type. `Cow<'_, str>` and `Cow<'_, [T]>` are
-// explicitly rejected at parse time (covered in the fail suite); use
-// `String` / `Vec<T>` directly for those.
+// column shape as the inner type. Unsized `Cow<'_, str>` / `Cow<'_, [u8]>`
+// have their own semantic tests in 44-cow-unsized.rs.
 //
 // This test pins every supported composition shape plus the previously-
 // blocked `Box<Vec<u8>>` + `as_binary` regression.

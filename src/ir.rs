@@ -110,12 +110,15 @@ impl NumericKind {
 }
 
 /// Bases that can be paired with the `as_str` borrow path: `String`,
-/// concrete user-defined struct types, and generic type parameters. The
-/// parser's legality matrix accepts only this set with `as_str`; every
-/// other base is rejected at parse time.
+/// `Cow<'_, str>`, concrete user-defined struct types, and generic type
+/// parameters. The parser's legality matrix accepts only this set with
+/// `as_str`; every other base is rejected at parse time.
 #[derive(Clone)]
 pub enum StringyBase {
     String,
+    /// Unsized string Cows are semantic string leaves. They cannot be peeled
+    /// like sized smart pointers, so codegen borrows through `Cow::as_ref`.
+    CowStr,
     /// Concrete user-defined struct, with optional angle-bracketed generic
     /// arguments at the field's use site (e.g. `<M>` in `Vec<Foo<M>>`).
     Struct(Ident, Option<syn::AngleBracketedGenericArguments>),

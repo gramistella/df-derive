@@ -373,7 +373,7 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
             precision: DEFAULT_DECIMAL_PRECISION,
             scale: DEFAULT_DECIMAL_SCALE,
         }),
-        AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::Struct(ident, args)),
+        AnalyzedBase::Struct(path) => Ok(LeafSpec::Struct(path)),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::Generic(ident)),
         AnalyzedBase::Tuple(elements) => {
             let lowered: Result<Vec<_>, _> = elements
@@ -415,7 +415,7 @@ fn parse_leaf_as_str(
         AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
         AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
-        AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
+        AnalyzedBase::Struct(path) => Ok(LeafSpec::AsStr(StringyBase::Struct(path))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
         // Tuple bases reach this dispatcher only when `parse_leaf_spec`'s
         // upstream `reject_attrs_on_tuple` was bypassed, which it isn't —
@@ -460,7 +460,7 @@ fn parse_leaf_decimal(
         // so the explicit `decimal(...)` attribute is the user assertion that
         // a differently named custom/generic backend should use the same
         // `Decimal128Encode` dispatch.
-        AnalyzedBase::Decimal | AnalyzedBase::Struct(_, _) | AnalyzedBase::Generic(_) => {
+        AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
             Ok(LeafSpec::Decimal { precision, scale })
         }
         _ => Err(syn::Error::new_spanned(

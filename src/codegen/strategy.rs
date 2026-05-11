@@ -11,7 +11,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
-use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_type_path, idents};
+use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, idents, struct_type_path};
 
 /// Per-field columnar emit pieces. The columnar pipeline concatenates
 /// every field's `decls` ahead of the per-row push loop, splices every
@@ -48,8 +48,8 @@ impl LeafSpec {
     /// structurally exhaustive — no `is_stringy` bridge.
     fn route(&self) -> FieldRoute {
         match self {
-            Self::Struct(id, args) => FieldRoute::Nested {
-                type_path: build_type_path(id, args.as_ref()),
+            Self::Struct(path) => FieldRoute::Nested {
+                type_path: struct_type_path(path),
             },
             Self::Generic(id) => FieldRoute::Nested {
                 type_path: quote! { #id },

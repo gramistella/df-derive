@@ -1,5 +1,5 @@
 use crate::ir::{DateTimeUnit, NumericKind};
-use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
+use syn::{GenericArgument, Ident, Path, PathArguments, Type, TypePath};
 
 /// Default `Datetime` precision for `chrono::DateTime<Tz>` and
 /// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
@@ -85,9 +85,9 @@ pub enum AnalyzedBase {
     /// backend facade (`paft_decimal::Decimal`) and still get implicit decimal
     /// support. Non-`Decimal` backend names opt in with `decimal(...)`.
     Decimal,
-    /// Concrete user-defined struct, with optional angle-bracketed generic
-    /// arguments at the field's use site (e.g. `<M>` in `Vec<Foo<M>>`).
-    Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
+    /// Concrete user-defined struct path as written at the field's use site
+    /// (for example `Foo`, `models::Foo`, or `models::Foo<M>`).
+    Struct(Path),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
     /// Tuple-typed base, with each element recursively analyzed. Empty
@@ -383,11 +383,7 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
                 {
                     AnalyzedBase::Generic(type_ident.clone())
                 } else {
-                    let args = match &segment.arguments {
-                        PathArguments::AngleBracketed(ab) => Some(ab.clone()),
-                        _ => None,
-                    };
-                    AnalyzedBase::Struct(type_ident.clone(), args)
+                    AnalyzedBase::Struct(type_path.path.clone())
                 }
             }
         };

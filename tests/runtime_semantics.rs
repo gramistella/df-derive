@@ -33,3 +33,6 @@ mod borrowed_references;
 
 #[path = "runtime/47-nonzero-numerics.rs"]
 mod nonzero_numerics;
+
+#[path = "runtime/48-qualified-type-paths.rs"]
+mod qualified_type_paths;

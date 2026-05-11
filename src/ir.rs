@@ -1,4 +1,4 @@
-use syn::Ident;
+use syn::{Ident, Path};
 
 /// Top-level IR for a struct targeted by the derive.
 #[derive(Clone)]
@@ -186,9 +186,9 @@ pub enum StringyBase {
     /// Unsized string Cows are semantic string leaves. They cannot be peeled
     /// like sized smart pointers, so codegen borrows through `Cow::as_ref`.
     CowStr,
-    /// Concrete user-defined struct, with optional angle-bracketed generic
-    /// arguments at the field's use site (e.g. `<M>` in `Vec<Foo<M>>`).
-    Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
+    /// Concrete user-defined struct path as written at the field's use site
+    /// (for example `Foo`, `models::Foo`, or `models::Foo<M>`).
+    Struct(Path),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
 }
@@ -289,8 +289,9 @@ pub enum LeafSpec {
     /// `Numeric(U8)` leaf with this variant; the encoder then materializes
     /// each row's bytes via `MutableBinaryViewArray::<[u8]>`.
     Binary,
-    /// Concrete user-defined struct type, no stringy transform.
-    Struct(Ident, Option<syn::AngleBracketedGenericArguments>),
+    /// Concrete user-defined struct type, no stringy transform. Stores the
+    /// full path as written at the field's use site.
+    Struct(Path),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
     /// Tuple-typed field. Each element contributes its own column(s) under a

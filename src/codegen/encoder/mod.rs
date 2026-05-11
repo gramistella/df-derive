@@ -41,42 +41,36 @@ mod vec;
 use crate::ir::{LeafSpec, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::Ident;
+use syn::PathArguments;
 
 pub use nested::{NestedLeafCtx, build_nested_encoder};
 pub use tuple::{
     build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
 };
 
-/// Build the type-as-path token stream for a struct/generic field. For a
-/// struct referenced without args (e.g. `Address`) this is the bare ident;
-/// for a struct referenced with args (e.g. `Foo<M>` or `Foo<M, N>`) it is
-/// the turbofish form `Foo::<M, N>`, valid in both expression and type
-/// position. Generic type parameters use the bare ident (the macro injects
-/// the trait bounds that make `T::method()` resolve).
-pub fn build_type_path(
-    ident: &Ident,
-    args: Option<&syn::AngleBracketedGenericArguments>,
-) -> TokenStream {
-    args.map_or_else(
-        || quote! { #ident },
-        |ab| {
-            let inner = &ab.args;
-            quote! { #ident::<#inner> }
-        },
-    )
+/// Build the type-as-path token stream for a concrete struct field. Generic
+/// args on the final segment are emitted as turbofish so the same token stream
+/// is valid for associated calls (`Foo::<T>::schema()`) and type positions
+/// (`<Foo::<T> as Trait>`), while preserving module qualification.
+pub fn struct_type_path(path: &syn::Path) -> TokenStream {
+    let mut path = path.clone();
+    if let Some(segment) = path.segments.last_mut()
+        && let PathArguments::AngleBracketed(args) = &mut segment.arguments
+    {
+        args.colon2_token.get_or_insert_with(Default::default);
+    }
+    quote! { #path }
 }
 
 /// Token stream for the type-as-path expression used in UFCS calls
 /// (`<#ty as AsRef<str>>::as_ref(...)`). The `String` base maps to
-/// `::std::string::String`; structs/generics splice through
-/// `build_type_path`.
+/// `::std::string::String`; concrete structs preserve their full source path.
 pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream {
     match base {
         crate::ir::StringyBase::String => quote! { ::std::string::String },
         crate::ir::StringyBase::BorrowedStr => quote! { &'_ str },
         crate::ir::StringyBase::CowStr => quote! { ::std::borrow::Cow<'_, str> },
-        crate::ir::StringyBase::Struct(ident, args) => build_type_path(ident, args.as_ref()),
+        crate::ir::StringyBase::Struct(path) => struct_type_path(path),
         crate::ir::StringyBase::Generic(ident) => quote! { #ident },
     }
 }

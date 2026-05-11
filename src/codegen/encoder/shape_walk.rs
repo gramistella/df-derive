@@ -10,8 +10,8 @@
 //!
 //! [`ShapeScan`] captures all of those decision points behind one struct so
 //! the recursion logic lives in exactly one place. The two callers share a
-//! unified [`LayerIdents`] bundle (5 fields: offsets / offsets_buf /
-//! validity_mb / validity_bm / bind); the walker reads `offsets`,
+//! unified [`LayerIdents`] bundle (5 fields: offsets / `offsets_buf` /
+//! `validity_mb` / `validity_bm` / bind); the walker reads `offsets`,
 //! `validity_mb`, and `bind` directly off it. Each caller chooses the
 //! `outer_some_prefix` and supplies the deepest-layer body via `leaf_body`.
 //!
@@ -308,7 +308,7 @@ impl ShapePrecount<'_> {
 /// `None` when the layer has no outer Option (the wrap passes
 /// `Option::None` for its validity argument). When present it is always
 /// cloned (the same frozen `Bitmap` rides under every list-array layer's
-/// LargeListArray::new in the same arm and across multiple arms in the
+/// `LargeListArray::new` in the same arm and across multiple arms in the
 /// nested four-way dispatch).
 pub(super) enum OwnPolicy<'a> {
     /// Move the named local into the wrap argument. The local is bound
@@ -386,12 +386,10 @@ pub(super) fn shape_assemble_list_stack(
         let freeze = &layer.freeze_decl;
         let buf_splice = layer.offsets_buf.splice();
         let arr_id = arr_id_for_layer(cur);
-        let validity_expr = match layer.validity_bm {
-            Some(bm) => {
-                quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }
-            }
-            None => quote! { ::std::option::Option::None },
-        };
+        let validity_expr = layer.validity_bm.map_or_else(
+            || quote! { ::std::option::Option::None },
+            |bm| quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) },
+        );
         block.push(quote! {
             #freeze
             let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(

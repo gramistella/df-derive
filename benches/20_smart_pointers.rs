@@ -89,14 +89,14 @@ fn make_u64_plain() -> Vec<U64Plain> {
 fn make_u64_box() -> Vec<U64Box> {
     (0..N_ROWS)
         .map(|i| U64Box {
-            v: (0..4).map(|j| Box::new(i as u64 + j as u64)).collect(),
+            v: (0_u64..4).map(|j| Box::new(i as u64 + j)).collect(),
         })
         .collect()
 }
 fn make_u64_arc() -> Vec<U64Arc> {
     (0..N_ROWS)
         .map(|i| U64Arc {
-            v: (0..4).map(|j| Arc::new(i as u64 + j as u64)).collect(),
+            v: (0_u64..4).map(|j| Arc::new(i as u64 + j)).collect(),
         })
         .collect()
 }
@@ -171,31 +171,31 @@ fn bench_smart_pointers(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("smart_pointers");
     g.bench_function("vec_u64_plain", |b| {
-        b.iter(|| std::hint::black_box(&u64_plain).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&u64_plain).to_dataframe().unwrap());
     });
     g.bench_function("vec_u64_box", |b| {
-        b.iter(|| std::hint::black_box(&u64_box).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&u64_box).to_dataframe().unwrap());
     });
     g.bench_function("vec_u64_arc", |b| {
-        b.iter(|| std::hint::black_box(&u64_arc).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&u64_arc).to_dataframe().unwrap());
     });
     g.bench_function("vec_str_plain", |b| {
-        b.iter(|| std::hint::black_box(&str_plain).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&str_plain).to_dataframe().unwrap());
     });
     g.bench_function("vec_str_arc", |b| {
-        b.iter(|| std::hint::black_box(&str_arc).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&str_arc).to_dataframe().unwrap());
     });
     g.bench_function("vec_date_plain", |b| {
-        b.iter(|| std::hint::black_box(&date_plain).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&date_plain).to_dataframe().unwrap());
     });
     g.bench_function("vec_date_box", |b| {
-        b.iter(|| std::hint::black_box(&date_box).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&date_box).to_dataframe().unwrap());
     });
     g.bench_function("opt_i32_plain", |b| {
-        b.iter(|| std::hint::black_box(&opt_i32_plain).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&opt_i32_plain).to_dataframe().unwrap());
     });
     g.bench_function("opt_i32_box", |b| {
-        b.iter(|| std::hint::black_box(&opt_i32_box).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&opt_i32_box).to_dataframe().unwrap());
     });
     g.finish();
 }

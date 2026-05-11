@@ -499,10 +499,10 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         }
     }
 
-    let to_df_trait_path_ts = match &to_df_trait_path {
-        Some(path) => quote! { #path },
-        None => quote! { #default_df_mod::ToDataFrame },
-    };
+    let to_df_trait_path_ts = to_df_trait_path.as_ref().map_or_else(
+        || quote! { #default_df_mod::ToDataFrame },
+        |path| quote! { #path },
+    );
     let columnar_trait_path_ts = match (&columnar_trait_path, &to_df_trait_path) {
         (Some(path), _) => quote! { #path },
         (None, Some(path)) => {

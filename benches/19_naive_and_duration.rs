@@ -32,7 +32,7 @@ fn generate() -> Vec<Sample> {
     (0..N_ROWS)
         .map(|i| {
             let date = epoch + chrono::Duration::days(i64::try_from(i).unwrap() % 10_000);
-            let secs = (i % 86_400) as u32;
+            let secs = u32::try_from(i % 86_400).unwrap();
             let time = NaiveTime::from_num_seconds_from_midnight_opt(secs, 0).unwrap();
             Sample {
                 nd: date,

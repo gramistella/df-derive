@@ -95,6 +95,38 @@ pub struct AnalyzedType {
 }
 
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
+    let peeled = peel_type_wrappers(ty)?;
+
+    reject_unsupported_collection_type(peeled.current_type)?;
+    reject_bare_duration(peeled.current_type, generic_params)?;
+
+    let base = analyze_base_type(peeled.current_type, generic_params)?;
+
+    Ok(AnalyzedType {
+        base,
+        wrappers: peeled.wrappers,
+        outer_smart_ptr_depth: peeled.outer_smart_ptr_depth,
+        inner_smart_ptr_depth: peeled.inner_smart_ptr_depth,
+        field_ty: ty.clone(),
+    })
+}
+
+struct PeeledType<'a> {
+    wrappers: Vec<RawWrapper>,
+    current_type: &'a Type,
+    outer_smart_ptr_depth: usize,
+    inner_smart_ptr_depth: usize,
+}
+
+const fn bump_smart_ptr_depths(outer: &mut usize, inner: &mut usize, wrappers: &[RawWrapper]) {
+    if wrappers.is_empty() {
+        *outer += 1;
+    } else {
+        *inner += 1;
+    }
+}
+
+fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut outer_smart_ptr_depth: usize = 0;
     let mut inner_smart_ptr_depth: usize = 0;
@@ -105,13 +137,6 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
     // depth (codegen rewrites the access expression) before any wrapper is
     // seen, and the inner depth (codegen injects deref at the per-element
     // leaf binding) once a wrapper has been pushed.
-    let bump_smart_ptr = |outer: &mut usize, inner: &mut usize, wrappers: &[RawWrapper]| {
-        if wrappers.is_empty() {
-            *outer += 1;
-        } else {
-            *inner += 1;
-        }
-    };
     loop {
         if let Some(inner_ty) = extract_inner_type(current_type, "Option") {
             wrappers.push(RawWrapper::Option);
@@ -123,26 +148,11 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
             current_type = inner_ty;
             continue;
         }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Box") {
-            bump_smart_ptr(
-                &mut outer_smart_ptr_depth,
-                &mut inner_smart_ptr_depth,
-                &wrappers,
-            );
-            current_type = inner_ty;
-            continue;
-        }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Rc") {
-            bump_smart_ptr(
-                &mut outer_smart_ptr_depth,
-                &mut inner_smart_ptr_depth,
-                &wrappers,
-            );
-            current_type = inner_ty;
-            continue;
-        }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Arc") {
-            bump_smart_ptr(
+        if let Some(inner_ty) = extract_inner_type(current_type, "Box")
+            .or_else(|| extract_inner_type(current_type, "Rc"))
+            .or_else(|| extract_inner_type(current_type, "Arc"))
+        {
+            bump_smart_ptr_depths(
                 &mut outer_smart_ptr_depth,
                 &mut inner_smart_ptr_depth,
                 &wrappers,
@@ -153,7 +163,7 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
         if let Some(action) = peel_cow(current_type) {
             match action {
                 CowPeel::Rebind(inner) => {
-                    bump_smart_ptr(
+                    bump_smart_ptr_depths(
                         &mut outer_smart_ptr_depth,
                         &mut inner_smart_ptr_depth,
                         &wrappers,
@@ -175,6 +185,15 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
         break;
     }
 
+    Ok(PeeledType {
+        wrappers,
+        current_type,
+        outer_smart_ptr_depth,
+        inner_smart_ptr_depth,
+    })
+}
+
+fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Error> {
     // Before resolving the base type, reject a small allow-list of common
     // wrapper / collection types with an actionable hint. These all parse
     // fine as a `Type::Path` and would otherwise either fall through to the
@@ -202,7 +221,10 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
             return Err(syn::Error::new_spanned(current_type, message));
         }
     }
+    Ok(())
+}
 
+fn reject_bare_duration(current_type: &Type, generic_params: &[Ident]) -> Result<(), syn::Error> {
     // Bare `Duration` (no qualifier, no generic args, not a known generic
     // param) is ambiguous between `std::time::Duration` and
     // `chrono::Duration` — both crates are commonly in scope. Reject with
@@ -221,16 +243,7 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
              `chrono::Duration` to disambiguate",
         ));
     }
-
-    let base = analyze_base_type(current_type, generic_params)?;
-
-    Ok(AnalyzedType {
-        base,
-        wrappers,
-        outer_smart_ptr_depth,
-        inner_smart_ptr_depth,
-        field_ty: ty.clone(),
-    })
+    Ok(())
 }
 
 fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase, syn::Error> {
@@ -413,9 +426,7 @@ enum CowPeel<'a> {
 /// (mirrors `extract_inner_type`'s leniency for qualified paths like
 /// `std::borrow::Cow`). Returns `None` for non-Cow types.
 fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
-    let type_path = if let Type::Path(tp) = ty {
-        tp
-    } else {
+    let Type::Path(type_path) = ty else {
         return None;
     };
     let segment = type_path.path.segments.last()?;

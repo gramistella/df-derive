@@ -43,7 +43,7 @@ struct BinaryMediumRow {
 fn make_payload(seed: usize, len: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(len);
     for i in 0..len {
-        buf.push(((seed.wrapping_add(i)) & 0xff) as u8);
+        buf.push(u8::try_from((seed.wrapping_add(i)) & 0xff).unwrap());
     }
     buf
 }

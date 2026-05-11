@@ -80,8 +80,7 @@ fn generated_polars_roots_are_centralized() {
                 let original = src.lines().nth(lineno).unwrap_or("<line out of range>");
                 let display_path = path
                     .strip_prefix(&manifest)
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|_| path.clone());
+                    .map_or_else(|_| path.clone(), Path::to_path_buf);
                 violations.push(format!(
                     "  {}:{}: {}",
                     display_path.display(),

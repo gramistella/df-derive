@@ -834,7 +834,7 @@ fn vec_encoder_mapped_numeric(
     shape: &VecLayers,
     leaf: &LeafSpec,
     native: TokenStream,
-    leaf_dtype: TokenStream,
+    leaf_dtype: &TokenStream,
     needs_decimal_import: bool,
 ) -> Encoder {
     let v = idents::leaf_value();
@@ -848,7 +848,7 @@ fn vec_encoder_mapped_numeric(
         value_expr: mapped_v,
         needs_decimal_import,
     };
-    vec_encoder(ctx, &spec, shape, &leaf_dtype)
+    vec_encoder(ctx, &spec, shape, leaf_dtype)
 }
 
 fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
@@ -862,7 +862,7 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers
         shape,
         &LeafSpec::DateTime(unit),
         quote! { i64 },
-        leaf_dtype,
+        &leaf_dtype,
         false,
     )
 }
@@ -875,7 +875,7 @@ fn vec_encoder_naive_date(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         shape,
         &LeafSpec::NaiveDate,
         quote! { i32 },
-        leaf_dtype,
+        &leaf_dtype,
         false,
     )
 }
@@ -888,7 +888,7 @@ fn vec_encoder_naive_time(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         shape,
         &LeafSpec::NaiveTime,
         quote! { i64 },
-        leaf_dtype,
+        &leaf_dtype,
         false,
     )
 }
@@ -907,7 +907,7 @@ fn vec_encoder_duration(
         shape,
         &LeafSpec::Duration { unit, source },
         quote! { i64 },
-        leaf_dtype,
+        &leaf_dtype,
         false,
     )
 }
@@ -922,7 +922,7 @@ fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecL
         shape,
         &LeafSpec::Decimal { precision, scale },
         quote! { i128 },
-        leaf_dtype,
+        &leaf_dtype,
         true,
     )
 }

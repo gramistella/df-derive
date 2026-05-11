@@ -306,10 +306,10 @@ fn emit_element(
 
 /// True when the element's leaf is `Copy` AND a primitive that the
 /// standard Option-leaf encoder expects to receive by value (not by
-/// reference). The numeric / Bool / NaiveDate / NaiveTime / Duration
-/// leaves all match this; String / Decimal / DateTime / Binary do not
+/// reference). The numeric / Bool / `NaiveDate` / `NaiveTime` / Duration
+/// leaves all match this; String / Decimal / `DateTime` / Binary do not
 /// (their Option-arm push bodies do `match &access` and bind by ref).
-fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
+const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
     matches!(
         leaf,
         LeafSpec::Numeric(_)
@@ -546,7 +546,10 @@ fn emit_vec_parent_primitive(
 /// Vec-bearing parent. Walks the composed shape, collects `&Inner` refs at
 /// the deepest binding (with projection applied), then dispatches the
 /// inner type's `columnar_from_refs` and stacks `LargeListArray`s.
-#[allow(clippy::too_many_arguments)]
+// Bench-sensitive generated-code builder: this intentionally keeps the
+// composed-shape walk, nested dispatch, and list stacking adjacent so tuple
+// Vec emission stays predictable while deeper factoring waits.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn emit_vec_parent_nested(
     parent_access: &TokenStream,
     composed_shape: &VecLayers,
@@ -894,14 +897,14 @@ fn wrap_per_column_layers(
 /// into `column_prefix`; this function projects into the OUTER tuple's
 /// element at the access level, then recurses into each inner element
 /// using a fresh `emit_element` call with the projected access as the new
-/// "parent_access".
+/// `parent_access`.
 ///
 /// Two operationally distinct cases:
 ///
-/// - **No outer tuple wrappers** (parent + outer_elem both unwrapped, the
+/// - **No outer tuple wrappers** (parent + `outer_elem` both unwrapped, the
 ///   common `((A, B), C)` shape): the projection is a static access path
 ///   `(parent_access).<outer_idx>`. We recurse directly with that as the
-///   new parent_access.
+///   new `parent_access`.
 /// - **Wrapped outer** (rare — `Vec<((A, B), C)>` or
 ///   `Option<((A, B), C)>`): the projection cannot be a single static
 ///   path because the wrappers must be walked per-row. Defer with a
@@ -1048,11 +1051,10 @@ fn emit_via_standard_encoder(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
         inner_smart_ptr_depth,
     };
-    let enc = if let Some(nctx) = &nested_ctx {
-        build_nested_encoder(wrapper, nctx)
-    } else {
-        build_encoder(leaf, wrapper, &leaf_ctx)
-    };
+    let enc = nested_ctx.as_ref().map_or_else(
+        || build_encoder(leaf, wrapper, &leaf_ctx),
+        |nctx| build_nested_encoder(wrapper, nctx),
+    );
     match enc {
         Encoder::Leaf {
             decls,
@@ -1602,8 +1604,8 @@ fn build_leaf_projection_value_expr(
             // `.as_str()`.
             Some(ref_projected)
         }
-        LeafSpec::Binary => None,
-        LeafSpec::AsString
+        LeafSpec::Binary
+        | LeafSpec::AsString
         | LeafSpec::AsStr(_)
         | LeafSpec::Struct(..)
         | LeafSpec::Generic(_)
@@ -1631,6 +1633,10 @@ struct PrimitiveLeafPieces {
 /// `&LeafType` (the standard for-loop iteration shape); when the per-row
 /// binding is `&Tuple`, the caller computes the projection and passes the
 /// resulting `LeafType`-yielding expression.
+// Bench-sensitive generated-code builder: these primitive arms preserve the
+// current per-leaf emission shape used by the Vec tuple benchmarks, so this
+// lint is allowed until a measured split lands.
+#[allow(clippy::too_many_lines)]
 fn build_primitive_leaf_pieces(
     ctx: &LeafCtx<'_>,
     leaf: &LeafSpec,

@@ -452,6 +452,10 @@ fn pep_materialize(
 ///   slots), `flat.is_empty() && total > 0` (all leaves None; typed-null
 ///   Series of length `total`), `flat.len() == total` (all Some; direct),
 ///   else mixed (`IdxCa::take` per column).
+// Bench-sensitive generated-code builder: keeping the dispatch and shared
+// frozen buffers in one emission block avoids repeated work in nested Vec
+// paths, so the ASAP lint fix is a narrow allow instead of a split.
+#[allow(clippy::too_many_lines)]
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,

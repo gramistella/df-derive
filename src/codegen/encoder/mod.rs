@@ -86,6 +86,7 @@ pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream
 /// per-row binding inside the leaf push body. Each shape branches on
 /// `StringyBase::is_string()` the same way — `String` deref-coerces or uses
 /// `String::as_str`, non-`String` bases UFCS through `<T as AsRef<str>>`.
+#[derive(Clone, Copy)]
 pub(super) enum StringyExprKind {
     /// Leaf push for `WrapperShape::Leaf { option_layers: 0 }`. Materializes
     /// `&str`-coerceable from a field access. `String`: `&(#binding)` (relies

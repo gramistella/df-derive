@@ -52,6 +52,8 @@ struct NestedTuple {
 }
 
 #[derive(ToDataFrame, Clone)]
+// Names mirror the nested tuple projection columns this benchmark compares.
+#[allow(clippy::struct_field_names)]
 struct NestedNamed {
     nested_0_0: i32,
     nested_0_1: String,
@@ -78,10 +80,10 @@ fn make_pair_named() -> Vec<PairNamed> {
 fn make_vec_tuple() -> Vec<VecTuple> {
     (0..N_ROWS)
         .map(|i| {
-            let f = i64::try_from(i).unwrap();
+            let f = u32::try_from(i).unwrap();
             VecTuple {
-                pairs: (0..4)
-                    .map(|j| (i32::try_from(j).unwrap(), (f + j) as f64 * 0.5))
+                pairs: (0_u32..4)
+                    .map(|j| (i32::try_from(j).unwrap(), f64::from(f + j) * 0.5))
                     .collect(),
             }
         })
@@ -91,10 +93,10 @@ fn make_vec_tuple() -> Vec<VecTuple> {
 fn make_vec_named() -> Vec<VecNamed> {
     (0..N_ROWS)
         .map(|i| {
-            let f = i64::try_from(i).unwrap();
+            let f = u32::try_from(i).unwrap();
             VecNamed {
                 pairs_0: (0..4i32).collect(),
-                pairs_1: (0..4).map(|j| (f + j) as f64 * 0.5).collect(),
+                pairs_1: (0_u32..4).map(|j| f64::from(f + j) * 0.5).collect(),
             }
         })
         .collect()
@@ -128,22 +130,22 @@ fn bench_tuple_fields(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("tuple_fields");
     g.bench_function("pair_tuple", |b| {
-        b.iter(|| std::hint::black_box(&pair_tuple).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&pair_tuple).to_dataframe().unwrap());
     });
     g.bench_function("pair_named", |b| {
-        b.iter(|| std::hint::black_box(&pair_named).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&pair_named).to_dataframe().unwrap());
     });
     g.bench_function("vec_tuple", |b| {
-        b.iter(|| std::hint::black_box(&vec_tuple).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&vec_tuple).to_dataframe().unwrap());
     });
     g.bench_function("vec_named", |b| {
-        b.iter(|| std::hint::black_box(&vec_named).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&vec_named).to_dataframe().unwrap());
     });
     g.bench_function("nested_tuple", |b| {
-        b.iter(|| std::hint::black_box(&nested_tuple).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&nested_tuple).to_dataframe().unwrap());
     });
     g.bench_function("nested_named", |b| {
-        b.iter(|| std::hint::black_box(&nested_named).to_dataframe().unwrap())
+        b.iter(|| std::hint::black_box(&nested_named).to_dataframe().unwrap());
     });
     g.finish();
 }

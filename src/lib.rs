@@ -141,8 +141,8 @@
 //!
 //! ## Supported types
 //!
-//! - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`),
-//!   `f32`, `f64`
+//! - **Primitives**: `String`, `bool`, integer types
+//!   (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `f32`, `f64`
 //! - **Time**: `chrono::DateTime<Utc>` and `chrono::NaiveDateTime` → materialized as
 //!   `Datetime(Milliseconds, None)` by default; override per-field with
 //!   `#[df_derive(time_unit = "ms"|"us"|"ns")]`
@@ -287,7 +287,8 @@
 //! - **Rust edition**: 2024
 //! - **Polars**: 0.53 (tested). Enable Polars features `timezones` for timezone-aware
 //!   `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`,
-//!   `dtype-duration` for duration columns, and `dtype-decimal` for `Decimal`.
+//!   `dtype-duration` for duration columns, `dtype-i128` / `dtype-u128` for 128-bit
+//!   integer columns, and `dtype-decimal` for `Decimal`.
 //! - **polars-arrow**: 0.53 (direct dependency required by generated code).
 //!
 //! ## License
@@ -413,7 +414,7 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Nested structs are flattened using dot notation (e.g., `outer.inner`)
 /// - Wrappers `Option<T>` and `Vec<T>` in any nesting order, with `Vec<Struct>` producing multiple
 ///   list columns with a `vec_field.subfield` prefix
-/// - Primitive types: `String`, `bool`, integer types, `f32`, `f64`
+/// - Primitive types: `String`, `bool`, integer types including `i128`/`u128`, `f32`, `f64`
 /// - `chrono::DateTime<Utc>` and `chrono::NaiveDateTime` (default:
 ///   `Datetime(Milliseconds, None)`; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`)
 /// - `chrono::NaiveDate` (`Date`, i32 days since 1970-01-01) and `chrono::NaiveTime`

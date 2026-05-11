@@ -45,6 +45,7 @@ fn tests() {
     t.pass("tests/pass/40-reversed-trait-overrides.rs");
     t.pass("tests/pass/41-decimal-custom-backend-attr.rs");
     t.pass("tests/pass/42-naive-datetime.rs");
+    t.pass("tests/pass/43-i128-u128.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

@@ -3,13 +3,13 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 /// Token bundle for one numeric-shaped primitive base. Every fast-path
-/// emitter consumes some subset of these — collected here so the 12-arm
+/// emitter consumes some subset of these — collected here so the 14-arm
 /// match per metadata kind doesn't have to be repeated at every call site.
 ///
 /// `widen_from` carries the SOURCE Rust type (`isize`/`usize`) when widening
 /// is needed; `native` is the storage type (`i64`/`u64` in that case). For
 /// fixed-width bases (`i8/i16/.../f64`) `widen_from` is `None` and `native`
-/// matches the source type. Polars supports only fixed-width 8/16/32/64
+/// matches the source type. Polars supports only fixed-width integer
 /// lanes, so the encoder widens `ISize`/`USize` reads to `i64`/`u64` at the
 /// leaf push site and stores into a `Vec<i64>` / `Vec<u64>` whose downstream
 /// chunked-array build matches the schema dtype directly.
@@ -35,7 +35,7 @@ pub(super) struct NumericInfo {
 ///
 /// Total over `NumericKind` (no `Option` return) — the parser has already
 /// classified the leaf as numeric, so the encoder consumer knows the result
-/// is non-empty. The 12-arm match here is the one place that translates the
+/// is non-empty. The 14-arm match here is the one place that translates the
 /// parser-tagged kind into the polars-prelude token shape.
 pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
     let pp = super::polars_paths::prelude();
@@ -54,10 +54,12 @@ pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
         NumericKind::I16 => info(quote! { i16 }, "Int16", None),
         NumericKind::I32 => info(quote! { i32 }, "Int32", None),
         NumericKind::I64 => info(quote! { i64 }, "Int64", None),
+        NumericKind::I128 => info(quote! { i128 }, "Int128", None),
         NumericKind::U8 => info(quote! { u8 }, "UInt8", None),
         NumericKind::U16 => info(quote! { u16 }, "UInt16", None),
         NumericKind::U32 => info(quote! { u32 }, "UInt32", None),
         NumericKind::U64 => info(quote! { u64 }, "UInt64", None),
+        NumericKind::U128 => info(quote! { u128 }, "UInt128", None),
         NumericKind::F32 => info(quote! { f32 }, "Float32", None),
         NumericKind::F64 => info(quote! { f64 }, "Float64", None),
         NumericKind::ISize => info(quote! { i64 }, "Int64", Some(quote! { isize })),

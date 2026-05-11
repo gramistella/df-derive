@@ -79,7 +79,7 @@ pub enum DurationSource {
 /// Numeric primitive kind. Carries the static information the encoder needs
 /// (variant tag for chunked-array / dtype dispatch, plus widening info for
 /// `isize`/`usize`) without binding to any token-stream representation.
-/// Polars only supports fixed-width 8/16/32/64 lanes, so the platform-sized
+/// Polars only has fixed-width integer lanes, so the platform-sized
 /// `ISize`/`USize` variants widen to `i64`/`u64` at the leaf push site.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NumericKind {
@@ -87,10 +87,12 @@ pub enum NumericKind {
     I16,
     I32,
     I64,
+    I128,
     U8,
     U16,
     U32,
     U64,
+    U128,
     F32,
     F64,
     /// Widens to `i64`. The leaf push site reads `(*v) as i64`.

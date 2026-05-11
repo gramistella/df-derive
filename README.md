@@ -224,7 +224,7 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 
 ## Supported types
 
-- **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`
+- **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `f32`, `f64`
 - **Time**: `chrono::DateTime<Utc>` and `chrono::NaiveDateTime` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
 - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars `dtype-time`). Both have fixed encodings — `time_unit` is not accepted.
 - **Duration**: `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`.
@@ -394,7 +394,7 @@ Performance is continuously monitored and tracked using [Bencher](https://benche
 - **Rust edition**: 2024
 - **Polars**: 0.53 (tested)
 - **polars-arrow**: 0.53 (direct dependency required by generated code)
-- Enable Polars features `timezones` for timezone-aware `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`, `dtype-duration` for duration columns, and `dtype-decimal` for `Decimal`.
+- Enable Polars features `timezones` for timezone-aware `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`, `dtype-duration` for duration columns, `dtype-i128` / `dtype-u128` for 128-bit integer columns, and `dtype-decimal` for `Decimal`.
 
 ## License
 

@@ -1,9 +1,9 @@
 use crate::ir::{DateTimeUnit, NumericKind};
 use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
 
-/// Default `Datetime` precision for `chrono::DateTime<Utc>` fields without an
-/// explicit `time_unit` override. Matches the historical default this crate
-/// shipped with.
+/// Default `Datetime` precision for `chrono::DateTime<Utc>` and
+/// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
+/// Matches the historical default this crate shipped with.
 pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
 /// Default `Duration` precision for `std::time::Duration` and
 /// `chrono::Duration` (`chrono::TimeDelta`) fields without an explicit
@@ -45,6 +45,9 @@ pub enum AnalyzedBase {
     /// `chrono::NaiveTime` — last-segment `NaiveTime` with no generic args
     /// matches, same leniency as [`Self::NaiveDate`].
     NaiveTime,
+    /// `chrono::NaiveDateTime` — last-segment `NaiveDateTime` with no
+    /// generic args matches, same leniency as [`Self::NaiveDate`].
+    NaiveDateTime,
     /// Exactly `std::time::Duration` or `core::time::Duration`. Detected by
     /// strict path matching to disambiguate from `chrono::Duration` and the
     /// external `time::Duration`; bare `Duration` is rejected as ambiguous in
@@ -312,14 +315,14 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
             "bool" => AnalyzedBase::Bool,
             "Decimal" => AnalyzedBase::Decimal,
             // Last-segment ident matching, mirroring `is_datetime_utc`'s
-            // leniency. Both `NaiveDate` and `NaiveTime` take no generic
-            // arguments, so a re-export under another name (`my_crate::NaiveDate`)
-            // still resolves to chrono's type at the call site; if the user's
-            // type happens to share the name without sharing the API, the
-            // generated `signed_duration_since` / `Timelike` calls fail at
-            // compile time at the user's field site.
+            // leniency. `NaiveDate`, `NaiveTime`, and `NaiveDateTime` take
+            // no generic arguments, so a re-export under another path still
+            // resolves to chrono's type at the call site; if the user's type
+            // happens to share the name without sharing the API, the generated
+            // chrono method calls fail at compile time at the user's field site.
             "NaiveDate" if !has_args => AnalyzedBase::NaiveDate,
             "NaiveTime" if !has_args => AnalyzedBase::NaiveTime,
+            "NaiveDateTime" if !has_args => AnalyzedBase::NaiveDateTime,
             _ => {
                 if is_single_segment && !has_args && generic_params.iter().any(|p| p == type_ident)
                 {

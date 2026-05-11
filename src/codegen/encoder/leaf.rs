@@ -571,6 +571,17 @@ pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmK
     mapped_cast_leaf(ctx, &LeafSpec::DateTime(unit), &quote! { i64 }, arm)
 }
 
+/// `NaiveDateTime` leaf with a `NaiveDateTimeToInt(unit)` transform. Same
+/// storage and dtype as `datetime_leaf`, but maps through `and_utc()` so the
+/// naive value is interpreted against the Unix epoch without a timezone.
+pub(super) fn naive_datetime_leaf(
+    ctx: &LeafCtx<'_>,
+    unit: DateTimeUnit,
+    arm: LeafArmKind,
+) -> LeafArm {
+    mapped_cast_leaf(ctx, &LeafSpec::NaiveDateTime(unit), &quote! { i64 }, arm)
+}
+
 /// `NaiveDate` leaf — i32 days since 1970-01-01. Bare: `Vec<i32>` +
 /// `Series::new` + cast to `Date`. Option: `Vec<Option<i32>>`. Shape
 /// matches `datetime_leaf` modulo native type / cast dtype.
@@ -601,7 +612,8 @@ pub(super) fn duration_leaf(
 }
 
 /// Shared body of every `Vec<#native>` + `Series::new` + `.cast(&dtype)?`
-/// leaf — `DateTime`, `NaiveDate`, `NaiveTime`, both Duration variants.
+/// leaf — `DateTime`, `NaiveDateTime`, `NaiveDate`, `NaiveTime`, both
+/// Duration variants.
 /// Each caller passes the leaf spec (drives `mapped_push` and the cast
 /// dtype) and the native storage type; arm selection swaps between
 /// `Vec<#native>` and `Vec<Option<#native>>`.

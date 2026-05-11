@@ -94,7 +94,7 @@ impl LeafSpec {
             Self::String | Self::AsString | Self::AsStr(_) => quote! { #dt::String },
             Self::Bool => quote! { #dt::Boolean },
             Self::Binary => quote! { #dt::Binary },
-            Self::DateTime(unit) => {
+            Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
                 let unit = time_unit_tokens(*unit);
                 quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
             }
@@ -152,6 +152,18 @@ pub fn map_primitive_expr(
                 quote! {
                     (#var).timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: DateTime<Utc> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
+                    ))?
+                }
+            }
+        },
+        LeafSpec::NaiveDateTime(unit) => match unit {
+            DateTimeUnit::Milliseconds => quote! { (#var).and_utc().timestamp_millis() },
+            DateTimeUnit::Microseconds => quote! { (#var).and_utc().timestamp_micros() },
+            DateTimeUnit::Nanoseconds => {
+                let pp = super::polars_paths::prelude();
+                quote! {
+                    (#var).and_utc().timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
+                        ComputeError: "df-derive: NaiveDateTime value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
                     ))?
                 }
             }

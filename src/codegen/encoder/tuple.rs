@@ -1294,6 +1294,7 @@ fn build_leaf_projection_value_expr(
         }
         LeafSpec::Bool => Some(copy_projected),
         LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
         | LeafSpec::NaiveDate
         | LeafSpec::NaiveTime
         | LeafSpec::Duration { .. }
@@ -1306,7 +1307,7 @@ fn build_leaf_projection_value_expr(
             // *receiver* of the mapping; the builder applies the standard
             // `map_primitive_expr` on top.
             //
-            // For DateTime / NaiveDate / NaiveTime / Duration / Decimal we
+            // For DateTime / NaiveDateTime / NaiveDate / NaiveTime / Duration / Decimal we
             // pass a reference to the projected element so the mapping's
             // method calls (`timestamp_millis`, `signed_duration_since`,
             // `num_nanoseconds`, etc.) autoderef through `&Element`.
@@ -1599,6 +1600,7 @@ fn build_primitive_leaf_pieces(
             }
         }
         LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
         | LeafSpec::NaiveDate
         | LeafSpec::NaiveTime
         | LeafSpec::Duration { .. }
@@ -1616,9 +1618,10 @@ fn build_primitive_leaf_pieces(
                 ctx.decimal128_encode_trait,
             );
             let native: TokenStream = match leaf {
-                LeafSpec::DateTime(_) | LeafSpec::NaiveTime | LeafSpec::Duration { .. } => {
-                    quote! { i64 }
-                }
+                LeafSpec::DateTime(_)
+                | LeafSpec::NaiveDateTime(_)
+                | LeafSpec::NaiveTime
+                | LeafSpec::Duration { .. } => quote! { i64 },
                 LeafSpec::NaiveDate => quote! { i32 },
                 LeafSpec::Decimal { .. } => quote! { i128 },
                 _ => unreachable!(),

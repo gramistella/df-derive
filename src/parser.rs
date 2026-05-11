@@ -111,8 +111,8 @@ fn override_conflict(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
              pick one — `decimal(...)` applies to decimal backend candidates, \
              `time_unit` only applies to `chrono::DateTime<Utc>`, \
-             `std::time::Duration`, `core::time::Duration`, or \
-             `chrono::Duration`"
+             `chrono::NaiveDateTime`, `std::time::Duration`, \
+             `core::time::Duration`, or `chrono::Duration`"
         ),
         (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
             "field `{field_display_name}` combines `as_binary` with another override; \
@@ -287,6 +287,7 @@ fn default_leaf_for_base(base: AnalyzedBase) -> LeafSpec {
         AnalyzedBase::DateTimeUtc => LeafSpec::DateTime(DEFAULT_DATETIME_UNIT),
         AnalyzedBase::NaiveDate => LeafSpec::NaiveDate,
         AnalyzedBase::NaiveTime => LeafSpec::NaiveTime,
+        AnalyzedBase::NaiveDateTime => LeafSpec::NaiveDateTime(DEFAULT_DATETIME_UNIT),
         AnalyzedBase::StdDuration => LeafSpec::Duration {
             unit: DEFAULT_DURATION_UNIT,
             source: DurationSource::Std,
@@ -347,6 +348,7 @@ fn parse_leaf_as_str(
         | AnalyzedBase::DateTimeUtc
         | AnalyzedBase::NaiveDate
         | AnalyzedBase::NaiveTime
+        | AnalyzedBase::NaiveDateTime
         | AnalyzedBase::StdDuration
         | AnalyzedBase::ChronoDuration
         | AnalyzedBase::Decimal => Err(syn::Error::new_spanned(
@@ -407,6 +409,7 @@ fn parse_leaf_time_unit(
 ) -> Result<LeafSpec, syn::Error> {
     match base {
         AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(unit)),
+        AnalyzedBase::NaiveDateTime => Ok(LeafSpec::NaiveDateTime(unit)),
         AnalyzedBase::StdDuration => Ok(LeafSpec::Duration {
             unit,
             source: DurationSource::Std,
@@ -435,9 +438,9 @@ fn parse_leaf_time_unit(
             field,
             format!(
                 "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 not `chrono::DateTime<Utc>`, `std::time::Duration`, \
-                 `core::time::Duration`, or `chrono::Duration`; remove the \
-                 attribute or change the field type"
+                 not `chrono::DateTime<Utc>`, `chrono::NaiveDateTime`, \
+                 `std::time::Duration`, `core::time::Duration`, or \
+                 `chrono::Duration`; remove the attribute or change the field type"
             ),
         )),
     }

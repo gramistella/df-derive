@@ -59,6 +59,7 @@ impl LeafSpec {
             | Self::String
             | Self::Bool
             | Self::DateTime(_)
+            | Self::NaiveDateTime(_)
             | Self::NaiveDate
             | Self::NaiveTime
             | Self::Duration { .. }

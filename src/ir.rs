@@ -174,8 +174,12 @@ pub enum LeafSpec {
     /// `chrono::DateTime<Utc>` paired with the parser-injected
     /// `DateTimeToInt(unit)` semantics. The chosen unit determines both the
     /// chrono call used to derive the i64 mantissa and the
-    /// `DataType::Datetime(...)` schema dtype.
+    /// `DataType::Datetime(unit, None)` schema dtype.
     DateTime(DateTimeUnit),
+    /// `chrono::NaiveDateTime` materialized as `DataType::Datetime(unit, None)`.
+    /// Values are interpreted against the naive Unix epoch via
+    /// `NaiveDateTime::and_utc().timestamp_*()`.
+    NaiveDateTime(DateTimeUnit),
     /// `chrono::NaiveDate` — materializes as `DataType::Date` (i32 days
     /// since 1970-01-01). No unit choice — `Date` has a fixed encoding.
     NaiveDate,
@@ -228,11 +232,12 @@ pub enum LeafSpec {
 
 impl LeafSpec {
     /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
-    /// (including `ISize`/`USize`), `Bool`, `NaiveDate`, `NaiveTime`, and
-    /// `Duration` are `Copy`; `String`, `Binary`, `DateTime`, `Decimal`,
-    /// `AsString`, and the `AsStr` borrow path are not. The `AsStr` path
-    /// takes its own branch in the multi-Option wrapper before reaching this
-    /// helper, so its `false` answer here is only consulted on dead arms.
+    /// (including `ISize`/`USize`), `Bool`, `NaiveDate`, `NaiveTime`,
+    /// `NaiveDateTime`, and `Duration` are `Copy`; `String`, `Binary`,
+    /// `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow path are not.
+    /// The `AsStr` path takes its own branch in the multi-Option wrapper before
+    /// reaching this helper, so its `false` answer here is only consulted on
+    /// dead arms.
     pub const fn is_copy(&self) -> bool {
         matches!(
             self,
@@ -240,6 +245,7 @@ impl LeafSpec {
                 | Self::Bool
                 | Self::NaiveDate
                 | Self::NaiveTime
+                | Self::NaiveDateTime(_)
                 | Self::Duration { .. }
         )
     }

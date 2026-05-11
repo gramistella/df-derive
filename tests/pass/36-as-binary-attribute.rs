@@ -19,10 +19,7 @@ struct Blobs {
 }
 
 // Regression pin: a separate struct whose `Vec<u8>` field has NO attribute.
-// The default schema dtype must remain `List(UInt8)`. We only inspect the
-// static schema — runtime materialization of a `UInt8` series requires the
-// `dtype-u8` polars feature, which the workspace doesn't enable; the schema
-// shape is what we want to pin here, not the runtime build path.
+// The default schema and runtime dtype must remain `List(UInt8)`.
 #[derive(ToDataFrame, Clone)]
 struct DefaultRaw {
     raw: Vec<u8>,
@@ -60,6 +57,22 @@ fn assert_list_of_bytes(df: &DataFrame, col: &str, row: usize, expected: &[Optio
         let expected_owned: Vec<Option<Vec<u8>>> =
             expected.iter().map(|o| o.map(|b| b.to_vec())).collect();
         assert_eq!(actual, expected_owned, "col {col} row {row}");
+    } else {
+        panic!("expected List for {col} row {row}, got {v:?}");
+    }
+}
+
+fn assert_list_u8(df: &DataFrame, col: &str, row: usize, expected: &[u8]) {
+    let v = df.column(col).unwrap().get(row).unwrap();
+    if let AnyValue::List(inner) = v {
+        let actual: Vec<u8> = inner
+            .iter()
+            .map(|av| match av {
+                AnyValue::UInt8(v) => v,
+                other => panic!("unexpected AnyValue inside list {col}: {other:?}"),
+            })
+            .collect();
+        assert_eq!(actual, expected, "col {col} row {row}");
     } else {
         panic!("expected List for {col} row {row}, got {v:?}");
     }
@@ -115,14 +128,22 @@ fn main() {
     );
 
     println!("Default-behavior pin: Vec<u8> with no attribute -> List(UInt8)...");
-    // Static schema only; constructing the DataFrame would need the polars
-    // `dtype-u8` feature, which the workspace doesn't enable.
     let raw_schema = DefaultRaw::schema().unwrap();
     let raw_dtype = raw_schema
         .iter()
         .find_map(|(n, d)| (n == "raw").then(|| d.clone()))
         .unwrap();
     assert_eq!(raw_dtype, DataType::List(Box::new(DataType::UInt8)));
+    let raw_df = DefaultRaw {
+        raw: vec![0, 1, 255],
+    }
+    .to_dataframe()
+    .unwrap();
+    assert_eq!(
+        raw_df.schema().get("raw"),
+        Some(&DataType::List(Box::new(DataType::UInt8)))
+    );
+    assert_list_u8(&raw_df, "raw", 0, &[0, 1, 255]);
 
     assert_col_bytes(&df, "blob", 0, &small);
     assert_col_bytes(&df, "opt_blob", 0, &medium);

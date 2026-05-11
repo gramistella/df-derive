@@ -395,7 +395,12 @@ Performance is continuously monitored and tracked using [Bencher](https://benche
 - **Rust edition**: 2024
 - **Polars**: 0.53 (tested)
 - **polars-arrow**: 0.53 (direct dependency required by generated code)
-- Enable Polars features `timezones` for timezone-aware `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`, `dtype-duration` for duration columns, `dtype-i128` / `dtype-u128` for 128-bit integer columns, and `dtype-decimal` for `Decimal`.
+- Enable Polars features `timezones` for timezone-aware `DateTime<Utc>`,
+  `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`,
+  `dtype-duration` for duration columns, `dtype-i8` / `dtype-i16` /
+  `dtype-u8` / `dtype-u16` for exact small-integer columns,
+  `dtype-i128` / `dtype-u128` for 128-bit integer columns, and
+  `dtype-decimal` for `Decimal`.
 
 ## License
 

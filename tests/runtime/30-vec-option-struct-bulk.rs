@@ -14,12 +14,10 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
+use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::Columnar;
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {
@@ -42,13 +40,20 @@ fn list_dtype_for_field_b() -> DataType {
 }
 
 fn assert_inner_columns_typed(df: &DataFrame, expected_height: usize) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &list_dtype_for_field_b());
+    assert_eq!(
+        df.column("payload.field_a").unwrap().dtype(),
+        &list_dtype_for_field_a()
+    );
+    assert_eq!(
+        df.column("payload.field_b").unwrap().dtype(),
+        &list_dtype_for_field_b()
+    );
     assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
     assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     test_empty_parent_slice();
     test_all_some_but_empty_vec();
     test_all_none_elements();
@@ -68,7 +73,12 @@ fn test_empty_parent_slice() {
 // slice is empty, every outer row must be a present-but-empty list (NOT
 // null). Exercises the `total == 0` branch in the bulk emitter.
 fn test_all_some_but_empty_vec() {
-    let rows: Vec<Outer> = (0..4).map(|i| Outer { id: i, payload: Vec::new() }).collect();
+    let rows: Vec<Outer> = (0..4)
+        .map(|i| Outer {
+            id: i,
+            payload: Vec::new(),
+        })
+        .collect();
     let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
@@ -93,9 +103,18 @@ fn test_all_some_but_empty_vec() {
 // inside its outer list.
 fn test_all_none_elements() {
     let rows = vec![
-        Outer { id: 0, payload: vec![None, None, None] },
-        Outer { id: 1, payload: vec![None] },
-        Outer { id: 2, payload: vec![None, None] },
+        Outer {
+            id: 0,
+            payload: vec![None, None, None],
+        },
+        Outer {
+            id: 1,
+            payload: vec![None],
+        },
+        Outer {
+            id: 2,
+            payload: vec![None, None],
+        },
     ];
     let expected_lens = [3usize, 1, 2];
 
@@ -112,8 +131,16 @@ fn test_all_none_elements() {
         let AnyValue::List(s_b) = av_b else {
             panic!("row {idx} payload.field_b must be a List, got {av_b:?}");
         };
-        assert_eq!(s_a.len(), expected_len, "row {idx} field_a outer list length");
-        assert_eq!(s_b.len(), expected_len, "row {idx} field_b outer list length");
+        assert_eq!(
+            s_a.len(),
+            expected_len,
+            "row {idx} field_a outer list length"
+        );
+        assert_eq!(
+            s_b.len(),
+            expected_len,
+            "row {idx} field_b outer list length"
+        );
         for inner_idx in 0..expected_len {
             assert_eq!(
                 s_a.get(inner_idx).unwrap(),
@@ -139,27 +166,54 @@ fn test_mixed_some_none() {
         Outer {
             id: 0,
             payload: vec![
-                Some(Inner { field_a: 10, field_b: 1.5 }),
+                Some(Inner {
+                    field_a: 10,
+                    field_b: 1.5,
+                }),
                 None,
-                Some(Inner { field_a: 20, field_b: 2.5 }),
+                Some(Inner {
+                    field_a: 20,
+                    field_b: 2.5,
+                }),
             ],
         },
         // Empty Vec — outer list present but empty.
-        Outer { id: 1, payload: Vec::new() },
+        Outer {
+            id: 1,
+            payload: Vec::new(),
+        },
         // All None — outer list present, every inner null.
-        Outer { id: 2, payload: vec![None, None] },
+        Outer {
+            id: 2,
+            payload: vec![None, None],
+        },
         // All Some.
         Outer {
             id: 3,
             payload: vec![
-                Some(Inner { field_a: 30, field_b: 3.5 }),
-                Some(Inner { field_a: 40, field_b: 4.5 }),
+                Some(Inner {
+                    field_a: 30,
+                    field_b: 3.5,
+                }),
+                Some(Inner {
+                    field_a: 40,
+                    field_b: 4.5,
+                }),
             ],
         },
         // Single None at a single slot.
-        Outer { id: 4, payload: vec![None] },
+        Outer {
+            id: 4,
+            payload: vec![None],
+        },
         // Single Some.
-        Outer { id: 5, payload: vec![Some(Inner { field_a: 50, field_b: 5.5 })] },
+        Outer {
+            id: 5,
+            payload: vec![Some(Inner {
+                field_a: 50,
+                field_b: 5.5,
+            })],
+        },
     ];
 
     let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
@@ -194,8 +248,16 @@ fn test_mixed_some_none() {
         let AnyValue::List(s_b) = av_b else {
             panic!("row {idx} payload.field_b must be a List, got {av_b:?}");
         };
-        assert_eq!(s_a.len(), exp_a.len(), "row {idx} field_a outer list length");
-        assert_eq!(s_b.len(), exp_b.len(), "row {idx} field_b outer list length");
+        assert_eq!(
+            s_a.len(),
+            exp_a.len(),
+            "row {idx} field_a outer list length"
+        );
+        assert_eq!(
+            s_b.len(),
+            exp_b.len(),
+            "row {idx} field_b outer list length"
+        );
         for (inner_idx, exp) in exp_a.iter().enumerate() {
             let av = s_a.get(inner_idx).unwrap();
             match exp {

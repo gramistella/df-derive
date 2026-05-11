@@ -1,8 +1,6 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-#[path = "../common.rs"]
-mod core;
 use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
@@ -135,12 +133,15 @@ fn assert_binary_list(df: &DataFrame, col: &str, row: usize, expected: &[Option<
             other => panic!("unexpected AnyValue inside list {col}: {other:?}"),
         })
         .collect();
-    let expected_owned: Vec<Option<Vec<u8>>> =
-        expected.iter().map(|value| value.map(<[u8]>::to_vec)).collect();
+    let expected_owned: Vec<Option<Vec<u8>>> = expected
+        .iter()
+        .map(|value| value.map(<[u8]>::to_vec))
+        .collect();
     assert_eq!(actual, expected_owned, "col {col} row {row}");
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     println!("--- Borrowed reference support ---");
 
     let owned = "owned-string".to_string();
@@ -218,7 +219,10 @@ fn main() {
     };
     let nested_schema = BorrowedNested::schema().unwrap();
     assert_eq!(schema_dtype(&nested_schema, "nested.tag"), DataType::String);
-    assert_eq!(schema_dtype(&nested_schema, "nested.amount"), DataType::Int32);
+    assert_eq!(
+        schema_dtype(&nested_schema, "nested.amount"),
+        DataType::Int32
+    );
     assert_eq!(
         schema_dtype(&nested_schema, "nested_vec.tag"),
         DataType::List(Box::new(DataType::String))
@@ -276,12 +280,7 @@ fn main() {
     assert_binary(&bytes_df, "payload", 0, b"payload");
     assert_binary(&bytes_df, "maybe_payload", 0, b"maybe");
     assert_binary_list(&bytes_df, "payloads", 0, &[Some(b"aa"), Some(b"bb")]);
-    assert_binary_list(
-        &bytes_df,
-        "nullable_payloads",
-        0,
-        &[Some(b"present"), None],
-    );
+    assert_binary_list(&bytes_df, "nullable_payloads", 0, &[Some(b"present"), None]);
     assert_binary_list(
         &bytes_df,
         "maybe_payloads",

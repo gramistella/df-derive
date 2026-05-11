@@ -16,8 +16,6 @@ use chrono::NaiveDate;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-#[path = "../common.rs"]
-mod core;
 use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
@@ -55,7 +53,8 @@ fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     println!("--- Smart-pointer transparency ---");
 
     // --- Bare composition table ---
@@ -120,7 +119,10 @@ fn main() {
 
     // --- Composed (option / vec compositions over smart pointers) ---
     let composed_schema = Composed::schema().unwrap();
-    assert_eq!(schema_dtype(&composed_schema, "opt_bx_i32"), DataType::Int32);
+    assert_eq!(
+        schema_dtype(&composed_schema, "opt_bx_i32"),
+        DataType::Int32
+    );
     assert_eq!(
         schema_dtype(&composed_schema, "bx_opt_bool"),
         DataType::Boolean
@@ -170,7 +172,11 @@ fn main() {
     ));
 
     // Vec<Arc<String>> list extraction
-    let v = composed_df.column("vec_arc_string").unwrap().get(0).unwrap();
+    let v = composed_df
+        .column("vec_arc_string")
+        .unwrap()
+        .get(0)
+        .unwrap();
     let AnyValue::List(inner) = v else {
         panic!("expected list")
     };
@@ -200,7 +206,10 @@ fn main() {
 
     // --- Regression: as_binary over Box<Vec<u8>> ---
     let regression_schema = Regression::schema().unwrap();
-    assert_eq!(schema_dtype(&regression_schema, "bx_blob"), DataType::Binary);
+    assert_eq!(
+        schema_dtype(&regression_schema, "bx_blob"),
+        DataType::Binary
+    );
     assert_eq!(schema_dtype(&regression_schema, "arc_date"), DataType::Date);
     assert_eq!(
         schema_dtype(&regression_schema, "bx_chrono_dur"),

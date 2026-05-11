@@ -7,8 +7,6 @@ use std::sync::Arc;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-#[path = "../common.rs"]
-mod core;
 use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
@@ -126,7 +124,8 @@ fn assert_list_i64(df: &DataFrame, col: &str, row: usize, expected: &[Option<i64
     assert_eq!(actual, expected);
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     let scalar_schema = NonZeroScalars::schema().unwrap();
     assert_eq!(schema_dtype(&scalar_schema, "i8_v"), DataType::Int8);
     assert_eq!(schema_dtype(&scalar_schema, "i16_v"), DataType::Int16);
@@ -142,7 +141,10 @@ fn main() {
     assert_eq!(schema_dtype(&scalar_schema, "usize_v"), DataType::UInt64);
     assert_eq!(schema_dtype(&scalar_schema, "opt_i32"), DataType::Int32);
     assert_eq!(schema_dtype(&scalar_schema, "opt_u64"), DataType::UInt64);
-    assert_eq!(schema_dtype(&scalar_schema, "pair.field_0"), DataType::UInt8);
+    assert_eq!(
+        schema_dtype(&scalar_schema, "pair.field_0"),
+        DataType::UInt8
+    );
     assert_eq!(
         schema_dtype(&scalar_schema, "pair.field_1"),
         DataType::Int64
@@ -196,7 +198,10 @@ fn main() {
     ];
     let df = rows.as_slice().to_dataframe().unwrap();
     assert_eq!(df.shape(), (2, 18));
-    assert_eq!(df.column("i8_v").unwrap().get(0).unwrap(), AnyValue::Int8(-8));
+    assert_eq!(
+        df.column("i8_v").unwrap().get(0).unwrap(),
+        AnyValue::Int8(-8)
+    );
     assert_eq!(
         df.column("i128_v").unwrap().get(0).unwrap(),
         AnyValue::Int128(-128)

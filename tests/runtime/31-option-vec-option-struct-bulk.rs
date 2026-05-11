@@ -18,12 +18,10 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
+use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::Columnar;
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {
@@ -46,13 +44,20 @@ fn list_dtype_for_field_b() -> DataType {
 }
 
 fn assert_inner_columns_typed(df: &DataFrame, expected_height: usize) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &list_dtype_for_field_b());
+    assert_eq!(
+        df.column("payload.field_a").unwrap().dtype(),
+        &list_dtype_for_field_a()
+    );
+    assert_eq!(
+        df.column("payload.field_b").unwrap().dtype(),
+        &list_dtype_for_field_b()
+    );
     assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
     assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     test_empty_parent_slice();
     test_all_none_outer();
     test_all_some_empty_outer();
@@ -74,7 +79,12 @@ fn test_empty_parent_slice() {
 // as `AnyValue::Null` (NOT empty list). Exercises the `total == 0` branch
 // with all-null bitmap.
 fn test_all_none_outer() {
-    let rows: Vec<Outer> = (0..4).map(|i| Outer { id: i, payload: None }).collect();
+    let rows: Vec<Outer> = (0..4)
+        .map(|i| Outer {
+            id: i,
+            payload: None,
+        })
+        .collect();
     let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
@@ -129,9 +139,18 @@ fn test_all_some_empty_outer() {
 // outer list.
 fn test_all_some_inner_all_none() {
     let rows = vec![
-        Outer { id: 0, payload: Some(vec![None, None, None]) },
-        Outer { id: 1, payload: Some(vec![None]) },
-        Outer { id: 2, payload: Some(vec![None, None]) },
+        Outer {
+            id: 0,
+            payload: Some(vec![None, None, None]),
+        },
+        Outer {
+            id: 1,
+            payload: Some(vec![None]),
+        },
+        Outer {
+            id: 2,
+            payload: Some(vec![None, None]),
+        },
     ];
     let expected_lens = [3usize, 1, 2];
 
@@ -148,8 +167,16 @@ fn test_all_some_inner_all_none() {
         let AnyValue::List(s_b) = av_b else {
             panic!("row {idx} payload.field_b must be a List, got {av_b:?}");
         };
-        assert_eq!(s_a.len(), expected_len, "row {idx} field_a outer list length");
-        assert_eq!(s_b.len(), expected_len, "row {idx} field_b outer list length");
+        assert_eq!(
+            s_a.len(),
+            expected_len,
+            "row {idx} field_a outer list length"
+        );
+        assert_eq!(
+            s_b.len(),
+            expected_len,
+            "row {idx} field_b outer list length"
+        );
         for inner_idx in 0..expected_len {
             assert_eq!(
                 s_a.get(inner_idx).unwrap(),
@@ -177,31 +204,58 @@ fn test_mixed_all_branches() {
         Outer {
             id: 0,
             payload: Some(vec![
-                Some(Inner { field_a: 10, field_b: 1.5 }),
-                Some(Inner { field_a: 20, field_b: 2.5 }),
+                Some(Inner {
+                    field_a: 10,
+                    field_b: 1.5,
+                }),
+                Some(Inner {
+                    field_a: 20,
+                    field_b: 2.5,
+                }),
             ]),
         },
         // None outer — bitmap bit false, offset delta 0.
-        Outer { id: 1, payload: None },
+        Outer {
+            id: 1,
+            payload: None,
+        },
         // Some(vec![]) — bitmap bit true, offset delta 0.
-        Outer { id: 2, payload: Some(Vec::new()) },
+        Outer {
+            id: 2,
+            payload: Some(Vec::new()),
+        },
         // Some([None]) — bitmap bit true, offset delta 1, all inner None.
-        Outer { id: 3, payload: Some(vec![None]) },
+        Outer {
+            id: 3,
+            payload: Some(vec![None]),
+        },
         // Some([Some, None, Some]) — exercises mixed `IdxCa` + `take`.
         Outer {
             id: 4,
             payload: Some(vec![
-                Some(Inner { field_a: 30, field_b: 3.5 }),
+                Some(Inner {
+                    field_a: 30,
+                    field_b: 3.5,
+                }),
                 None,
-                Some(Inner { field_a: 40, field_b: 4.5 }),
+                Some(Inner {
+                    field_a: 40,
+                    field_b: 4.5,
+                }),
             ]),
         },
         // None again — make sure repeated None doesn't drift bitmap.
-        Outer { id: 5, payload: None },
+        Outer {
+            id: 5,
+            payload: None,
+        },
         // Some([Some]) — single-element non-null list.
         Outer {
             id: 6,
-            payload: Some(vec![Some(Inner { field_a: 50, field_b: 5.5 })]),
+            payload: Some(vec![Some(Inner {
+                field_a: 50,
+                field_b: 5.5,
+            })]),
         },
     ];
 
@@ -241,7 +295,11 @@ fn test_mixed_all_branches() {
                 let AnyValue::List(s_a) = av_a else {
                     panic!("row {idx} payload.field_a must be a List, got {av_a:?}");
                 };
-                assert_eq!(s_a.len(), slots.len(), "row {idx} field_a outer list length");
+                assert_eq!(
+                    s_a.len(),
+                    slots.len(),
+                    "row {idx} field_a outer list length"
+                );
                 for (inner_idx, slot) in slots.iter().enumerate() {
                     let av = s_a.get(inner_idx).unwrap();
                     match slot {
@@ -269,7 +327,11 @@ fn test_mixed_all_branches() {
                 let AnyValue::List(s_b) = av_b else {
                     panic!("row {idx} payload.field_b must be a List, got {av_b:?}");
                 };
-                assert_eq!(s_b.len(), slots.len(), "row {idx} field_b outer list length");
+                assert_eq!(
+                    s_b.len(),
+                    slots.len(),
+                    "row {idx} field_b outer list length"
+                );
                 for (inner_idx, slot) in slots.iter().enumerate() {
                     let av = s_b.get(inner_idx).unwrap();
                     match slot {

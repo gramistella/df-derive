@@ -19,12 +19,10 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
+use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::Columnar;
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {
@@ -50,20 +48,33 @@ fn nested_list_dtype_for_field_b() -> DataType {
 }
 
 fn assert_inner_columns_populated(df: &DataFrame, expected_height: usize) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &nested_list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &nested_list_dtype_for_field_b());
+    assert_eq!(
+        df.column("payload.field_a").unwrap().dtype(),
+        &nested_list_dtype_for_field_a()
+    );
+    assert_eq!(
+        df.column("payload.field_b").unwrap().dtype(),
+        &nested_list_dtype_for_field_b()
+    );
     assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
     assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
 }
 
 fn assert_inner_columns_empty_path(df: &DataFrame, expected_height: usize) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &nested_list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &nested_list_dtype_for_field_b());
+    assert_eq!(
+        df.column("payload.field_a").unwrap().dtype(),
+        &nested_list_dtype_for_field_a()
+    );
+    assert_eq!(
+        df.column("payload.field_b").unwrap().dtype(),
+        &nested_list_dtype_for_field_b()
+    );
     assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
     assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     test_empty_parent_slice();
     test_all_outer_empty();
     test_outer_with_empty_inner_vecs();
@@ -87,7 +98,12 @@ fn test_empty_parent_slice() {
 // inner lists, no leaves. Every outer row must be a present-but-empty
 // outer list. Exercises the fully-empty branch of the bulk emitter.
 fn test_all_outer_empty() {
-    let rows: Vec<Outer> = (0..4).map(|i| Outer { id: i, payload: Vec::new() }).collect();
+    let rows: Vec<Outer> = (0..4)
+        .map(|i| Outer {
+            id: i,
+            payload: Vec::new(),
+        })
+        .collect();
     let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_populated(&df, 4);
@@ -111,9 +127,18 @@ fn test_all_outer_empty() {
 // the inner-list count is non-zero per row, but every inner list is empty.
 fn test_outer_with_empty_inner_vecs() {
     let rows = vec![
-        Outer { id: 0, payload: vec![Vec::new(), Vec::new()] },
-        Outer { id: 1, payload: vec![Vec::new()] },
-        Outer { id: 2, payload: vec![Vec::new(), Vec::new(), Vec::new()] },
+        Outer {
+            id: 0,
+            payload: vec![Vec::new(), Vec::new()],
+        },
+        Outer {
+            id: 1,
+            payload: vec![Vec::new()],
+        },
+        Outer {
+            id: 2,
+            payload: vec![Vec::new(), Vec::new(), Vec::new()],
+        },
     ];
     let expected_inner_lens = [2usize, 1, 3];
 
@@ -130,8 +155,16 @@ fn test_outer_with_empty_inner_vecs() {
         let AnyValue::List(s_b) = av_b else {
             panic!("row {idx} payload.field_b must be a List, got {av_b:?}");
         };
-        assert_eq!(s_a.len(), expected_outer_len, "row {idx} field_a outer list length");
-        assert_eq!(s_b.len(), expected_outer_len, "row {idx} field_b outer list length");
+        assert_eq!(
+            s_a.len(),
+            expected_outer_len,
+            "row {idx} field_a outer list length"
+        );
+        assert_eq!(
+            s_b.len(),
+            expected_outer_len,
+            "row {idx} field_b outer list length"
+        );
         for inner_idx in 0..expected_outer_len {
             let av_inner_a = s_a.get(inner_idx).unwrap();
             let av_inner_b = s_b.get(inner_idx).unwrap();
@@ -141,8 +174,16 @@ fn test_outer_with_empty_inner_vecs() {
             let AnyValue::List(inner_b) = av_inner_b else {
                 panic!("row {idx} field_b inner element {inner_idx} must be a List(empty)");
             };
-            assert_eq!(inner_a.len(), 0, "row {idx} field_a inner {inner_idx} must be empty");
-            assert_eq!(inner_b.len(), 0, "row {idx} field_b inner {inner_idx} must be empty");
+            assert_eq!(
+                inner_a.len(),
+                0,
+                "row {idx} field_a inner {inner_idx} must be empty"
+            );
+            assert_eq!(
+                inner_b.len(),
+                0,
+                "row {idx} field_b inner {inner_idx} must be empty"
+            );
         }
     }
 }
@@ -156,19 +197,37 @@ fn test_all_populated() {
         Outer {
             id: 0,
             payload: vec![
-                vec![Inner { field_a: 10, field_b: 1.5 }],
+                vec![Inner {
+                    field_a: 10,
+                    field_b: 1.5,
+                }],
                 vec![
-                    Inner { field_a: 20, field_b: 2.5 },
-                    Inner { field_a: 30, field_b: 3.5 },
+                    Inner {
+                        field_a: 20,
+                        field_b: 2.5,
+                    },
+                    Inner {
+                        field_a: 30,
+                        field_b: 3.5,
+                    },
                 ],
             ],
         },
         Outer {
             id: 1,
             payload: vec![vec![
-                Inner { field_a: 40, field_b: 4.5 },
-                Inner { field_a: 50, field_b: 5.5 },
-                Inner { field_a: 60, field_b: 6.5 },
+                Inner {
+                    field_a: 40,
+                    field_b: 4.5,
+                },
+                Inner {
+                    field_a: 50,
+                    field_b: 5.5,
+                },
+                Inner {
+                    field_a: 60,
+                    field_b: 6.5,
+                },
             ]],
         },
     ];
@@ -177,14 +236,15 @@ fn test_all_populated() {
     assert_eq!(df.height(), 2);
     assert_inner_columns_populated(&df, 2);
 
-    let expected_a: Vec<Vec<Vec<i64>>> =
-        vec![vec![vec![10], vec![20, 30]], vec![vec![40, 50, 60]]];
+    let expected_a: Vec<Vec<Vec<i64>>> = vec![vec![vec![10], vec![20, 30]], vec![vec![40, 50, 60]]];
     let expected_b: Vec<Vec<Vec<f64>>> =
         vec![vec![vec![1.5], vec![2.5, 3.5]], vec![vec![4.5, 5.5, 6.5]]];
 
     for (idx, (exp_a, exp_b)) in expected_a.iter().zip(expected_b.iter()).enumerate() {
         verify_outer_row::<i64>(&df, idx, "payload.field_a", exp_a, |v| AnyValue::Int64(*v));
-        verify_outer_row::<f64>(&df, idx, "payload.field_b", exp_b, |v| AnyValue::Float64(*v));
+        verify_outer_row::<f64>(&df, idx, "payload.field_b", exp_b, |v| {
+            AnyValue::Float64(*v)
+        });
     }
 }
 
@@ -196,34 +256,61 @@ fn test_all_populated() {
 fn test_mixed_shapes() {
     let rows = vec![
         // Empty outer (no inner lists).
-        Outer { id: 0, payload: vec![] },
+        Outer {
+            id: 0,
+            payload: vec![],
+        },
         // Outer with one populated inner.
         Outer {
             id: 1,
-            payload: vec![vec![Inner { field_a: 100, field_b: 0.5 }]],
+            payload: vec![vec![Inner {
+                field_a: 100,
+                field_b: 0.5,
+            }]],
         },
         // Outer with one empty inner.
-        Outer { id: 2, payload: vec![Vec::new()] },
+        Outer {
+            id: 2,
+            payload: vec![Vec::new()],
+        },
         // Outer with mix of populated and empty inners.
         Outer {
             id: 3,
             payload: vec![
-                vec![Inner { field_a: 200, field_b: 1.5 }],
+                vec![Inner {
+                    field_a: 200,
+                    field_b: 1.5,
+                }],
                 Vec::new(),
                 vec![
-                    Inner { field_a: 300, field_b: 2.5 },
-                    Inner { field_a: 400, field_b: 3.5 },
+                    Inner {
+                        field_a: 300,
+                        field_b: 2.5,
+                    },
+                    Inner {
+                        field_a: 400,
+                        field_b: 3.5,
+                    },
                 ],
             ],
         },
         // Empty outer again, after populated rows.
-        Outer { id: 4, payload: vec![] },
+        Outer {
+            id: 4,
+            payload: vec![],
+        },
         // Single inner with multiple leaves.
         Outer {
             id: 5,
             payload: vec![vec![
-                Inner { field_a: 500, field_b: 4.5 },
-                Inner { field_a: 600, field_b: 5.5 },
+                Inner {
+                    field_a: 500,
+                    field_b: 4.5,
+                },
+                Inner {
+                    field_a: 600,
+                    field_b: 5.5,
+                },
             ]],
         },
     ];
@@ -251,7 +338,9 @@ fn test_mixed_shapes() {
 
     for (idx, (exp_a, exp_b)) in expected_a.iter().zip(expected_b.iter()).enumerate() {
         verify_outer_row::<i64>(&df, idx, "payload.field_a", exp_a, |v| AnyValue::Int64(*v));
-        verify_outer_row::<f64>(&df, idx, "payload.field_b", exp_b, |v| AnyValue::Float64(*v));
+        verify_outer_row::<f64>(&df, idx, "payload.field_b", exp_b, |v| {
+            AnyValue::Float64(*v)
+        });
     }
 }
 
@@ -266,7 +355,11 @@ fn verify_outer_row<T>(
     let AnyValue::List(outer_s) = av else {
         panic!("row {idx} {col} must be a List, got {av:?}");
     };
-    assert_eq!(outer_s.len(), expected.len(), "row {idx} {col} outer list length");
+    assert_eq!(
+        outer_s.len(),
+        expected.len(),
+        "row {idx} {col} outer list length"
+    );
     for (inner_idx, exp_inner) in expected.iter().enumerate() {
         let av_inner = outer_s.get(inner_idx).unwrap();
         let AnyValue::List(inner_s) = av_inner else {

@@ -1,8 +1,6 @@
+use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct Blobs {
@@ -78,7 +76,8 @@ fn assert_list_u8(df: &DataFrame, col: &str, row: usize, expected: &[u8]) {
     }
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     println!("--- Testing #[df_derive(as_binary)] attribute for Vec<u8> shapes ---");
 
     let small: Vec<u8> = b"hi".to_vec(); // 2 bytes (BinaryView inline)
@@ -293,9 +292,7 @@ fn test_nested_round_trip() {
         },
         OuterScalar {
             label: "b".into(),
-            inner: Inner {
-                payload: vec![],
-            },
+            inner: Inner { payload: vec![] },
         },
         OuterScalar {
             label: "c".into(),
@@ -312,7 +309,12 @@ fn test_nested_round_trip() {
     );
     assert_col_bytes(&df_batch, "inner.payload", 0, b"abc");
     assert_col_bytes(&df_batch, "inner.payload", 1, &[]);
-    assert_col_bytes(&df_batch, "inner.payload", 2, &(0..50u8).collect::<Vec<_>>());
+    assert_col_bytes(
+        &df_batch,
+        "inner.payload",
+        2,
+        &(0..50u8).collect::<Vec<_>>(),
+    );
 
     // Vec-of-inner nested: outer column for inners.payload should be List(Binary).
     let outer_vec = OuterVec {

@@ -1,8 +1,6 @@
+use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 
 // A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`
 // attribute is the semantic opt-in that tells the macro to route this leaf
@@ -82,7 +80,8 @@ fn decimal_mantissa(av: AnyValue<'_>) -> Option<i128> {
     }
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     let row = CustomDecimalRow {
         price: MoneyAmount::new(12_345, 2),
         optional: Some(MoneyAmount::new(7, 0)),
@@ -109,7 +108,10 @@ fn main() {
 
     let df = row.to_dataframe().unwrap();
     assert_eq!(df.height(), 1);
-    assert_eq!(df.column("price").unwrap().dtype(), &DataType::Decimal(18, 4));
+    assert_eq!(
+        df.column("price").unwrap().dtype(),
+        &DataType::Decimal(18, 4)
+    );
     assert_eq!(
         decimal_mantissa(df.column("price").unwrap().get(0).unwrap()),
         Some(1_234_500)
@@ -157,5 +159,8 @@ fn main() {
     );
 
     let empty = CustomDecimalRow::empty_dataframe().unwrap();
-    assert_eq!(empty.column("price").unwrap().dtype(), &DataType::Decimal(18, 4));
+    assert_eq!(
+        empty.column("price").unwrap().dtype(),
+        &DataType::Decimal(18, 4)
+    );
 }

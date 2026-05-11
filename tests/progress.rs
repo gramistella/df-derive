@@ -30,26 +30,15 @@ fn tests() {
     t.pass("tests/pass/25-doubly-optional-nested.rs");
     t.pass("tests/pass/26-generics-no-clone.rs");
     t.pass("tests/pass/27-decimal-i128-direct.rs");
-    t.pass("tests/pass/28-option-vec-struct-validity.rs");
     t.pass("tests/pass/29-decimal128-encode-trait.rs");
-    t.pass("tests/pass/30-vec-option-struct-bulk.rs");
-    t.pass("tests/pass/31-option-vec-option-struct-bulk.rs");
-    t.pass("tests/pass/32-vec-vec-struct-bulk.rs");
-    t.pass("tests/pass/33-vec-option-vec-mid-stack.rs");
     t.pass("tests/pass/34-doubly-optional-primitive.rs");
     t.pass("tests/pass/35-isize-usize.rs");
-    t.pass("tests/pass/36-as-binary-attribute.rs");
     t.pass("tests/pass/37-naive-and-duration.rs");
-    t.pass("tests/pass/38-smart-pointers.rs");
-    t.pass("tests/pass/39-tuple-fields.rs");
     t.pass("tests/pass/40-reversed-trait-overrides.rs");
-    t.pass("tests/pass/41-decimal-custom-backend-attr.rs");
     t.pass("tests/pass/42-naive-datetime.rs");
     t.pass("tests/pass/43-i128-u128.rs");
     t.pass("tests/pass/44-cow-unsized.rs");
-    t.pass("tests/pass/45-borrowed-references.rs");
     t.pass("tests/pass/46-datetime-timezones.rs");
-    t.pass("tests/pass/47-nonzero-numerics.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

@@ -14,12 +14,10 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
+use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::Columnar;
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {
@@ -44,13 +42,20 @@ fn list_dtype_for_field_b() -> DataType {
 }
 
 fn assert_inner_columns_are_null_lists(df: &DataFrame) {
-    assert_eq!(df.column("payload.field_a").unwrap().dtype(), &list_dtype_for_field_a());
-    assert_eq!(df.column("payload.field_b").unwrap().dtype(), &list_dtype_for_field_b());
+    assert_eq!(
+        df.column("payload.field_a").unwrap().dtype(),
+        &list_dtype_for_field_a()
+    );
+    assert_eq!(
+        df.column("payload.field_b").unwrap().dtype(),
+        &list_dtype_for_field_b()
+    );
     assert_eq!(df.column("payload.field_a").unwrap().len(), EXPECTED_HEIGHT);
     assert_eq!(df.column("payload.field_b").unwrap().len(), EXPECTED_HEIGHT);
 }
 
-fn main() {
+#[test]
+fn runtime_semantics() {
     test_all_none();
     test_mixed_some_none();
     test_some_empty_vs_none();
@@ -202,16 +207,36 @@ fn test_some_empty_vs_none() {
     }
 
     for empty_row in [0, 2] {
-        let av_a = df.column("payload.field_a").unwrap().get(empty_row).unwrap();
-        let av_b = df.column("payload.field_b").unwrap().get(empty_row).unwrap();
+        let av_a = df
+            .column("payload.field_a")
+            .unwrap()
+            .get(empty_row)
+            .unwrap();
+        let av_b = df
+            .column("payload.field_b")
+            .unwrap()
+            .get(empty_row)
+            .unwrap();
         let AnyValue::List(s_a) = av_a else {
-            panic!("Some(vec![]) row {empty_row} of payload.field_a must be List(empty), got {av_a:?}");
+            panic!(
+                "Some(vec![]) row {empty_row} of payload.field_a must be List(empty), got {av_a:?}"
+            );
         };
         let AnyValue::List(s_b) = av_b else {
-            panic!("Some(vec![]) row {empty_row} of payload.field_b must be List(empty), got {av_b:?}");
+            panic!(
+                "Some(vec![]) row {empty_row} of payload.field_b must be List(empty), got {av_b:?}"
+            );
         };
-        assert_eq!(s_a.len(), 0, "Some(vec![]) row {empty_row} must be an empty list");
-        assert_eq!(s_b.len(), 0, "Some(vec![]) row {empty_row} must be an empty list");
+        assert_eq!(
+            s_a.len(),
+            0,
+            "Some(vec![]) row {empty_row} must be an empty list"
+        );
+        assert_eq!(
+            s_b.len(),
+            0,
+            "Some(vec![]) row {empty_row} must be an empty list"
+        );
     }
 
     let av_a = df.column("payload.field_a").unwrap().get(4).unwrap();

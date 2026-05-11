@@ -569,7 +569,7 @@ pub(super) fn decimal_leaf(
     }
 }
 
-/// `DateTime<Utc>` leaf with a `DateTimeToInt(unit)` transform. Bare:
+/// `DateTime<Tz>` leaf with a `DateTimeToInt(unit)` transform. Bare:
 /// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
 /// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
 /// + cast); only the element type changes.

@@ -15,7 +15,7 @@ struct TxRecord {
 
 fn main() {
     println!("────────────────────────────────────────────────────────");
-    println!("🔎 Testing Decimal and DateTime<Utc> handling...");
+    println!("🔎 Testing Decimal and chrono::DateTime handling...");
 
     let ts = Utc.timestamp_millis_opt(1_700_000_000_123).single().unwrap();
     let tx = TxRecord {
@@ -51,7 +51,7 @@ fn main() {
     println!("\n📊 Resulting DataFrame:");
     println!("{}", df);
 
-    // DateTime<Utc> should materialize as Datetime(Milliseconds, None)
+    // chrono::DateTime<Tz> should materialize as Datetime(Milliseconds, None)
     let ts_runtime_dtype = df.column("ts").unwrap().dtype().clone();
     println!("\n🧪 Runtime dtype checks:");
     println!("  - ts runtime dtype: {:?}", ts_runtime_dtype);
@@ -62,7 +62,6 @@ fn main() {
     println!("  - amount runtime dtype: {:?}", amount_runtime_dtype);
     assert_eq!(amount_runtime_dtype, DataType::Decimal(38, 10));
 
-    println!("\n✅ Decimal and DateTime<Utc> test completed successfully!");
+    println!("\n✅ Decimal and chrono::DateTime test completed successfully!");
 }
-
 

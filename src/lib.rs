@@ -10,7 +10,7 @@
 //! - Inspect the schema (column names and `DataType`s) at compile time via a generated method
 //!
 //! It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`, tuple structs,
-//! and key domain types like `chrono::DateTime<Utc>`, `chrono::NaiveDateTime`, and decimal backend
+//! and key domain types like `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, and decimal backend
 //! paths named `Decimal`.
 //!
 //! ## Installation
@@ -143,9 +143,11 @@
 //!
 //! - **Primitives**: `String`, `bool`, integer types
 //!   (`i8/i16/i32/i64/i128/isize`, `u8/u16/u32/u64/u128/usize`), `f32`, `f64`
-//! - **Time**: `chrono::DateTime<Utc>` and `chrono::NaiveDateTime` → materialized as
+//! - **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` → materialized as
 //!   `Datetime(Milliseconds, None)` by default; override per-field with
-//!   `#[df_derive(time_unit = "ms"|"us"|"ns")]`
+//!   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. `DateTime<Tz>` values are encoded as UTC
+//!   instants; the textual timezone/offset is not preserved, so use `#[df_derive(as_string)]`
+//!   if that representation matters.
 //! - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires
 //!   Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars
 //!   `dtype-time`). Both have fixed encodings; `time_unit` is not accepted on either.
@@ -290,7 +292,7 @@
 //!
 //! - **Rust edition**: 2024
 //! - **Polars**: 0.53 (tested). Enable Polars features `timezones` for timezone-aware
-//!   `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`,
+//!   `DateTime<Tz>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`,
 //!   `dtype-duration` for duration columns, `dtype-i8` / `dtype-i16` /
 //!   `dtype-u8` / `dtype-u16` for exact small-integer columns,
 //!   `dtype-i128` / `dtype-u128` for 128-bit integer columns, and
@@ -421,8 +423,10 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - Wrappers `Option<T>` and `Vec<T>` in any nesting order, with `Vec<Struct>` producing multiple
 ///   list columns with a `vec_field.subfield` prefix
 /// - Primitive types: `String`, `bool`, integer types including `i128`/`u128`, `f32`, `f64`
-/// - `chrono::DateTime<Utc>` and `chrono::NaiveDateTime` (default:
-///   `Datetime(Milliseconds, None)`; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`)
+/// - `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` (default:
+///   `Datetime(Milliseconds, None)`; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`).
+///   `DateTime<Tz>` stores the UTC instant; use `as_string` when the textual timezone/offset
+///   matters.
 /// - `chrono::NaiveDate` (`Date`, i32 days since 1970-01-01) and `chrono::NaiveTime`
 ///   (`Time`, i64 ns since midnight); both have fixed encodings, no unit override.
 /// - `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for
@@ -462,10 +466,10 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   `1 <= precision <= 38`; `scale` may not exceed `precision`.
 /// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
 ///   `Datetime(unit, None)` / `Duration(unit)` dtype for a temporal field. Accepted bases are
-///   `chrono::DateTime<Utc>`, `chrono::NaiveDateTime`, `std::time::Duration`,
+///   `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, `std::time::Duration`,
 ///   `core::time::Duration`, and `chrono::Duration`. The chrono / std call used to derive the
 ///   i64 matches the chosen unit, so values are not silently truncated. `time_unit = "ns"` on
-///   `DateTime<Utc>` or `NaiveDateTime` is fallible on dates outside chrono's supported
+///   `DateTime<Tz>` or `NaiveDateTime` is fallible on dates outside chrono's supported
 ///   nanosecond range (~1677–2262); `time_unit = "ns"`/`"us"` on `chrono::Duration` is fallible
 ///   when the duration overflows i64 in the chosen unit; on `std::time::Duration` every unit is
 ///   fallible (the value type is `u128`). All failures surface as `PolarsError::ComputeError`

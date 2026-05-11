@@ -180,9 +180,9 @@ pub enum LeafSpec {
     String,
     /// Bare `bool` field, no transform.
     Bool,
-    /// `chrono::DateTime<Utc>` paired with the parser-injected
+    /// `chrono::DateTime<Tz>` paired with the parser-injected
     /// `DateTimeToInt(unit)` semantics. The chosen unit determines both the
-    /// chrono call used to derive the i64 mantissa and the
+    /// chrono call used to derive the UTC-instant i64 mantissa and the
     /// `DataType::Datetime(unit, None)` schema dtype.
     DateTime(DateTimeUnit),
     /// `chrono::NaiveDateTime` materialized as `DataType::Datetime(unit, None)`.

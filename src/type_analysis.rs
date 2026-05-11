@@ -1,7 +1,7 @@
 use crate::ir::{DateTimeUnit, NumericKind};
 use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
 
-/// Default `Datetime` precision for `chrono::DateTime<Utc>` and
+/// Default `Datetime` precision for `chrono::DateTime<Tz>` and
 /// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
 /// Matches the historical default this crate shipped with.
 pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
@@ -54,9 +54,13 @@ pub enum AnalyzedBase {
     /// struct or generic fallback.
     CowSlice,
     Bool,
-    DateTimeUtc,
+    /// `chrono::DateTime<Tz>` — syntax-detected by a final `DateTime`
+    /// path segment with one generic timezone argument. The encoder stores
+    /// the UTC instant via chrono's `timestamp_*` methods and materializes
+    /// `Datetime(unit, None)`.
+    DateTimeTz,
     /// `chrono::NaiveDate` — last-segment `NaiveDate` with no generic args
-    /// matches, mirroring `is_datetime_utc`'s leniency. The encoder emits
+    /// matches, mirroring `is_chrono_datetime`'s leniency. The encoder emits
     /// chrono calls; a same-name false positive surfaces as a compile
     /// error at the call site.
     NaiveDate,
@@ -307,8 +311,8 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     {
         return Ok(base);
     }
-    if is_datetime_utc(ty) {
-        return Ok(AnalyzedBase::DateTimeUtc);
+    if is_chrono_datetime(ty) {
+        return Ok(AnalyzedBase::DateTimeTz);
     }
     // Disambiguate `Duration` first (qualified-path matches) — both bases
     // share the last segment `Duration`, so naive last-segment matching is
@@ -351,7 +355,7 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
             "i32" => AnalyzedBase::Numeric(NumericKind::I32),
             "bool" => AnalyzedBase::Bool,
             "Decimal" => AnalyzedBase::Decimal,
-            // Last-segment ident matching, mirroring `is_datetime_utc`'s
+            // Last-segment ident matching, mirroring `is_chrono_datetime`'s
             // leniency. `NaiveDate`, `NaiveTime`, and `NaiveDateTime` take
             // no generic arguments, so a re-export under another path still
             // resolves to chrono's type at the call site; if the user's type
@@ -559,30 +563,31 @@ fn analyze_cow_base(type_path: &TypePath) -> Option<AnalyzedBase> {
     }
 }
 
-/// Detect a `chrono::DateTime<Utc>` field by ident only.
+/// Detect a `chrono::DateTime<Tz>` field by ident only.
 ///
-/// The match looks at the last segment of the outer path (`DateTime`) and the
-/// last segment of the first generic argument's path (`Utc`). Anything that
-/// happens to share those idents — e.g. `some_other_crate::DateTime<other::Utc>`
-/// — would be a false positive and routed through the chrono encoder.
+/// The match looks at the last segment of the outer path (`DateTime`) and
+/// requires one generic timezone argument. Anything that happens to share
+/// that shape — e.g. `some_other_crate::DateTime<some::Tz>` — would be a
+/// false positive and routed through the chrono encoder.
 ///
-/// This leniency is intentional: user crates frequently re-export
-/// `chrono::DateTime<chrono::Utc>` under their own paths (type aliases, prelude
-/// modules, glob re-exports), and tightening the match to a specific path
-/// prefix would break those uses without a robust way to recover the original
-/// definition from a `syn::Type` alone. The proc-macro happily generates code
-/// that calls chrono's `timestamp_*` methods; if the type isn't actually
-/// chrono's, the user gets a compile error at the call site, which is the
-/// correct failure mode.
-fn is_datetime_utc(ty: &Type) -> bool {
+/// This leniency is intentional: user crates frequently re-export chrono's
+/// `DateTime<Tz>` under their own paths (type aliases, prelude modules, glob
+/// re-exports), and tightening the match to a specific path prefix would break
+/// those uses without a robust way to recover the original definition from a
+/// `syn::Type` alone. The proc-macro happily generates code that calls
+/// chrono's `timestamp_*` methods; if the type isn't actually chrono's, the
+/// user gets a compile error at the call site, which is the correct failure
+/// mode.
+fn is_chrono_datetime(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
         && segment.ident == "DateTime"
         && let PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
-        && let Some(inner_seg) = inner.path.segments.last()
     {
-        return inner_seg.ident == "Utc";
+        return args
+            .args
+            .iter()
+            .any(|arg| matches!(arg, GenericArgument::Type(_)));
     }
     false
 }

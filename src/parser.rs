@@ -11,7 +11,7 @@ use syn::{Data, DeriveInput, Fields, Ident};
 
 /// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
 /// `None` means the field had no override; `parse_leaf_spec` injects defaults
-/// (e.g. `DateTimeToInt(Milliseconds)` for `chrono::DateTime<Utc>`) in that case.
+/// (e.g. `DateTimeToInt(Milliseconds)` for `chrono::DateTime<Tz>`) in that case.
 enum FieldOverride {
     None,
     AsStr,
@@ -110,7 +110,7 @@ fn override_conflict(
         | (FieldOverride::TimeUnit(_), FieldOverride::Decimal { .. }) => format!(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
              pick one — `decimal(...)` applies to decimal backend candidates, \
-             `time_unit` only applies to `chrono::DateTime<Utc>`, \
+             `time_unit` only applies to `chrono::DateTime<Tz>`, \
              `chrono::NaiveDateTime`, `std::time::Duration`, \
              `core::time::Duration`, or `chrono::Duration`"
         ),
@@ -207,7 +207,7 @@ fn parse_field_override(
 /// analyzed base type into the final `LeafSpec` carried on the IR. Performs
 /// base-type compatibility checks for every override variant and injects
 /// the default semantics (`DateTimeToInt(Milliseconds)` for
-/// `chrono::DateTime<Utc>`, `Decimal(38, 10)` for paths named `Decimal`)
+/// `chrono::DateTime<Tz>`, `Decimal(38, 10)` for paths named `Decimal`)
 /// when no override was declared.
 ///
 /// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
@@ -272,7 +272,7 @@ fn reject_attrs_on_tuple(
 
 /// Map an analyzed base to its default `LeafSpec` (no override declared).
 /// Each base picks the parser-injected default semantics — `Milliseconds`
-/// for `DateTime<Utc>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
+/// for `DateTime<Tz>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
 /// etc. The decimal default is intentionally syntax-based: proc macros see
 /// tokens, not resolved types, so a path whose last segment is `Decimal` is
 /// treated as a decimal backend while other names require an explicit
@@ -357,7 +357,7 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
             cow_slice_error(field_display_name),
         )),
         AnalyzedBase::Bool => Ok(LeafSpec::Bool),
-        AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(DEFAULT_DATETIME_UNIT)),
+        AnalyzedBase::DateTimeTz => Ok(LeafSpec::DateTime(DEFAULT_DATETIME_UNIT)),
         AnalyzedBase::NaiveDate => Ok(LeafSpec::NaiveDate),
         AnalyzedBase::NaiveTime => Ok(LeafSpec::NaiveTime),
         AnalyzedBase::NaiveDateTime => Ok(LeafSpec::NaiveDateTime(DEFAULT_DATETIME_UNIT)),
@@ -428,7 +428,7 @@ fn parse_leaf_as_str(
         | AnalyzedBase::BorrowedSlice
         | AnalyzedBase::CowSlice
         | AnalyzedBase::Bool
-        | AnalyzedBase::DateTimeUtc
+        | AnalyzedBase::DateTimeTz
         | AnalyzedBase::NaiveDate
         | AnalyzedBase::NaiveTime
         | AnalyzedBase::NaiveDateTime
@@ -492,7 +492,7 @@ fn parse_leaf_time_unit(
     unit: DateTimeUnit,
 ) -> Result<LeafSpec, syn::Error> {
     match base {
-        AnalyzedBase::DateTimeUtc => Ok(LeafSpec::DateTime(unit)),
+        AnalyzedBase::DateTimeTz => Ok(LeafSpec::DateTime(unit)),
         AnalyzedBase::NaiveDateTime => Ok(LeafSpec::NaiveDateTime(unit)),
         AnalyzedBase::StdDuration => Ok(LeafSpec::Duration {
             unit,
@@ -522,7 +522,7 @@ fn parse_leaf_time_unit(
             field,
             format!(
                 "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 not `chrono::DateTime<Utc>`, `chrono::NaiveDateTime`, \
+                 not `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, \
                  `std::time::Duration`, `core::time::Duration`, or \
                  `chrono::Duration`; remove the attribute or change the field type"
             ),

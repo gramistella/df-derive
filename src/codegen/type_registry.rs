@@ -153,7 +153,7 @@ pub fn map_primitive_expr(
                 let pp = super::polars_paths::prelude();
                 quote! {
                     (#var).timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
-                        ComputeError: "df-derive: DateTime<Utc> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
+                        ComputeError: "df-derive: DateTime<Tz> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
                     ))?
                 }
             }

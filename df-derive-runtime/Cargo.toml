@@ -13,7 +13,7 @@ keywords = ["polars", "dataframe", "df-derive", "decimal"]
 categories = ["data-structures"]
 
 [dependencies]
-polars = { workspace = true, features = ["timezones", "dtype-decimal"] }
+polars = { workspace = true, features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
 polars-arrow.workspace = true
 rust_decimal = { workspace = true, optional = true }
 

@@ -20,12 +20,12 @@ It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`,
 
 ## Installation
 
-Add the macro crate and Polars. You will also need a trait defining the `to_dataframe` behavior (you can use your own runtime crate/traits; see the override section below). For a minimal inline trait you can copy, see the Quick start example.
+Add the macro crate, Polars, and `polars-arrow`. You will also need a trait defining the `to_dataframe` behavior (you can use your own runtime crate/traits; see the override section below). For a minimal inline trait you can copy, see the Quick start example.
 
 ```toml
 [dependencies]
 df-derive = "0.3.0"
-polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.53", features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
 polars-arrow = "0.53"
 
 # If you use these types in your models
@@ -49,7 +49,7 @@ edition = "2024"
 
 [dependencies]
 df-derive = "0.3"
-polars = { version = "0.53", features = ["timezones", "dtype-decimal"] }
+polars = { version = "0.53", features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
 polars-arrow = "0.53"
 ```
 
@@ -226,8 +226,8 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 
 - **Primitives**: `String`, `bool`, integer types (`i8/i16/i32/i64/isize`, `u8/u16/u32/u64/usize`), `f32`, `f64`
 - **Time**: `chrono::DateTime<Utc>` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`
-- **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01), `chrono::NaiveTime` → `Time` (i64 ns since midnight). Both have fixed encodings — `time_unit` is not accepted.
-- **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration` or `chrono::Duration`.
+- **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars `dtype-time`). Both have fixed encodings — `time_unit` is not accepted.
+- **Duration**: `std::time::Duration` and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration` or `chrono::Duration`.
 - **Decimal**: `rust_decimal::Decimal` → `Decimal(38, 10)`
 - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
@@ -388,7 +388,8 @@ Performance is continuously monitored and tracked using [Bencher](https://benche
 
 - **Rust edition**: 2024
 - **Polars**: 0.53 (tested)
-- Enable Polars features `timezones` and `dtype-decimal` if you use `DateTime<Utc>` or `Decimal`.
+- **polars-arrow**: 0.53 (direct dependency required by generated code)
+- Enable Polars features `timezones` for `DateTime<Utc>`, `dtype-date` for `NaiveDate`, `dtype-time` for `NaiveTime`, `dtype-duration` for duration columns, and `dtype-decimal` for `Decimal`.
 
 ## License
 
@@ -433,6 +434,8 @@ The derive macro only generates impls; it does not own the traits those impls ta
 ```toml
 [dependencies]
 df-derive = "0.3"
+polars = { version = "0.53", features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
+polars-arrow = "0.53"
 df-derive-runtime = "0.3"
 ```
 

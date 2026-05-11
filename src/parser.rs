@@ -296,6 +296,31 @@ fn unannotated_cow_bytes_error(field_display_name: &str, can_add_as_binary: bool
     }
 }
 
+fn unannotated_borrowed_bytes_error(field_display_name: &str, can_add_as_binary: bool) -> String {
+    if can_add_as_binary {
+        format!(
+            "field `{field_display_name}` uses `&[u8]` without `as_binary`; \
+             add `#[df_derive(as_binary)]` to encode it as Binary, or use \
+             `Vec<u8>` if you want the default `List(UInt8)` representation"
+        )
+    } else {
+        format!(
+            "field `{field_display_name}` contains `&[u8]` in a tuple element; \
+             tuple elements cannot be annotated with `as_binary`, so use `Vec<u8>` \
+             for the default `List(UInt8)` representation or hoist the bytes into \
+             a named struct field with `#[df_derive(as_binary)]`"
+        )
+    }
+}
+
+fn borrowed_slice_error(field_display_name: &str) -> String {
+    format!(
+        "field `{field_display_name}` uses `&[T]`, but df-derive only \
+         supports `&[u8]` with `#[df_derive(as_binary)]`; use `Vec<T>` \
+         for list columns"
+    )
+}
+
 fn cow_slice_error(field_display_name: &str) -> String {
     format!(
         "field `{field_display_name}` uses `Cow<'_, [T]>`, but df-derive only \
@@ -313,10 +338,19 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
     match base {
         AnalyzedBase::Numeric(kind) => Ok(LeafSpec::Numeric(kind)),
         AnalyzedBase::String => Ok(LeafSpec::String),
+        AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
+        AnalyzedBase::BorrowedBytes => Err(syn::Error::new_spanned(
+            span,
+            unannotated_borrowed_bytes_error(field_display_name, can_add_as_binary),
+        )),
         AnalyzedBase::CowBytes => Err(syn::Error::new_spanned(
             span,
             unannotated_cow_bytes_error(field_display_name, can_add_as_binary),
+        )),
+        AnalyzedBase::BorrowedSlice => Err(syn::Error::new_spanned(
+            span,
+            borrowed_slice_error(field_display_name),
         )),
         AnalyzedBase::CowSlice => Err(syn::Error::new_spanned(
             span,
@@ -379,6 +413,7 @@ fn parse_leaf_as_str(
 ) -> Result<LeafSpec, syn::Error> {
     match base {
         AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
+        AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
         AnalyzedBase::Struct(ident, args) => Ok(LeafSpec::AsStr(StringyBase::Struct(ident, args))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
@@ -388,7 +423,9 @@ fn parse_leaf_as_str(
         // distinct error if it ever does fire.
         AnalyzedBase::Tuple(_)
         | AnalyzedBase::Numeric(_)
+        | AnalyzedBase::BorrowedBytes
         | AnalyzedBase::CowBytes
+        | AnalyzedBase::BorrowedSlice
         | AnalyzedBase::CowSlice
         | AnalyzedBase::Bool
         | AnalyzedBase::DateTimeUtc
@@ -401,8 +438,9 @@ fn parse_leaf_as_str(
             field,
             format!(
                 "field `{field_display_name}` has `as_str` but its base type does not implement \
-                 `AsRef<str>`; `as_str` only applies to `String`, `Cow<'_, str>`, custom struct \
-                 types, or generic type parameters — drop the attribute or change the field type"
+                 `AsRef<str>`; `as_str` only applies to `String`, `&str`, `Cow<'_, str>`, \
+                 custom struct types, or generic type parameters — drop the attribute or \
+                 change the field type"
             ),
         )),
     }
@@ -581,8 +619,17 @@ fn parse_as_binary_shape(
              `as_binary` only supports `Cow<'_, [u8]>`; use `Vec<T>` for list columns"
         )
     };
-    if matches!(base, AnalyzedBase::CowBytes) {
+    let borrowed_slice_msg = || {
+        format!(
+            "field `{field_display_name}` has `as_binary` on `&[T]`, but \
+             `as_binary` only supports `&[u8]`; use `Vec<T>` for list columns"
+        )
+    };
+    if matches!(base, AnalyzedBase::CowBytes | AnalyzedBase::BorrowedBytes) {
         return Ok((LeafSpec::Binary, wrappers.to_vec()));
+    }
+    if matches!(base, AnalyzedBase::BorrowedSlice) {
+        return Err(syn::Error::new_spanned(field, borrowed_slice_msg()));
     }
     if matches!(base, AnalyzedBase::CowSlice) {
         return Err(syn::Error::new_spanned(field, cow_slice_msg()));

@@ -4,7 +4,8 @@ use quote::{format_ident, quote};
 
 /// Peel transparent wrappers off a field type to find the leaf used in
 /// codegen trait-bound asserts. Strips `Option`/`Vec`/`Box`/`Rc`/`Arc`/`Cow`
-/// (last-segment ident match) so the assert sees the same leaf type
+/// and borrowed references (last-segment ident match for path wrappers) so
+/// the assert sees the same leaf type
 /// `analyze_type` resolves to. Mirrors the peel in
 /// `type_analysis::analyze_type`; if either falls out of sync the
 /// `as_str` const-assert points at the wrong type.
@@ -62,6 +63,10 @@ fn peel_to_leaf(ty: &syn::Type) -> &syn::Type {
         }
         if let Some(inner) = extract_cow_inner(cur) {
             cur = inner;
+            continue;
+        }
+        if let syn::Type::Reference(reference) = cur {
+            cur = reference.elem.as_ref();
             continue;
         }
         break;

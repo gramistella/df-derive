@@ -1,0 +1,5 @@
+error: field `items` uses `&[T]`, but df-derive only supports `&[u8]` with `#[df_derive(as_binary)]`; use `Vec<T>` for list columns
+ --> tests/fail/130-fail-borrowed-non-u8-slice.rs:8:5
+  |
+8 |     items: &'a [i32],
+  |     ^^^^^^^^^^^^^^^^

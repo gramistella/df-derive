@@ -1,0 +1,6 @@
+error: field `items` has `as_binary` on `&[T]`, but `as_binary` only supports `&[u8]`; use `Vec<T>` for list columns
+ --> tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs:8:5
+  |
+8 | /     #[df_derive(as_binary)]
+9 | |     items: &'a [i32],
+  | |____________________^

@@ -35,11 +35,20 @@ pub enum RawWrapper {
 pub enum AnalyzedBase {
     Numeric(NumericKind),
     String,
+    /// `&str` — kept as a semantic string leaf instead of peeling to
+    /// unsized `str`, mirroring `Cow<'_, str>`.
+    BorrowedStr,
     /// `Cow<'_, str>` — kept as a semantic string leaf instead of peeling to
     /// unsized `str` so codegen can borrow via `Cow::as_ref`.
     CowStr,
+    /// `&[u8]` — supported only with `#[df_derive(as_binary)]`.
+    BorrowedBytes,
     /// `Cow<'_, [u8]>` — supported only with `#[df_derive(as_binary)]`.
     CowBytes,
+    /// `&[T]` for non-`u8` element types. Kept as a semantic base so
+    /// the parser can emit a domain-specific error instead of returning a
+    /// generic unsupported-type diagnostic.
+    BorrowedSlice,
     /// `Cow<'_, [T]>` for non-`u8` element types. Kept as a semantic base so
     /// the parser can emit a domain-specific error instead of routing it as a
     /// struct or generic fallback.
@@ -95,7 +104,8 @@ pub struct AnalyzedType {
     /// element-type span. For the top-level field, this is the user's field
     /// type; for tuple elements, this is the element's own type.
     pub field_ty: syn::Type,
-    /// Number of smart-pointer layers (`Box` / `Rc` / `Arc` / `Cow`) peeled
+    /// Number of transparent pointer layers (`Box` / `Rc` / `Arc` / `Cow` /
+    /// borrowed references) peeled
     /// off the field type ABOVE the first wrapper (`Option` / `Vec`). These
     /// layers are dereffed at the access expression itself — `it.field`
     /// becomes `(*(*(it.field)))` for two outer Boxes — so the rest of the
@@ -151,10 +161,13 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
     let mut current_type = ty;
 
     // Loop to peel off wrappers in any order. Option/Vec push onto the
-    // wrapper stack; Box/Rc/Arc/Cow are transparent — they bump the outer
-    // depth (codegen rewrites the access expression) before any wrapper is
-    // seen, and the inner depth (codegen injects deref at the per-element
-    // leaf binding) once a wrapper has been pushed.
+    // wrapper stack; Box/Rc/Arc/Cow and borrowed references are transparent
+    // when their inner type is sized — they bump the outer depth (codegen
+    // rewrites the access expression) before any wrapper is seen, and the
+    // inner depth (codegen injects deref at the per-element leaf binding)
+    // once a wrapper has been pushed. Borrowed `str` and slices stay as
+    // semantic bases because they are unsized and need domain-specific
+    // parser decisions.
     loop {
         if let Some(inner_ty) = extract_inner_type(current_type, "Option") {
             wrappers.push(RawWrapper::Option);
@@ -191,6 +204,18 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
                 }
                 CowPeel::KeepAsSemanticBase => break,
             }
+        }
+        if let Type::Reference(reference) = current_type {
+            if borrowed_reference_base(reference).is_some() {
+                break;
+            }
+            bump_smart_ptr_depths(
+                &mut outer_smart_ptr_depth,
+                &mut inner_smart_ptr_depth,
+                &wrappers,
+            );
+            current_type = reference.elem.as_ref();
+            continue;
         }
         // No more wrappers found, break the loop
         break;
@@ -276,6 +301,11 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
             elements.push(analyze_type(elem, generic_params)?);
         }
         return Ok(AnalyzedBase::Tuple(elements));
+    }
+    if let Type::Reference(reference) = ty
+        && let Some(base) = borrowed_reference_base(reference)
+    {
+        return Ok(base);
     }
     if is_datetime_utc(ty) {
         return Ok(AnalyzedBase::DateTimeUtc);
@@ -495,6 +525,22 @@ fn is_u8_type(ty: &Type) -> bool {
         return seg.ident == "u8" && matches!(seg.arguments, PathArguments::None);
     }
     false
+}
+
+fn borrowed_reference_base(reference: &syn::TypeReference) -> Option<AnalyzedBase> {
+    let inner_ty = reference.elem.as_ref();
+    if is_bare_str_type(inner_ty) {
+        return Some(AnalyzedBase::BorrowedStr);
+    }
+    if let Type::Slice(slice) = inner_ty {
+        if is_u8_type(&slice.elem) {
+            Some(AnalyzedBase::BorrowedBytes)
+        } else {
+            Some(AnalyzedBase::BorrowedSlice)
+        }
+    } else {
+        None
+    }
 }
 
 fn analyze_cow_base(type_path: &TypePath) -> Option<AnalyzedBase> {

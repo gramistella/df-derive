@@ -1,0 +1,5 @@
+error: field `bs` uses `&[u8]` without `as_binary`; add `#[df_derive(as_binary)]` to encode it as Binary, or use `Vec<u8>` if you want the default `List(UInt8)` representation
+ --> tests/fail/129-fail-borrowed-bytes-without-as-binary.rs:8:5
+  |
+8 |     bs: &'a [u8],
+  |     ^^^^^^^^^^^^

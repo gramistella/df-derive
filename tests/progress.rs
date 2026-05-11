@@ -47,6 +47,7 @@ fn tests() {
     t.pass("tests/pass/42-naive-datetime.rs");
     t.pass("tests/pass/43-i128-u128.rs");
     t.pass("tests/pass/44-cow-unsized.rs");
+    t.pass("tests/pass/45-borrowed-references.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -82,4 +83,7 @@ fn tests() {
     t.compile_fail("tests/fail/126-fail-time-unit-on-tuple.rs");
     t.compile_fail("tests/fail/127-fail-external-time-duration.rs");
     t.compile_fail("tests/fail/128-fail-cow-bytes-in-tuple.rs");
+    t.compile_fail("tests/fail/129-fail-borrowed-bytes-without-as-binary.rs");
+    t.compile_fail("tests/fail/130-fail-borrowed-non-u8-slice.rs");
+    t.compile_fail("tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs");
 }

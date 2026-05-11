@@ -38,14 +38,15 @@ pub struct FieldIR {
     /// encoding with `#[df_derive(decimal(...))]`. Codegen uses this to add
     /// `Decimal128Encode` bounds only for the generic params that need them.
     pub decimal_generic_params: Vec<Ident>,
-    /// Number of smart-pointer layers (`Box`/`Rc`/`Arc`/`Cow`) peeled at
-    /// the OUTER position — above any `Option`/`Vec` wrapper. The codegen
-    /// wraps the raw field access in this many `*` derefs so numeric `as`
-    /// casts and pattern matches see the deref-coerced inner value
-    /// (autoderef does not fire across `as` casts or pattern positions).
+    /// Number of transparent pointer layers (`Box`/`Rc`/`Arc`/sized `Cow`/
+    /// borrowed references) peeled at the OUTER position — above any
+    /// `Option`/`Vec` wrapper. The codegen wraps the raw field access in this
+    /// many `*` derefs so numeric `as` casts and pattern matches see the
+    /// deref-coerced inner value (autoderef does not fire across `as` casts
+    /// or pattern positions).
     pub outer_smart_ptr_depth: usize,
-    /// Number of smart-pointer layers peeled at the INNER position — below
-    /// some wrapper but above the leaf. Cannot be applied to the access
+    /// Number of transparent pointer layers peeled at the INNER position —
+    /// below some wrapper but above the leaf. Cannot be applied to the access
     /// expression directly (you can't deref `Option<Box<T>>` or
     /// `Vec<Arc<T>>`); instead the encoder injects an extra `*` at the
     /// per-element leaf binding so primitive pushes see the inner value
@@ -109,13 +110,16 @@ impl NumericKind {
     }
 }
 
-/// Bases that can be paired with the `as_str` borrow path: `String`,
+/// Bases that can be paired with the `as_str` borrow path: `String`, `&str`,
 /// `Cow<'_, str>`, concrete user-defined struct types, and generic type
 /// parameters. The parser's legality matrix accepts only this set with
 /// `as_str`; every other base is rejected at parse time.
 #[derive(Clone)]
 pub enum StringyBase {
     String,
+    /// Borrowed string slices are semantic string leaves. They cannot be
+    /// peeled like sized references, so codegen borrows through `AsRef<str>`.
+    BorrowedStr,
     /// Unsized string Cows are semantic string leaves. They cannot be peeled
     /// like sized smart pointers, so codegen borrows through `Cow::as_ref`.
     CowStr,

@@ -24,8 +24,8 @@ use super::collapse_options_to_ref;
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapePrecount, ShapeScan, shape_assemble_list_stack,
-    shape_offsets_decls, shape_validity_decls,
+    LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
+    shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
 
 /// Per-layer ident bundle factory. `field_idx == None` produces the
@@ -51,36 +51,6 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
             bind: idents::nested_layer_bind(idx, layer_idx),
         },
     )
-}
-
-/// Freeze a per-layer `Vec<i64>` into an `OffsetsBuffer<i64>` (single
-/// statement). Centralizes the token shape used by both the interleaved
-/// per-element-push path ([`layer_wraps`]) and the hoisted
-/// collect-then-bulk path ([`hoisted_freezes`]) — keep these byte-
-/// equivalent so the bench-stable interleaves in the encoder don't shift.
-fn freeze_offsets_buf(
-    buf: &syn::Ident,
-    offsets: &syn::Ident,
-    pa_root: &TokenStream,
-) -> TokenStream {
-    quote! {
-        let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-            #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-    }
-}
-
-/// Freeze a per-layer `MutableBitmap` into a `Bitmap` (single statement).
-/// Centralizes the token shape used by both the interleaved per-element-
-/// push path ([`layer_wraps`]) and the hoisted collect-then-bulk path
-/// ([`hoisted_freezes`]) — keep these byte-equivalent so the bench-stable
-/// interleaves in the encoder don't shift.
-fn freeze_validity_bitmap(bm: &syn::Ident, mb: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
-    quote! {
-        let #bm: #pa_root::bitmap::Bitmap =
-            <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                #pa_root::bitmap::MutableBitmap,
-            >>::from(#mb);
-    }
 }
 
 /// Build the per-layer `LayerWrap` slice the shared list-stack helper
@@ -189,6 +159,7 @@ fn build_precount<'a>(
         outer_some_prefix,
         total_counter: total,
         layer_counters,
+        projection: None,
     }
     .build()
 }
@@ -215,6 +186,7 @@ fn build_scan(
         outer_some_prefix,
         leaf_body,
         leaf_offsets_post_push,
+        projection: None,
     }
     .build()
 }

@@ -98,6 +98,56 @@ struct BoxTuple {
     pair: Box<(String, i32)>,
 }
 
+// 15. Tuple element with its own Vec wrapper under a Vec parent.
+#[derive(ToDataFrame, Clone)]
+struct VecTupleWithVecElement {
+    items: Vec<(Vec<i32>, String)>,
+}
+
+// 16. Parent Vec element is optional, and the tuple element has its own Vec.
+#[derive(ToDataFrame, Clone)]
+struct VecOptTupleWithVecElement {
+    items: Vec<Option<(Vec<i32>, String)>>,
+}
+
+// 17. Tuple element carries Option<Vec<_>> under a Vec parent.
+#[derive(ToDataFrame, Clone)]
+struct VecTupleWithOptVecElement {
+    items: Vec<(Option<Vec<i32>>, String)>,
+}
+
+fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
+    match value {
+        AnyValue::List(series) => series
+            .str()
+            .unwrap()
+            .into_iter()
+            .map(|value| value.map(str::to_owned))
+            .collect(),
+        other => panic!("expected string List, got {other:?}"),
+    }
+}
+
+fn list_i32s(value: AnyValue<'_>) -> Vec<Option<i32>> {
+    match value {
+        AnyValue::List(series) => series.i32().unwrap().into_iter().collect(),
+        other => panic!("expected i32 List, got {other:?}"),
+    }
+}
+
+fn nested_i32_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<i32>>>> {
+    let AnyValue::List(outer) = value else {
+        panic!("expected outer List, got {value:?}");
+    };
+    (0..outer.len())
+        .map(|idx| match outer.get(idx).unwrap() {
+            AnyValue::List(inner) => Some(inner.i32().unwrap().into_iter().collect()),
+            AnyValue::Null => None,
+            other => panic!("expected inner i32 List or Null, got {other:?}"),
+        })
+        .collect()
+}
+
 fn main() {
     // 1. Bare
     let v = BareTuple {
@@ -155,7 +205,15 @@ fn main() {
             Some(("b".to_string(), 2)),
         ],
     };
-    let _vot_df = vot_v.to_dataframe().unwrap();
+    let vot_df = vot_v.to_dataframe().unwrap();
+    assert_eq!(
+        list_strings(vot_df.column("items.field_0").unwrap().get(0).unwrap()),
+        vec![Some("a".to_string()), None, Some("b".to_string())],
+    );
+    assert_eq!(
+        list_i32s(vot_df.column("items.field_1").unwrap().get(0).unwrap()),
+        vec![Some(1), None, Some(2)],
+    );
 
     // 5. Option<Vec<tuple>>
     let ovt_v = vec![
@@ -164,7 +222,23 @@ fn main() {
         },
         OptVecTuple { pairs: None },
     ];
-    let _ovt_df = ovt_v.as_slice().to_dataframe().unwrap();
+    let ovt_df = ovt_v.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        list_strings(ovt_df.column("pairs.field_0").unwrap().get(0).unwrap()),
+        vec![Some("a".to_string()), Some("b".to_string())],
+    );
+    assert_eq!(
+        list_i32s(ovt_df.column("pairs.field_1").unwrap().get(0).unwrap()),
+        vec![Some(1), Some(2)],
+    );
+    assert_eq!(
+        ovt_df.column("pairs.field_0").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        ovt_df.column("pairs.field_1").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
 
     // 6. Tuple in tuple struct
     let wt = WithTuple(99, ("hi".to_string(), false));
@@ -245,6 +319,60 @@ fn main() {
     let bt_df = bt.to_dataframe().unwrap();
     assert_eq!(bt_df.column("pair.field_0").unwrap().get(0).unwrap(), AnyValue::String("boxed"));
     assert_eq!(bt_df.column("pair.field_1").unwrap().get(0).unwrap(), AnyValue::Int32(7));
+
+    // 15. Vec<(Vec<i32>, String)>: projection happens between list layers.
+    let vve = VecTupleWithVecElement {
+        items: vec![
+            (vec![1, 2], "a".to_string()),
+            (vec![], "b".to_string()),
+            (vec![3], "c".to_string()),
+        ],
+    };
+    let vve_df = vve.to_dataframe().unwrap();
+    assert!(matches!(
+        vve_df.column("items.field_0").unwrap().dtype(),
+        DataType::List(inner) if matches!(inner.as_ref(), DataType::List(_))
+    ));
+    assert_eq!(
+        nested_i32_lists(vve_df.column("items.field_0").unwrap().get(0).unwrap()),
+        vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(Vec::<Option<i32>>::new()),
+            Some(vec![Some(3)]),
+        ],
+    );
+    assert_eq!(
+        list_strings(vve_df.column("items.field_1").unwrap().get(0).unwrap()),
+        vec![
+            Some("a".to_string()),
+            Some("b".to_string()),
+            Some("c".to_string()),
+        ],
+    );
+
+    // 16. Vec<Option<(Vec<i32>, String)>>: parent Option becomes inner-list validity.
+    let vov = VecOptTupleWithVecElement {
+        items: vec![Some((vec![10], "x".to_string())), None, Some((vec![20, 30], "z".to_string()))],
+    };
+    let vov_df = vov.to_dataframe().unwrap();
+    assert_eq!(
+        nested_i32_lists(vov_df.column("items.field_0").unwrap().get(0).unwrap()),
+        vec![Some(vec![Some(10)]), None, Some(vec![Some(20), Some(30)])],
+    );
+
+    // 17. Vec<(Option<Vec<i32>>, String)>: element Option becomes inner-list validity.
+    let vov_elem = VecTupleWithOptVecElement {
+        items: vec![
+            (Some(vec![100]), "left".to_string()),
+            (None, "middle".to_string()),
+            (Some(vec![200, 300]), "right".to_string()),
+        ],
+    };
+    let vov_elem_df = vov_elem.to_dataframe().unwrap();
+    assert_eq!(
+        nested_i32_lists(vov_elem_df.column("items.field_0").unwrap().get(0).unwrap()),
+        vec![Some(vec![Some(100)]), None, Some(vec![Some(200), Some(300)])],
+    );
 
     // Batch round-trip
     let batch = vec![

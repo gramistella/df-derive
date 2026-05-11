@@ -402,10 +402,11 @@ pub(in crate::codegen) fn collapse_option_param() -> Ident {
 // --- Tuple-emitter idents -------------------------------------------------
 //
 // The tuple emitter operates on a per-field, per-element-column basis with
-// its own custom shape walker (see `super::tuple`). It uses a distinct
-// `__df_derive_t_*` prefix family to keep its locals from colliding with
-// the primitive/nested encoder paths inside the same generated function.
-// Every ident the tuple emitter introduces must come from this section.
+// tuple-specific adapters over the shared shape walker (see `super::tuple`).
+// It uses a distinct `__df_derive_t_*` prefix family to keep its locals from
+// colliding with the primitive/nested encoder paths inside the same generated
+// function. Every ident the tuple emitter introduces must come from this
+// section.
 
 /// Per-(field, layer) offsets vec ident for the tuple emitter.
 pub(in crate::codegen) fn tuple_layer_offsets(field_idx: usize, layer: usize) -> Ident {
@@ -445,19 +446,14 @@ pub(in crate::codegen) fn tuple_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_t_arr_{}", layer)
 }
 
-/// Outer-Some bind name for the tuple emitter's scan walker. Format is
-/// `__df_derive_t_some_<layer>` — the layer index identifies the wrapper
-/// position.
-pub(in crate::codegen) fn tuple_outer_some_bind(layer: usize) -> Ident {
-    format_ident!("__df_derive_t_some_{}", layer)
-}
+/// Token-form of the prefix used by the shared walker for tuple-field
+/// projection scans.
+pub(in crate::codegen) const TUPLE_OUTER_SOME_PREFIX: &str = "__df_derive_t_some_";
 
-/// Outer-Some bind name for the tuple emitter's precount walker. Format is
-/// `__df_derive_t_pre_some_<layer>` — distinct from the scan walker's
-/// prefix so the two loops can coexist without name shadowing.
-pub(in crate::codegen) fn tuple_pre_outer_some_bind(layer: usize) -> Ident {
-    format_ident!("__df_derive_t_pre_some_{}", layer)
-}
+/// Token-form of the prefix used by the shared walker for tuple-field
+/// projection precounts. Distinct from [`TUPLE_OUTER_SOME_PREFIX`] so the
+/// scan and precount loops can coexist without name shadowing.
+pub(in crate::codegen) const TUPLE_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_t_pre_some_";
 
 /// Closure parameter for the tuple-element projection lambda
 /// (`.map(|__df_derive_t| ...)`). Local to the lambda; centralized so the

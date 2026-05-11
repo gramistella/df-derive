@@ -23,6 +23,11 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::idents;
+use super::shape_walk::{
+    LayerIdents, LayerProjection, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan,
+    freeze_offsets_buf, freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls,
+    shape_validity_decls,
+};
 use super::{
     BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder, build_type_path,
 };
@@ -220,6 +225,7 @@ fn emit_element(
             parent_access,
             parent_wrapper,
             elem,
+            elem_idx,
             inner,
             field_idx,
             column_prefix,
@@ -289,7 +295,7 @@ fn emit_element(
                 config,
             )
         }
-        // Parent has at least one Vec layer. Construct a custom emission
+        // Parent has at least one Vec layer. Construct a composed emission
         // that walks the composed wrapper stack (parent + element layers)
         // with `.iter()` rebased to project at the boundary.
         WrapperShape::Vec(parent_layers) => emit_vec_parent(
@@ -342,7 +348,7 @@ fn compose_option_with_element(elem_shape: &WrapperShape) -> WrapperShape {
 
 /// Emit a tuple element column with a Vec-bearing parent. Composes parent +
 /// element wrappers, with the projection injected at the parent/element
-/// boundary. Uses a custom shape walker that's aware of the projection
+/// boundary. Uses the shared shape walker with tuple-specific projection
 /// layer.
 #[allow(clippy::too_many_arguments)]
 fn emit_vec_parent(
@@ -386,6 +392,12 @@ fn emit_vec_parent(
     let projection_layer = parent_layers.depth();
     let elem_li = syn::Index::from(elem_idx);
     let projection_path = quote! { .#elem_li };
+    let projection = TupleProjection {
+        layer: projection_layer,
+        path: &projection_path,
+        parent_option_layers: carried_inner_option,
+        smart_ptr_depth: elem.outer_smart_ptr_depth,
+    };
 
     match &elem.leaf_spec {
         LeafSpec::Struct(id, args) => {
@@ -393,8 +405,7 @@ fn emit_vec_parent(
             emit_vec_parent_nested(
                 parent_access,
                 &composed_shape,
-                projection_layer,
-                &projection_path,
+                projection,
                 &type_path,
                 field_idx,
                 column_prefix,
@@ -406,8 +417,7 @@ fn emit_vec_parent(
             emit_vec_parent_nested(
                 parent_access,
                 &composed_shape,
-                projection_layer,
-                &projection_path,
+                projection,
                 &type_path,
                 field_idx,
                 column_prefix,
@@ -417,8 +427,7 @@ fn emit_vec_parent(
         _ => emit_vec_parent_primitive(
             parent_access,
             &composed_shape,
-            projection_layer,
-            &projection_path,
+            projection,
             elem,
             field_idx,
             column_prefix,
@@ -435,8 +444,7 @@ fn emit_vec_parent(
 fn emit_vec_parent_primitive(
     parent_access: &TokenStream,
     composed_shape: &VecLayers,
-    projection_layer: usize,
-    projection_path: &TokenStream,
+    projection: TupleProjection<'_>,
     elem: &TupleElement,
     field_idx: usize,
     column_prefix: &str,
@@ -446,13 +454,13 @@ fn emit_vec_parent_primitive(
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let series_local = idents::vec_field_series(field_idx);
     let named = idents::field_named_series();
-    let assemble_helper = idents::assemble_helper();
     let leaf_arr = idents::leaf_arr();
     let total_leaves = idents::total_leaves();
 
-    let layers: Vec<TupleLayerIdents> = (0..composed_shape.depth())
-        .map(|i| TupleLayerIdents::new(field_idx, i))
+    let layers: Vec<LayerIdents> = (0..composed_shape.depth())
+        .map(|i| tuple_layer_idents(field_idx, i))
         .collect();
+    let layer_counters = tuple_layer_counters(field_idx, composed_shape.depth());
 
     // Build leaf pieces (storage decls, per-element push, leaf-array
     // construction, post-push offsets value) for the element's primitive
@@ -475,9 +483,9 @@ fn emit_vec_parent_primitive(
     // leaf binding is `&Leaf` directly — no in-leaf projection needed.
     let leaf_value_override = build_leaf_projection_value_expr(
         &elem.leaf_spec,
-        projection_path,
+        projection.path,
         composed_shape.depth(),
-        projection_layer,
+        projection.layer,
         elem.outer_smart_ptr_depth,
         elem.inner_smart_ptr_depth,
     );
@@ -490,32 +498,29 @@ fn emit_vec_parent_primitive(
         leaf_value_override.as_ref(),
     );
 
-    let layer0_iter_src = quote! { (&(#parent_access)) };
     let precount = build_precount(
         composed_shape,
         &layers,
+        &layer_counters,
         &total_leaves,
-        &layer0_iter_src,
-        projection_layer,
-        projection_path,
+        parent_access,
+        projection,
     );
     let scan = build_scan(
         composed_shape,
         &layers,
-        &layer0_iter_src,
-        projection_layer,
-        projection_path,
+        parent_access,
+        projection,
         &leaf_pieces.per_elem_push,
         &leaf_pieces.leaf_offsets_post_push,
     );
-    let offsets_decls = build_offsets_decls(&layers);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &pa_root);
+    let offsets_decls = build_offsets_decls(&layers, &layer_counters);
+    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, &pa_root);
 
     let materialize = build_materialize(
         composed_shape,
         &layers,
         &leaf_arr,
-        &assemble_helper,
         &elem.leaf_spec.dtype(),
         &leaf_pieces.leaf_arr_expr,
         &pp,
@@ -553,8 +558,7 @@ fn emit_vec_parent_primitive(
 fn emit_vec_parent_nested(
     parent_access: &TokenStream,
     composed_shape: &VecLayers,
-    projection_layer: usize,
-    projection_path: &TokenStream,
+    projection: TupleProjection<'_>,
     type_path: &TokenStream,
     field_idx: usize,
     column_prefix: &str,
@@ -564,7 +568,6 @@ fn emit_vec_parent_nested(
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
-    let assemble_helper = idents::assemble_helper();
     let total_leaves = idents::nested_total(field_idx);
     let flat = idents::nested_flat(field_idx);
     let positions = idents::nested_positions(field_idx);
@@ -580,18 +583,18 @@ fn emit_vec_parent_nested(
     let inner_rech = idents::nested_inner_rech();
     let named = idents::field_named_series();
 
-    let layers: Vec<TupleLayerIdents> = (0..composed_shape.depth())
-        .map(|i| TupleLayerIdents::new(field_idx, i))
+    let layers: Vec<LayerIdents> = (0..composed_shape.depth())
+        .map(|i| tuple_layer_idents(field_idx, i))
         .collect();
+    let layer_counters = tuple_layer_counters(field_idx, composed_shape.depth());
 
-    let layer0_iter_src = quote! { (&(#parent_access)) };
     let precount = build_precount(
         composed_shape,
         &layers,
+        &layer_counters,
         &total_leaves,
-        &layer0_iter_src,
-        projection_layer,
-        projection_path,
+        parent_access,
+        projection,
     );
 
     let has_inner_option = composed_shape.has_inner_option();
@@ -605,8 +608,13 @@ fn emit_vec_parent_nested(
     // refs, so the binding is `&Inner` directly.
     let leaf_v = idents::leaf_value();
     let inner_v = idents::tuple_nested_inner_v();
-    let projected_leaf = if projection_layer == composed_shape.depth() {
-        quote! { &(*#leaf_v) #projection_path }
+    let projected_leaf = if projection.layer == composed_shape.depth() {
+        let projection_path = projection.path;
+        let mut projected = quote! { (*#leaf_v) #projection_path };
+        for _ in 0..projection.smart_ptr_depth {
+            projected = quote! { (*(#projected)) };
+        }
+        quote! { &(#projected) }
     } else {
         quote! { #leaf_v }
     };
@@ -638,14 +646,13 @@ fn emit_vec_parent_nested(
     let scan = build_scan(
         composed_shape,
         &layers,
-        &layer0_iter_src,
-        projection_layer,
-        projection_path,
+        parent_access,
+        projection,
         &per_elem_push,
         &leaf_offsets_post_push,
     );
-    let offsets_decls = build_offsets_decls(&layers);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &pa_root);
+    let offsets_decls = build_offsets_decls(&layers, &layer_counters);
+    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, &pa_root);
 
     let positions_decl = if has_inner_option {
         quote! {
@@ -675,48 +682,40 @@ fn emit_vec_parent_nested(
         &layers,
         &inner_col_direct,
         &pp,
-        &pa_root,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        &assemble_helper,
     );
     let series_take = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_take,
         &pp,
-        &pa_root,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        &assemble_helper,
     );
     let series_empty = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_empty,
         &pp,
-        &pa_root,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        &assemble_helper,
     );
     let series_all_absent = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_all_absent,
         &pp,
-        &pa_root,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        &assemble_helper,
     );
 
     let consume = |series_expr: &TokenStream| -> TokenStream {
@@ -757,23 +756,19 @@ fn emit_vec_parent_nested(
         if !composed_shape.layers[i].has_outer_validity() {
             continue;
         }
-        let mb = &layer.validity_mb;
-        let bm = &layer.validity_bm;
-        validity_freezes.push(quote! {
-            let #bm: #pa_root::bitmap::Bitmap =
-                <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                    #pa_root::bitmap::MutableBitmap,
-                >>::from(#mb);
-        });
+        validity_freezes.push(freeze_validity_bitmap(
+            &layer.validity_bm,
+            &layer.validity_mb,
+            &pa_root,
+        ));
     }
     let mut offsets_freezes: Vec<TokenStream> = Vec::new();
     for layer in &layers {
-        let buf = &layer.offsets_buf;
-        let off = &layer.offsets;
-        offsets_freezes.push(quote! {
-            let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-                #pa_root::offset::OffsetsBuffer::try_from(#off)?;
-        });
+        offsets_freezes.push(freeze_offsets_buf(
+            &layer.offsets_buf,
+            &layer.offsets,
+            &pa_root,
+        ));
     }
     let validity_freeze = quote! { #(#validity_freezes)* };
     let offsets_freeze = quote! { #(#offsets_freezes)* };
@@ -832,18 +827,15 @@ fn emit_vec_parent_nested(
 #[allow(clippy::too_many_arguments)]
 fn wrap_per_column_layers(
     shape: &VecLayers,
-    layers: &[TupleLayerIdents],
+    layers: &[LayerIdents],
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
-    pa_root: &TokenStream,
     inner_chunk: &syn::Ident,
     inner_col: &syn::Ident,
     inner_rech: &syn::Ident,
     dtype: &syn::Ident,
-    assemble_helper: &syn::Ident,
 ) -> TokenStream {
-    let depth = shape.depth();
-    if depth == 0 {
+    if shape.depth() == 0 {
         return inner_col_expr.clone();
     }
     let chunk_decl = quote! {
@@ -851,43 +843,17 @@ fn wrap_per_column_layers(
         let #inner_rech = #inner_col.rechunk();
         let #inner_chunk: #pp::ArrayRef = #inner_rech.chunks()[0].clone();
     };
-    let mut prev_payload = quote! { #inner_chunk };
-    let mut prev_dtype = quote! { #inner_chunk.dtype().clone() };
-    let mut block: Vec<TokenStream> = Vec::with_capacity(depth);
-    for cur in (0..depth).rev() {
-        let layer = &layers[cur];
-        let buf = &layer.offsets_buf;
-        let arr_id = idents::tuple_layer_list_arr(cur);
-        let validity_expr = if shape.layers[cur].has_outer_validity() {
-            let bm = &layer.validity_bm;
-            quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }
-        } else {
-            quote! { ::std::option::Option::None }
-        };
-        block.push(quote! {
-            let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(
-                #pp::LargeListArray::default_datatype(#prev_dtype),
-                ::std::clone::Clone::clone(&#buf),
-                #prev_payload,
-                #validity_expr,
-            );
-        });
-        prev_payload = quote! { ::std::boxed::Box::new(#arr_id) as #pp::ArrayRef };
-        prev_dtype = quote! { #pa_root::array::Array::dtype(&#arr_id).clone() };
-    }
-    let helper_logical = crate::codegen::polars_paths::wrap_list_layers_compile_time_pub(
-        pp,
+    let wrap_layers = tuple_layer_wraps_clone(shape, layers);
+    let stack = shape_assemble_list_stack(
+        quote! { #inner_chunk },
+        quote! { #inner_chunk.dtype().clone() },
+        &wrap_layers,
         quote! { (*#dtype).clone() },
-        depth.saturating_sub(1),
+        &idents::tuple_layer_list_arr,
     );
-    let outer = idents::tuple_layer_list_arr(0);
     quote! {{
         #chunk_decl
-        #(#block)*
-        #assemble_helper(
-            #outer,
-            #helper_logical,
-        )
+        #stack
     }}
 }
 
@@ -915,6 +881,7 @@ fn emit_inner_tuple(
     parent_access: &TokenStream,
     parent_wrapper: &WrapperShape,
     outer_elem: &TupleElement,
+    outer_elem_idx: usize,
     inner_elements: &[TupleElement],
     field_idx: usize,
     column_prefix: &str,
@@ -930,13 +897,7 @@ fn emit_inner_tuple(
         WrapperShape::Leaf { option_layers: 0 }
     );
     if parent_static && outer_static {
-        // The outer tuple's element index isn't directly stored on the
-        // `TupleElement` — it's the position the caller passed when
-        // iterating elements. Reconstruct it from `column_prefix`'s
-        // suffix `field_<i>` (the caller built `<...>.field_<i>`).
-        // Cleaner: parse the suffix back; we already know the format.
-        let outer_idx = parse_field_idx_from_prefix(column_prefix);
-        let outer_li = syn::Index::from(outer_idx);
+        let outer_li = syn::Index::from(outer_elem_idx);
         let mut outer_access = quote! { #parent_access.#outer_li };
         for _ in 0..outer_elem.outer_smart_ptr_depth {
             outer_access = quote! { (*(#outer_access)) };
@@ -966,6 +927,7 @@ fn emit_inner_tuple(
         parent_access,
         parent_wrapper,
         outer_elem,
+        outer_elem_idx,
         inner_elements,
         field_idx,
         column_prefix,
@@ -978,18 +940,6 @@ fn emit_inner_tuple(
              ToDataFrame, or unwrap the outer wrappers."
         );
     }
-}
-
-/// Parse the trailing `field_<i>` from a `<...>.field_<i>` column prefix.
-/// Used by [`emit_inner_tuple`]'s static fast path to recover the outer
-/// tuple's element index from the prefix the caller built.
-fn parse_field_idx_from_prefix(prefix: &str) -> usize {
-    prefix
-        .rsplit('.')
-        .next()
-        .and_then(|tail| tail.strip_prefix("field_"))
-        .and_then(|n| n.parse::<usize>().ok())
-        .expect("emit_inner_tuple's column_prefix should end in `field_<i>`")
 }
 
 // ============================================================================
@@ -1079,276 +1029,78 @@ fn emit_via_standard_encoder(
 }
 
 // ============================================================================
-// Custom shape walker (for Vec-bearing parent + tuple-element projection)
+// Shared shape-walker adapters (Vec-bearing parent + tuple-element projection)
 // ============================================================================
 
-struct TupleLayerIdents {
-    offsets: syn::Ident,
-    offsets_buf: syn::Ident,
-    validity_mb: syn::Ident,
-    validity_bm: syn::Ident,
-    bind: syn::Ident,
-    layer_total: syn::Ident,
+fn tuple_layer_idents(field_idx: usize, layer: usize) -> LayerIdents {
+    LayerIdents {
+        offsets: idents::tuple_layer_offsets(field_idx, layer),
+        offsets_buf: idents::tuple_layer_offsets_buf(field_idx, layer),
+        validity_mb: idents::tuple_layer_validity_mb(field_idx, layer),
+        validity_bm: idents::tuple_layer_validity_bm(field_idx, layer),
+        bind: idents::tuple_layer_bind(field_idx, layer),
+    }
 }
 
-impl TupleLayerIdents {
-    fn new(field_idx: usize, layer: usize) -> Self {
-        Self {
-            offsets: idents::tuple_layer_offsets(field_idx, layer),
-            offsets_buf: idents::tuple_layer_offsets_buf(field_idx, layer),
-            validity_mb: idents::tuple_layer_validity_mb(field_idx, layer),
-            validity_bm: idents::tuple_layer_validity_bm(field_idx, layer),
-            bind: idents::tuple_layer_bind(field_idx, layer),
-            layer_total: idents::tuple_layer_total(field_idx, layer),
-        }
+fn tuple_layer_counters(field_idx: usize, depth: usize) -> Vec<syn::Ident> {
+    (0..depth.saturating_sub(1))
+        .map(|layer| idents::tuple_layer_total(field_idx, layer))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct TupleProjection<'a> {
+    layer: usize,
+    path: &'a TokenStream,
+    parent_option_layers: usize,
+    smart_ptr_depth: usize,
+}
+
+impl<'a> TupleProjection<'a> {
+    fn as_layer_projection(self, shape: &VecLayers) -> Option<LayerProjection<'a>> {
+        (self.layer < shape.depth()).then_some(LayerProjection {
+            layer: self.layer,
+            path: self.path,
+            parent_option_layers: self.parent_option_layers,
+            smart_ptr_depth: self.smart_ptr_depth,
+        })
     }
 }
 
 fn build_precount(
     shape: &VecLayers,
-    layers: &[TupleLayerIdents],
+    layers: &[LayerIdents],
+    layer_counters: &[syn::Ident],
     total: &syn::Ident,
-    layer0_iter_src: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
+    access: &TokenStream,
+    projection: TupleProjection<'_>,
 ) -> TokenStream {
-    let it = idents::populator_iter();
-    let body = build_precount_layer(
+    ShapePrecount {
         shape,
+        access,
         layers,
-        total,
-        0,
-        layer0_iter_src,
-        projection_layer,
-        projection_path,
-    );
-    let counter_decls = (0..shape.depth().saturating_sub(1)).map(|i| {
-        let id = &layers[i].layer_total;
-        quote! { let mut #id: usize = 0; }
-    });
-    quote! {
-        let mut #total: usize = 0;
-        #(#counter_decls)*
-        for #it in items {
-            #body
-        }
+        outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
+        total_counter: total,
+        layer_counters,
+        projection: projection.as_layer_projection(shape),
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_precount_layer(
-    shape: &VecLayers,
-    layers: &[TupleLayerIdents],
-    total: &syn::Ident,
-    cur: usize,
-    bind: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
-) -> TokenStream {
-    let opt_layers = shape.layers[cur].option_layers_above;
-    if opt_layers > 0 {
-        let inner_bind = idents::tuple_pre_outer_some_bind(cur);
-        let inner = build_precount_iter(
-            shape,
-            layers,
-            total,
-            cur,
-            &quote! { #inner_bind },
-            projection_layer,
-            projection_path,
-        );
-        let collapsed = if opt_layers == 1 {
-            bind.clone()
-        } else {
-            super::collapse_options_to_ref(bind, opt_layers)
-        };
-        quote! {
-            if let ::std::option::Option::Some(#inner_bind) = #collapsed {
-                #inner
-            }
-        }
-    } else {
-        build_precount_iter(
-            shape,
-            layers,
-            total,
-            cur,
-            bind,
-            projection_layer,
-            projection_path,
-        )
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_precount_iter(
-    shape: &VecLayers,
-    layers: &[TupleLayerIdents],
-    total: &syn::Ident,
-    cur: usize,
-    vec_bind: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
-) -> TokenStream {
-    let depth = shape.depth();
-    if cur + 1 == depth {
-        // Deepest layer counts elements via `vec_bind.len()`. Projection
-        // at the deepest layer would mean the leaf access reads through
-        // the projection — but `len()` is on the same `vec_bind` either
-        // way (the projection lives in the per-element value expression,
-        // not in the iteration source), so no special-casing is needed.
-        let _ = (projection_layer, projection_path);
-        quote! { #total += #vec_bind.len(); }
-    } else {
-        let inner_bind = &layers[cur + 1].bind;
-        let counter = &layers[cur].layer_total;
-        let inner_layer = build_precount_layer(
-            shape,
-            layers,
-            total,
-            cur + 1,
-            &quote! { #inner_bind },
-            projection_layer,
-            projection_path,
-        );
-        // Interior-layer projection: the next layer iterates the projected
-        // sub-expression of the current binding.
-        let iter_src = if cur + 1 == projection_layer {
-            quote! { (#vec_bind #projection_path).iter() }
-        } else {
-            quote! { #vec_bind.iter() }
-        };
-        quote! {
-            for #inner_bind in #iter_src {
-                #inner_layer
-                #counter += 1;
-            }
-        }
-    }
+    .build()
 }
 
 fn build_scan(
     shape: &VecLayers,
-    layers: &[TupleLayerIdents],
-    layer0_iter_src: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
+    layers: &[LayerIdents],
+    access: &TokenStream,
+    projection: TupleProjection<'_>,
     per_elem_push: &TokenStream,
     leaf_offsets_post_push: &TokenStream,
 ) -> TokenStream {
-    let it = idents::populator_iter();
-    let body = build_scan_layer(
-        shape,
-        layers,
-        0,
-        layer0_iter_src,
-        projection_layer,
-        projection_path,
-        per_elem_push,
-        leaf_offsets_post_push,
-    );
-    quote! {
-        for #it in items {
-            #body
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_scan_layer(
-    shape: &VecLayers,
-    layers: &[TupleLayerIdents],
-    cur: usize,
-    bind: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
-    per_elem_push: &TokenStream,
-    leaf_offsets_post_push: &TokenStream,
-) -> TokenStream {
-    let depth = shape.depth();
-    let layer = &layers[cur];
-    let offsets = &layer.offsets;
-    let offsets_post_push = if cur + 1 == depth {
-        leaf_offsets_post_push.clone()
-    } else {
-        let inner_offsets = &layers[cur + 1].offsets;
-        quote! { (#inner_offsets.len() - 1) }
-    };
-    let opt_layers = shape.layers[cur].option_layers_above;
-    let inner_iter = if opt_layers > 0 {
-        let validity = &layer.validity_mb;
-        let inner_vec_bind = idents::tuple_outer_some_bind(cur);
-        let inner_iter = build_scan_iter(
-            shape,
-            layers,
-            cur,
-            &quote! { #inner_vec_bind },
-            projection_layer,
-            projection_path,
-            per_elem_push,
-            leaf_offsets_post_push,
-        );
-        let collapsed = if opt_layers == 1 {
-            bind.clone()
-        } else {
-            super::collapse_options_to_ref(bind, opt_layers)
-        };
-        quote! {
-            match #collapsed {
-                ::std::option::Option::Some(#inner_vec_bind) => {
-                    #validity.push(true);
-                    #inner_iter
-                }
-                ::std::option::Option::None => {
-                    #validity.push(false);
-                }
-            }
-        }
-    } else {
-        build_scan_iter(
-            shape,
-            layers,
-            cur,
-            bind,
-            projection_layer,
-            projection_path,
-            per_elem_push,
-            leaf_offsets_post_push,
-        )
-    };
-    quote! {
-        #inner_iter
-        #offsets.push(#offsets_post_push as i64);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_scan_iter(
-    shape: &VecLayers,
-    layers: &[TupleLayerIdents],
-    cur: usize,
-    vec_bind: &TokenStream,
-    projection_layer: usize,
-    projection_path: &TokenStream,
-    per_elem_push: &TokenStream,
-    leaf_offsets_post_push: &TokenStream,
-) -> TokenStream {
-    let depth = shape.depth();
     let leaf_bind = idents::leaf_value();
-    let _ = leaf_offsets_post_push;
-    if cur + 1 == depth {
-        // Deepest layer: iterate the vec binding to bind individual leaves
-        // to `__df_derive_v`. The projection (if it lands AT the deepest
-        // layer, i.e., projection_layer == depth) is baked into
-        // `per_elem_push` by the caller, not into the iteration source.
-        // The projection appears in `iter_src` only when it lies at a
-        // strictly-INTERIOR layer transition (handled below by
-        // `cur + 1 == projection_layer` for non-deepest layers).
-        let iter_src = quote! { #vec_bind.iter() };
+    let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
         if shape.has_inner_option() {
             if shape.inner_option_layers == 1 {
                 quote! {
-                    for #leaf_bind in #iter_src {
+                    for #leaf_bind in #vec_bind.iter() {
                         #per_elem_push
                     }
                 }
@@ -1359,7 +1111,7 @@ fn build_scan_iter(
                     shape.inner_option_layers,
                 );
                 quote! {
-                    for #raw_bind in #iter_src {
+                    for #raw_bind in #vec_bind.iter() {
                         let #leaf_bind: ::std::option::Option<_> = #collapsed;
                         #per_elem_push
                     }
@@ -1367,152 +1119,115 @@ fn build_scan_iter(
             }
         } else {
             quote! {
-                for #leaf_bind in #iter_src {
+                for #leaf_bind in #vec_bind.iter() {
                     #per_elem_push
                 }
             }
         }
-    } else {
-        let inner_bind = &layers[cur + 1].bind;
-        let inner_layer_body = build_scan_layer(
-            shape,
-            layers,
-            cur + 1,
-            &quote! { #inner_bind },
-            projection_layer,
-            projection_path,
-            per_elem_push,
-            leaf_offsets_post_push,
-        );
-        // Projection at an INTERIOR layer transition: the next layer
-        // iterates the projected sub-expression. Used for `Vec<(Vec<A>, B)>`-
-        // shaped tuples where the element has its own Vec wrappers and the
-        // boundary sits between parent and element layers.
-        let iter_src = if cur + 1 == projection_layer {
-            quote! { (#vec_bind #projection_path).iter() }
-        } else {
-            quote! { #vec_bind.iter() }
-        };
-        quote! {
-            for #inner_bind in #iter_src {
-                #inner_layer_body
-            }
-        }
+    };
+    ShapeScan {
+        shape,
+        access,
+        layers,
+        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
+        leaf_body: &leaf_body,
+        leaf_offsets_post_push,
+        projection: projection.as_layer_projection(shape),
     }
+    .build()
 }
 
-fn build_offsets_decls(layers: &[TupleLayerIdents]) -> TokenStream {
-    let mut out: Vec<TokenStream> = Vec::with_capacity(layers.len());
-    for (i, layer) in layers.iter().enumerate() {
-        let offsets = &layer.offsets;
-        let cap = if i == 0 {
-            quote! { items.len() + 1 }
-        } else {
-            let counter = &layers[i - 1].layer_total;
-            quote! { #counter + 1 }
-        };
-        out.push(quote! {
-            let mut #offsets: ::std::vec::Vec<i64> =
-                ::std::vec::Vec::with_capacity(#cap);
-            #offsets.push(0);
-        });
-    }
-    quote! { #(#out)* }
+fn build_offsets_decls(layers: &[LayerIdents], layer_counters: &[syn::Ident]) -> TokenStream {
+    let offsets: Vec<&syn::Ident> = layers.iter().map(|layer| &layer.offsets).collect();
+    let counter_for_depth = |layer: usize| -> TokenStream {
+        let counter = &layer_counters[layer];
+        quote! { #counter }
+    };
+    shape_offsets_decls(&offsets, &counter_for_depth)
 }
 
 fn build_validity_decls(
     shape: &VecLayers,
-    layers: &[TupleLayerIdents],
+    layers: &[LayerIdents],
+    layer_counters: &[syn::Ident],
     pa_root: &TokenStream,
 ) -> TokenStream {
-    let mut out: Vec<TokenStream> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        if !shape.layers[i].has_outer_validity() {
-            continue;
-        }
-        let validity = &layer.validity_mb;
-        let cap = if i == 0 {
-            quote! { items.len() }
-        } else {
-            let counter = &layers[i - 1].layer_total;
-            quote! { #counter }
-        };
-        out.push(quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#cap);
-        });
-    }
-    quote! { #(#out)* }
+    let validity: Vec<&syn::Ident> = layers.iter().map(|layer| &layer.validity_mb).collect();
+    let counter_for_depth = |layer: usize| -> TokenStream {
+        let counter = &layer_counters[layer];
+        quote! { #counter }
+    };
+    shape_validity_decls(shape, &validity, &counter_for_depth, pa_root)
 }
 
-#[allow(clippy::too_many_arguments)]
+fn tuple_layer_wraps_move<'a>(
+    shape: &VecLayers,
+    layers: &'a [LayerIdents],
+    pa_root: &TokenStream,
+) -> Vec<LayerWrap<'a>> {
+    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
+    for (cur, layer) in layers.iter().enumerate() {
+        let mut freeze_decl = freeze_offsets_buf(&layer.offsets_buf, &layer.offsets, pa_root);
+        let validity_bm = if shape.layers[cur].has_outer_validity() {
+            freeze_decl.extend(freeze_validity_bitmap(
+                &layer.validity_bm,
+                &layer.validity_mb,
+                pa_root,
+            ));
+            Some(&layer.validity_bm)
+        } else {
+            None
+        };
+        out.push(LayerWrap {
+            offsets_buf: OwnPolicy::Move(&layer.offsets_buf),
+            validity_bm,
+            freeze_decl,
+        });
+    }
+    out
+}
+
+fn tuple_layer_wraps_clone<'a>(shape: &VecLayers, layers: &'a [LayerIdents]) -> Vec<LayerWrap<'a>> {
+    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
+    for (cur, layer) in layers.iter().enumerate() {
+        let validity_bm = shape.layers[cur]
+            .has_outer_validity()
+            .then_some(&layer.validity_bm);
+        out.push(LayerWrap {
+            offsets_buf: OwnPolicy::Clone(&layer.offsets_buf),
+            validity_bm,
+            freeze_decl: TokenStream::new(),
+        });
+    }
+    out
+}
+
 fn build_materialize(
     shape: &VecLayers,
-    layers: &[TupleLayerIdents],
+    layers: &[LayerIdents],
     leaf_arr: &syn::Ident,
-    assemble_helper: &syn::Ident,
     leaf_logical_dtype: &TokenStream,
     leaf_arr_expr: &TokenStream,
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> TokenStream {
-    let depth = shape.depth();
     let seed_arrow_dtype_id = idents::seed_arrow_dtype();
     let seed_dtype_decl = quote! {
         let #seed_arrow_dtype_id: #pa_root::datatypes::ArrowDataType =
             #pa_root::array::Array::dtype(&#leaf_arr).clone();
     };
-    let mut block: Vec<TokenStream> = Vec::with_capacity(depth);
-    let mut prev_payload = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
-    let mut prev_dtype = quote! { #seed_arrow_dtype_id };
-    for cur in (0..depth).rev() {
-        let layer = &layers[cur];
-        let buf = &layer.offsets_buf;
-        let offsets = &layer.offsets;
-        let arr_id = idents::tuple_layer_list_arr(cur);
-        let mut freeze: TokenStream = quote! {
-            let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-                #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
-        };
-        let validity_expr = if shape.layers[cur].has_outer_validity() {
-            let bm = &layer.validity_bm;
-            let mb = &layer.validity_mb;
-            freeze.extend(quote! {
-                let #bm: #pa_root::bitmap::Bitmap =
-                    <#pa_root::bitmap::Bitmap as ::core::convert::From<
-                        #pa_root::bitmap::MutableBitmap,
-                    >>::from(#mb);
-            });
-            quote! { ::std::option::Option::Some(::std::clone::Clone::clone(&#bm)) }
-        } else {
-            quote! { ::std::option::Option::None }
-        };
-        block.push(quote! {
-            #freeze
-            let #arr_id: #pp::LargeListArray = #pp::LargeListArray::new(
-                #pp::LargeListArray::default_datatype(#prev_dtype),
-                #buf,
-                #prev_payload,
-                #validity_expr,
-            );
-        });
-        prev_payload = quote! { ::std::boxed::Box::new(#arr_id) as #pp::ArrayRef };
-        prev_dtype = quote! { #pa_root::array::Array::dtype(&#arr_id).clone() };
-    }
-    let helper_logical = crate::codegen::polars_paths::wrap_list_layers_compile_time_pub(
-        pp,
+    let wrap_layers = tuple_layer_wraps_move(shape, layers, pa_root);
+    let stack = shape_assemble_list_stack(
+        quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef },
+        quote! { #seed_arrow_dtype_id },
+        &wrap_layers,
         leaf_logical_dtype.clone(),
-        depth.saturating_sub(1),
+        &idents::tuple_layer_list_arr,
     );
-    let outer = idents::tuple_layer_list_arr(0);
     quote! {
         #leaf_arr_expr
         #seed_dtype_decl
-        #(#block)*
-        #assemble_helper(
-            #outer,
-            #helper_logical,
-        )
+        #stack
     }
 }
 

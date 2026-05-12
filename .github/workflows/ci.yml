@@ -21,6 +21,10 @@ permissions:
   id-token: write
   checks: write
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Lint and test
@@ -29,7 +33,7 @@ jobs:
       CARGO_TERM_COLOR: always
       # Avoid intermittent rust-lld SIGBUS crashes while linking the
       # Polars-heavy trybuild binaries on GitHub-hosted Linux runners.
-      RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--no-threads"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

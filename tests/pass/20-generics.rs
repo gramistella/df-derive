@@ -1,11 +1,12 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
+#[path = "../local_runtime.rs"]
 mod core;
 use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct MetaStruct {
     timestamp: i64,
     note: String,
@@ -13,6 +14,7 @@ struct MetaStruct {
 
 // Generic struct with one type parameter
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Wrapper<T>
 where
     T: Clone,
@@ -23,6 +25,7 @@ where
 
 // Default type parameter (M defaults to ())
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct DefaultMeta<M = ()>
 where
     M: Clone,
@@ -33,6 +36,7 @@ where
 
 // Multiple generics
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Multi<A, B>
 where
     A: Clone,
@@ -45,6 +49,7 @@ where
 
 // Generic field wrapped in Option
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptWrapper<T>
 where
     T: Clone,
@@ -55,6 +60,7 @@ where
 
 // Generic field wrapped in Vec
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecWrapper<T>
 where
     T: Clone,
@@ -67,6 +73,7 @@ where
 // as AnyValue::Null; this verifies the encoder's two-Option collapse over
 // generic payloads still produces correct output.
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptOptWrapper<T>
 where
     T: Clone,
@@ -78,6 +85,7 @@ where
 // Option<Vec<T>>: depth-2 with the inner being a Vec. Goes through the
 // generic on_vec branch with tail=[] inside an Option Some-recursion.
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptVecWrapper<T>
 where
     T: Clone,
@@ -89,6 +97,7 @@ where
 // Vec<Option<T>>: depth-2 where the outer Vec layer dispatches into the
 // generic-vec helper with tail=[Option].
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecOptWrapper<T>
 where
     T: Clone,
@@ -100,6 +109,7 @@ where
 // Vec<Vec<T>>: depth-2 with both layers being Vec. Recurses through the
 // generic-vec helper with tail=[Vec].
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecVecWrapper<T>
 where
     T: Clone,
@@ -109,6 +119,7 @@ where
 }
 
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct InnerGeneric<M>
 where
     M: Clone,
@@ -119,6 +130,7 @@ where
 
 // Outer struct that propagates its own `M` into nested generic fields.
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OuterPropagating<M = ()>
 where
     M: Clone,

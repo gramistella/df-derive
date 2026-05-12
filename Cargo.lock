@@ -689,26 +689,32 @@ version = "0.3.0"
 dependencies = [
  "chrono",
  "criterion",
- "df-derive-runtime",
+ "df-derive-core",
+ "df-derive-macros",
  "polars",
  "polars-arrow",
  "pretty_assertions",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
  "rust_decimal",
  "serde",
- "syn 2.0.117",
  "trybuild",
 ]
 
 [[package]]
-name = "df-derive-runtime"
+name = "df-derive-core"
 version = "0.3.0"
 dependencies = [
  "polars",
- "polars-arrow",
  "rust_decimal",
+]
+
+[[package]]
+name = "df-derive-macros"
+version = "0.3.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

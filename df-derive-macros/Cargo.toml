@@ -1,0 +1,22 @@
+[package]
+name = "df-derive-macros"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Procedural derive macro implementation for df-derive."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/df-derive-macros"
+readme = "../README.md"
+keywords = ["polars", "dataframe", "proc-macro", "finance"]
+categories = ["data-structures", "finance"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.106"
+quote = "1.0.45"
+syn = { version = "2.0.117", features = ["derive"] }
+proc-macro-crate = "3.5.0"

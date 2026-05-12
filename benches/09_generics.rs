@@ -14,7 +14,7 @@ use polars::prelude::*;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
+#[path = "../tests/local_runtime.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
 use crate::core::dataframe::{Columnar, ToDataFrame};
@@ -22,6 +22,7 @@ use crate::core::dataframe::{Columnar, ToDataFrame};
 const N_ROWS: usize = 100_000;
 
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Meta {
     timestamp: i64,
     note: String,
@@ -29,6 +30,7 @@ struct Meta {
 
 // The generic struct under test. The macro emits the bulk path for `payload`.
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Wrapper<T>
 where
     T: Clone,
@@ -110,6 +112,7 @@ where
 
 // Wrappers used to A/B benchmark the new Option<T> and Vec<T> bulk overrides.
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptWrap<T>
 where
     T: Clone,
@@ -119,6 +122,7 @@ where
 }
 
 #[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecWrap<T>
 where
     T: Clone,

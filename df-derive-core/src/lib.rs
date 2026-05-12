@@ -1,14 +1,11 @@
-//! Canonical runtime traits for [`df-derive`].
+//! Shared runtime trait identity for `df-derive`.
 //!
 //! # What this crate provides
 //!
-//! `df-derive` is a procedural derive macro that emits code naming a
-//! user-supplied trait module. The macro itself ships no traits — every
-//! example, test, and downstream user historically had to inline its own
-//! copy of `ToDataFrame`, `Columnar`, `ToDataFrameVec`, and
-//! `Decimal128Encode`. This crate is the canonical reference module so users
-//! without a `paft` runtime can just depend on `df-derive-runtime` and point
-//! the derive at it.
+//! `df-derive-core` owns the default `dataframe` traits used by the
+//! user-facing `df-derive` facade. Sharing these traits across crates lets
+//! derived models compose as nested `ToDataFrame` types without each crate
+//! inventing a local runtime identity.
 //!
 //! The [`dataframe`] module exposes:
 //!
@@ -25,40 +22,31 @@
 //!
 //! # When to use this crate
 //!
-//! Add this crate when you want the macro's trait surface but do not have a
-//! `paft` ecosystem dependency. The macro's default discovery cascade tries
-//! the `paft` facade first, then `paft-utils`, then a local
-//! `crate::core::dataframe` fallback; this crate is for projects that prefer
-//! an explicit, canonical runtime path instead of local trait boilerplate.
+//! Most users get this crate through `df-derive`. Depend on this crate
+//! directly when you want the shared traits without the facade, or when you
+//! use `df-derive-macros` directly and still want the default runtime
+//! identity.
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.3"
-//! df-derive-runtime = "0.3"
+//! df-derive-core = "0.3"
+//! df-derive-macros = "0.3"
 //! ```
 //!
 //! ```ignore
-//! use df_derive::ToDataFrame;
-//! use df_derive_runtime::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+//! use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+//! use df_derive_macros::ToDataFrame;
 //!
 //! #[derive(ToDataFrame)]
-//! #[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 //! struct Trade { symbol: String, price: f64, size: u64 }
 //! ```
-//!
-//! The `#[df_derive(trait = "...")]` attribute auto-infers the `Columnar`
-//! and `Decimal128Encode` paths by replacing the last segment of the trait
-//! path, so you only need to name the `ToDataFrame` path.
 //!
 //! # Validating a custom decimal backend
 //!
 //! The `Decimal128Encode` contract requires round-half-to-even (banker's
 //! rounding) on scale-down. The reference `rust_decimal::Decimal` impl in
-//! this crate honours that contract; it is byte-equivalent to the
-//! historical `tests/common.rs` impl and is exercised by this repository's
+//! this crate honours that contract and is exercised by this repository's
 //! unpublished `df-derive-test-harness` workspace crate.
-//!
-//! [`df-derive`]: https://docs.rs/df-derive
 
 // `polars` pulls a wide transitive dependency tree (ahash, foldhash,
 // hashbrown, windows-sys variants, …) where multiple resolved versions are
@@ -70,7 +58,7 @@
 
 #[allow(dead_code)]
 pub mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, NamedFrom, PolarsResult, Series};
+    use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
     pub trait ToDataFrame {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
@@ -83,7 +71,7 @@ pub mod dataframe {
         fn schema() -> PolarsResult<Vec<(String, DataType)>>;
     }
 
-    /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.
+    /// Columnar batch trait implemented by the derive macro.
     pub trait Columnar: Sized {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
@@ -115,6 +103,14 @@ pub mod dataframe {
         }
     }
 
+    fn zero_column_dataframe_with_height(n: usize) -> PolarsResult<DataFrame> {
+        let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
+            .extend_constant(AnyValue::Null, n)?;
+        let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
+        df.drop_in_place("_dummy")?;
+        Ok(df)
+    }
+
     // Unit-type support for generic payloads such as `Wrapper<()>`. Direct
     // derived fields of type `()` are rejected by df-derive, but a generic
     // field instantiated as `()` contributes zero columns. The
@@ -123,10 +119,7 @@ pub mod dataframe {
     // column that is dropped immediately after construction.
     impl ToDataFrame for () {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            let dummy = Series::new("_dummy".into(), &[0i32]);
-            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-            df.drop_in_place("_dummy")?;
-            Ok(df)
+            zero_column_dataframe_with_height(1)
         }
 
         fn empty_dataframe() -> PolarsResult<DataFrame> {
@@ -139,13 +132,12 @@ pub mod dataframe {
     }
 
     impl Columnar for () {
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            zero_column_dataframe_with_height(items.len())
+        }
+
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-            let n = items.len();
-            let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
-                .extend_constant(AnyValue::Null, n)?;
-            let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-            df.drop_in_place("_dummy")?;
-            Ok(df)
+            zero_column_dataframe_with_height(items.len())
         }
     }
 

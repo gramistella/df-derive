@@ -1,5 +1,5 @@
 //! Safety net for the encoder identifier registry at
-//! `src/codegen/encoder/idents.rs`.
+//! `df-derive-macros/src/codegen/encoder/idents.rs`.
 //!
 //! Every `__df_derive_*` identifier the macro emits must come from that
 //! registry. New emitters that mint identifiers as raw `format_ident!` /
@@ -95,7 +95,10 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn no_uncentralized_df_derive_idents() {
     let manifest =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
-    let codegen_root = PathBuf::from(&manifest).join("src").join("codegen");
+    let codegen_root = PathBuf::from(&manifest)
+        .join("df-derive-macros")
+        .join("src")
+        .join("codegen");
     assert!(
         codegen_root.is_dir(),
         "expected codegen dir at {}",
@@ -143,9 +146,9 @@ fn no_uncentralized_df_derive_idents() {
 
     assert!(
         violations.is_empty(),
-        "found `{needle}` literals outside `src/codegen/encoder/idents.rs`. \
+        "found `{needle}` literals outside `df-derive-macros/src/codegen/encoder/idents.rs`. \
          Every `__df_derive_*` identifier the macro emits must come from a \
-         function or constant in `src/codegen/encoder/idents.rs` — add one \
+         function or constant in `df-derive-macros/src/codegen/encoder/idents.rs` — add one \
          there and route the literal through it.\n\nviolations:\n{}",
         violations.join("\n"),
     );

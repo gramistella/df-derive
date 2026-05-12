@@ -5,22 +5,19 @@
 //! shows how the derive flattens the nested-struct columns and how both
 //! outer-`None` and inner-`None` rows surface as nulls.
 //!
-//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-//! any user-defined module at this path; see `quickstart.rs` for the inline form.
+//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe;
-use df_derive_runtime::dataframe::ToDataFrameVec;
+use df_derive::dataframe;
+use df_derive::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Profile {
     handle: String,
     score: f64,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct User {
     id: u32,
     // The example's whole point is to demonstrate this shape.

@@ -6,15 +6,12 @@
 //! those traits. The unit type `()` can be used as a payload to contribute
 //! zero columns.
 //!
-//! Uses `df-derive-runtime` for the canonical trait module — it ships
-//! `impl ToDataFrame for ()` and `impl Columnar for ()` so the unit-payload
-//! shapes below work out of the box. See `quickstart.rs` for the inline form.
+//! Uses the default `df-derive` facade runtime, including the unit-payload impls.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+use df_derive::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Meta {
     timestamp: i64,
     note: String,
@@ -25,21 +22,18 @@ struct Meta {
 // parameter for the impl blocks it generates.
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Wrapper<T> {
     id: u32,
     payload: T,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct DefaultMeta<M = ()> {
     value: i32,
     meta: M,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Pair<A, B> {
     name: String,
     left: A,
@@ -47,14 +41,12 @@ struct Pair<A, B> {
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct OptWrapper<T> {
     id: u32,
     payload: Option<T>,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct VecWrapper<T> {
     id: u32,
     payload: Vec<T>,

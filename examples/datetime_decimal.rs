@@ -1,17 +1,15 @@
-// Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-// any user-defined module at this path; see `quickstart.rs` for the inline form.
-// `df-derive-runtime` ships the reference `Decimal128Encode for
+// Uses the default `df-derive` facade runtime.
+// `df-derive` ships the reference `Decimal128Encode for
 // rust_decimal::Decimal` impl behind the `rust_decimal` feature, which is
 // enabled by default; the codegen finds it via the auto-inferred
-// `df_derive_runtime::dataframe::Decimal128Encode` path.
+// `df_derive::dataframe::Decimal128Encode` path.
 
 use chrono::{DateTime, Utc};
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe;
+use df_derive::dataframe;
 use rust_decimal::Decimal;
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct TxRecord {
     amount: Decimal,
     ts: DateTime<Utc>,

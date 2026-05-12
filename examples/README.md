@@ -95,4 +95,4 @@ cargo run --example nested_generics
 - **Schema information**: Column names and data types
 - **Different use cases**: From simple structs to complex nested data with lists
 
-All examples use the same trait definitions to demonstrate the complete API surface of the generated code.
+The examples use the default `df-derive` facade runtime unless they are demonstrating a custom-runtime pattern.

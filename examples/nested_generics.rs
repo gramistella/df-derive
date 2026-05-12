@@ -17,23 +17,20 @@
 //! which the existing `quickstart` example does not do because it isn't
 //! generic.
 //!
-//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-//! any user-defined module at this path; see `quickstart.rs` for the inline form.
+//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe::ToDataFrameVec as _;
+use df_derive::dataframe::ToDataFrameVec as _;
 
 // Two concrete payloads to instantiate the generic with. Both derive
 // `ToDataFrame`, which the macro requires for any concrete `T`.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct IntPayload {
     timestamp: i64,
     seq: u32,
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct StringPayload {
     name: String,
     note: String,
@@ -43,7 +40,6 @@ struct StringPayload {
 // its impl blocks; `#[derive(Clone)]` adds its own `T: Clone` bound. So
 // `Generic<P>` derives transparently for any `P` that satisfies all three.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Generic<T> {
     value: T,
     label: String,
@@ -55,7 +51,6 @@ struct Generic<T> {
 //   - `list: Vec<Generic<StringPayload>>` — each inner field becomes a
 //     List column: `list.value.name`, `list.value.note`, `list.label`.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Outer {
     id: u32,
     inner: Generic<IntPayload>,
@@ -105,7 +100,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     println!("Outer (batch):\n{}", rows.as_slice().to_dataframe()?);
 
-    let schema = <Outer as df_derive_runtime::dataframe::ToDataFrame>::schema()?;
+    let schema = <Outer as df_derive::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (generic instantiations flatten with dot notation):");
     for (name, dtype) in schema {
         println!("  {name}: {dtype:?}");

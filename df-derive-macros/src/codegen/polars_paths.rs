@@ -17,7 +17,7 @@ use quote::{format_ident, quote};
 /// neither of those macros realistically expands inside the polars or
 /// polars-arrow crate, and a missing direct dep is best surfaced as
 /// `unresolved import ::<name>` at the call site rather than `unresolved
-/// name <name>`. The `mod::resolve_paft_crate_path` site is bespoke
+/// name <name>`. The `mod::resolve_default_dataframe_mod` site is bespoke
 /// because its `Itself` arm maps to `crate::dataframe` (a substantive
 /// path), not to the fallback — a different cascade shape that this
 /// helper cannot model cleanly.

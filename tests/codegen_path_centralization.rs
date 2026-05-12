@@ -1,6 +1,6 @@
 //! Safety net for generated external crate paths.
 //!
-//! `src/codegen/polars_paths.rs` is the only place codegen should spell raw
+//! `df-derive-macros/src/codegen/polars_paths.rs` is the only place codegen should spell raw
 //! `::polars` or `::polars_arrow` roots. Everywhere else should go through the
 //! resolver helpers so downstream dependency renames keep working.
 
@@ -58,7 +58,10 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn generated_polars_roots_are_centralized() {
     let manifest =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
-    let codegen_root = PathBuf::from(&manifest).join("src").join("codegen");
+    let codegen_root = PathBuf::from(&manifest)
+        .join("df-derive-macros")
+        .join("src")
+        .join("codegen");
     let allowed = fs::canonicalize(codegen_root.join("polars_paths.rs"))
         .expect("polars_paths.rs should exist");
 
@@ -93,7 +96,7 @@ fn generated_polars_roots_are_centralized() {
 
     assert!(
         violations.is_empty(),
-        "generated Polars roots must go through src/codegen/polars_paths.rs \
+        "generated Polars roots must go through df-derive-macros/src/codegen/polars_paths.rs \
          so dependency renames are honored.\n\nviolations:\n{}",
         violations.join("\n"),
     );

@@ -5,15 +5,13 @@
 //! fuses the wrapper layers into a single bulk emission, so per-row work is
 //! O(total leaf count) rather than O(layer count * leaf count).
 //!
-//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-//! any user-defined module at this path; see `quickstart.rs` for the inline form.
+//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe;
-use df_derive_runtime::dataframe::ToDataFrameVec;
+use df_derive::dataframe;
+use df_derive::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Tensor {
     label: String,
     // List<List<List<f64>>> after derive: outer batches, sequences, frames.

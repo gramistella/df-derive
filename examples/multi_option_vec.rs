@@ -19,15 +19,13 @@
 //! make a row null. So `Some(Some(vec![]))` is observably distinct from
 //! `None` / `Some(None)`: the former is an empty list, the latter is null.
 //!
-//! Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-//! any user-defined module at this path; see `quickstart.rs` for the inline form.
+//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe;
-use df_derive_runtime::dataframe::ToDataFrameVec;
+use df_derive::dataframe;
+use df_derive::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Sample {
     id: u32,
     // The example's whole point is to demonstrate this shape.

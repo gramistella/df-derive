@@ -1,11 +1,9 @@
-// Uses `df-derive-runtime` for the canonical trait module — the macro accepts
-// any user-defined module at this path; see `quickstart.rs` for the inline form.
+// Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
-use df_derive_runtime::dataframe;
+use df_derive::dataframe;
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Address {
     street: String,
     city: String,
@@ -13,7 +11,6 @@ struct Address {
 }
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "df_derive_runtime::dataframe::ToDataFrame")]
 struct Person {
     name: String,
     age: u32,

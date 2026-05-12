@@ -27,33 +27,29 @@ pub struct MacroConfig {
     pub decimal128_encode_trait_path: TokenStream,
 }
 
-pub fn resolve_paft_crate_path() -> TokenStream {
-    // Current paft layout:
-    // - `paft` facade re-exports `paft_utils::dataframe` as `paft::dataframe`
-    // - direct internal consumers use `paft_utils::dataframe`
-    // - non-paft projects can still get a convention-based fallback with
-    //   `crate::core::dataframe`
-    match crate_name("paft") {
-        Ok(FoundCrate::Name(name)) => {
-            let ident = format_ident!("{}", name);
-            quote! { ::#ident::dataframe }
+fn resolve_dataframe_mod_for_crate(name: &str, itself: TokenStream) -> Option<TokenStream> {
+    match crate_name(name) {
+        Ok(FoundCrate::Name(resolved)) => {
+            let ident = format_ident!("{}", resolved);
+            Some(quote! { ::#ident::dataframe })
         }
-        Ok(FoundCrate::Itself) => {
-            quote! { crate::dataframe }
-        }
-        _ => match crate_name("paft-utils") {
-            Ok(FoundCrate::Name(name)) => {
-                let ident = format_ident!("{}", name);
-                quote! { ::#ident::dataframe }
-            }
-            Ok(FoundCrate::Itself) => {
-                quote! { crate::dataframe }
-            }
-            _ => {
-                quote! { crate::core::dataframe }
-            }
-        },
+        Ok(FoundCrate::Itself) => Some(itself),
+        Err(_) => None,
     }
+}
+
+pub fn resolve_default_dataframe_mod() -> TokenStream {
+    // Default discovery order:
+    // - `paft` facade (`paft::dataframe`)
+    // - `paft-utils` direct runtime (`paft_utils::dataframe`)
+    // - `df-derive` facade (`df_derive::dataframe`)
+    // - `df-derive-core` shared runtime (`df_derive_core::dataframe`)
+    // - legacy local fallback (`crate::core::dataframe`)
+    resolve_dataframe_mod_for_crate("paft", quote! { crate::dataframe })
+        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", quote! { crate::dataframe }))
+        .or_else(|| resolve_dataframe_mod_for_crate("df-derive", quote! { ::df_derive::dataframe }))
+        .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", quote! { crate::dataframe }))
+        .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {

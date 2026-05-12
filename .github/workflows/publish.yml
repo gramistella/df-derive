@@ -10,6 +10,12 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    env:
+      # Keep publish dry-runs on GNU ld.bfd as well; the Polars-heavy
+      # trybuild fixtures can otherwise trip rust-lld SIGBUS crashes on
+      # GitHub-hosted Linux runners.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
     environment:
       name: crates-io
     permissions:

@@ -29,7 +29,8 @@ jobs:
       # Force consistent, optimized builds on CI
       # Pin to x86-64-v3 (AVX2 + BMI1/BMI2 + LZCNT + MOVBE) instead of `native` so bench
       # results are stable across heterogeneous GitHub Actions runners.
-      RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C linker-features=-lld -C link-arg=-fuse-ld=bfd"
       # Pin parallelism for determinism
       RAYON_NUM_THREADS: '1'
       POLARS_MAX_THREADS: '1'

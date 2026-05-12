@@ -32,8 +32,11 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       # Avoid intermittent rust-lld SIGBUS crashes while linking the
-      # Polars-heavy trybuild binaries on GitHub-hosted Linux runners.
-      RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+      # Polars-heavy trybuild binaries on GitHub-hosted Linux runners. Use
+      # Cargo's target-specific env vars so nested trybuild Cargo invocations
+      # inherit the linker choice too.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

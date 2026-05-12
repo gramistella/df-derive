@@ -11,6 +11,20 @@
 trait surface, so most projects can write `#[derive(ToDataFrame)]` without a
 local trait module or `#[df_derive(trait = "...")]` override.
 
+## What This Crate Does
+
+Deriving `ToDataFrame` on structs and tuple structs generates
+allocation-conscious code to:
+
+- Convert a single value to a `polars::prelude::DataFrame`
+- Convert slices through a columnar batch path
+- Inspect generated column names and `DataType`s through `T::schema()`
+
+The derive supports nested structs flattened with dot notation, nullable
+shapes with `Option<T>`, list shapes with `Vec<T>`, tuple structs,
+tuple-typed fields, generic structs, borrowed fields, smart pointers, datetime
+types, duration types, byte blobs, and decimal backends.
+
 ## Quick Start
 
 ```toml
@@ -88,29 +102,102 @@ The direct `&[Self]` method is generated so top-level slice conversion does
 not allocate a temporary `Vec<&Self>`. The borrowed `&[&Self]` method remains
 for nested and generic composition.
 
-## Supported Shapes
+## Supported Types And Shapes
 
-The derive supports named structs, tuple structs, nested structs flattened with
-dot notation, `Option<T>`, `Vec<T>` in arbitrary wrapper stacks, tuple-typed
-fields, `Box<T>`, `Rc<T>`, `Arc<T>`, borrowed references, and `Cow`.
+Container and wrapper support:
 
-Common leaf types include strings, bools, signed and unsigned integers
-including `i128`/`u128`, `NonZero*` integer types, `f32`, `f64`,
-`chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, `chrono::NaiveDate`,
-`chrono::NaiveTime`, `std::time::Duration`, `core::time::Duration`,
-`chrono::Duration`, and `rust_decimal::Decimal`.
+- **Named structs**: each field becomes one or more columns.
+- **Nested structs**: fields flatten recursively with dot notation.
+- **Vec of primitives and structs**: `Vec<T>` becomes a Polars `List` column;
+  `Vec<Nested>` becomes one list column per nested field.
+- **`Option<T>`**: scalar and list columns carry null validity.
+- **Tuple structs**: unnamed fields become `field_0`, `field_1`, and so on.
+- **Tuple-typed fields**: `pair: (A, B)` flattens to
+  `pair.field_0`, `pair.field_1`; `Option<(A, B)>` and `Vec<(A, B)>`
+  distribute the outer wrapper across the element columns.
+- **Empty structs**: an instance produces shape `(1, 0)` and an empty slice
+  produces shape `(0, 0)`.
+- **Generics**: generic structs are supported; the macro injects the
+  necessary `ToDataFrame + Columnar` bounds, plus `Decimal128Encode` for
+  generic parameters annotated with `decimal(...)`.
+- **Transparent pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, borrowed references
+  `&T`, and `Cow<'_, T>` with a sized inner peel transparently and preserve
+  the bare field's column shape and dtype.
+
+Common leaf types:
+
+- **Primitives**: `String`, `&str`, `bool`, signed and unsigned integer types
+  including `i128`/`u128` and `isize`/`usize`, `std::num::NonZero*` integer
+  types, `f32`, and `f64`.
+- **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` encode as
+  `Datetime(Milliseconds, None)` by default; use
+  `#[df_derive(time_unit = "ms" | "us" | "ns")]` to override.
+  `DateTime<Tz>` values are encoded as UTC instants, so use
+  `#[df_derive(as_string)]` if the textual timezone or offset matters.
+- **Date and time-of-day**: `chrono::NaiveDate` encodes as `Date`, and
+  `chrono::NaiveTime` encodes as `Time`. These encodings are fixed and do not
+  accept `time_unit`.
+- **Duration**: `std::time::Duration`, `core::time::Duration`, and
+  `chrono::Duration` encode as `Duration(Nanoseconds)` by default; use
+  `time_unit` to choose milliseconds, microseconds, or nanoseconds. Bare
+  `Duration` is rejected as ambiguous.
+- **Decimal**: bare `Decimal` and `rust_decimal::Decimal` encode as
+  `Decimal(38, 10)` by default. Custom decimal backends opt in with
+  `#[df_derive(decimal(precision = N, scale = S))]`.
+- **Binary blobs**: `#[df_derive(as_binary)]` opts `Vec<u8>`, `&[u8]`, or
+  `Cow<'_, [u8]>` shapes into Polars `Binary`; unannotated `Vec<u8>` remains
+  `List(UInt8)`.
 
 Useful field attributes:
 
 - `#[df_derive(as_string)]`: format values with `Display` into a string column.
 - `#[df_derive(as_str)]`: borrow via `AsRef<str>` without per-row string allocation.
-- `#[df_derive(as_binary)]`: encode `Vec<u8>`, `&[u8]`, or `Cow<'_, [u8]>` as Binary.
-- `#[df_derive(decimal(precision = N, scale = N))]`: choose a decimal dtype or opt a custom decimal backend into `Decimal128Encode`.
+- `#[df_derive(as_binary)]`: encode byte-buffer shapes as Binary.
+- `#[df_derive(decimal(precision = N, scale = S))]`: choose a decimal dtype or opt a custom decimal backend into `Decimal128Encode`.
 - `#[df_derive(time_unit = "ms" | "us" | "ns")]`: choose datetime or duration units.
 
-Enums are not supported as derive targets; use `as_string` or `as_str` on enum
-fields. Direct fields of type `()` are rejected, but `()` is supported as a
-generic payload and contributes zero columns.
+`as_string` is useful for enums or validated newtypes that should appear as
+string columns. If a field already implements `AsRef<str>`, prefer `as_str`:
+it borrows through the same columnar buffer used for bare `String`/`&str`
+fields and avoids per-row string allocation. The two attributes are mutually
+exclusive.
+
+`as_binary` accepts `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
+`Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`, and the same shapes over
+`&[u8]` and `Cow<'_, [u8]>`. Bare `u8`, `Option<u8>`,
+`Vec<Option<u8>>`, non-`u8` leaves, and `String` are rejected. The binary
+attribute is mutually exclusive with `as_str`, `as_string`, `decimal(...)`,
+and `time_unit`.
+
+Enums and unions are not supported as derive targets; use `as_string` or
+`as_str` on enum fields. Direct fields of type `()` are rejected, but `()` is
+supported as a generic payload and contributes zero columns.
+
+Tuple fields cannot carry field-level conversion attributes such as `as_str`,
+`as_binary`, `decimal(...)`, or `time_unit`; hoist that value into a named
+struct when you need an attributed field. Nested tuples inside an outer
+`Option` or `Vec` are rejected for now; use a named struct for those shapes.
+
+## Column Naming
+
+- Named struct fields use the Rust field name, such as `symbol`.
+- Nested structs use dot notation recursively, such as `address.city`.
+- `Vec<Nested>` fields use the outer field plus nested field name, such as
+  `quotes.close`.
+- Tuple-typed fields use `field.field_0`, `field.field_1`, and recurse for
+  unwrapped nested tuples.
+- Tuple structs use `field_0`, `field_1`, and so on.
+
+## Limitations And Guidance
+
+- Maps and sets such as `HashMap<_, _>` are not supported; use `Vec<(K, V)>`
+  or a named row struct when you need a tabular representation.
+- All nested custom structs must also derive `ToDataFrame`.
+- Consecutive `Option` layers above a `Vec` collapse to one list-level
+  validity bit, so `None` and `Some(None)` are indistinguishable in the
+  resulting list column.
+- Borrowed byte slices and `Cow<'_, [u8]>` require `#[df_derive(as_binary)]`;
+  other borrowed slice forms are rejected. Use `Vec<T>` for list columns.
 
 ## Runtime Discovery And Overrides
 
@@ -225,10 +312,46 @@ df-derive = { version = "0.3", default-features = false }
 ```
 
 Custom decimal backends should implement `Decimal128Encode` and use
-`#[df_derive(decimal(precision = N, scale = N))]` on fields that should be
+`#[df_derive(decimal(precision = N, scale = S))]` on fields that should be
 encoded as Polars decimal columns. Implementations must return an `i128`
 mantissa rescaled to the requested scale, using round-half-to-even when
-scaling down. Returning `None` surfaces as a Polars compute error.
+scaling down. Returning `None` surfaces as a Polars compute error. The
+generated code verifies that the returned mantissa fits the declared precision
+before constructing the Polars decimal column.
+
+Unannotated decimal detection is syntax-based. A procedural macro receives
+tokens, not rustc's resolved type information, so bare `Decimal` and canonical
+`rust_decimal::Decimal` are treated as decimals automatically. Qualified paths
+such as `domain::Decimal` are treated as nested custom structs unless you opt
+them into decimal encoding with `decimal(...)`.
+
+If your decimal trait lives somewhere other than the discovered runtime module,
+point at it explicitly:
+
+```rust
+#[derive(df_derive::ToDataFrame)]
+#[df_derive(
+    trait = "my_runtime::dataframe::ToDataFrame",
+    decimal128_encode = "my_runtime::decimal_backend::Decimal128Encode",
+)]
+struct Tx {
+    #[df_derive(decimal(precision = 38, scale = 10))]
+    amount: MyDecimal,
+}
+```
+
+## Compatibility
+
+- **Rust edition**: 2024
+- **Polars**: 0.53
+- **polars-arrow**: 0.53, required as a direct dependency because generated
+  code uses public Arrow array builders that Polars does not re-export
+- **Polars feature flags**: enable `timezones` for timezone-aware
+  `DateTime<Tz>`, `dtype-date` for `NaiveDate`, `dtype-time` for
+  `NaiveTime`, `dtype-duration` for duration columns, `dtype-i8` /
+  `dtype-i16` / `dtype-u8` / `dtype-u16` for exact small-integer columns,
+  `dtype-i128` / `dtype-u128` for 128-bit integer columns, and
+  `dtype-decimal` for decimal columns.
 
 ## Performance Notes
 
@@ -244,15 +367,31 @@ The generated `columnar_to_dataframe(&[Self])` path avoids the old top-level
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, and tuple fields.
 
+Performance is continuously monitored with
+[Bencher](https://bencher.dev/perf/df-derive).
+
 ## Examples
 
-Run examples with:
+Run any example with:
 
 ```sh
 cargo run -p df-derive --example quickstart
-cargo run -p df-derive --example nested
-cargo run -p df-derive --example datetime_decimal
+cargo run -p df-derive --example <example_name>
 ```
+
+Available examples:
+
+- **`quickstart`**: basic usage with single values and slices.
+- **`nested`**: nested structs flattened with dot notation.
+- **`vec_custom`**: `Vec<T>` fields and custom nested structs as list columns.
+- **`tuple`**: tuple structs and `field_0`/`field_1` naming.
+- **`datetime_decimal`**: chrono datetime values and `rust_decimal::Decimal`.
+- **`as_string`**: `#[df_derive(as_string)]` for enums and custom values.
+- **`generics`**: generic structs, default type parameters, and `()` payloads.
+- **`nested_options`**: nested optional structs.
+- **`deep_vec`**: deep `Vec<Vec<Vec<T>>>` list nesting.
+- **`multi_option_vec`**: multiple `Option` layers above a `Vec`.
+- **`nested_generics`**: generic structs used as nested fields and list items.
 
 ## License
 

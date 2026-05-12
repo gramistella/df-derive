@@ -257,7 +257,7 @@ pub fn map_primitive_expr(
         LeafSpec::AsString => {
             quote! { (#var).to_string() }
         }
-        LeafSpec::Decimal { scale, .. } => {
+        LeafSpec::Decimal { precision, scale } => {
             // Dispatch the rescale through the user-controlled
             // `Decimal128Encode` trait so different decimal backends
             // (`rust_decimal::Decimal`, `bigdecimal::BigDecimal`, …) can
@@ -281,11 +281,26 @@ pub fn map_primitive_expr(
             // the compiler inlines through the trait dispatch (confirmed
             // by bench 13 not regressing).
             let target = u32::from(*scale);
+            let precision = u32::from(*precision);
+            let scale = u32::from(*scale);
             let pp = super::polars_paths::prelude();
             quote! {{
                 use #decimal128_encode_trait as _;
                 match (#var).try_to_i128_mantissa(#target) {
-                    ::std::option::Option::Some(__df_m) => __df_m,
+                    ::std::option::Option::Some(__df_m) => {
+                        if __df_m.unsigned_abs() >= 10u128.pow(#precision) {
+                            return ::std::result::Result::Err(
+                                #pp::polars_err!(ComputeError:
+                                    "df-derive: decimal mantissa {} exceeds declared precision {} for Decimal({}, {})",
+                                    __df_m,
+                                    #precision,
+                                    #precision,
+                                    #scale,
+                                )
+                            );
+                        }
+                        __df_m
+                    }
                     ::std::option::Option::None => return ::std::result::Result::Err(
                         #pp::polars_err!(ComputeError:
                             "df-derive: decimal mantissa rescale to scale {} failed (overflow or precision loss)",

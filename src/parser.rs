@@ -207,7 +207,8 @@ fn parse_field_override(
 /// analyzed base type into the final `LeafSpec` carried on the IR. Performs
 /// base-type compatibility checks for every override variant and injects
 /// the default semantics (`DateTimeToInt(Milliseconds)` for
-/// `chrono::DateTime<Tz>`, `Decimal(38, 10)` for paths named `Decimal`)
+/// `chrono::DateTime<Tz>`, `Decimal(38, 10)` for bare `Decimal` /
+/// `rust_decimal::Decimal`)
 /// when no override was declared.
 ///
 /// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
@@ -273,12 +274,12 @@ fn reject_attrs_on_tuple(
 /// Map an analyzed base to its default `LeafSpec` (no override declared).
 /// Each base picks the parser-injected default semantics — `Milliseconds`
 /// for `DateTime<Tz>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
-/// etc. The decimal default is intentionally syntax-based: proc macros see
-/// tokens, not resolved types, so a path whose last segment is `Decimal` is
-/// treated as a decimal backend while other names require an explicit
-/// `decimal(...)` attribute. Tuple bases recurse: each element runs through
-/// the same default pipeline (no field-level overrides apply at element
-/// level — the parser rejects them on the parent field).
+/// etc. The decimal default is intentionally syntax-based and narrow: bare
+/// `Decimal` and canonical `rust_decimal::Decimal` are treated as decimal
+/// backends while other paths require an explicit `decimal(...)` attribute.
+/// Tuple bases recurse: each element runs through the same default pipeline
+/// (no field-level overrides apply at element level — the parser rejects
+/// them on the parent field).
 fn unannotated_cow_bytes_error(field_display_name: &str, can_add_as_binary: bool) -> String {
     if can_add_as_binary {
         format!(
@@ -453,12 +454,12 @@ fn parse_leaf_decimal(
     scale: u8,
 ) -> Result<LeafSpec, syn::Error> {
     match base {
-        // `Decimal` by name is the implicit path (`rust_decimal::Decimal`,
-        // `paft_decimal::Decimal`, type aliases / re-exports, etc.). Proc
-        // macros cannot resolve whether a path is *actually* a decimal type,
-        // so the explicit `decimal(...)` attribute is the user assertion that
-        // a differently named custom/generic backend should use the same
-        // `Decimal128Encode` dispatch.
+        // `Decimal` by name is the implicit path (`Decimal` or
+        // `rust_decimal::Decimal`). Proc macros cannot resolve whether an
+        // arbitrary custom path is *actually* a decimal type, so the explicit
+        // `decimal(...)` attribute is the user assertion that a differently
+        // named custom/generic backend should use the same `Decimal128Encode`
+        // dispatch.
         AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
             Ok(LeafSpec::Decimal { precision, scale })
         }

@@ -16,7 +16,7 @@ Deriving `ToDataFrame` on your structs and tuple structs generates fast, allocat
 - Convert a slice of values via a columnar path (efficient batch conversion)
 - Inspect the schema (column names and `DataType`s) at compile time via a generated method
 
-It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`, tuple structs, and key domain types like `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, and decimal backend paths named `Decimal`.
+It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`, tuple structs, and key domain types like `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, and decimal backends.
 
 ## Installation
 
@@ -230,12 +230,11 @@ Accepted shapes: `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`, `Vec<Option<Vec<u
 - **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` → `Datetime(Milliseconds, None)` by default; override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. `DateTime<Tz>` values are encoded as UTC instants; the textual timezone/offset is not preserved, so use `#[df_derive(as_string)]` if that representation matters.
 - **Date / time-of-day**: `chrono::NaiveDate` → `Date` (i32 days since 1970-01-01; requires Polars `dtype-date`), `chrono::NaiveTime` → `Time` (i64 ns since midnight; requires Polars `dtype-time`). Both have fixed encodings — `time_unit` is not accepted.
 - **Duration**: `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default (requires Polars `dtype-duration`); override with `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` (no qualifier) is rejected as ambiguous — write `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`.
-- **Decimal**: any type path whose last segment is `Decimal` (for example
-  `rust_decimal::Decimal` or a backend facade such as `paft_decimal::Decimal`)
-  → `Decimal(38, 10)`. This implicit detection is syntax-based because proc
-  macros cannot resolve type aliases. For differently named decimal backends,
-  use `#[df_derive(decimal(precision = N, scale = S))]` and implement
-  `Decimal128Encode`.
+- **Decimal**: bare `Decimal` or `rust_decimal::Decimal` → `Decimal(38, 10)`.
+  This implicit detection is syntax-based and intentionally narrow so qualified
+  custom structs such as `domain::Decimal` can still flatten as nested structs.
+  For custom decimal backends, use `#[df_derive(decimal(precision = N, scale = S))]`
+  and implement `Decimal128Encode`.
 - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>`, `&[u8]`, or `Cow<'_, [u8]>` shape; default `Vec<u8>` (no attribute) remains `List(UInt8)`, while unannotated borrowed byte slices are rejected
 - **Wrappers**: `Option<T>`, `Vec<T>` in any nesting order
 - **Transparent pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, borrowed references `&T`, and `Cow<'_, T>` (with sized inner) peel transparently — column shape, schema dtype, and runtime are identical to the bare `T` field. Composes freely with `Option`/`Vec` (e.g. `Option<&i32>`, `Vec<Arc<String>>`, `Box<Vec<f64>>`). `&str` and `Cow<'_, str>` are treated as borrowed string leaves by default. `&[u8]` and `Cow<'_, [u8]>` are supported with `#[df_derive(as_binary)]`; other borrowed slice forms are rejected — use `Vec<T>` for list columns.
@@ -475,24 +474,24 @@ pub trait Decimal128Encode {
 }
 ```
 
-The implementer rescales the value to the schema scale and returns the mantissa as an `i128`. A `None` return surfaces as a polars `ComputeError` from the generated code, matching the existing scale-up overflow path.
+The implementer rescales the value to the schema scale and returns the mantissa as an `i128`. A `None` return surfaces as a polars `ComputeError` from the generated code, matching the existing scale-up overflow path. The generated code also verifies that the returned mantissa fits the declared precision before constructing the Polars decimal column.
 
-**Implicit detection is name-based.** A procedural macro receives tokens, not
+**Implicit detection is syntax-based.** A procedural macro receives tokens, not
 rustc's resolved type information, so unannotated decimal fields are detected
-by the last path segment: `Decimal`, `rust_decimal::Decimal`,
-`paft_decimal::Decimal`, or any re-export/type alias whose written path ends in
-`Decimal`. This is intentional and keeps facade crates ergonomic, but it is a
-heuristic.
+only when written as bare `Decimal` or canonical `rust_decimal::Decimal`.
+Qualified paths such as `domain::Decimal` are treated as custom nested structs
+unless you opt them into decimal encoding.
 
-**Explicit opt-in for custom names.** If your backend type is not written with a
-final `Decimal` segment, add `#[df_derive(decimal(precision = N, scale = S))]`.
-That attribute is a semantic assertion that the leaf should use the decimal
-encoder; the generated code then calls the configured `Decimal128Encode` trait
-and normal Rust type checking verifies that an impl exists.
+**Explicit opt-in for custom backends.** If your backend type is written under a
+facade path, has a different name, or is a generic backend, add
+`#[df_derive(decimal(precision = N, scale = S))]`. That attribute is a semantic
+assertion that the leaf should use the decimal encoder; the generated code then
+calls the configured `Decimal128Encode` trait and normal Rust type checking
+verifies that an impl exists.
 
 **Rounding contract (load-bearing).** Implementations MUST use round-half-to-even (banker's rounding) on scale-down. Polars' own `str_to_dec128` rounds that way, so backends that disagree on tie-breaking (e.g., `rust_decimal::Decimal::rescale` rounds half-away-from-zero) would produce different bytes than the historical `to_string + cast` path the codegen replaced. Sticking to round-half-to-even keeps the column byte-identical across decimal backends.
 
-**Default discovery.** The codegen looks for `Decimal128Encode` next to the `ToDataFrame` and `Columnar` traits — by default `paft::dataframe::Decimal128Encode`, then `paft_utils::dataframe::Decimal128Encode`, then `crate::core::dataframe::Decimal128Encode` as a non-paft local fallback. If you point `trait = "..."` at your own `ToDataFrame`, the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last path segment. In the common facade case, expose the backend as `Decimal` and add an `impl Decimal128Encode for Decimal`; if the backend is written as `MyDecimal`, add the field-level `decimal(...)` attribute too.
+**Default discovery.** The codegen looks for `Decimal128Encode` next to the `ToDataFrame` and `Columnar` traits — by default `paft::dataframe::Decimal128Encode`, then `paft_utils::dataframe::Decimal128Encode`, then `crate::core::dataframe::Decimal128Encode` as a non-paft local fallback. If you point `trait = "..."` at your own `ToDataFrame`, the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last path segment. Facade/custom backends should add the field-level `decimal(...)` attribute.
 
 **Per-derive override.** If your decimal trait lives somewhere else, point at it explicitly:
 
@@ -505,10 +504,9 @@ and normal Rust type checking verifies that an impl exists.
 struct Tx { /* … */ }
 ```
 
-**Backend status.** Facade crates can expose their active backend as a type named
-`Decimal` for implicit support, or users can annotate differently named backend
-fields with `decimal(...)`. The sibling crate `df-derive-runtime` ships the
-reference `Decimal128Encode for rust_decimal::Decimal` impl behind a default-on
+**Backend status.** Custom backends opt in with `decimal(...)`. The sibling
+crate `df-derive-runtime` ships the reference
+`Decimal128Encode for rust_decimal::Decimal` impl behind a default-on
 `rust_decimal` feature — depend on it (see [Using `df-derive-runtime`](#using-df-derive-runtime) above) and the codegen finds the impl via the auto-inferred `df_derive_runtime::dataframe::Decimal128Encode` path. A copy-paste-ready inline form also lives in `tests/common.rs` for projects that prefer not to take the dependency.
 
 The repository also contains an unpublished `df-derive-test-harness` workspace crate that validates the reference decimal implementation against Polars. It is intentionally not part of the public release surface for v0.3.0.

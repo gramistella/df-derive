@@ -72,11 +72,49 @@ struct GenericDecimalRow<T> {
     amount: T,
 }
 
+#[derive(ToDataFrame, Clone)]
+struct PrecisionScalar {
+    #[df_derive(decimal(precision = 5, scale = 2))]
+    amount: MoneyAmount,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct PrecisionOption {
+    #[df_derive(decimal(precision = 5, scale = 2))]
+    amount: Option<MoneyAmount>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct PrecisionVec {
+    #[df_derive(decimal(precision = 5, scale = 2))]
+    amounts: Vec<MoneyAmount>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct PrecisionNullableVec {
+    #[df_derive(decimal(precision = 5, scale = 2))]
+    amounts: Vec<Option<MoneyAmount>>,
+}
+
 fn decimal_mantissa(av: AnyValue<'_>) -> Option<i128> {
     match av {
         AnyValue::Decimal(v, _p, _s) => Some(v),
         AnyValue::Null => None,
         other => panic!("expected AnyValue::Decimal or Null, got {other:?}"),
+    }
+}
+
+fn assert_precision_error(result: PolarsResult<DataFrame>, ctx: &str) {
+    let err = match result {
+        Ok(df) => panic!("{ctx}: expected precision error, got {df:?}"),
+        Err(err) => err,
+    };
+    match err {
+        PolarsError::ComputeError(msg) => assert!(
+            msg.contains("exceeds declared precision"),
+            "{ctx}: unexpected ComputeError message: {msg}"
+        ),
+        other => panic!("{ctx}: expected PolarsError::ComputeError, got {other:?}"),
     }
 }
 
@@ -162,5 +200,47 @@ fn runtime_semantics() {
     assert_eq!(
         empty.column("price").unwrap().dtype(),
         &DataType::Decimal(18, 4)
+    );
+}
+
+#[test]
+fn decimal_precision_is_validated_after_encode() {
+    let valid = PrecisionScalar {
+        amount: MoneyAmount::new(99_999, 2),
+    }
+    .to_dataframe()
+    .unwrap();
+    assert_eq!(
+        decimal_mantissa(valid.column("amount").unwrap().get(0).unwrap()),
+        Some(99_999)
+    );
+
+    assert_precision_error(
+        PrecisionScalar {
+            amount: MoneyAmount::new(100_000, 2),
+        }
+        .to_dataframe(),
+        "scalar",
+    );
+    assert_precision_error(
+        PrecisionOption {
+            amount: Some(MoneyAmount::new(-100_000, 2)),
+        }
+        .to_dataframe(),
+        "option",
+    );
+    assert_precision_error(
+        PrecisionVec {
+            amounts: vec![MoneyAmount::new(1, 2), MoneyAmount::new(100_000, 2)],
+        }
+        .to_dataframe(),
+        "vec",
+    );
+    assert_precision_error(
+        PrecisionNullableVec {
+            amounts: vec![None, Some(MoneyAmount::new(100_000, 2))],
+        }
+        .to_dataframe(),
+        "nullable vec",
     );
 }

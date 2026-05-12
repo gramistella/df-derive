@@ -1,5 +1,11 @@
 # df-derive
 
+[![Crates.io](https://img.shields.io/crates/v/df-derive.svg)](https://crates.io/crates/df-derive)
+[![Docs.rs](https://docs.rs/df-derive/badge.svg)](https://docs.rs/df-derive)
+[![CI](https://github.com/gramistella/df-derive/actions/workflows/ci.yml/badge.svg)](https://github.com/gramistella/df-derive/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/crates/d/df-derive)](https://crates.io/crates/df-derive)
+[![License](https://img.shields.io/crates/l/df-derive)](LICENSE)
+
 `df-derive` derives fast conversions from Rust structs into Polars
 `DataFrame`s. The normal user-facing crate now includes a default runtime
 trait surface, so most projects can write `#[derive(ToDataFrame)]` without a

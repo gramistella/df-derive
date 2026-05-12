@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "df-derive-core", "df-derive-macros", "df-derive-test-harness"]
+members = [".", "df-derive-core", "df-derive-macros"]
 resolver = "3"
 
 [workspace.package]

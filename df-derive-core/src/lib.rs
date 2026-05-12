@@ -45,8 +45,8 @@
 //!
 //! The `Decimal128Encode` contract requires round-half-to-even (banker's
 //! rounding) on scale-down. The reference `rust_decimal::Decimal` impl in
-//! this crate honours that contract and is exercised by this repository's
-//! unpublished `df-derive-test-harness` workspace crate.
+//! this crate honours that contract and is checked against Polars' decimal
+//! string-cast behavior in this crate's integration tests.
 
 // `polars` pulls a wide transitive dependency tree (ahash, foldhash,
 // hashbrown, windows-sys variants, …) where multiple resolved versions are
@@ -169,8 +169,8 @@ pub mod dataframe {
     /// `checked_mul` overflow-to-`None` on scale-up. This impl is verified
     /// against polars's `str_to_dec128` on a battery of inputs covering
     /// half-tie boundaries (positive and negative), large magnitudes, and
-    /// scale-up overflow by this repository's unpublished
-    /// `df-derive-test-harness` workspace crate.
+    /// scale-up overflow by this repository's `df-derive-core` integration
+    /// tests.
     #[cfg(feature = "rust_decimal")]
     impl Decimal128Encode for rust_decimal::Decimal {
         #[inline]

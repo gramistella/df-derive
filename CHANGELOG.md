@@ -57,8 +57,6 @@ All notable changes to this project will be documented in this file.
 - `df-derive-core` provides the canonical trait surface for non-paft
   projects, including the reference `Decimal128Encode for rust_decimal::Decimal`
   implementation.
-- The unpublished `df-derive-test-harness` workspace crate provides a
-  contract check for the repository's decimal encoding implementation.
 
 ### Changed
 

@@ -1,22 +1,21 @@
-//! Multi-`Option` leaf wrappers.
+//! Option/access-chain leaf wrappers.
 //!
-//! `wrap_multi_option_primitive` and `wrap_multi_option_as_str` handle the
-//! `Option<…<Option<T>>>` stacks of depth ≥ 2 by collapsing the access into
-//! a single `Option<&T>` (Polars folds every nested None into one validity
-//! bit). The single-Option case is served directly by the leaf builder's
-//! `option` arm — `mod.rs::build_encoder` selects it without needing a
-//! wrapper.
+//! `wrap_option_access_chain_primitive` handles `Option` stacks and
+//! smart-pointer steps that cannot use the legacy single plain `Option<T>`
+//! fast path. It collapses the access into a single optional reference at
+//! the exact boundary encoded by `AccessChain` (Polars still folds every
+//! nested `None` into one validity bit).
 
-use crate::ir::{LeafSpec, StringyBase};
+use crate::ir::{AccessChain, LeafSpec, StringyBase};
 use quote::quote;
 
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, named_from_buf, vec_decl};
-use super::{BaseCtx, Encoder, LeafCtx, collapse_options_to_ref};
+use super::{BaseCtx, Encoder, LeafCtx, access_chain_to_ref};
 
-/// Build the encoder for a primitive leaf with `option_layers >= 2` consecutive
-/// `Option`s above it (Polars folds them all to one validity bit). Strategy
-/// per leaf-kind:
+/// Build the encoder for a primitive leaf with any non-trivial `AccessChain`
+/// above it: multiple `Option`s, smart pointers under an `Option`, or both.
+/// Strategy per leaf-kind:
 ///
 /// - **`as_str` borrow path**: the leaf's owning buffer is
 ///   `Vec<Option<&str>>` borrowing from `items`. Using a per-row local would
@@ -30,19 +29,22 @@ use super::{BaseCtx, Encoder, LeafCtx, collapse_options_to_ref};
 ///   `.cloned()` (non-Copy) and fed back through the standard single-Option
 ///   leaf machinery is sound. The clone is per-row only on this rare slow
 ///   path; the fast paths still apply for `[]` and `[Option]` shapes.
-pub(super) fn wrap_multi_option_primitive(
+pub(super) fn wrap_option_access_chain_primitive(
     leaf: &LeafSpec,
     ctx: &LeafCtx<'_>,
+    access: &AccessChain,
     layers: usize,
 ) -> Encoder {
-    debug_assert!(layers >= 2);
+    debug_assert!(layers >= 1);
     if let LeafSpec::AsStr(stringy) = leaf {
-        return wrap_multi_option_as_str(stringy, ctx, layers);
+        return wrap_option_access_chain_as_str(stringy, ctx, access);
     }
     let orig_access = ctx.base.access.clone();
     let local = idents::multi_option_local(ctx.base.idx);
     let local_access = quote! { #local };
-    let collapsed_chain = collapse_options_to_ref(&orig_access, layers);
+    let access_ref = access_chain_to_ref(&quote! { &(#orig_access) }, access);
+    debug_assert!(access_ref.has_option);
+    let collapsed_chain = access_ref.expr;
     // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`) flatten
     // through `.copied()`; everything else through `.cloned()`. The local
     // shadows the field for the inner option-leaf machinery so its existing
@@ -62,11 +64,6 @@ pub(super) fn wrap_multi_option_primitive(
             name: ctx.base.name,
         },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
-        // The collapsed local has type `Option<Inner>`. If `Inner` is a
-        // smart-pointer (e.g. `Box<i32>` came from
-        // `Option<Option<Box<i32>>>`), the inner leaf binding still needs
-        // those derefs — propagate the field's count.
-        inner_smart_ptr_depth: ctx.inner_smart_ptr_depth,
     };
     let LeafArm {
         decls,
@@ -90,10 +87,15 @@ pub(super) fn wrap_multi_option_primitive(
 /// whole pass, which a per-row local owning `String` cannot provide. The
 /// `String`-vs-UFCS branch is shared with the single-Option leaf and the
 /// vec(`as_str`) path through [`super::stringy_value_expr`].
-fn wrap_multi_option_as_str(base: &StringyBase, ctx: &LeafCtx<'_>, layers: usize) -> Encoder {
+fn wrap_option_access_chain_as_str(
+    base: &StringyBase,
+    ctx: &LeafCtx<'_>,
+    access: &AccessChain,
+) -> Encoder {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
-    let collapsed_ref = collapse_options_to_ref(ctx.base.access, layers);
+    let orig_access = ctx.base.access;
+    let collapsed_ref = access_chain_to_ref(&quote! { &(#orig_access) }, access).expr;
     let value = super::stringy_value_expr(
         base,
         &collapsed_ref,

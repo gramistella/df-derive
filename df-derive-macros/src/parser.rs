@@ -1,6 +1,6 @@
 use crate::ir::{
-    DateTimeUnit, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase, StructIR,
-    TupleElement, VecLayerSpec, VecLayers, WrapperShape,
+    AccessChain, AccessStep, DateTimeUnit, DurationSource, FieldIR, LeafSpec, NumericKind,
+    StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -387,10 +387,10 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
 }
 
 /// Lower one analyzed tuple element to its IR form. Recurses into nested
-/// tuples (`((i32, String), bool)`), preserves smart-pointer counts on the
-/// element, and normalizes the element's wrapper stack independently of the
-/// parent's. Field-level attributes are not applied here — they are rejected
-/// on the parent field by [`reject_attrs_on_tuple`] before this runs.
+/// tuples (`((i32, String), bool)`), preserves outer smart-pointer counts on
+/// the element, and normalizes the element's wrapper stack independently of
+/// the parent's. Field-level attributes are not applied here — they are
+/// rejected on the parent field by [`reject_attrs_on_tuple`] before this runs.
 fn analyzed_to_tuple_element(
     analyzed: crate::type_analysis::AnalyzedType,
     field_display_name: &str,
@@ -402,7 +402,6 @@ fn analyzed_to_tuple_element(
         leaf_spec,
         wrapper_shape,
         outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
-        inner_smart_ptr_depth: analyzed.inner_smart_ptr_depth,
     })
 }
 
@@ -541,48 +540,42 @@ fn parse_leaf_time_unit(
 }
 
 /// Normalize the raw outer-to-inner `RawWrapper` sequence into a
-/// `WrapperShape` the encoder consumes directly. Consecutive `Option`s
-/// collapse into per-position counts: above each `Vec`, immediately
-/// surrounding the leaf, or for the leaf-only path, all in one bucket.
-/// Polars folds them into a single validity bit per position, so the count
-/// is preserved only so the encoder can pick between a direct match
-/// (`option_layers == 1`) and the multi-Option `as_ref().and_then(...)`
-/// collapse (`option_layers >= 2`).
+/// `WrapperShape` the encoder consumes directly. `Option` and smart-pointer
+/// steps are retained as an `AccessChain` at each wrapper boundary: above
+/// each `Vec`, immediately surrounding the leaf, or for the leaf-only path.
+/// Polars folds consecutive `Option`s into a single validity bit per
+/// position, so the count is also cached to choose the direct single-Option
+/// path versus the collapsed multi-Option path.
 fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
     let mut layers: Vec<VecLayerSpec> = Vec::new();
-    let mut pending_options: usize = 0;
-    let mut inner_option_layers: usize = 0;
-    let mut saw_vec = false;
+    let mut pending_access = AccessChain::empty();
     for w in wrappers {
         match w {
             RawWrapper::Option => {
-                if saw_vec {
-                    inner_option_layers += 1;
-                } else {
-                    pending_options += 1;
-                }
+                pending_access.steps.push(AccessStep::Option);
+            }
+            RawWrapper::SmartPtr => {
+                pending_access.steps.push(AccessStep::SmartPtr);
             }
             RawWrapper::Vec => {
-                saw_vec = true;
-                // Options accumulated since the last Vec wrap THIS Vec from
-                // the previous Vec's element perspective: from the new Vec's
-                // POV they sit immediately above it as list-level validity.
-                // Drop them into the new layer instead of discarding.
+                let option_layers_above = pending_access.option_layers();
                 layers.push(VecLayerSpec {
-                    option_layers_above: pending_options + std::mem::take(&mut inner_option_layers),
+                    option_layers_above,
+                    access: std::mem::take(&mut pending_access),
                 });
-                pending_options = 0;
             }
         }
     }
     if layers.is_empty() {
         return WrapperShape::Leaf {
-            option_layers: pending_options,
+            option_layers: pending_access.option_layers(),
+            access: pending_access,
         };
     }
     WrapperShape::Vec(VecLayers {
         layers,
-        inner_option_layers,
+        inner_option_layers: pending_access.option_layers(),
+        inner_access: pending_access,
     })
 }
 
@@ -664,6 +657,7 @@ fn parse_as_binary_shape(
             trimmed.pop();
             Ok((LeafSpec::Binary, trimmed))
         }
+        Some(RawWrapper::SmartPtr) => Err(syn::Error::new_spanned(field, wrong_base_msg())),
     }
 }
 
@@ -681,7 +675,6 @@ fn process_field(
     let override_ = parse_field_override(field, &display_name)?;
     let analyzed = analyze_type(&field.ty, generic_params)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
-    let inner_smart_ptr_depth = analyzed.inner_smart_ptr_depth;
     let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
     let decimal_backend_path = decimal_backend_path_for_override(&override_, &analyzed.base);
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
@@ -706,7 +699,6 @@ fn process_field(
         decimal_generic_params,
         decimal_backend_path,
         outer_smart_ptr_depth,
-        inner_smart_ptr_depth,
     })
 }
 

@@ -166,7 +166,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-    let inner_derefs = ctx.inner_smart_ptr_depth;
 
     match arm {
         LeafArmKind::Bare => {
@@ -182,11 +181,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             // Widening (`isize`/`usize` → `i64`/`u64`) casts the field expression to
             // `info.native` (the storage type), not to `info.widen_from` (the
             // source type) — `widen_from.is_some()` is just the gating signal.
-            //
-            // For bare numerics, inner_smart_ptr_depth is always 0 — bare leaves
-            // (no Option/Vec) only see outer smart pointers, which the access
-            // expression already dereffed via `it_access`.
-            let _ = inner_derefs;
             let bare_value = if kind.is_nonzero() || info.widen_from.is_some() {
                 crate::codegen::type_registry::numeric_stored_value(
                     kind,
@@ -211,55 +205,21 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
             // `<#native>::default()` and `validity.push(false)`. Splitting value vs
             // validity into independent pushes lets the compiler vectorize cleanly.
-            //
-            // For inner smart pointers (`Option<Box<i32>>` etc.) we cannot
-            // `match #access { Some(v) => ... }` by value because a place
-            // expression on a borrowed `Self` can't move out of a non-Copy
-            // payload (`Box<i32>` is non-Copy even though `i32` is Copy).
-            // Switch to `match #access.as_ref() { Some(v) => ... }` which
-            // binds `v: &Box<...<i32>>`, then deref through the smart-pointer
-            // chain to land on the inner numeric. The bare `Option<numeric>`
-            // path keeps the original by-value match for the legacy bench
-            // shape (the bench-stable token shape was the Some-by-value
-            // `match`; switching to `as_ref` regressed several
-            // `08_complex_wrappers` cases by 2-3% in earlier prototypes —
-            // keep the by-value match when no smart pointers are present).
+            // Non-trivial option/smart-pointer access chains are collapsed
+            // before this leaf arm is invoked, so the old single
+            // `Option<numeric>` token shape remains intact here.
             let v = idents::leaf_value();
-            let option_push = if inner_derefs == 0 {
-                let some_push_value = crate::codegen::type_registry::numeric_stored_value(
-                    kind,
-                    quote! { #v },
-                    native,
-                );
-                quote! {
-                    match #access {
-                        ::std::option::Option::Some(#v) => {
-                            #buf.push(#some_push_value);
-                            #validity.push(true);
-                        }
-                        ::std::option::Option::None => {
-                            #buf.push(<#native as ::std::default::Default>::default());
-                            #validity.push(false);
-                        }
+            let some_push_value =
+                crate::codegen::type_registry::numeric_stored_value(kind, quote! { #v }, native);
+            let option_push = quote! {
+                match #access {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push(#some_push_value);
+                        #validity.push(true);
                     }
-                }
-            } else {
-                // `v: &Box<...<i32>>`. One implicit deref unwraps the `&`
-                // produced by `.as_ref()`; then `inner_derefs` more derefs
-                // walk the smart-pointer chain to the leaf. Total: 1 + inner_derefs.
-                let v_inner = apply_inner_derefs(&quote! { #v }, inner_derefs + 1);
-                let some_push_value =
-                    crate::codegen::type_registry::numeric_stored_value(kind, v_inner, native);
-                quote! {
-                    match (#access).as_ref() {
-                        ::std::option::Option::Some(#v) => {
-                            #buf.push(#some_push_value);
-                            #validity.push(true);
-                        }
-                        ::std::option::Option::None => {
-                            #buf.push(<#native as ::std::default::Default>::default());
-                            #validity.push(false);
-                        }
+                    ::std::option::Option::None => {
+                        #buf.push(<#native as ::std::default::Default>::default());
+                        #validity.push(false);
                     }
                 }
             };
@@ -279,18 +239,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             }
         }
     }
-}
-
-/// Apply `n` `*` prefixes to a binding expression. For `n == 0` returns
-/// the binding unchanged. Used by leaves whose pattern-binding-by-value
-/// position needs inner-smart-pointer derefs (e.g. numeric Option arm
-/// over `Option<Box<T>>`).
-pub(super) fn apply_inner_derefs(binding: &TokenStream, n: usize) -> TokenStream {
-    let mut out = binding.clone();
-    for _ in 0..n {
-        out = quote! { (*#out) };
-    }
-    out
 }
 
 /// `String` leaf. Bare arm: `MutableBinaryViewArray<str>` accumulator —
@@ -421,11 +369,9 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let name = ctx.base.name;
     let pp = crate::codegen::polars_paths::prelude();
     let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-    let inner_derefs = ctx.inner_smart_ptr_depth;
 
     match arm {
         LeafArmKind::Bare => {
-            let _ = inner_derefs;
             let bare_push = quote! { #buf.push({ (#access).clone() }); };
             let bare_series = named_from_buf(name, &buf);
             LeafArm {
@@ -435,36 +381,16 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }
         }
         LeafArmKind::Option => {
-            // For `Option<Box<bool>>` shapes the pattern arms
-            // `Some(true)` / `Some(false)` won't match a `Box<bool>` payload
-            // directly, AND `match #access` would try to move-by-value out of
-            // a borrowed `Self` (`Box<bool>` is non-Copy even though bool is).
-            // Switch to `match #access.as_ref() { Some(v) => ... }` and deref
-            // `v: &Box<...<bool>>` to the inner bool. The bare path keeps the
-            // by-value match (Copy + bench-stable token shape).
-            let option_push = if inner_derefs == 0 {
-                quote! {
-                    match (#access) {
-                        ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
-                        ::std::option::Option::Some(false) => {}
-                        ::std::option::Option::None => { #validity.set(#row_idx, false); }
-                    }
-                    #row_idx += 1;
+            // Non-trivial option/smart-pointer access chains are collapsed
+            // before this leaf arm is invoked, so this preserves the legacy
+            // single `Option<bool>` match shape.
+            let option_push = quote! {
+                match (#access) {
+                    ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
+                    ::std::option::Option::Some(false) => {}
+                    ::std::option::Option::None => { #validity.set(#row_idx, false); }
                 }
-            } else {
-                let v = idents::leaf_value();
-                let v_deref = apply_inner_derefs(&quote! { #v }, inner_derefs + 1);
-                quote! {
-                    match (#access).as_ref() {
-                        ::std::option::Option::Some(#v) => {
-                            if #v_deref {
-                                #buf.set(#row_idx, true);
-                            }
-                        }
-                        ::std::option::Option::None => { #validity.set(#row_idx, false); }
-                    }
-                    #row_idx += 1;
-                }
+                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity);
             let option_series = quote! {{

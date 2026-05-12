@@ -38,7 +38,7 @@ mod shape_walk;
 mod tuple;
 mod vec;
 
-use crate::ir::{LeafSpec, WrapperShape};
+use crate::ir::{AccessChain, AccessStep, LeafSpec, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::PathArguments;
@@ -207,6 +207,86 @@ pub(super) fn collapse_options_to_ref(base: &TokenStream, n: usize) -> TokenStre
     out
 }
 
+pub(super) struct ChainRef {
+    pub expr: TokenStream,
+    pub has_option: bool,
+}
+
+fn deref_ref_expr(base_ref: &TokenStream, smart_ptrs: usize) -> TokenStream {
+    if smart_ptrs == 0 {
+        return base_ref.clone();
+    }
+    let mut out = quote! { *(#base_ref) };
+    for _ in 0..smart_ptrs {
+        out = quote! { *(#out) };
+    }
+    quote! { (&(#out)) }
+}
+
+fn apply_pending_smart_ptrs(expr: TokenStream, has_option: bool, smart_ptrs: usize) -> TokenStream {
+    if smart_ptrs == 0 {
+        return expr;
+    }
+    if has_option {
+        let param = idents::collapse_option_param();
+        let derefed = deref_ref_expr(&quote! { #param }, smart_ptrs);
+        quote! { (#expr).map(|#param| #derefed) }
+    } else {
+        deref_ref_expr(&expr, smart_ptrs)
+    }
+}
+
+/// Resolve the transparent access chain at one wrapper boundary.
+///
+/// The input expression must be a reference to the syntactic value at that
+/// boundary. The result is either a reference to the target layer/leaf, or an
+/// `Option<&Target>` when the chain crosses one or more `Option` layers.
+pub(super) fn access_chain_to_ref(base: &TokenStream, chain: &AccessChain) -> ChainRef {
+    if chain.is_empty() {
+        return ChainRef {
+            expr: base.clone(),
+            has_option: false,
+        };
+    }
+    if chain.is_only_options() {
+        let option_layers = chain.option_layers();
+        return ChainRef {
+            expr: if option_layers == 1 {
+                base.clone()
+            } else {
+                collapse_options_to_ref(base, option_layers)
+            },
+            has_option: option_layers > 0,
+        };
+    }
+
+    let mut expr = base.clone();
+    let mut has_option = false;
+    let mut pending_smart_ptrs = 0usize;
+
+    for step in &chain.steps {
+        match step {
+            AccessStep::SmartPtr => {
+                pending_smart_ptrs += 1;
+            }
+            AccessStep::Option => {
+                expr = apply_pending_smart_ptrs(expr, has_option, pending_smart_ptrs);
+                pending_smart_ptrs = 0;
+                let param = idents::collapse_option_param();
+                expr = if has_option {
+                    quote! { (#expr).and_then(|#param| (#param).as_ref()) }
+                } else {
+                    has_option = true;
+                    quote! { (#expr).as_ref() }
+                };
+            }
+        }
+    }
+
+    expr = apply_pending_smart_ptrs(expr, has_option, pending_smart_ptrs);
+    ChainRef { expr, has_option }
+}
+
 /// Per-field encoder state. Variant determines whether the encoder serves
 /// the single-column primitive path (`Leaf`) or the multi-column nested
 /// path (`Multi`); the field set is type-enforced per variant.
@@ -240,13 +320,6 @@ pub struct BaseCtx<'a> {
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub decimal128_encode_trait: &'a TokenStream,
-    /// Smart-pointer layers (`Box`/`Rc`/`Arc`/`Cow`) sitting between a
-    /// wrapper (`Option`/`Vec`) and the leaf type. The leaf push body
-    /// applies this many `*` derefs to the per-element binding so primitive
-    /// pushes see the inner value, not the smart pointer. Most leaves work
-    /// without explicit derefs (method-call autoderef handles `arc.as_str()`
-    /// etc.) but pattern-binding-by-value sites need the unwrap.
-    pub inner_smart_ptr_depth: usize,
 }
 
 // --- Top-level dispatcher ---
@@ -262,7 +335,10 @@ pub struct LeafCtx<'a> {
 /// function is total on parser-validated IR.
 pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>) -> Encoder {
     match wrapper {
-        WrapperShape::Leaf { option_layers: 0 } => {
+        WrapperShape::Leaf {
+            option_layers: 0,
+            access,
+        } if access.is_empty() => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -274,7 +350,16 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
                 series,
             }
         }
-        WrapperShape::Leaf { option_layers: 1 } => {
+        WrapperShape::Leaf {
+            option_layers: 0, ..
+        } => unreachable!(
+            "df-derive: bare leaf reached with a non-empty access chain; leading smart pointers \
+             should be peeled into the field access before encoder dispatch"
+        ),
+        WrapperShape::Leaf {
+            option_layers: 1,
+            access,
+        } if access.is_single_plain_option() => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -294,7 +379,8 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
         // over a struct/generic) is handled separately in `build_nested_encoder`.
         WrapperShape::Leaf {
             option_layers: layers,
-        } => option::wrap_multi_option_primitive(leaf, ctx, *layers),
+            access,
+        } => option::wrap_option_access_chain_primitive(leaf, ctx, access, *layers),
         WrapperShape::Vec(vec_layers) => vec::try_build_vec_encoder(leaf, ctx, vec_layers),
     }
 }

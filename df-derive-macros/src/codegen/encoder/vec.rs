@@ -142,7 +142,6 @@ fn build_vec_leaf_pieces(
     has_inner_option: bool,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
-    inner_derefs: usize,
 ) -> (TokenStream, TokenStream, TokenStream) {
     match spec {
         VecLeafSpec::Numeric {
@@ -171,9 +170,9 @@ fn build_vec_leaf_pieces(
         }
         VecLeafSpec::Bool => {
             if has_inner_option {
-                bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root, inner_derefs)
+                bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root)
             } else {
-                bool_bare_leaf_pieces(leaf_capacity_expr, pa_root, inner_derefs)
+                bool_bare_leaf_pieces(leaf_capacity_expr, pa_root)
             }
         }
     }
@@ -184,15 +183,9 @@ fn build_vec_leaf_pieces(
 /// `Vec<bool>` shapes that don't qualify for the depth-1 `from_slice`
 /// fast path. The leaf-array build skips the validity argument.
 ///
-/// `inner_derefs` is the count of smart-pointer layers between the
-/// outermost Vec wrapper and the bool leaf (e.g. `Vec<Box<bool>>` is 1).
-/// The push body applies `1 + inner_derefs` derefs to the loop binding —
-/// the first to unwrap the `&` from the for-loop, the rest to walk the
-/// smart-pointer chain.
 fn bool_bare_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
-    inner_derefs: usize,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
@@ -203,23 +196,11 @@ fn bool_bare_leaf_pieces(
         #values_decl
         let mut #leaf_idx: usize = 0;
     };
-    // No smart pointers: keep the original `*v` token shape. With smart
-    // pointers, walk the chain via parenthesized derefs.
-    let push = if inner_derefs == 0 {
-        quote! {
-            if *#v {
-                #values_ident.set(#leaf_idx, true);
-            }
-            #leaf_idx += 1;
+    let push = quote! {
+        if *#v {
+            #values_ident.set(#leaf_idx, true);
         }
-    } else {
-        let v_chain = leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
-        quote! {
-            if #v_chain {
-                #values_ident.set(#leaf_idx, true);
-            }
-            #leaf_idx += 1;
-        }
+        #leaf_idx += 1;
     };
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, false, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
@@ -441,7 +422,6 @@ fn binary_like_leaf_pieces(
 fn bool_inner_option_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
-    inner_derefs: usize,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
@@ -458,47 +438,17 @@ fn bool_inner_option_leaf_pieces(
         #validity_decl
         let mut #leaf_idx: usize = 0;
     };
-    // The Option-bind here is `Some(v)` against the value bound by the
-    // outer for loop (`v: &Option<...>`-or-`Option<&...>` depending on the
-    // wrapper layout). For `Vec<Option<Box<bool>>>` the bound `v` is
-    // `Box<bool>`, requiring `inner_derefs` extra `*` to reach the bool.
-    // The match itself stays on `Some(true)/Some(false)` literals when
-    // there are no inner smart pointers; otherwise the inner is a non-bool
-    // type (the smart pointer) and we bind a name + nested match instead.
-    let push = if inner_derefs == 0 {
-        quote! {
-            match #v {
-                ::std::option::Option::Some(true) => {
-                    #values_ident.set(#leaf_idx, true);
-                }
-                ::std::option::Option::Some(false) => {}
-                ::std::option::Option::None => {
-                    #validity_ident.set(#leaf_idx, false);
-                }
+    let push = quote! {
+        match #v {
+            ::std::option::Option::Some(true) => {
+                #values_ident.set(#leaf_idx, true);
             }
-            #leaf_idx += 1;
-        }
-    } else {
-        // Bind the Some payload as `__df_derive_v` (shadowing the outer
-        // loop binding inside this arm only) so apply_inner_derefs sees a
-        // simple ident expression. The outer `v` is the Option-typed
-        // value; the inner `v` is the smart-pointer-wrapped bool we need
-        // to deref.
-        let inner_v = v.clone();
-        let v_deref = leaf::apply_inner_derefs(&quote! { #inner_v }, inner_derefs);
-        quote! {
-            match #v {
-                ::std::option::Option::Some(#inner_v) => {
-                    if #v_deref {
-                        #values_ident.set(#leaf_idx, true);
-                    }
-                }
-                ::std::option::Option::None => {
-                    #validity_ident.set(#leaf_idx, false);
-                }
+            ::std::option::Option::Some(false) => {}
+            ::std::option::Option::None => {
+                #validity_ident.set(#leaf_idx, false);
             }
-            #leaf_idx += 1;
         }
+        #leaf_idx += 1;
     };
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, true, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
@@ -573,7 +523,6 @@ fn lower_to_pep(
         shape.has_inner_option(),
         &leaf_capacity_expr,
         &pa_root,
-        ctx.inner_smart_ptr_depth,
     );
     let extra_imports = if let VecLeafSpec::Numeric {
         needs_decimal_import: true,
@@ -604,11 +553,10 @@ fn lower_to_pep(
 /// `MutableBitmap` layout inside `build_vec_leaf_pieces`.
 fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     // The depth-1 fast path uses `(&access).iter().copied()`, which
-    // requires a `&bool`-yielding iterator. With inner smart pointers
-    // (`Vec<Box<bool>>` and friends) the iter yields `&Box<bool>` etc., so
-    // `.copied()` fails. Route those shapes through the bit-packed
-    // bitmap path which threads `inner_derefs` into the per-element push.
-    if shape.depth() == 1 && !shape.any_outer_validity() && ctx.inner_smart_ptr_depth == 0 {
+    // requires a plain `&bool`-yielding iterator. Any inner access chain
+    // (Option or smart-pointer boundary) routes through the generalized
+    // scanner so that boundary is resolved before the leaf push.
+    if shape.depth() == 1 && !shape.any_outer_validity() && shape.inner_access.is_empty() {
         let pa_root = crate::codegen::polars_paths::polars_arrow_root();
         let pp = crate::codegen::polars_paths::prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
@@ -727,7 +675,6 @@ pub(super) fn try_build_vec_encoder(
     vec_shape: &VecLayers,
 ) -> Encoder {
     let v = idents::leaf_value();
-    let inner_derefs = ctx.inner_smart_ptr_depth;
     match leaf {
         LeafSpec::Numeric(kind) => {
             let info = crate::codegen::type_registry::numeric_info_for(*kind);
@@ -740,25 +687,11 @@ pub(super) fn try_build_vec_encoder(
             // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
             // The loop binding is `&isize`/`&usize`, so the cast reads the
             // pointed-to value first (`*v`) then widens to the target.
-            //
-            // Inner smart pointers (`Vec<Box<T>>`, `Vec<Arc<T>>`, etc.)
-            // contribute extra derefs after the loop-binding `&` is
-            // unwrapped. The bare path keeps the original `*v` shape (no
-            // extra parens) — bench `08_complex_wrappers` is sensitive to
-            // the exact token shape; switching to `(*v)` for the
-            // zero-smart-pointer case shifted timings by ~5-10% in
-            // prototypes. With smart pointers we use `apply_inner_derefs`
-            // because the parens are needed to compose multiple derefs.
-            let value_expr = if inner_derefs == 0 {
-                crate::codegen::type_registry::numeric_stored_value(
-                    *kind,
-                    quote! { *#v },
-                    &info.native,
-                )
-            } else {
-                let v_chain = leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
-                crate::codegen::type_registry::numeric_stored_value(*kind, v_chain, &info.native)
-            };
+            let value_expr = crate::codegen::type_registry::numeric_stored_value(
+                *kind,
+                quote! { *#v },
+                &info.native,
+            );
             let spec = VecLeafSpec::Numeric {
                 native: info.native.clone(),
                 value_expr,

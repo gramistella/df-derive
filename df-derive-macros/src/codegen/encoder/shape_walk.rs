@@ -55,7 +55,7 @@ use quote::{format_ident, quote};
 
 use crate::ir::VecLayers;
 
-use super::collapse_options_to_ref;
+use super::access_chain_to_ref;
 use super::idents;
 
 /// Optional projection injected at an inter-layer transition. Tuple fields
@@ -109,18 +109,6 @@ fn projected_layer_bind(
         expr = quote! { (#base).as_ref().map(|#param| #expr) };
     }
     expr
-}
-
-/// Collapse `opt_layers` `Option` levels above `bind` to a single
-/// `Option<&Inner>`. For `opt_layers == 1` returns the bind unchanged so
-/// default binding modes can match `&Option<Vec<...>>` directly without an
-/// explicit `.as_ref()` (which LLVM doesn't always eliminate).
-fn collapse_or_clone_bind(bind: &TokenStream, opt_layers: usize) -> TokenStream {
-    if opt_layers == 1 {
-        bind.clone()
-    } else {
-        collapse_options_to_ref(bind, opt_layers)
-    }
 }
 
 /// Unified per-layer identifier bundle shared by the flat-vec path and the
@@ -242,8 +230,8 @@ impl ShapeScan<'_> {
             let inner_offsets = &self.layers[cur + 1].offsets;
             quote! { (#inner_offsets.len() - 1) }
         };
-        let opt_layers = self.shape.layers[cur].option_layers_above;
-        let inner_iter = if opt_layers > 0 {
+        let layer_access = access_chain_to_ref(bind, &self.shape.layers[cur].access);
+        let inner_iter = if layer_access.has_option {
             let validity = &layer.validity_mb;
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner_iter = self.build_iter(cur, &quote! { #inner_vec_bind });
@@ -255,7 +243,7 @@ impl ShapeScan<'_> {
             // binding modes match `&Option<Vec<...>>` directly without an
             // explicit `.as_ref()` call, which LLVM doesn't always
             // eliminate — so we keep the bind unchanged in that case.
-            let collapsed = collapse_or_clone_bind(bind, opt_layers);
+            let collapsed = layer_access.expr;
             quote! {
                 match #collapsed {
                     ::std::option::Option::Some(#inner_vec_bind) => {
@@ -268,7 +256,7 @@ impl ShapeScan<'_> {
                 }
             }
         } else {
-            self.build_iter(cur, bind)
+            self.build_iter(cur, &layer_access.expr)
         };
         quote! {
             #inner_iter
@@ -381,18 +369,18 @@ impl ShapePrecount<'_> {
     }
 
     fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
-        let opt_layers = self.shape.layers[cur].option_layers_above;
-        if opt_layers > 0 {
+        let layer_access = access_chain_to_ref(bind, &self.shape.layers[cur].access);
+        if layer_access.has_option {
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner = self.build_iter(cur, &quote! { #inner_vec_bind });
-            let collapsed = collapse_or_clone_bind(bind, opt_layers);
+            let collapsed = layer_access.expr;
             quote! {
                 if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
                     #inner
                 }
             }
         } else {
-            self.build_iter(cur, bind)
+            self.build_iter(cur, &layer_access.expr)
         }
     }
 }

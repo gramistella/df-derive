@@ -23,6 +23,7 @@ pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 pub enum RawWrapper {
     Option,
     Vec,
+    SmartPtr,
 }
 
 /// Analyzed base type the parser uses internally before folding through the
@@ -110,15 +111,6 @@ pub struct AnalyzedType {
     /// becomes `(*(*(it.field)))` for two outer Boxes — so the rest of the
     /// codegen sees a clean wrapper stack over the inner type.
     pub outer_smart_ptr_depth: usize,
-    /// Number of smart-pointer layers peeled BELOW some wrapper but above
-    /// the leaf. These cannot be dereffed at the access (you can't deref
-    /// `Option<Box<T>>` or `Vec<Arc<T>>`) — instead the encoder injects an
-    /// extra deref at the per-element binding inside leaf push bodies.
-    /// Method-call autoderef handles most cases (e.g. `arc_string.as_str()`
-    /// resolves through Deref), but pattern-binding-by-value sites
-    /// (`match #access { Some(v) => buf.push(v); ... }` for numerics) need
-    /// the extra `*` to extract the inner value.
-    pub inner_smart_ptr_depth: usize,
 }
 
 fn bare_generic_param_ident(ty: &Type, generic_params: &[Ident]) -> Option<Ident> {
@@ -155,7 +147,6 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
         base,
         wrappers: peeled.wrappers,
         outer_smart_ptr_depth: peeled.outer_smart_ptr_depth,
-        inner_smart_ptr_depth: peeled.inner_smart_ptr_depth,
         field_ty: ty.clone(),
     })
 }
@@ -164,31 +155,29 @@ struct PeeledType<'a> {
     wrappers: Vec<RawWrapper>,
     current_type: &'a Type,
     outer_smart_ptr_depth: usize,
-    inner_smart_ptr_depth: usize,
 }
 
-const fn bump_smart_ptr_depths(outer: &mut usize, inner: &mut usize, wrappers: &[RawWrapper]) {
+fn record_smart_ptr_layer(outer: &mut usize, wrappers: &mut Vec<RawWrapper>) {
     if wrappers.is_empty() {
         *outer += 1;
     } else {
-        *inner += 1;
+        wrappers.push(RawWrapper::SmartPtr);
     }
 }
 
 fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut outer_smart_ptr_depth: usize = 0;
-    let mut inner_smart_ptr_depth: usize = 0;
     let mut current_type = ty;
 
     // Loop to peel off wrappers in any order. Option/Vec push onto the
     // wrapper stack; Box/Rc/Arc/Cow and borrowed references are transparent
     // when their inner type is sized — they bump the outer depth (codegen
-    // rewrites the access expression) before any wrapper is seen, and the
-    // inner depth (codegen injects deref at the per-element leaf binding)
-    // once a wrapper has been pushed. Borrowed `str` and slices stay as
-    // semantic bases because they are unsized and need domain-specific
-    // parser decisions.
+    // rewrites the access expression) before any wrapper is seen, or become
+    // `RawWrapper::SmartPtr` once a semantic wrapper has been pushed so the
+    // parser can retain the exact boundary where the smart pointer occurred.
+    // Borrowed `str` and slices stay as semantic bases because they are
+    // unsized and need domain-specific parser decisions.
     loop {
         if let Some(inner_ty) =
             extract_inner_type(current_type, "Option", &["std", "option", "Option"]).or_else(|| {
@@ -213,22 +202,14 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
             .or_else(|| extract_inner_type(current_type, "Arc", &["std", "sync", "Arc"]))
             .or_else(|| extract_inner_type(current_type, "Arc", &["alloc", "sync", "Arc"]))
         {
-            bump_smart_ptr_depths(
-                &mut outer_smart_ptr_depth,
-                &mut inner_smart_ptr_depth,
-                &wrappers,
-            );
+            record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
             current_type = inner_ty;
             continue;
         }
         if let Some(action) = peel_cow(current_type) {
             match action {
                 CowPeel::Rebind(inner) => {
-                    bump_smart_ptr_depths(
-                        &mut outer_smart_ptr_depth,
-                        &mut inner_smart_ptr_depth,
-                        &wrappers,
-                    );
+                    record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
                     current_type = inner;
                     continue;
                 }
@@ -239,11 +220,7 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
             if borrowed_reference_base(reference).is_some() {
                 break;
             }
-            bump_smart_ptr_depths(
-                &mut outer_smart_ptr_depth,
-                &mut inner_smart_ptr_depth,
-                &wrappers,
-            );
+            record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
             current_type = reference.elem.as_ref();
             continue;
         }
@@ -255,7 +232,6 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
         wrappers,
         current_type,
         outer_smart_ptr_depth,
-        inner_smart_ptr_depth,
     }
 }
 

@@ -18,7 +18,9 @@
 
 use crate::codegen::MacroConfig;
 use crate::codegen::strategy::{EmitMode, FieldEmit};
-use crate::ir::{FieldIR, LeafSpec, TupleElement, VecLayerSpec, VecLayers, WrapperShape};
+use crate::ir::{
+    AccessChain, AccessStep, FieldIR, LeafSpec, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
+};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -249,7 +251,9 @@ fn emit_element(
         // dereffed in `parent_access`). Project directly via `.<i>` and
         // route through the standard encoder with the element's own
         // wrapper shape and leaf.
-        WrapperShape::Leaf { option_layers: 0 } => {
+        WrapperShape::Leaf {
+            option_layers: 0, ..
+        } => {
             let elem_li = syn::Index::from(elem_idx);
             let mut access = quote! { #parent_access.#elem_li };
             for _ in 0..elem.outer_smart_ptr_depth {
@@ -259,7 +263,6 @@ fn emit_element(
                 &access,
                 &elem.wrapper_shape,
                 &elem.leaf_spec,
-                elem.inner_smart_ptr_depth,
                 field_idx,
                 column_prefix,
                 config,
@@ -269,7 +272,7 @@ fn emit_element(
         // Options to `Option<&Tuple>` per row, project to `Option<&Inner>`
         // (or `Option<Inner>` for Copy primitive leaves) via `.map(...)`,
         // and route through the standard encoder with the composed wrapper.
-        WrapperShape::Leaf { option_layers } => {
+        WrapperShape::Leaf { option_layers, .. } => {
             let elem_li = syn::Index::from(elem_idx);
             let collapsed_parent = if *option_layers == 1 {
                 quote! { (#parent_access).as_ref() }
@@ -278,15 +281,13 @@ fn emit_element(
             };
             // The standard primitive Option-leaf machinery expects an
             // access expression that yields `Option<T>` for Copy primitives
-            // (numeric / Bool / NaiveDate / NaiveTime / Duration) and
-            // `Option<T>` (or `Option<&T>` via deref-coercion in the leaf
-            // body) for non-Copy. For tuple projections we project by
-            // value when the element is `Copy` so the generated push
-            // body's `match Option<_> { Some(v) => buf.push(v) }` works
-            // without a deref. Non-Copy primitives keep the by-reference
-            // projection.
+            // (numeric / Bool / NaiveDate / NaiveTime / Duration). Project
+            // by value only when the whole element wrapper stack is also
+            // Copy-projectable from `&Tuple`: bare leaves and Option-only
+            // stacks over Copy leaves. Vecs and smart pointers must project
+            // by reference so we never move out of a borrowed tuple.
             let proj_param = idents::tuple_proj_param();
-            let projected = if is_copy_leaf_for_projection(&elem.leaf_spec) {
+            let projected = if is_copy_element_projection(elem) {
                 quote! {
                     ((#collapsed_parent).map(|#proj_param| #proj_param.#elem_li))
                 }
@@ -300,7 +301,6 @@ fn emit_element(
                 &projected,
                 &composed_shape,
                 &elem.leaf_spec,
-                elem.inner_smart_ptr_depth,
                 field_idx,
                 column_prefix,
                 config,
@@ -319,6 +319,14 @@ fn emit_element(
             config,
         ),
     }
+}
+
+fn is_copy_element_projection(elem: &TupleElement) -> bool {
+    is_copy_leaf_for_projection(&elem.leaf_spec)
+        && match &elem.wrapper_shape {
+            WrapperShape::Leaf { access, .. } => access.is_only_options(),
+            WrapperShape::Vec(_) => false,
+        }
 }
 
 /// True when the element's leaf is `Copy` AND a primitive that the
@@ -343,18 +351,38 @@ const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
 /// validity on the element's outermost Vec layer.
 fn compose_option_with_element(elem_shape: &WrapperShape) -> WrapperShape {
     match elem_shape {
-        WrapperShape::Leaf { option_layers } => WrapperShape::Leaf {
+        WrapperShape::Leaf {
+            option_layers,
+            access,
+        } => WrapperShape::Leaf {
             option_layers: 1 + option_layers,
+            access: prepend_option_access(access),
         },
         WrapperShape::Vec(layers) => {
             let mut new_layers = layers.layers.clone();
             new_layers[0].option_layers_above += 1;
+            new_layers[0].access = prepend_option_access(&new_layers[0].access);
             WrapperShape::Vec(VecLayers {
                 layers: new_layers,
                 inner_option_layers: layers.inner_option_layers,
+                inner_access: layers.inner_access.clone(),
             })
         }
     }
+}
+
+fn prepend_option_access(access: &AccessChain) -> AccessChain {
+    let mut steps = Vec::with_capacity(access.steps.len() + 1);
+    steps.push(AccessStep::Option);
+    steps.extend(access.steps.iter().copied());
+    AccessChain { steps }
+}
+
+fn concat_access_chains(left: &AccessChain, right: &AccessChain) -> AccessChain {
+    let mut steps = Vec::with_capacity(left.steps.len() + right.steps.len());
+    steps.extend(left.steps.iter().copied());
+    steps.extend(right.steps.iter().copied());
+    AccessChain { steps }
 }
 
 /// Emit a tuple element column with a Vec-bearing parent. Composes parent +
@@ -386,19 +414,28 @@ fn emit_vec_parent(
             // Parent's inner-Option (above-tuple Options) attaches to
             // element's outermost Vec as outer validity.
             e_layers[0].option_layers_above += carried_inner_option;
+            e_layers[0].access =
+                concat_access_chains(&parent_layers.inner_access, &e_layers[0].access);
             composed_layers.extend(e_layers);
             elem_layers.inner_option_layers
         }
-        WrapperShape::Leaf { option_layers } => {
+        WrapperShape::Leaf { option_layers, .. } => {
             // No element Vec layers. Parent's inner-Option and element's
             // option_layers both attach to the leaf — Polars folds them.
             carried_inner_option + option_layers
+        }
+    };
+    let composed_inner_access = match &elem.wrapper_shape {
+        WrapperShape::Vec(elem_layers) => elem_layers.inner_access.clone(),
+        WrapperShape::Leaf { access, .. } => {
+            concat_access_chains(&parent_layers.inner_access, access)
         }
     };
 
     let composed_shape = VecLayers {
         layers: composed_layers,
         inner_option_layers: composed_inner_option,
+        inner_access: composed_inner_access,
     };
     let projection_layer = parent_layers.depth();
     let elem_li = syn::Index::from(elem_idx);
@@ -484,7 +521,6 @@ fn emit_vec_parent_primitive(
             name: column_prefix,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
-        inner_smart_ptr_depth: elem.inner_smart_ptr_depth,
     };
     // Projection placement: when the projection lands AT the deepest
     // composed layer (i.e., the element has no own wrappers), the leaf
@@ -498,7 +534,6 @@ fn emit_vec_parent_primitive(
         composed_shape.depth(),
         projection.layer,
         elem.outer_smart_ptr_depth,
-        elem.inner_smart_ptr_depth,
     );
 
     let leaf_pieces = build_primitive_leaf_pieces(
@@ -902,10 +937,19 @@ fn emit_inner_tuple(
     // tuple element has no wrappers. The projection is a chain of `.<i>`
     // field accesses that compose statically. Recurse with the projected
     // access expression as the new parent_access.
-    let parent_static = matches!(parent_wrapper, WrapperShape::Leaf { option_layers: 0 });
+    let parent_static = matches!(
+        parent_wrapper,
+        WrapperShape::Leaf {
+            option_layers: 0,
+            ..
+        }
+    );
     let outer_static = matches!(
         &outer_elem.wrapper_shape,
-        WrapperShape::Leaf { option_layers: 0 }
+        WrapperShape::Leaf {
+            option_layers: 0,
+            ..
+        }
     );
     if parent_static && outer_static {
         let outer_li = syn::Index::from(outer_elem_idx);
@@ -913,7 +957,10 @@ fn emit_inner_tuple(
         for _ in 0..outer_elem.outer_smart_ptr_depth {
             outer_access = quote! { (*(#outer_access)) };
         }
-        let inner_wrapper = WrapperShape::Leaf { option_layers: 0 };
+        let inner_wrapper = WrapperShape::Leaf {
+            option_layers: 0,
+            access: AccessChain::empty(),
+        };
         let mut blocks: Vec<TokenStream> = Vec::with_capacity(inner_elements.len());
         for (j, inner) in inner_elements.iter().enumerate() {
             let inner_prefix = format!("{column_prefix}.field_{j}");
@@ -967,7 +1014,6 @@ fn emit_via_standard_encoder(
     access: &TokenStream,
     wrapper: &WrapperShape,
     leaf: &LeafSpec,
-    inner_smart_ptr_depth: usize,
     field_idx: usize,
     column_prefix: &str,
     config: &MacroConfig,
@@ -1010,7 +1056,6 @@ fn emit_via_standard_encoder(
             name: column_prefix,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
-        inner_smart_ptr_depth,
     };
     let enc = nested_ctx.as_ref().map_or_else(
         || build_encoder(leaf, wrapper, &leaf_ctx),
@@ -1108,30 +1153,29 @@ fn build_scan(
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
     let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
-        if shape.has_inner_option() {
-            if shape.inner_option_layers == 1 {
+        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
+            quote! {
+                for #leaf_bind in #vec_bind.iter() {
+                    #per_elem_push
+                }
+            }
+        } else {
+            let raw_bind = idents::leaf_value_raw();
+            let chain_ref = super::access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
+            let resolved = chain_ref.expr;
+            if chain_ref.has_option {
                 quote! {
-                    for #leaf_bind in #vec_bind.iter() {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind: ::std::option::Option<_> = #resolved;
                         #per_elem_push
                     }
                 }
             } else {
-                let raw_bind = idents::leaf_value_raw();
-                let collapsed = super::collapse_options_to_ref(
-                    &quote! { #raw_bind },
-                    shape.inner_option_layers,
-                );
                 quote! {
                     for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind: ::std::option::Option<_> = #collapsed;
+                        let #leaf_bind = #resolved;
                         #per_elem_push
                     }
-                }
-            }
-        } else {
-            quote! {
-                for #leaf_bind in #vec_bind.iter() {
-                    #per_elem_push
                 }
             }
         }
@@ -1256,7 +1300,6 @@ fn build_leaf_projection_value_expr(
     composed_depth: usize,
     projection_layer: usize,
     elem_outer_smart_ptr_depth: usize,
-    elem_inner_smart_ptr_depth: usize,
 ) -> Option<TokenStream> {
     if projection_layer != composed_depth {
         // Interior projection: handled by `build_scan_iter`. The leaf
@@ -1275,7 +1318,6 @@ fn build_leaf_projection_value_expr(
     // projection — for `(Box<i32>, String)` element 0 is `Box<i32>`, so
     // the element's outer-smart-pointer-depth is 1; the projected
     // expression is `*((*v).0)`.
-    let _ = elem_inner_smart_ptr_depth;
     let copy_projected = {
         let mut p = quote! { (*#v) #projection_path };
         for _ in 0..elem_outer_smart_ptr_depth {
@@ -1372,7 +1414,6 @@ fn build_primitive_leaf_pieces(
 ) -> PrimitiveLeafPieces {
     use super::leaf::{mb_decl_filled, validity_into_option};
     let v = idents::leaf_value();
-    let inner_derefs = ctx.inner_smart_ptr_depth;
     let total_leaves_id = idents::total_leaves();
     let leaf_capacity_expr = quote! { #total_leaves_id };
     let leaf_arr = idents::leaf_arr();
@@ -1382,23 +1423,13 @@ fn build_primitive_leaf_pieces(
             let info = crate::codegen::type_registry::numeric_info_for(*kind);
             // `leaf_value_expr` is the projection-aware value expression
             // when provided; otherwise compute the standard `*__df_derive_v`
-            // shape (with widening for `isize`/`usize` and inner-smart-
-            // pointer derefs).
+            // shape (with widening for `isize`/`usize`).
             let value_expr = leaf_value_expr.cloned().unwrap_or_else(|| {
-                if inner_derefs == 0 {
-                    crate::codegen::type_registry::numeric_stored_value(
-                        *kind,
-                        quote! { *#v },
-                        &info.native,
-                    )
-                } else {
-                    let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
-                    crate::codegen::type_registry::numeric_stored_value(
-                        *kind,
-                        v_chain,
-                        &info.native,
-                    )
-                }
+                crate::codegen::type_registry::numeric_stored_value(
+                    *kind,
+                    quote! { *#v },
+                    &info.native,
+                )
             });
             let native = &info.native;
             let flat = idents::vec_flat();
@@ -1534,46 +1565,21 @@ fn build_primitive_leaf_pieces(
                 }
             };
             let push = if has_inner_option {
-                if inner_derefs == 0 {
-                    quote! {
-                        match #v {
-                            ::std::option::Option::Some(true) => {
-                                #values_ident.set(#leaf_idx, true);
-                            }
-                            ::std::option::Option::Some(false) => {}
-                            ::std::option::Option::None => {
-                                #validity_ident.set(#leaf_idx, false);
-                            }
-                        }
-                        #leaf_idx += 1;
-                    }
-                } else {
-                    let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, inner_derefs);
-                    quote! {
-                        match #v {
-                            ::std::option::Option::Some(#v) => {
-                                if #v_chain {
-                                    #values_ident.set(#leaf_idx, true);
-                                }
-                            }
-                            ::std::option::Option::None => {
-                                #validity_ident.set(#leaf_idx, false);
-                            }
-                        }
-                        #leaf_idx += 1;
-                    }
-                }
-            } else if inner_derefs == 0 {
                 quote! {
-                    if *#v {
-                        #values_ident.set(#leaf_idx, true);
+                    match #v {
+                        ::std::option::Option::Some(true) => {
+                            #values_ident.set(#leaf_idx, true);
+                        }
+                        ::std::option::Option::Some(false) => {}
+                        ::std::option::Option::None => {
+                            #validity_ident.set(#leaf_idx, false);
+                        }
                     }
                     #leaf_idx += 1;
                 }
             } else {
-                let v_chain = super::leaf::apply_inner_derefs(&quote! { #v }, 1 + inner_derefs);
                 quote! {
-                    if #v_chain {
+                    if *#v {
                         #values_ident.set(#leaf_idx, true);
                     }
                     #leaf_idx += 1;

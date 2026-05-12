@@ -1,5 +1,50 @@
 use syn::{Ident, Path};
 
+/// One transparent access step peeled while analyzing a field type, excluding
+/// `Vec` itself. The normalized wrapper shape stores these steps at the
+/// boundary where they occur so codegen can dereference smart pointers before
+/// walking the next wrapper layer instead of blindly dereferencing at the leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessStep {
+    Option,
+    SmartPtr,
+}
+
+/// Transparent access steps between two semantic wrapper boundaries: from the
+/// field access to a `Vec`, from one `Vec` item to the next `Vec`, or from the
+/// innermost `Vec` item to the leaf.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccessChain {
+    pub steps: Vec<AccessStep>,
+}
+
+impl AccessChain {
+    pub fn empty() -> Self {
+        Self { steps: Vec::new() }
+    }
+
+    pub fn option_layers(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|step| matches!(step, AccessStep::Option))
+            .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    pub fn is_single_plain_option(&self) -> bool {
+        self.steps == [AccessStep::Option]
+    }
+
+    pub fn is_only_options(&self) -> bool {
+        self.steps
+            .iter()
+            .all(|step| matches!(step, AccessStep::Option))
+    }
+}
+
 /// Top-level IR for a struct targeted by the derive.
 #[derive(Clone)]
 pub struct StructIR {
@@ -45,16 +90,6 @@ pub struct FieldIR {
     /// deref-coerced inner value (autoderef does not fire across `as` casts
     /// or pattern positions).
     pub outer_smart_ptr_depth: usize,
-    /// Number of transparent pointer layers peeled at the INNER position —
-    /// below some wrapper but above the leaf. Cannot be applied to the access
-    /// expression directly (you can't deref `Option<Box<T>>` or
-    /// `Vec<Arc<T>>`); instead the encoder injects an extra `*` at the
-    /// per-element leaf binding so primitive pushes see the inner value
-    /// rather than the smart pointer. Most leaves auto-deref through method
-    /// calls (`arc_string.as_str()` works), but pattern-binding-by-value
-    /// arms (`match #access { Some(v) => buf.push(v) }` for numerics)
-    /// don't, so the explicit deref is needed there.
-    pub inner_smart_ptr_depth: usize,
 }
 
 /// Datetime time unit chosen via `#[df_derive(time_unit = "ms"|"us"|"ns")]`.
@@ -204,10 +239,10 @@ impl StringyBase {
 
 /// One element of a tuple-typed field. Each element contributes one or more
 /// columns to the parent struct's flattened layout (one column per primitive
-/// leaf; multiple per nested struct or further tuple). The `outer_smart_ptr_depth`
-/// and `inner_smart_ptr_depth` fields are scoped to this element's own
-/// peeled wrappers — the parent struct's smart-pointer counts on the tuple
-/// field itself live on the surrounding `FieldIR`.
+/// leaf; multiple per nested struct or further tuple). The
+/// `outer_smart_ptr_depth` field is scoped to this element's own peeled
+/// wrappers — the parent struct's smart-pointer count on the tuple field
+/// itself lives on the surrounding `FieldIR`.
 #[derive(Clone)]
 pub struct TupleElement {
     /// Element's leaf classification. Every primitive leaf and nested-struct
@@ -218,8 +253,6 @@ pub struct TupleElement {
     pub wrapper_shape: WrapperShape,
     /// Smart-pointer depth above any wrapper in the element type.
     pub outer_smart_ptr_depth: usize,
-    /// Smart-pointer depth below a wrapper in the element type.
-    pub inner_smart_ptr_depth: usize,
 }
 
 /// Per-leaf semantic shape — the encoder's vocabulary for the unwrapped
@@ -331,34 +364,37 @@ impl LeafSpec {
 }
 
 /// One `Vec` layer in a normalized wrapper stack. Outermost layer first.
-/// `option_layers_above` is the count of consecutive `Option` wrappers
-/// immediately above this `Vec`. Zero means no list-level validity. `>0`
-/// means a `MutableBitmap` rides under this `LargeListArray` and the
-/// per-row access expression must walk `option_layers_above` `Option`s
-/// before entering the `Vec`. Polars only carries one validity bit per list
-/// level, so all consecutive `Option`s collapse to one bit (`Some(None)`
-/// and `None` are indistinguishable in the column).
-#[derive(Clone, Copy, Debug)]
+/// `access` records every transparent boundary step immediately above this
+/// `Vec`; `option_layers_above` is its Option count. Zero means no list-level
+/// validity. `>0` means a `MutableBitmap` rides under this `LargeListArray`.
+/// Polars only carries one validity bit per list level, so all consecutive
+/// `Option`s collapse to one bit (`Some(None)` and `None` are
+/// indistinguishable in the column), while smart-pointer positions remain in
+/// `access` so codegen dereferences them before entering the `Vec`.
+#[derive(Clone, Debug)]
 pub struct VecLayerSpec {
     pub option_layers_above: usize,
+    pub access: AccessChain,
 }
 
 impl VecLayerSpec {
-    pub const fn has_outer_validity(self) -> bool {
+    pub const fn has_outer_validity(&self) -> bool {
         self.option_layers_above > 0
     }
 }
 
 /// Normalized form of a `Vec`-bearing wrapper stack. `layers[0]` is the
-/// outermost `Vec`. `inner_option_layers` is the count of consecutive
-/// `Option` wrappers immediately surrounding the leaf (between the
-/// innermost `Vec` and the leaf type). `>0` means a per-element validity
-/// bit is stored at the leaf and the per-element access expression must
-/// walk `inner_option_layers` `Option`s before reaching the leaf value.
+/// outermost `Vec`. `inner_access` records every transparent boundary step
+/// immediately surrounding the leaf (between the innermost `Vec` and the
+/// leaf type), and `inner_option_layers` is its Option count. `>0` means a
+/// per-element validity bit is stored at the leaf; smart-pointer positions
+/// remain in `inner_access` so the scan reaches the leaf at the right
+/// wrapper boundary.
 #[derive(Clone, Debug)]
 pub struct VecLayers {
     pub layers: Vec<VecLayerSpec>,
     pub inner_option_layers: usize,
+    pub inner_access: AccessChain,
 }
 
 impl VecLayers {
@@ -393,7 +429,10 @@ pub enum WrapperShape {
     /// the leaf. `0` is a bare leaf; `1` is a single `Option<T>`; `>= 2` is
     /// `Option<...<Option<T>>>` collapsed into a single validity bit per
     /// Polars's representation.
-    Leaf { option_layers: usize },
+    Leaf {
+        option_layers: usize,
+        access: AccessChain,
+    },
     /// One or more `Vec` wrappers, optionally with `Option`s collapsed into
     /// per-layer outer validity and inner-element validity.
     Vec(VecLayers),

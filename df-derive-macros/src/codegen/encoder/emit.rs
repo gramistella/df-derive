@@ -18,15 +18,15 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::{VecLayers, WrapperShape};
+use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
-use super::collapse_options_to_ref;
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::shape_walk::{
     LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
+use super::{access_chain_to_ref, collapse_options_to_ref};
 
 /// Per-layer ident bundle factory. `field_idx == None` produces the
 /// per-element-push path's flat-vec idents (`__df_derive_layer_*_{layer}`,
@@ -202,31 +202,54 @@ fn pep_leaf_body<'a>(
     per_elem_push: &'a TokenStream,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
-        if shape.has_inner_option() {
-            if shape.inner_option_layers == 1 {
-                quote! {
-                    for #leaf_bind in #vec_bind.iter() {
-                        #per_elem_push
-                    }
-                }
-            } else {
-                let raw_bind = idents::leaf_value_raw();
-                let collapsed =
-                    collapse_options_to_ref(&quote! { #raw_bind }, shape.inner_option_layers);
-                quote! {
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind: ::std::option::Option<_> = #collapsed;
-                        #per_elem_push
-                    }
-                }
-            }
-        } else {
+        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
             quote! {
                 for #leaf_bind in #vec_bind.iter() {
                     #per_elem_push
                 }
             }
+        } else {
+            let raw_bind = idents::leaf_value_raw();
+            let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
+            let resolved = chain_ref.expr;
+            if chain_ref.has_option {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind: ::std::option::Option<_> = #resolved;
+                        #per_elem_push
+                    }
+                }
+            } else {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind = #resolved;
+                        #per_elem_push
+                    }
+                }
+            }
         }
+    }
+}
+
+fn ctb_depth0_match_expr(
+    access: &TokenStream,
+    access_chain: &AccessChain,
+    option_layers: usize,
+) -> TokenStream {
+    if access_chain.is_single_plain_option() {
+        quote! { &(#access) }
+    } else if access_chain.is_only_options() {
+        collapse_options_to_ref(access, option_layers)
+    } else {
+        access_chain_to_ref(&quote! { &(#access) }, access_chain).expr
+    }
+}
+
+fn ctb_depth0_ref_expr(access: &TokenStream, access_chain: &AccessChain) -> TokenStream {
+    if access_chain.is_empty() {
+        quote! { &(#access) }
+    } else {
+        access_chain_to_ref(&quote! { &(#access) }, access_chain).expr
     }
 }
 
@@ -243,15 +266,17 @@ fn ctb_leaf_body<'a>(
     flat: &'a syn::Ident,
     positions: &'a syn::Ident,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
-    debug_assert!(
-        shape.inner_option_layers <= 1,
-        "nested-struct scan walker only supports inner_option_layers <= 1"
-    );
     move |vec_bind: &TokenStream| -> TokenStream {
         let pp = crate::codegen::polars_paths::prelude();
         let maybe = idents::nested_maybe();
         let v = idents::leaf_value();
-        if shape.has_inner_option() {
+        if shape.inner_access.is_empty() {
+            quote! {
+                for #v in #vec_bind.iter() {
+                    #flat.push(#v);
+                }
+            }
+        } else if shape.inner_access.is_single_plain_option() {
             quote! {
                 for #maybe in #vec_bind.iter() {
                     match #maybe {
@@ -268,9 +293,31 @@ fn ctb_leaf_body<'a>(
                 }
             }
         } else {
-            quote! {
-                for #v in #vec_bind.iter() {
-                    #flat.push(#v);
+            let raw_bind = idents::leaf_value_raw();
+            let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
+            let resolved = chain_ref.expr;
+            if chain_ref.has_option {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        match #resolved {
+                            ::std::option::Option::Some(#v) => {
+                                #positions.push(::std::option::Option::Some(
+                                    #flat.len() as #pp::IdxSize,
+                                ));
+                                #flat.push(#v);
+                            }
+                            ::std::option::Option::None => {
+                                #positions.push(::std::option::Option::None);
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #v = #resolved;
+                        #flat.push(#v);
+                    }
                 }
             }
         }
@@ -510,7 +557,9 @@ fn ctb_materialize(
     let (validity_freeze, offsets_freeze) = hoisted_freezes(shape, layers, kind, pa_root);
 
     match wrapper {
-        WrapperShape::Leaf { option_layers: 0 } => {
+        WrapperShape::Leaf {
+            option_layers: 0, ..
+        } => {
             // Bare nested struct: every row contributes one ref. One arm.
             quote! {
                 #df_decl
@@ -652,13 +701,15 @@ fn ctb_leaf_scan_depth0(
     flat: &syn::Ident,
     positions: &syn::Ident,
     option_layers: usize,
+    access_chain: &AccessChain,
 ) -> TokenStream {
     let it = idents::populator_iter();
     let v = idents::leaf_value();
     if option_layers == 0 {
+        let value_ref = ctb_depth0_ref_expr(access, access_chain);
         quote! {
             for #it in items {
-                #flat.push(&(#access));
+                #flat.push(#value_ref);
             }
         }
     } else {
@@ -666,12 +717,7 @@ fn ctb_leaf_scan_depth0(
         // `option_layers == 1`: match `&Option<T>` directly. `>= 2`:
         // collapse to `Option<&T>` first, then match by value. Mirrors
         // `ShapeScan::build_layer`'s opt_layers branch on outer-Vec layers.
-        let match_expr = if option_layers == 1 {
-            quote! { &(#access) }
-        } else {
-            let chain = collapse_options_to_ref(access, option_layers);
-            quote! { (#chain) }
-        };
+        let match_expr = ctb_depth0_match_expr(access, access_chain, option_layers);
         quote! {
             for #it in items {
                 match #match_expr {
@@ -720,8 +766,12 @@ fn ctb_emit(
     // offsets/validity decls are vacuous, so the scan is the entire driver;
     // depth >= 1 routes through the shared shape walkers.
     let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
-        WrapperShape::Leaf { option_layers } => {
-            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers);
+        WrapperShape::Leaf {
+            option_layers,
+            access: access_chain,
+        } => {
+            let scan =
+                ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers, access_chain);
             (
                 TokenStream::new(),
                 scan,
@@ -772,7 +822,7 @@ fn ctb_emit(
     // `positions` is needed whenever any row can be absent: at depth 0 with
     // any outer Option, or at depth >= 1 with an inner Option above the leaf.
     let needs_positions = match wrapper {
-        WrapperShape::Leaf { option_layers } => *option_layers > 0,
+        WrapperShape::Leaf { option_layers, .. } => *option_layers > 0,
         WrapperShape::Vec(_) => shape.has_inner_option(),
     };
     let positions_decl = if needs_positions {
@@ -825,6 +875,7 @@ pub(super) fn vec_emit_general(
     let empty_shape = VecLayers {
         layers: Vec::new(),
         inner_option_layers: 0,
+        inner_access: AccessChain::empty(),
     };
     let shape: &VecLayers = match wrapper {
         WrapperShape::Leaf { .. } => &empty_shape,

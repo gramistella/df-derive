@@ -79,8 +79,8 @@ impl LeafSpec {
 /// derefs so `Box<isize> as i64` and `match &(box_option) { Some(_) => ... }`
 /// see the inner value: numeric `as` casts and pattern positions don't
 /// trigger `Deref` autoderef, so the codegen has to peel manually. Inner
-/// smart pointers (below a wrapper) are dereffed at the per-element leaf
-/// binding instead — see `LeafCtx::inner_smart_ptr_depth`.
+/// smart pointers (below a wrapper) are preserved in the normalized wrapper
+/// access chains and dereffed at the wrapper boundary where they occur.
 fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
     let raw = field.field_index.map_or_else(
         || {
@@ -253,7 +253,6 @@ fn build_primitive_emit(
             name: &name,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
-        inner_smart_ptr_depth: field.inner_smart_ptr_depth,
     };
     let enc = encoder::build_encoder(&field.leaf_spec, &field.wrapper_shape, &leaf_ctx);
     match enc {

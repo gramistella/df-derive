@@ -39,6 +39,17 @@ struct Composed {
 }
 
 #[derive(ToDataFrame, Clone)]
+struct BoundaryPositions {
+    opt_box_vec: Option<Box<Vec<i32>>>,
+    opt_box_opt: Option<Box<Option<i32>>>,
+    vec_box_opt: Vec<Box<Option<i32>>>,
+    vec_box_vec: Vec<Box<Vec<i32>>>,
+    vec_opt_arc_vec: Vec<Option<Arc<Vec<i32>>>>,
+    #[df_derive(as_binary)]
+    opt_box_blob: Option<Box<Vec<u8>>>,
+}
+
+#[derive(ToDataFrame, Clone)]
 struct Regression {
     #[df_derive(as_binary)]
     bx_blob: Box<Vec<u8>>,
@@ -52,6 +63,34 @@ fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
         .find(|(n, _)| n == col)
         .map(|(_, dt)| dt.clone())
         .unwrap_or_else(|| panic!("column {col} missing"))
+}
+
+fn assert_list_i32(df: &DataFrame, col: &str, row: usize, expected: &[Option<i32>]) {
+    let AnyValue::List(inner) = df.column(col).unwrap().get(row).unwrap() else {
+        panic!("expected List for {col}[{row}]");
+    };
+    let actual: Vec<Option<i32>> = inner.i32().unwrap().into_iter().collect();
+    assert_eq!(actual, expected, "{col}[{row}]");
+}
+
+fn assert_nested_list_i32(
+    df: &DataFrame,
+    col: &str,
+    row: usize,
+    expected: &[Option<Vec<Option<i32>>>],
+) {
+    let AnyValue::List(outer) = df.column(col).unwrap().get(row).unwrap() else {
+        panic!("expected outer List for {col}[{row}]");
+    };
+    let actual: Vec<Option<Vec<Option<i32>>>> = outer
+        .iter()
+        .map(|value| match value {
+            AnyValue::List(inner) => Some(inner.i32().unwrap().into_iter().collect()),
+            AnyValue::Null => None,
+            other => panic!("unexpected nested list value for {col}[{row}]: {other:?}"),
+        })
+        .collect();
+    assert_eq!(actual, expected, "{col}[{row}]");
 }
 
 #[test]
@@ -204,6 +243,117 @@ fn runtime_semantics() {
         })
         .collect();
     assert_eq!(nums, vec![1.5, 2.5, 3.5]);
+
+    // --- Boundary-sensitive smart pointers ---
+    let boundary_schema = BoundaryPositions::schema().unwrap();
+    assert_eq!(
+        schema_dtype(&boundary_schema, "opt_box_vec"),
+        DataType::List(Box::new(DataType::Int32))
+    );
+    assert_eq!(
+        schema_dtype(&boundary_schema, "opt_box_opt"),
+        DataType::Int32
+    );
+    assert_eq!(
+        schema_dtype(&boundary_schema, "vec_box_opt"),
+        DataType::List(Box::new(DataType::Int32))
+    );
+    assert_eq!(
+        schema_dtype(&boundary_schema, "vec_box_vec"),
+        DataType::List(Box::new(DataType::List(Box::new(DataType::Int32))))
+    );
+    assert_eq!(
+        schema_dtype(&boundary_schema, "vec_opt_arc_vec"),
+        DataType::List(Box::new(DataType::List(Box::new(DataType::Int32))))
+    );
+    assert_eq!(
+        schema_dtype(&boundary_schema, "opt_box_blob"),
+        DataType::Binary
+    );
+
+    let boundary_rows = vec![
+        BoundaryPositions {
+            opt_box_vec: Some(Box::new(vec![1, 2])),
+            opt_box_opt: Some(Box::new(Some(7))),
+            vec_box_opt: vec![Box::new(Some(10)), Box::new(None), Box::new(Some(30))],
+            vec_box_vec: vec![Box::new(vec![1, 2]), Box::new(vec![]), Box::new(vec![3])],
+            vec_opt_arc_vec: vec![Some(Arc::new(vec![5, 6])), None, Some(Arc::new(vec![]))],
+            opt_box_blob: Some(Box::new(b"abc".to_vec())),
+        },
+        BoundaryPositions {
+            opt_box_vec: None,
+            opt_box_opt: Some(Box::new(None)),
+            vec_box_opt: vec![],
+            vec_box_vec: vec![],
+            vec_opt_arc_vec: vec![],
+            opt_box_blob: None,
+        },
+        BoundaryPositions {
+            opt_box_vec: Some(Box::new(vec![])),
+            opt_box_opt: None,
+            vec_box_opt: vec![Box::new(None)],
+            vec_box_vec: vec![Box::new(vec![9])],
+            vec_opt_arc_vec: vec![None],
+            opt_box_blob: Some(Box::new(vec![])),
+        },
+    ];
+    let boundary_df = boundary_rows.as_slice().to_dataframe().unwrap();
+    assert_eq!(boundary_df.shape(), (3, 6));
+    assert_list_i32(&boundary_df, "opt_box_vec", 0, &[Some(1), Some(2)]);
+    assert!(matches!(
+        boundary_df.column("opt_box_vec").unwrap().get(1).unwrap(),
+        AnyValue::Null
+    ));
+    assert_list_i32(&boundary_df, "opt_box_vec", 2, &[]);
+    assert!(matches!(
+        boundary_df.column("opt_box_opt").unwrap().get(0).unwrap(),
+        AnyValue::Int32(7)
+    ));
+    assert!(matches!(
+        boundary_df.column("opt_box_opt").unwrap().get(1).unwrap(),
+        AnyValue::Null
+    ));
+    assert!(matches!(
+        boundary_df.column("opt_box_opt").unwrap().get(2).unwrap(),
+        AnyValue::Null
+    ));
+    assert_list_i32(&boundary_df, "vec_box_opt", 0, &[Some(10), None, Some(30)]);
+    assert_list_i32(&boundary_df, "vec_box_opt", 1, &[]);
+    assert_list_i32(&boundary_df, "vec_box_opt", 2, &[None]);
+    assert_nested_list_i32(
+        &boundary_df,
+        "vec_box_vec",
+        0,
+        &[
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![]),
+            Some(vec![Some(3)]),
+        ],
+    );
+    assert_nested_list_i32(&boundary_df, "vec_box_vec", 1, &[]);
+    assert_nested_list_i32(&boundary_df, "vec_box_vec", 2, &[Some(vec![Some(9)])]);
+    assert_nested_list_i32(
+        &boundary_df,
+        "vec_opt_arc_vec",
+        0,
+        &[Some(vec![Some(5), Some(6)]), None, Some(vec![])],
+    );
+    assert_nested_list_i32(&boundary_df, "vec_opt_arc_vec", 1, &[]);
+    assert_nested_list_i32(&boundary_df, "vec_opt_arc_vec", 2, &[None]);
+    match boundary_df.column("opt_box_blob").unwrap().get(0).unwrap() {
+        AnyValue::Binary(bytes) => assert_eq!(bytes, b"abc"),
+        AnyValue::BinaryOwned(ref bytes) => assert_eq!(bytes.as_slice(), b"abc"),
+        other => panic!("unexpected opt_box_blob[0] {other:?}"),
+    }
+    assert!(matches!(
+        boundary_df.column("opt_box_blob").unwrap().get(1).unwrap(),
+        AnyValue::Null
+    ));
+    match boundary_df.column("opt_box_blob").unwrap().get(2).unwrap() {
+        AnyValue::Binary(bytes) => assert_eq!(bytes, b""),
+        AnyValue::BinaryOwned(ref bytes) => assert_eq!(bytes.as_slice(), b""),
+        other => panic!("unexpected opt_box_blob[2] {other:?}"),
+    }
 
     // --- Regression: as_binary over Box<Vec<u8>> ---
     let regression_schema = Regression::schema().unwrap();

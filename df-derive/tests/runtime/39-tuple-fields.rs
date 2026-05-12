@@ -114,6 +114,12 @@ struct VecTupleWithOptVecElement {
     items: Vec<(Option<Vec<i32>>, String)>,
 }
 
+// 18. Optional tuple whose elements have non-Copy wrapper stacks.
+#[derive(ToDataFrame, Clone)]
+struct OptTupleWithWrappedElements {
+    pair: Option<(Vec<i32>, Option<Box<i32>>, Vec<Box<Option<i32>>>)>,
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -479,6 +485,60 @@ fn runtime_semantics() {
             None,
             Some(vec![Some(200), Some(300)])
         ],
+    );
+
+    // 18. Option<(Vec<i32>, Option<Box<i32>>, Vec<Box<Option<i32>>>)>:
+    // parent Option must project tuple elements by reference when the
+    // element wrapper is not Copy-projectable.
+    let wrapped = vec![
+        OptTupleWithWrappedElements {
+            pair: Some((
+                vec![1, 2],
+                Some(Box::new(5)),
+                vec![Box::new(Some(7)), Box::new(None)],
+            )),
+        },
+        OptTupleWithWrappedElements { pair: None },
+        OptTupleWithWrappedElements {
+            pair: Some((vec![], None, vec![Box::new(None)])),
+        },
+    ];
+    let wrapped_df = wrapped.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        list_i32s(wrapped_df.column("pair.field_0").unwrap().get(0).unwrap()),
+        vec![Some(1), Some(2)],
+    );
+    assert_eq!(
+        wrapped_df.column("pair.field_0").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        list_i32s(wrapped_df.column("pair.field_0").unwrap().get(2).unwrap()),
+        Vec::<Option<i32>>::new(),
+    );
+    assert_eq!(
+        wrapped_df.column("pair.field_1").unwrap().get(0).unwrap(),
+        AnyValue::Int32(5),
+    );
+    assert_eq!(
+        wrapped_df.column("pair.field_1").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        wrapped_df.column("pair.field_1").unwrap().get(2).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        list_i32s(wrapped_df.column("pair.field_2").unwrap().get(0).unwrap()),
+        vec![Some(7), None],
+    );
+    assert_eq!(
+        wrapped_df.column("pair.field_2").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        list_i32s(wrapped_df.column("pair.field_2").unwrap().get(2).unwrap()),
+        vec![None],
     );
 
     // Batch round-trip

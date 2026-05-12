@@ -58,7 +58,11 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn generated_polars_roots_are_centralized() {
     let manifest =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
-    let codegen_root = PathBuf::from(&manifest)
+    let repo_root = PathBuf::from(&manifest)
+        .parent()
+        .expect("facade crate lives under the workspace root")
+        .to_path_buf();
+    let codegen_root = repo_root
         .join("df-derive-macros")
         .join("src")
         .join("codegen");
@@ -82,7 +86,7 @@ fn generated_polars_roots_are_centralized() {
             if line.contains("::polars::") || line.contains("::polars_arrow::") {
                 let original = src.lines().nth(lineno).unwrap_or("<line out of range>");
                 let display_path = path
-                    .strip_prefix(&manifest)
+                    .strip_prefix(&repo_root)
                     .map_or_else(|_| path.clone(), Path::to_path_buf);
                 violations.push(format!(
                     "  {}:{}: {}",

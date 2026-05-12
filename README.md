@@ -235,17 +235,17 @@ The generated `columnar_to_dataframe(&[Self])` path avoids the old top-level
 `Vec<&Self>` allocation. Nested and generic emitters still use
 `columnar_from_refs(&[&Self])` so borrowed composition remains clone-free.
 
-Criterion benches in `benches/` cover wide rows, nested structs, deep Vec
-shapes, decimals, strings, borrowed data, and tuple fields.
+Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
+deep Vec shapes, decimals, strings, borrowed data, and tuple fields.
 
 ## Examples
 
 Run examples with:
 
 ```sh
-cargo run --example quickstart
-cargo run --example nested
-cargo run --example datetime_decimal
+cargo run -p df-derive --example quickstart
+cargo run -p df-derive --example nested
+cargo run -p df-derive --example datetime_decimal
 ```
 
 ## License

@@ -1,13 +1,24 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn package_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn repo_root() -> PathBuf {
+    package_root()
+        .parent()
+        .expect("facade crate lives under the workspace root")
+        .to_path_buf()
+}
 
 fn toml_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "\\\\")
 }
 
 fn check_fixture(name: &str, manifest: &str, main_rs: &str) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = repo_root();
     let fixture_root = root.join("target").join("architecture-fixtures").join(name);
     if fixture_root.exists() {
         fs::remove_dir_all(&fixture_root).expect("remove stale fixture");
@@ -45,7 +56,7 @@ polars-arrow = "0.53.0"
 
 #[test]
 fn facade_default_runtime_works_without_attributes() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = package_root();
     let manifest = format!(
         r#"
 [package]
@@ -91,7 +102,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
 #[test]
 fn macros_direct_with_core_runtime_works_without_facade() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = repo_root();
     let manifest = format!(
         r#"
 [package]
@@ -141,7 +152,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
 #[test]
 fn renamed_facade_and_polars_dependencies_are_respected() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = package_root();
     let manifest = format!(
         r#"
 [package]
@@ -184,7 +195,7 @@ fn main() -> pl::prelude::PolarsResult<()> {
 
 #[test]
 fn local_fallback_works_without_facade_or_core_dependencies() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = repo_root();
     let manifest = format!(
         r#"
 [package]

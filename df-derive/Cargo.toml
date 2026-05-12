@@ -1,0 +1,115 @@
+[package]
+name = "df-derive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Derive fast conversions from Rust structs into Polars DataFrames."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/df-derive"
+readme = "../README.md"
+keywords = ["polars", "dataframe", "derive", "finance"]
+categories = ["data-structures", "finance"]
+
+[dependencies]
+df-derive-core.workspace = true
+df-derive-macros.workspace = true
+
+[features]
+default = ["rust_decimal"]
+rust_decimal = ["df-derive-core/rust_decimal"]
+
+[dev-dependencies]
+trybuild = "1.0.116"
+polars = { workspace = true, features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
+polars-arrow.workspace = true
+chrono = { version = "0.4.41", features = ["serde"] }
+rust_decimal.workspace = true
+criterion = { version = "0.8.2", features = ["html_reports"] }
+pretty_assertions = "1.4"
+serde = { version = "1", features = ["derive"] }
+
+[[bench]]
+name = "01_top_level_vec"
+harness = false
+
+[[bench]]
+name = "02_empty_nested_vec"
+harness = false
+
+[[bench]]
+name = "03_nested_option"
+harness = false
+
+[[bench]]
+name = "04_vec_custom_struct"
+harness = false
+
+[[bench]]
+name = "05_wide_top_level_options"
+harness = false
+
+[[bench]]
+name = "06_optional_vec_custom_struct"
+harness = false
+
+[[bench]]
+name = "07_deep_nesting_vec"
+harness = false
+
+[[bench]]
+name = "08_complex_wrappers"
+harness = false
+
+[[bench]]
+name = "09_generics"
+harness = false
+
+[[bench]]
+name = "10_string_columns"
+harness = false
+
+[[bench]]
+name = "11_slow_path_shapes"
+harness = false
+
+[[bench]]
+name = "12_tuple_structs"
+harness = false
+
+[[bench]]
+name = "13_datetime_decimal_columns"
+harness = false
+
+[[bench]]
+name = "14_as_string_enum"
+harness = false
+
+[[bench]]
+name = "15_as_str_enum"
+harness = false
+
+[[bench]]
+name = "16_option_vec_option_struct"
+harness = false
+
+[[bench]]
+name = "17_vec_vec_struct"
+harness = false
+
+[[bench]]
+name = "18_as_binary"
+harness = false
+
+[[bench]]
+name = "19_naive_and_duration"
+harness = false
+
+[[bench]]
+name = "20_smart_pointers"
+harness = false
+
+[[bench]]
+name = "21_tuple_fields"
+harness = false

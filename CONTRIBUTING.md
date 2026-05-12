@@ -32,7 +32,7 @@ You can use either plain `cargo` commands or the `just` recipes.
 
 - Benchmarks (Criterion):
   - `just bench`
-  - or `cargo bench`
+  - or `cargo bench -p df-derive`
 
 Benchmark summaries are printed by `just bench-results`.
 
@@ -59,5 +59,4 @@ If you discover a security-related issue, please do not open a public issue. Ema
 #### Contact
 
 For any questions or to discuss contributions, reach out at: letter.brigade_7s@icloud.com.
-
 

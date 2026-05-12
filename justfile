@@ -11,7 +11,7 @@ fmt:
 	cargo fmt --all
 
 bench:
-	cargo bench
+	cargo bench -p df-derive
 	@just bench-results
 
 bench-results:

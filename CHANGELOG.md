@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
   `df-derive-core` (shared runtime trait identity), and
   `df-derive-macros` (proc macro implementation). Normal users can now
   depend on `df-derive` and derive without a runtime-path override.
+- Moved the facade crate into `df-derive/`, leaving the repository root as a
+  workspace-only manifest alongside `df-derive-core/` and
+  `df-derive-macros/`.
 - Generated `Columnar` impls now override both `columnar_to_dataframe(&[Self])`
   and `columnar_from_refs(&[&Self])`, avoiding the top-level `Vec<&Self>`
   allocation while preserving borrowed nested composition.

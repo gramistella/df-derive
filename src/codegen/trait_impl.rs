@@ -30,12 +30,12 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     let empty_series_creations: Vec<TokenStream> = ir
         .fields
         .iter()
-        .map(super::strategy::build_empty_series)
+        .map(|field| super::strategy::build_empty_series(field, config))
         .collect();
     let schema_entries: Vec<TokenStream> = ir
         .fields
         .iter()
-        .map(super::strategy::build_schema_entries)
+        .map(|field| super::strategy::build_schema_entries(field, config))
         .collect();
 
     // `to_dataframe(&self)` delegates to the `Columnar::columnar_from_refs`

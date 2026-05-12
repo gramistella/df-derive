@@ -387,6 +387,12 @@ pub(in crate::codegen) fn assemble_helper() -> Ident {
     format_ident!("__df_derive_assemble_list_series_unchecked")
 }
 
+/// Per-derive helper used to eagerly assert that concrete
+/// `#[df_derive(as_str)]` custom paths implement `AsRef<str>`.
+pub(in crate::codegen) fn as_ref_str_assert_helper() -> Ident {
+    format_ident!("__df_derive_assert_as_ref_str")
+}
+
 /// Per-row inner-Option binding inside the nested-struct deepest leaf body.
 pub(in crate::codegen) fn nested_maybe() -> Ident {
     format_ident!("__df_derive_maybe")

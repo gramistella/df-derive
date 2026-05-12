@@ -36,3 +36,12 @@ mod nonzero_numerics;
 
 #[path = "runtime/48-qualified-type-paths.rs"]
 mod qualified_type_paths;
+
+#[path = "runtime/49-generic-shadowing-and-bounds.rs"]
+mod generic_shadowing_and_bounds;
+
+#[path = "runtime/50-qualified-custom-name-collisions.rs"]
+mod qualified_custom_name_collisions;
+
+#[path = "runtime/51-qualified-custom-wrapper-collisions.rs"]
+mod qualified_custom_wrapper_collisions;

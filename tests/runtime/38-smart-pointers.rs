@@ -6,6 +6,7 @@
 //
 // This test pins every supported composition shape plus the previously-
 // blocked `Box<Vec<u8>>` + `as_binary` regression.
+#![allow(clippy::box_collection, clippy::redundant_allocation)]
 
 use std::borrow::Cow;
 use std::rc::Rc;

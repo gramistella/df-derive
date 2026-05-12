@@ -400,7 +400,6 @@ fn analyzed_to_tuple_element(
     Ok(TupleElement {
         leaf_spec,
         wrapper_shape,
-        field_ty: analyzed.field_ty,
         outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
         inner_smart_ptr_depth: analyzed.inner_smart_ptr_depth,
     })
@@ -482,6 +481,16 @@ fn decimal_generic_params_for_override(
     match (override_, base) {
         (FieldOverride::Decimal { .. }, AnalyzedBase::Generic(ident)) => vec![ident.clone()],
         _ => Vec::new(),
+    }
+}
+
+fn decimal_backend_path_for_override(
+    override_: &FieldOverride,
+    base: &AnalyzedBase,
+) -> Option<syn::Path> {
+    match (override_, base) {
+        (FieldOverride::Decimal { .. }, AnalyzedBase::Struct(path)) => Some(path.clone()),
+        _ => None,
     }
 }
 
@@ -673,6 +682,7 @@ fn process_field(
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let inner_smart_ptr_depth = analyzed.inner_smart_ptr_depth;
     let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
+    let decimal_backend_path = decimal_backend_path_for_override(&override_, &analyzed.base);
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
         // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
         // only checks the leaf base, but the tuple itself fails the same
@@ -692,8 +702,8 @@ fn process_field(
         field_index,
         leaf_spec,
         wrapper_shape,
-        field_ty: field.ty.clone(),
         decimal_generic_params,
+        decimal_backend_path,
         outer_smart_ptr_depth,
         inner_smart_ptr_depth,
     })

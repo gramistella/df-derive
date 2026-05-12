@@ -367,7 +367,7 @@ fn runtime_semantics() {
 
     // 12. Tuple containing a nested struct
     let wi = WithInnerTuple {
-        pair: (Inner { a: 7, b: 3.14 }, 99),
+        pair: (Inner { a: 7, b: 3.125 }, 99),
     };
     let wi_df = wi.to_dataframe().unwrap();
     let wi_cols: Vec<&str> = wi_df

@@ -7,10 +7,10 @@ mod strategy;
 mod trait_impl;
 mod type_registry;
 
-use crate::ir::StructIR;
+use crate::ir::{LeafSpec, StringyBase, StructIR, TupleElement};
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 
 /// Macro-wide configuration for generated code
 #[allow(clippy::struct_field_names)]
@@ -59,7 +59,7 @@ pub fn resolve_paft_crate_path() -> TokenStream {
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
-    let helpers_impl = helpers::generate_helpers_impl(ir, config);
+    let eager_asserts = helpers::generate_eager_asserts(ir);
     let pp = polars_paths::prelude();
     let assemble_helper = encoder::idents::assemble_helper();
 
@@ -83,6 +83,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     // every nested-`Vec` bulk emitter site.
     quote! {
         const _: () = {
+            #eager_asserts
+
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
             fn #assemble_helper(
@@ -112,22 +114,109 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 
             #trait_impl
             #columnar_impl
-            #helpers_impl
         };
     }
 }
 
-/// Build `impl_generics`, `ty_generics`, and `where_clause` token streams suitable
-/// for splicing into an `impl` header. When the struct has type parameters, each
-/// one is augmented with the configured `ToDataFrame` and `Columnar` trait
-/// bounds so the generated method bodies can call those traits on the params.
-/// Generic parameters explicitly opted into `decimal(...)` also receive the
-/// configured `Decimal128Encode` bound.
+#[derive(Default)]
+struct GenericRequirements {
+    nested_params: Vec<syn::Ident>,
+    nested_paths: Vec<syn::Path>,
+    decimal_params: Vec<syn::Ident>,
+    decimal_paths: Vec<syn::Path>,
+    as_ref_str: Vec<syn::Ident>,
+    as_ref_str_paths: Vec<syn::Path>,
+}
+
+fn push_unique(out: &mut Vec<syn::Ident>, ident: &syn::Ident) {
+    if !out.iter().any(|existing| existing == ident) {
+        out.push(ident.clone());
+    }
+}
+
+fn contains_ident(items: &[syn::Ident], ident: &syn::Ident) -> bool {
+    items.iter().any(|item| item == ident)
+}
+
+fn push_unique_path(out: &mut Vec<syn::Path>, path: &syn::Path) {
+    let key = path.to_token_stream().to_string();
+    if !out
+        .iter()
+        .any(|existing| existing.to_token_stream().to_string() == key)
+    {
+        out.push(path.clone());
+    }
+}
+
+fn collect_tuple_element_requirements(elem: &TupleElement, reqs: &mut GenericRequirements) {
+    collect_leaf_requirements(&elem.leaf_spec, reqs);
+}
+
+fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
+    match leaf {
+        LeafSpec::Generic(ident) => {
+            push_unique(&mut reqs.nested_params, ident);
+        }
+        LeafSpec::Struct(path) => {
+            push_unique_path(&mut reqs.nested_paths, path);
+        }
+        LeafSpec::AsStr(StringyBase::Generic(ident)) => {
+            push_unique(&mut reqs.as_ref_str, ident);
+        }
+        LeafSpec::AsStr(StringyBase::Struct(path)) => {
+            push_unique_path(&mut reqs.as_ref_str_paths, path);
+        }
+        LeafSpec::Tuple(elements) => {
+            for elem in elements {
+                collect_tuple_element_requirements(elem, reqs);
+            }
+        }
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::AsString
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Binary => {}
+    }
+}
+
+fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
+    let mut reqs = GenericRequirements::default();
+
+    for field in &ir.fields {
+        collect_leaf_requirements(&field.leaf_spec, &mut reqs);
+
+        for ident in &field.decimal_generic_params {
+            push_unique(&mut reqs.decimal_params, ident);
+        }
+
+        if let Some(path) = &field.decimal_backend_path {
+            push_unique_path(&mut reqs.decimal_paths, path);
+        }
+    }
+
+    reqs
+}
+
+/// Build `impl_generics`, `ty_generics`, and `where_clause` token streams
+/// suitable for splicing into an `impl` header. Generic bounds are driven by
+/// each parameter's role: direct generic dataframe payloads need `ToDataFrame
+/// + Columnar`, decimal backends need `Decimal128Encode`, generic `as_str`
+/// leaves need `AsRef<str>`, and concrete conversion/nested paths receive
+/// exact `where` predicates.
 pub fn impl_parts_with_bounds(
     ir: &StructIR,
     config: &MacroConfig,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let mut generics = ir.generics.clone();
+    let reqs = collect_generic_requirements(ir);
+
     let to_df_trait = &config.to_dataframe_trait_path;
     let columnar_trait = &config.columnar_trait_path;
     let decimal_trait = &config.decimal128_encode_trait_path;
@@ -137,6 +226,8 @@ pub fn impl_parts_with_bounds(
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
     let decimal_bound: syn::TypeParamBound =
         syn::parse2(quote! { #decimal_trait }).expect("trait path should parse as bound");
+    let as_ref_str_bound: syn::TypeParamBound = syn::parse2(quote! { ::core::convert::AsRef<str> })
+        .expect("AsRef<str> should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
     // `Columnar::columnar_from_refs`, and every primitive-vec branch in the
     // encoder IR borrows from the for-loop binding directly. A user with a
@@ -144,16 +235,56 @@ pub fn impl_parts_with_bounds(
     // `ToDataFrame` on a struct holding `T` without that bound leaking from
     // the macro.
     for tp in generics.type_params_mut() {
-        tp.bounds.push(to_df_bound.clone());
-        tp.bounds.push(columnar_bound.clone());
-        if ir
-            .fields
-            .iter()
-            .any(|f| f.decimal_generic_params.iter().any(|p| p == &tp.ident))
-        {
+        if contains_ident(&reqs.nested_params, &tp.ident) {
+            tp.bounds.push(to_df_bound.clone());
+            tp.bounds.push(columnar_bound.clone());
+        }
+
+        if contains_ident(&reqs.decimal_params, &tp.ident) {
             tp.bounds.push(decimal_bound.clone());
         }
+
+        if contains_ident(&reqs.as_ref_str, &tp.ident) {
+            tp.bounds.push(as_ref_str_bound.clone());
+        }
     }
+
+    if !reqs.nested_paths.is_empty()
+        || !reqs.as_ref_str_paths.is_empty()
+        || !reqs.decimal_paths.is_empty()
+    {
+        let where_clause_mut = generics.make_where_clause();
+
+        for path in &reqs.nested_paths {
+            let nested_ty = quote! { #path };
+
+            where_clause_mut.predicates.push(
+                syn::parse2(quote! { #nested_ty: #to_df_trait })
+                    .expect("nested ToDataFrame where predicate should parse"),
+            );
+            where_clause_mut.predicates.push(
+                syn::parse2(quote! { #nested_ty: #columnar_trait })
+                    .expect("nested Columnar where predicate should parse"),
+            );
+        }
+        for path in &reqs.as_ref_str_paths {
+            let as_str_ty = quote! { #path };
+
+            where_clause_mut.predicates.push(
+                syn::parse2(quote! { #as_str_ty: ::core::convert::AsRef<str> })
+                    .expect("as_str path where predicate should parse"),
+            );
+        }
+        for path in &reqs.decimal_paths {
+            let decimal_ty = quote! { #path };
+
+            where_clause_mut.predicates.push(
+                syn::parse2(quote! { #decimal_ty: #decimal_trait })
+                    .expect("decimal backend where predicate should parse"),
+            );
+        }
+    }
+
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     (
         quote! { #impl_generics },

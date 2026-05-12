@@ -10,8 +10,8 @@
 //! - Inspect the schema (column names and `DataType`s) at compile time via a generated method
 //!
 //! It supports nested structs (flattened with dot notation), `Option<T>`, `Vec<T>`, tuple structs,
-//! and key domain types like `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, and decimal backend
-//! paths named `Decimal`.
+//! and key domain types like `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, and
+//! `rust_decimal::Decimal`.
 //!
 //! ## Installation
 //!
@@ -157,10 +157,8 @@
 //!   `dtype-duration`); override per-field with `#[df_derive(time_unit = "ms"|"us"|"ns")]`.
 //!   Bare `Duration` (no qualifier) is rejected as ambiguous — use `std::time::Duration`,
 //!   `core::time::Duration`, or `chrono::Duration` to disambiguate.
-//! - **Decimal**: any type path whose last segment is `Decimal` (for example
-//!   `rust_decimal::Decimal` or a facade such as `paft_decimal::Decimal`) → `Decimal(38, 10)`
-//!   by default. This implicit detection is syntax-based because proc macros cannot resolve
-//!   type aliases. For differently named decimal backends, use
+//! - **Decimal**: bare `Decimal` or `rust_decimal::Decimal` → `Decimal(38, 10)`
+//!   by default. For custom decimal backends, use
 //!   `#[df_derive(decimal(precision = N, scale = N))]` and implement `Decimal128Encode`.
 //! - **Binary blobs**: opt-in per field with `#[df_derive(as_binary)]` over a `Vec<u8>`,
 //!   `&[u8]`, or `Cow<'_, [u8]>` shape; the default for `Vec<u8>` (no attribute) remains
@@ -435,11 +433,10 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// - `std::time::Duration`, `core::time::Duration`, and `chrono::Duration` (alias for
 ///   `chrono::TimeDelta`) → `Duration(Nanoseconds)` by default; override with
 ///   `#[df_derive(time_unit = "ms"|"us"|"ns")]`. Bare `Duration` is ambiguous and rejected.
-/// - Decimal backends written with a final `Decimal` path segment, such as
-///   `rust_decimal::Decimal` or `paft_decimal::Decimal` (default: `Decimal(38, 10)`;
-///   override with `#[df_derive(decimal(precision = N, scale = N))]`). This is a
-///   syntax-level heuristic, not type resolution; differently named backends opt in with
-///   explicit `decimal(...)` and a `Decimal128Encode` impl.
+/// - Decimal backends written as bare `Decimal` or `rust_decimal::Decimal`
+///   (default: `Decimal(38, 10)`; override with
+///   `#[df_derive(decimal(precision = N, scale = N))]`). Custom backends opt in
+///   with explicit `decimal(...)` and a `Decimal128Encode` impl.
 ///
 /// Attributes:
 ///
@@ -464,7 +461,7 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   non-`u8` leaves are rejected at parse time. Mutually exclusive with `as_str`,
 ///   `as_string`, `decimal(...)`, and `time_unit = "..."`.
 /// - Field-level: `#[df_derive(decimal(precision = N, scale = N))]` to choose the
-///   `Decimal(precision, scale)` dtype for a path named `Decimal` or to explicitly opt a
+///   `Decimal(precision, scale)` dtype for a built-in decimal path or to explicitly opt a
 ///   custom/generic decimal backend into `Decimal128Encode` dispatch. Polars requires
 ///   `1 <= precision <= 38`; `scale` may not exceed `precision`.
 /// - Field-level: `#[df_derive(time_unit = "ms"|"us"|"ns")]` to choose the
@@ -487,10 +484,12 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 /// Notes:
 ///
 /// - Enums are not supported for derive.
-/// - Generic structs are supported; the macro injects `ToDataFrame + Columnar`
-///   bounds on every type parameter, plus `Decimal128Encode` for generic parameters explicitly
-///   annotated with `decimal(...)`. The unit type `()` is a valid generic payload (zero columns);
-///   direct `field: ()` fields are rejected.
+/// - Generic structs are supported; the macro adds bounds only for the roles a
+///   generic parameter actually plays (`ToDataFrame + Columnar` for nested
+///   dataframe payloads, `AsRef<str>` for generic `as_str`, and
+///   `Decimal128Encode` for generic decimal backends). The unit type `()` is a
+///   valid generic payload (zero columns); direct `field: ()` fields are
+///   rejected.
 /// - All nested custom structs must also derive `ToDataFrame`.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.

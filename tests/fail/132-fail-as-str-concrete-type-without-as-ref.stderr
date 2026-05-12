@@ -1,0 +1,31 @@
+error[E0277]: the trait bound `custom::Option<NotAsRef>: AsRef<str>` is not satisfied
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `AsRef<str>` is not implemented for `custom::Option<NotAsRef>`
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:6:5
+   |
+ 6 |     pub struct Option<T>(pub T);
+   |     ^^^^^^^^^^^^^^^^^^^^
+   = help: see issue #48214
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `custom::Option<NotAsRef>: AsRef<str>` is not satisfied
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:14:12
+   |
+14 |     label: custom::Option<NotAsRef>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `AsRef<str>` is not implemented for `custom::Option<NotAsRef>`
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:6:5
+   |
+ 6 |     pub struct Option<T>(pub T);
+   |     ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__df_derive_assert_as_ref_str`
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ required by this bound in `__df_derive_assert_as_ref_str`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

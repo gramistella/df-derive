@@ -10,8 +10,8 @@ pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
 /// `time_unit` override. Nanoseconds is the most-information-preserving
 /// choice and matches `polars-arrow`'s default `Duration` representation.
 pub const DEFAULT_DURATION_UNIT: DateTimeUnit = DateTimeUnit::Nanoseconds;
-/// Default `Decimal(precision, scale)` for fields whose written type path
-/// ends in `Decimal` and has no explicit `decimal(...)` override.
+/// Default `Decimal(precision, scale)` for bare `Decimal` or
+/// `rust_decimal::Decimal` fields without an explicit `decimal(...)` override.
 pub const DEFAULT_DECIMAL_PRECISION: u8 = 38;
 /// Default scale paired with `DEFAULT_DECIMAL_PRECISION`.
 pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
@@ -54,21 +54,19 @@ pub enum AnalyzedBase {
     /// struct or generic fallback.
     CowSlice,
     Bool,
-    /// `chrono::DateTime<Tz>` — syntax-detected by a final `DateTime`
-    /// path segment with one generic timezone argument. The encoder stores
-    /// the UTC instant via chrono's `timestamp_*` methods and materializes
+    /// `chrono::DateTime<Tz>` — syntax-detected for bare `DateTime<Tz>` or
+    /// canonical `chrono::DateTime<Tz>` paths. The encoder stores the UTC
+    /// instant via chrono's `timestamp_*` methods and materializes
     /// `Datetime(unit, None)`.
     DateTimeTz,
-    /// `chrono::NaiveDate` — last-segment `NaiveDate` with no generic args
-    /// matches, mirroring `is_chrono_datetime`'s leniency. The encoder emits
-    /// chrono calls; a same-name false positive surfaces as a compile
-    /// error at the call site.
+    /// `chrono::NaiveDate` — bare `NaiveDate` or canonical
+    /// `chrono::NaiveDate`.
     NaiveDate,
-    /// `chrono::NaiveTime` — last-segment `NaiveTime` with no generic args
-    /// matches, same leniency as [`Self::NaiveDate`].
+    /// `chrono::NaiveTime` — bare `NaiveTime` or canonical
+    /// `chrono::NaiveTime`.
     NaiveTime,
-    /// `chrono::NaiveDateTime` — last-segment `NaiveDateTime` with no
-    /// generic args matches, same leniency as [`Self::NaiveDate`].
+    /// `chrono::NaiveDateTime` — bare `NaiveDateTime` or canonical
+    /// `chrono::NaiveDateTime`.
     NaiveDateTime,
     /// Exactly `std::time::Duration` or `core::time::Duration`. Detected by
     /// strict path matching to disambiguate from `chrono::Duration` and the
@@ -79,11 +77,8 @@ pub enum AnalyzedBase {
     /// segment matching. Codegen uses the user's declared field-type tokens
     /// directly so type inference resolves the alias correctly.
     ChronoDuration,
-    /// Any path whose last segment is `Decimal`. This is deliberately
-    /// syntax-based: derive macros cannot resolve type aliases or prove this
-    /// is `rust_decimal::Decimal`, so projects such as paft can expose a
-    /// backend facade (`paft_decimal::Decimal`) and still get implicit decimal
-    /// support. Non-`Decimal` backend names opt in with `decimal(...)`.
+    /// Bare `Decimal` or canonical `rust_decimal::Decimal`. Other decimal
+    /// backend names opt in with `decimal(...)`.
     Decimal,
     /// Concrete user-defined struct path as written at the field's use site
     /// (for example `Foo`, `models::Foo`, or `models::Foo<M>`).
@@ -126,11 +121,33 @@ pub struct AnalyzedType {
     pub inner_smart_ptr_depth: usize,
 }
 
+fn bare_generic_param_ident(ty: &Type, generic_params: &[Ident]) -> Option<Ident> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return None;
+    }
+
+    let segment = type_path.path.segments.last()?;
+    if !matches!(segment.arguments, PathArguments::None) {
+        return None;
+    }
+
+    generic_params
+        .iter()
+        .any(|param| param == &segment.ident)
+        .then(|| segment.ident.clone())
+}
+
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
     let peeled = peel_type_wrappers(ty);
 
-    reject_unsupported_collection_type(peeled.current_type)?;
-    reject_bare_duration(peeled.current_type, generic_params)?;
+    if bare_generic_param_ident(peeled.current_type, generic_params).is_none() {
+        reject_unsupported_collection_type(peeled.current_type)?;
+        reject_bare_duration(peeled.current_type, generic_params)?;
+    }
 
     let base = analyze_base_type(peeled.current_type, generic_params)?;
 
@@ -173,19 +190,28 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
     // semantic bases because they are unsized and need domain-specific
     // parser decisions.
     loop {
-        if let Some(inner_ty) = extract_inner_type(current_type, "Option") {
+        if let Some(inner_ty) =
+            extract_inner_type(current_type, "Option", &["std", "option", "Option"]).or_else(|| {
+                extract_inner_type(current_type, "Option", &["core", "option", "Option"])
+            })
+        {
             wrappers.push(RawWrapper::Option);
             current_type = inner_ty;
             continue;
         }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Vec") {
+        if let Some(inner_ty) = extract_inner_type(current_type, "Vec", &["std", "vec", "Vec"])
+            .or_else(|| extract_inner_type(current_type, "Vec", &["alloc", "vec", "Vec"]))
+        {
             wrappers.push(RawWrapper::Vec);
             current_type = inner_ty;
             continue;
         }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Box")
-            .or_else(|| extract_inner_type(current_type, "Rc"))
-            .or_else(|| extract_inner_type(current_type, "Arc"))
+        if let Some(inner_ty) = extract_inner_type(current_type, "Box", &["std", "boxed", "Box"])
+            .or_else(|| extract_inner_type(current_type, "Box", &["alloc", "boxed", "Box"]))
+            .or_else(|| extract_inner_type(current_type, "Rc", &["std", "rc", "Rc"]))
+            .or_else(|| extract_inner_type(current_type, "Rc", &["alloc", "rc", "Rc"]))
+            .or_else(|| extract_inner_type(current_type, "Arc", &["std", "sync", "Arc"]))
+            .or_else(|| extract_inner_type(current_type, "Arc", &["alloc", "sync", "Arc"]))
         {
             bump_smart_ptr_depths(
                 &mut outer_smart_ptr_depth,
@@ -240,9 +266,9 @@ fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Er
     // generic "Unsupported field type" error or — worse — be silently
     // routed through the `Struct` arm and explode at codegen time.
     if let Type::Path(type_path) = current_type
-        && let Some(segment) = type_path.path.segments.last()
+        && let Some(collection) = unsupported_collection_name(type_path)
     {
-        let hint: Option<&'static str> = match segment.ident.to_string().as_str() {
+        let hint: Option<&'static str> = match collection {
             "HashMap" => Some(
                 "df-derive does not support `HashMap` fields. Convert to \
                  `Vec<(K, V)>` or pre-flatten into named columns before assignment.",
@@ -313,8 +339,8 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     {
         return Ok(base);
     }
-    if is_chrono_datetime(ty) {
-        return Ok(AnalyzedBase::DateTimeTz);
+    if let Some(ident) = bare_generic_param_ident(ty, generic_params) {
+        return Ok(AnalyzedBase::Generic(ident));
     }
     // Disambiguate `Duration` first (qualified-path matches) — both bases
     // share the last segment `Duration`, so naive last-segment matching is
@@ -333,63 +359,173 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
             return Ok(AnalyzedBase::ChronoDuration);
         }
     }
-    if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-    {
-        let type_ident = &segment.ident;
-        let has_args = !matches!(segment.arguments, PathArguments::None);
-        let is_single_segment = type_path.qself.is_none() && type_path.path.segments.len() == 1;
-        let base = match type_ident.to_string().as_str() {
-            "String" => AnalyzedBase::String,
-            "f64" => AnalyzedBase::Numeric(NumericKind::F64),
-            "f32" => AnalyzedBase::Numeric(NumericKind::F32),
-            "i8" => AnalyzedBase::Numeric(NumericKind::I8),
-            "u8" => AnalyzedBase::Numeric(NumericKind::U8),
-            "i16" => AnalyzedBase::Numeric(NumericKind::I16),
-            "u16" => AnalyzedBase::Numeric(NumericKind::U16),
-            "i64" => AnalyzedBase::Numeric(NumericKind::I64),
-            "i128" => AnalyzedBase::Numeric(NumericKind::I128),
-            "isize" => AnalyzedBase::Numeric(NumericKind::ISize),
-            "u64" => AnalyzedBase::Numeric(NumericKind::U64),
-            "u128" => AnalyzedBase::Numeric(NumericKind::U128),
-            "usize" => AnalyzedBase::Numeric(NumericKind::USize),
-            "u32" => AnalyzedBase::Numeric(NumericKind::U32),
-            "i32" => AnalyzedBase::Numeric(NumericKind::I32),
-            "NonZeroI8" => AnalyzedBase::Numeric(NumericKind::NonZeroI8),
-            "NonZeroI16" => AnalyzedBase::Numeric(NumericKind::NonZeroI16),
-            "NonZeroI32" => AnalyzedBase::Numeric(NumericKind::NonZeroI32),
-            "NonZeroI64" => AnalyzedBase::Numeric(NumericKind::NonZeroI64),
-            "NonZeroI128" => AnalyzedBase::Numeric(NumericKind::NonZeroI128),
-            "NonZeroIsize" => AnalyzedBase::Numeric(NumericKind::NonZeroISize),
-            "NonZeroU8" => AnalyzedBase::Numeric(NumericKind::NonZeroU8),
-            "NonZeroU16" => AnalyzedBase::Numeric(NumericKind::NonZeroU16),
-            "NonZeroU32" => AnalyzedBase::Numeric(NumericKind::NonZeroU32),
-            "NonZeroU64" => AnalyzedBase::Numeric(NumericKind::NonZeroU64),
-            "NonZeroU128" => AnalyzedBase::Numeric(NumericKind::NonZeroU128),
-            "NonZeroUsize" => AnalyzedBase::Numeric(NumericKind::NonZeroUSize),
-            "bool" => AnalyzedBase::Bool,
-            "Decimal" => AnalyzedBase::Decimal,
-            // Last-segment ident matching, mirroring `is_chrono_datetime`'s
-            // leniency. `NaiveDate`, `NaiveTime`, and `NaiveDateTime` take
-            // no generic arguments, so a re-export under another path still
-            // resolves to chrono's type at the call site; if the user's type
-            // happens to share the name without sharing the API, the generated
-            // chrono method calls fail at compile time at the user's field site.
-            "NaiveDate" if !has_args => AnalyzedBase::NaiveDate,
-            "NaiveTime" if !has_args => AnalyzedBase::NaiveTime,
-            "NaiveDateTime" if !has_args => AnalyzedBase::NaiveDateTime,
-            _ => {
-                if is_single_segment && !has_args && generic_params.iter().any(|p| p == type_ident)
-                {
-                    AnalyzedBase::Generic(type_ident.clone())
-                } else {
-                    AnalyzedBase::Struct(type_path.path.clone())
-                }
-            }
-        };
-        return Ok(base);
+    if let Type::Path(type_path) = ty {
+        if is_chrono_datetime(type_path) {
+            return Ok(AnalyzedBase::DateTimeTz);
+        }
+        if let Some(kind) = bare_numeric_kind(type_path).or_else(|| nonzero_numeric_kind(type_path))
+        {
+            return Ok(AnalyzedBase::Numeric(kind));
+        }
+        if path_is_exact_no_args(type_path, &["bool"]) {
+            return Ok(AnalyzedBase::Bool);
+        }
+        if is_string_type(type_path) {
+            return Ok(AnalyzedBase::String);
+        }
+        if is_decimal_type(type_path) {
+            return Ok(AnalyzedBase::Decimal);
+        }
+        if is_chrono_no_args_type(type_path, "NaiveDate") {
+            return Ok(AnalyzedBase::NaiveDate);
+        }
+        if is_chrono_no_args_type(type_path, "NaiveTime") {
+            return Ok(AnalyzedBase::NaiveTime);
+        }
+        if is_chrono_no_args_type(type_path, "NaiveDateTime") {
+            return Ok(AnalyzedBase::NaiveDateTime);
+        }
+        return Ok(AnalyzedBase::Struct(type_path.path.clone()));
     }
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
+}
+
+fn path_is_exact_no_args(type_path: &TypePath, segments: &[&str]) -> bool {
+    type_path.qself.is_none()
+        && type_path.path.segments.len() == segments.len()
+        && type_path
+            .path
+            .segments
+            .iter()
+            .zip(segments)
+            .all(|(segment, expected)| {
+                segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
+            })
+}
+
+fn path_is_exact_with_leaf_args(type_path: &TypePath, segments: &[&str]) -> bool {
+    type_path.qself.is_none()
+        && type_path.path.segments.len() == segments.len()
+        && type_path
+            .path
+            .segments
+            .iter()
+            .zip(segments)
+            .enumerate()
+            .all(|(idx, (segment, expected))| {
+                segment.ident == *expected
+                    && (idx + 1 == segments.len()
+                        || matches!(segment.arguments, PathArguments::None))
+            })
+}
+
+fn unsupported_collection_name(type_path: &TypePath) -> Option<&'static str> {
+    ["HashMap", "BTreeMap", "HashSet"]
+        .into_iter()
+        .find(|&name| path_is_bare_or_std_collection(type_path, name))
+}
+
+fn path_is_bare_or_std_collection(type_path: &TypePath, leaf: &str) -> bool {
+    type_path.qself.is_none()
+        && ((type_path.path.segments.len() == 1
+            && type_path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == leaf))
+            || (type_path.path.segments.len() == 3
+                && path_prefix_is_no_args(type_path, &["std", "collections"])
+                && type_path
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == leaf)))
+}
+
+fn path_prefix_is_no_args(type_path: &TypePath, prefix: &[&str]) -> bool {
+    type_path.path.segments.len() > prefix.len()
+        && type_path
+            .path
+            .segments
+            .iter()
+            .zip(prefix)
+            .all(|(segment, expected)| {
+                segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
+            })
+}
+
+fn bare_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = type_path.path.segments.last()?;
+    if !matches!(segment.arguments, PathArguments::None) {
+        return None;
+    }
+    match segment.ident.to_string().as_str() {
+        "f64" => Some(NumericKind::F64),
+        "f32" => Some(NumericKind::F32),
+        "i8" => Some(NumericKind::I8),
+        "u8" => Some(NumericKind::U8),
+        "i16" => Some(NumericKind::I16),
+        "u16" => Some(NumericKind::U16),
+        "i64" => Some(NumericKind::I64),
+        "i128" => Some(NumericKind::I128),
+        "isize" => Some(NumericKind::ISize),
+        "u64" => Some(NumericKind::U64),
+        "u128" => Some(NumericKind::U128),
+        "usize" => Some(NumericKind::USize),
+        "u32" => Some(NumericKind::U32),
+        "i32" => Some(NumericKind::I32),
+        _ => None,
+    }
+}
+
+fn nonzero_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
+    let segment = type_path.path.segments.last()?;
+    if !matches!(segment.arguments, PathArguments::None) {
+        return None;
+    }
+    let kind = match segment.ident.to_string().as_str() {
+        "NonZeroI8" => NumericKind::NonZeroI8,
+        "NonZeroI16" => NumericKind::NonZeroI16,
+        "NonZeroI32" => NumericKind::NonZeroI32,
+        "NonZeroI64" => NumericKind::NonZeroI64,
+        "NonZeroI128" => NumericKind::NonZeroI128,
+        "NonZeroIsize" => NumericKind::NonZeroISize,
+        "NonZeroU8" => NumericKind::NonZeroU8,
+        "NonZeroU16" => NumericKind::NonZeroU16,
+        "NonZeroU32" => NumericKind::NonZeroU32,
+        "NonZeroU64" => NumericKind::NonZeroU64,
+        "NonZeroU128" => NumericKind::NonZeroU128,
+        "NonZeroUsize" => NumericKind::NonZeroUSize,
+        _ => return None,
+    };
+    let leaf = segment.ident.to_string();
+    let leaf = leaf.as_str();
+    if path_is_exact_no_args(type_path, &[leaf])
+        || path_is_exact_no_args(type_path, &["std", "num", leaf])
+        || path_is_exact_no_args(type_path, &["core", "num", leaf])
+    {
+        Some(kind)
+    } else {
+        None
+    }
+}
+
+fn is_string_type(type_path: &TypePath) -> bool {
+    path_is_exact_no_args(type_path, &["String"])
+        || path_is_exact_no_args(type_path, &["std", "string", "String"])
+        || path_is_exact_no_args(type_path, &["alloc", "string", "String"])
+}
+
+fn is_decimal_type(type_path: &TypePath) -> bool {
+    path_is_exact_no_args(type_path, &["Decimal"])
+        || path_is_exact_no_args(type_path, &["rust_decimal", "Decimal"])
+}
+
+fn is_chrono_no_args_type(type_path: &TypePath, leaf: &str) -> bool {
+    path_is_exact_no_args(type_path, &[leaf]) || path_is_exact_no_args(type_path, &["chrono", leaf])
 }
 
 /// Detect exactly `std::time::Duration` or `core::time::Duration`.
@@ -426,40 +562,28 @@ fn is_std_duration(type_path: &TypePath) -> bool {
 /// the user's declared field-type tokens directly so type inference handles
 /// the alias transparently.
 fn is_chrono_duration(type_path: &TypePath) -> bool {
-    let segs: Vec<String> = type_path
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    let last = match segs.last() {
-        Some(s) if s == "Duration" || s == "TimeDelta" => s,
+    let leaf = match type_path.path.segments.last() {
+        Some(segment)
+            if matches!(segment.arguments, PathArguments::None)
+                && (segment.ident == "Duration" || segment.ident == "TimeDelta") =>
+        {
+            segment.ident.to_string()
+        }
         _ => return false,
     };
-    // For unqualified `Duration`, only accept when the path is rooted at
-    // `chrono::` or contains a `chrono` segment somewhere — bare `Duration`
-    // is rejected upstream, but a path like `mycrate::Duration` should not
-    // route here. `TimeDelta` is chrono-specific enough that the bare-ident
-    // case is unlikely to collide; still require an upstream `chrono` for
-    // symmetry.
-    if last == "Duration" {
-        // Accept paths like `chrono::Duration` or `::chrono::Duration`.
-        // Reject `std::time::Duration` (handled by `is_std_duration`),
-        // `core::time::Duration`, or anything with a `time` segment in
-        // the path — those are the std flavor.
-        if segs.iter().any(|s| s == "time") {
-            return false;
-        }
-        return segs.iter().any(|s| s == "chrono");
-    }
-    // `TimeDelta` only lives in chrono.
-    segs.iter().any(|s| s == "chrono") || segs.len() == 1
+    let leaf = leaf.as_str();
+    path_is_exact_no_args(type_path, &[leaf]) || path_is_exact_no_args(type_path, &["chrono", leaf])
 }
 
-fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
+fn wrapper_path_matches(type_path: &TypePath, bare: &str, qualified: &[&str]) -> bool {
+    path_is_exact_with_leaf_args(type_path, &[bare])
+        || path_is_exact_with_leaf_args(type_path, qualified)
+}
+
+fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str, qualified: &[&str]) -> Option<&'a Type> {
     if let Type::Path(type_path) = ty
+        && wrapper_path_matches(type_path, wrapper, qualified)
         && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == wrapper
         && let PathArguments::AngleBracketed(args) = &segment.arguments
         && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
     {
@@ -481,15 +605,14 @@ enum CowPeel<'a> {
     KeepAsSemanticBase,
 }
 
-/// Peel a `Cow<'a, T>` layer if the type is one. Last-segment ident match
-/// (mirrors `extract_inner_type`'s leniency for qualified paths like
-/// `std::borrow::Cow`). Returns `None` for non-Cow types.
+/// Peel a `Cow<'a, T>` layer if the type is one. Only bare `Cow` and the
+/// canonical std/alloc paths are recognized; user paths such as
+/// `domain::Cow<T>` remain custom structs.
 fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
     let Type::Path(type_path) = ty else {
         return None;
     };
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Cow" {
+    if !is_cow_path(type_path) {
         return None;
     }
     let inner_ty = cow_inner_type(type_path)?;
@@ -502,11 +625,17 @@ fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
     Some(CowPeel::Rebind(inner_ty))
 }
 
+fn is_cow_path(type_path: &TypePath) -> bool {
+    path_is_exact_with_leaf_args(type_path, &["Cow"])
+        || path_is_exact_with_leaf_args(type_path, &["std", "borrow", "Cow"])
+        || path_is_exact_with_leaf_args(type_path, &["alloc", "borrow", "Cow"])
+}
+
 fn cow_inner_type(type_path: &TypePath) -> Option<&Type> {
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Cow" {
+    if !is_cow_path(type_path) {
         return None;
     }
+    let segment = type_path.path.segments.last()?;
     let PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
@@ -573,31 +702,22 @@ fn analyze_cow_base(type_path: &TypePath) -> Option<AnalyzedBase> {
     }
 }
 
-/// Detect a `chrono::DateTime<Tz>` field by ident only.
-///
-/// The match looks at the last segment of the outer path (`DateTime`) and
-/// requires one generic timezone argument. Anything that happens to share
-/// that shape — e.g. `some_other_crate::DateTime<some::Tz>` — would be a
-/// false positive and routed through the chrono encoder.
-///
-/// This leniency is intentional: user crates frequently re-export chrono's
-/// `DateTime<Tz>` under their own paths (type aliases, prelude modules, glob
-/// re-exports), and tightening the match to a specific path prefix would break
-/// those uses without a robust way to recover the original definition from a
-/// `syn::Type` alone. The proc-macro happily generates code that calls
-/// chrono's `timestamp_*` methods; if the type isn't actually chrono's, the
-/// user gets a compile error at the call site, which is the correct failure
-/// mode.
-fn is_chrono_datetime(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "DateTime"
-        && let PathArguments::AngleBracketed(args) = &segment.arguments
+/// Detect a `chrono::DateTime<Tz>` field as either bare `DateTime<Tz>` or
+/// canonical `chrono::DateTime<Tz>`. Qualified custom paths such as
+/// `domain::DateTime<T>` remain user structs.
+fn is_chrono_datetime(type_path: &TypePath) -> bool {
+    if !path_is_exact_with_leaf_args(type_path, &["DateTime"])
+        && !path_is_exact_with_leaf_args(type_path, &["chrono", "DateTime"])
     {
-        return args
-            .args
-            .iter()
-            .any(|arg| matches!(arg, GenericArgument::Type(_)));
+        return false;
     }
-    false
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    args.args
+        .iter()
+        .any(|arg| matches!(arg, GenericArgument::Type(_)))
 }

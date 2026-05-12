@@ -114,12 +114,17 @@ pub(in crate::codegen) enum EmitMode {
 /// runtime helper for nested fields, or emits a one-element vec literal
 /// for primitive fields. The two leaf shapes are byte-equivalent to the
 /// pre-refactor `build_schema_entries` / `build_empty_series` emissions.
-fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
+fn build_field_entries(
+    field: &FieldIR,
+    mode: EmitMode,
+    config: &super::MacroConfig,
+) -> TokenStream {
     let name = field.name.to_string();
     match (field.leaf_spec.route(), mode) {
         (FieldRoute::Nested { type_path }, EmitMode::SchemaEntries) => {
             super::nested::generate_schema_entries_for_struct(
                 &type_path,
+                &config.to_dataframe_trait_path,
                 &name,
                 field.wrapper_shape.vec_depth(),
             )
@@ -127,6 +132,7 @@ fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
         (FieldRoute::Nested { type_path }, EmitMode::EmptyRows) => {
             super::nested::nested_empty_series_row(
                 &type_path,
+                &config.to_dataframe_trait_path,
                 &name,
                 field.wrapper_shape.vec_depth(),
             )
@@ -144,7 +150,7 @@ fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
             let LeafSpec::Tuple(elements) = &field.leaf_spec else {
                 unreachable!("FieldRoute::Tuple implies LeafSpec::Tuple")
             };
-            super::encoder::build_tuple_field_entries(field, elements, mode)
+            super::encoder::build_tuple_field_entries(field, elements, mode, config)
         }
     }
 }
@@ -153,15 +159,15 @@ fn build_field_entries(field: &FieldIR, mode: EmitMode) -> TokenStream {
 /// `Vec<(String, DataType)>` at runtime — primitive fields return a
 /// one-element vec, nested fields return one entry per inner schema column
 /// (with the parent name prefixed).
-pub fn build_schema_entries(field: &FieldIR) -> TokenStream {
-    build_field_entries(field, EmitMode::SchemaEntries)
+pub fn build_schema_entries(field: &FieldIR, config: &super::MacroConfig) -> TokenStream {
+    build_field_entries(field, EmitMode::SchemaEntries, config)
 }
 
 /// Build the empty-series token expression for one field. Evaluates to a
 /// `Vec<Column>` at runtime — primitive fields produce one empty Series,
 /// nested fields produce one empty Series per inner schema column.
-pub fn build_empty_series(field: &FieldIR) -> TokenStream {
-    build_field_entries(field, EmitMode::EmptyRows)
+pub fn build_empty_series(field: &FieldIR, config: &super::MacroConfig) -> TokenStream {
+    build_field_entries(field, EmitMode::EmptyRows, config)
 }
 
 fn field_full_dtype(field: &FieldIR) -> TokenStream {

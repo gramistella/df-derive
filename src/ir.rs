@@ -29,15 +29,15 @@ pub struct FieldIR {
     /// validity bit; the count is preserved so the encoder can decide
     /// whether a multi-Option `as_ref().and_then(...)` collapse is needed).
     pub wrapper_shape: WrapperShape,
-    /// The original `syn::Type` of the field. Preserved so codegen can splice
-    /// it into trait-bound asserts (e.g. `T: AsRef<str>`) with the user's
-    /// source span, putting compiler errors at the field declaration rather
-    /// than deep in macro expansion.
-    pub field_ty: syn::Type,
     /// Generic type parameters that were explicitly opted into decimal
     /// encoding with `#[df_derive(decimal(...))]`. Codegen uses this to add
     /// `Decimal128Encode` bounds only for the generic params that need them.
     pub decimal_generic_params: Vec<Ident>,
+    /// Concrete custom backend path explicitly opted into decimal encoding with
+    /// `#[df_derive(decimal(...))]`. Codegen adds an exact `Decimal128Encode`
+    /// where-predicate on this type instead of guessing bounds for any generic
+    /// arguments it contains.
+    pub decimal_backend_path: Option<Path>,
     /// Number of transparent pointer layers (`Box`/`Rc`/`Arc`/sized `Cow`/
     /// borrowed references) peeled at the OUTER position — above any
     /// `Option`/`Vec` wrapper. The codegen wraps the raw field access in this
@@ -216,11 +216,6 @@ pub struct TupleElement {
     /// Element's wrapper shape — `Option`s and `Vec`s peeled off the element
     /// type itself, before parent wrappers are composed.
     pub wrapper_shape: WrapperShape,
-    /// Element's own type token (preserved for span-anchored asserts on
-    /// future per-element diagnostics — currently unused because field-level
-    /// attributes are rejected on tuple-typed fields).
-    #[allow(dead_code)]
-    pub field_ty: syn::Type,
     /// Smart-pointer depth above any wrapper in the element type.
     pub outer_smart_ptr_depth: usize,
     /// Smart-pointer depth below a wrapper in the element type.

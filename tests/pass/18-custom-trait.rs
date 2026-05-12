@@ -74,6 +74,19 @@ struct ExplicitPath {
     value: f64,
 }
 
+#[derive(ToDataFrame)]
+#[df_derive(trait = "my_traits::MyToDataFrame", columnar = "my_traits::Columnar")]
+struct CustomInner {
+    value: i32,
+}
+
+#[derive(ToDataFrame)]
+#[df_derive(trait = "my_traits::MyToDataFrame", columnar = "my_traits::Columnar")]
+struct CustomOuter {
+    inner: CustomInner,
+    inners: Vec<CustomInner>,
+}
+
 fn main() {
     println!("--- Verifying side-by-side trait implementations ---");
 
@@ -115,6 +128,27 @@ fn main() {
     assert_eq!(df_explicit_vec.shape(), (2, 1));
     assert_eq!(df_explicit_vec.get_column_names(), &["value"]);
     println!("✅ Explicit path (columnar) implementation works.");
+
+    // == TEST D: Verify nested schema/empty generation uses the explicit trait path ==
+    let nested_schema = <CustomOuter as my_traits::MyToDataFrame>::schema().unwrap();
+    assert_eq!(nested_schema.len(), 2);
+    assert_eq!(nested_schema[0].0, "inner.value");
+    assert_eq!(nested_schema[0].1, DataType::Int32);
+    assert_eq!(nested_schema[1].0, "inners.value");
+    assert_eq!(nested_schema[1].1, DataType::List(Box::new(DataType::Int32)));
+
+    let empty_nested = <CustomOuter as my_traits::MyToDataFrame>::empty_dataframe().unwrap();
+    assert_eq!(empty_nested.shape(), (0, 2));
+    assert_eq!(empty_nested.get_column_names(), &["inner.value", "inners.value"]);
+
+    let nested_instance = CustomOuter {
+        inner: CustomInner { value: 1 },
+        inners: vec![CustomInner { value: 10 }, CustomInner { value: 20 }],
+    };
+    let nested_df = my_traits::MyToDataFrame::to_dataframe(&nested_instance).unwrap();
+    assert_eq!(nested_df.shape(), (1, 2));
+    assert_eq!(nested_df.get_column_names(), &["inner.value", "inners.value"]);
+    println!("✅ Custom path nested schema/empty implementation works.");
 
     println!("\n✅ Side-by-side test successful!");
 }

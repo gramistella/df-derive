@@ -21,20 +21,34 @@ fn gen_wrap_dtype_layers(layers: usize) -> TokenStream {
 
 pub fn nested_empty_series_row(
     type_path: &TokenStream,
+    to_df_trait: &TokenStream,
     name: &str,
     list_layers: usize,
 ) -> TokenStream {
-    generate_for_struct(type_path, name, list_layers, EmitMode::EmptyRows)
+    generate_for_struct(
+        type_path,
+        to_df_trait,
+        name,
+        list_layers,
+        EmitMode::EmptyRows,
+    )
 }
 
 // --- Schema and series-shape helpers ---
 
 pub fn generate_schema_entries_for_struct(
     type_path: &TokenStream,
+    to_df_trait: &TokenStream,
     column_name: &str,
     list_layers: usize,
 ) -> TokenStream {
-    generate_for_struct(type_path, column_name, list_layers, EmitMode::SchemaEntries)
+    generate_for_struct(
+        type_path,
+        to_df_trait,
+        column_name,
+        list_layers,
+        EmitMode::SchemaEntries,
+    )
 }
 
 /// Shared runtime emitter for the nested schema-entries / empty-rows pair.
@@ -45,6 +59,7 @@ pub fn generate_schema_entries_for_struct(
 /// expression vary, captured by [`EmitMode`].
 fn generate_for_struct(
     type_path: &TokenStream,
+    to_df_trait: &TokenStream,
     column_name: &str,
     list_layers: usize,
     mode: EmitMode,
@@ -56,7 +71,7 @@ fn generate_for_struct(
         EmitMode::SchemaEntries => quote! {
             {
                 let mut nested_fields: ::std::vec::Vec<(::std::string::String, #pp::DataType)> = ::std::vec::Vec::new();
-                for (inner_name, inner_dtype) in #type_path::schema()? {
+                for (inner_name, inner_dtype) in <#type_path as #to_df_trait>::schema()? {
                     let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
                     let mut #wrapped: #pp::DataType = inner_dtype;
                     #wrap_layers
@@ -68,7 +83,7 @@ fn generate_for_struct(
         EmitMode::EmptyRows => quote! {
             {
                 let mut nested_series: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
-                for (inner_name, inner_dtype) in #type_path::schema()? {
+                for (inner_name, inner_dtype) in <#type_path as #to_df_trait>::schema()? {
                     let prefixed_name = ::std::format!("{}.{}", #column_name, inner_name);
                     let mut #wrapped: #pp::DataType = inner_dtype;
                     #wrap_layers

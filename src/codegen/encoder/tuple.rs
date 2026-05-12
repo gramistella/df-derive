@@ -44,10 +44,11 @@ pub fn build_field_entries(
     field: &FieldIR,
     elements: &[TupleElement],
     mode: EmitMode,
+    config: &MacroConfig,
 ) -> TokenStream {
     let parent_name = field.name.to_string();
     let outer_layers = field.wrapper_shape.vec_depth();
-    build_tuple_entries(elements, &parent_name, outer_layers, mode)
+    build_tuple_entries(elements, &parent_name, outer_layers, mode, config)
 }
 
 fn build_tuple_entries(
@@ -55,6 +56,7 @@ fn build_tuple_entries(
     column_prefix: &str,
     outer_layers: usize,
     mode: EmitMode,
+    config: &MacroConfig,
 ) -> TokenStream {
     let pp = crate::codegen::polars_paths::prelude();
     let mut per_elem: Vec<TokenStream> = Vec::with_capacity(elements.len());
@@ -65,6 +67,7 @@ fn build_tuple_entries(
             &elem_prefix,
             outer_layers,
             mode,
+            config,
         ));
     }
     match mode {
@@ -95,19 +98,22 @@ fn build_element_entries(
     column_prefix: &str,
     outer_layers: usize,
     mode: EmitMode,
+    config: &MacroConfig,
 ) -> TokenStream {
     let pp = crate::codegen::polars_paths::prelude();
     let total_layers = outer_layers + elem.wrapper_shape.vec_depth();
     match &elem.leaf_spec {
         LeafSpec::Struct(path) => {
             let type_path = struct_type_path(path);
-            element_nested_entries(&type_path, column_prefix, total_layers, mode)
+            element_nested_entries(&type_path, column_prefix, total_layers, mode, config)
         }
         LeafSpec::Generic(id) => {
             let type_path = quote! { #id };
-            element_nested_entries(&type_path, column_prefix, total_layers, mode)
+            element_nested_entries(&type_path, column_prefix, total_layers, mode, config)
         }
-        LeafSpec::Tuple(inner) => build_tuple_entries(inner, column_prefix, total_layers, mode),
+        LeafSpec::Tuple(inner) => {
+            build_tuple_entries(inner, column_prefix, total_layers, mode, config)
+        }
         _ => {
             let elem_dtype = elem.leaf_spec.dtype();
             let full_dtype = crate::codegen::polars_paths::wrap_list_layers_compile_time_pub(
@@ -134,16 +140,21 @@ fn element_nested_entries(
     column_prefix: &str,
     total_layers: usize,
     mode: EmitMode,
+    config: &MacroConfig,
 ) -> TokenStream {
     match mode {
         EmitMode::SchemaEntries => crate::codegen::nested::generate_schema_entries_for_struct(
             type_path,
+            &config.to_dataframe_trait_path,
             column_prefix,
             total_layers,
         ),
-        EmitMode::EmptyRows => {
-            crate::codegen::nested::nested_empty_series_row(type_path, column_prefix, total_layers)
-        }
+        EmitMode::EmptyRows => crate::codegen::nested::nested_empty_series_row(
+            type_path,
+            &config.to_dataframe_trait_path,
+            column_prefix,
+            total_layers,
+        ),
     }
 }
 

@@ -45,3 +45,6 @@ mod qualified_custom_name_collisions;
 
 #[path = "runtime/51-qualified-custom-wrapper-collisions.rs"]
 mod qualified_custom_wrapper_collisions;
+
+#[path = "runtime/52-skip-field.rs"]
+mod skip_field;

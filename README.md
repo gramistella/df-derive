@@ -150,11 +150,18 @@ Common leaf types:
 
 Useful field attributes:
 
+- `#[df_derive(skip)]`: omit a field from generated schema and DataFrame output.
 - `#[df_derive(as_string)]`: format values with `Display` into a string column.
 - `#[df_derive(as_str)]`: borrow via `AsRef<str>` without per-row string allocation.
 - `#[df_derive(as_binary)]`: encode byte-buffer shapes as Binary.
 - `#[df_derive(decimal(precision = N, scale = S))]`: choose a decimal dtype or opt a custom decimal backend into `Decimal128Encode`.
 - `#[df_derive(time_unit = "ms" | "us" | "ns")]`: choose datetime or duration units.
+
+`skip` is useful for caches, source metadata, handles, or unsupported helper
+fields that should remain on the Rust struct but not become DataFrame columns.
+It is mutually exclusive with conversion attributes because skipped fields are
+not analyzed or emitted. Tuple struct fields can be skipped too; remaining
+tuple columns keep their original `field_{index}` names.
 
 `as_string` is useful for enums or validated newtypes that should appear as
 string columns. If a field already implements `AsRef<str>`, prefer `as_str`:

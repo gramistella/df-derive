@@ -14,6 +14,7 @@ use syn::{Data, DeriveInput, Fields, Ident};
 /// (e.g. `DateTimeToInt(Milliseconds)` for `chrono::DateTime<Tz>`) in that case.
 enum FieldOverride {
     None,
+    Skip,
     AsStr,
     AsString,
     AsBinary,
@@ -114,6 +115,10 @@ fn override_conflict(
              `chrono::NaiveDateTime`, `std::time::Duration`, \
              `core::time::Duration`, or `chrono::Duration`"
         ),
+        (FieldOverride::Skip, _) | (_, FieldOverride::Skip) => format!(
+            "field `{field_display_name}` combines `skip` with another field attribute; \
+             `skip` omits the field entirely, so conversion attributes have no effect; drop one"
+        ),
         (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
             "field `{field_display_name}` combines `as_binary` with another override; \
              `as_binary` produces a Binary column over a `Vec<u8>` shape and is \
@@ -145,6 +150,7 @@ fn set_override(
 ) -> Result<(), syn::Error> {
     match (&*override_, &incoming) {
         (FieldOverride::None, _)
+        | (FieldOverride::Skip, FieldOverride::Skip)
         | (FieldOverride::AsStr, FieldOverride::AsStr)
         | (FieldOverride::AsString, FieldOverride::AsString)
         | (FieldOverride::AsBinary, FieldOverride::AsBinary)
@@ -170,7 +176,9 @@ fn parse_field_override(
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("as_string") {
+                if meta.path.is_ident("skip") {
+                    set_override(field, field_display_name, &mut override_, FieldOverride::Skip)
+                } else if meta.path.is_ident("as_string") {
                     set_override(field, field_display_name, &mut override_, FieldOverride::AsString)
                 } else if meta.path.is_ident("as_str") {
                     set_override(field, field_display_name, &mut override_, FieldOverride::AsStr)
@@ -194,7 +202,7 @@ fn parse_field_override(
                     )
                 } else {
                     Err(meta.error(
-                        "unknown key in #[df_derive(...)] field attribute; expected `as_str`, `as_string`, `as_binary`, `decimal(precision = N, scale = N)`, or `time_unit = \"ms\"|\"us\"|\"ns\"`",
+                        "unknown key in #[df_derive(...)] field attribute; expected `skip`, `as_str`, `as_string`, `as_binary`, `decimal(precision = N, scale = N)`, or `time_unit = \"ms\"|\"us\"|\"ns\"`",
                     ))
                 }
             })?;
@@ -227,6 +235,7 @@ fn parse_leaf_spec(
     }
     match override_ {
         FieldOverride::None => default_leaf_for_base(field, field_display_name, base, true),
+        FieldOverride::Skip => unreachable!("skip fields are filtered before leaf parsing"),
         FieldOverride::AsString => Ok(LeafSpec::AsString),
         FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
         FieldOverride::AsBinary => {
@@ -254,6 +263,7 @@ fn reject_attrs_on_tuple(
 ) -> Result<(), syn::Error> {
     let attr = match override_ {
         FieldOverride::None => return Ok(()),
+        FieldOverride::Skip => return Ok(()),
         FieldOverride::AsStr => "as_str",
         FieldOverride::AsString => "as_string",
         FieldOverride::AsBinary => "as_binary",
@@ -479,6 +489,7 @@ fn decimal_generic_params_for_override(
     base: &AnalyzedBase,
 ) -> Vec<Ident> {
     match (override_, base) {
+        (FieldOverride::Skip, _) => Vec::new(),
         (FieldOverride::Decimal { .. }, AnalyzedBase::Generic(ident)) => vec![ident.clone()],
         _ => Vec::new(),
     }
@@ -489,6 +500,7 @@ fn decimal_backend_path_for_override(
     base: &AnalyzedBase,
 ) -> Option<syn::Path> {
     match (override_, base) {
+        (FieldOverride::Skip, _) => None,
         (FieldOverride::Decimal { .. }, AnalyzedBase::Struct(path)) => Some(path.clone()),
         _ => None,
     }
@@ -670,9 +682,12 @@ fn process_field(
     name_ident: Ident,
     field_index: Option<usize>,
     generic_params: &[Ident],
-) -> Result<FieldIR, syn::Error> {
+) -> Result<Option<FieldIR>, syn::Error> {
     let display_name = name_ident.to_string();
     let override_ = parse_field_override(field, &display_name)?;
+    if matches!(override_, FieldOverride::Skip) {
+        return Ok(None);
+    }
     let analyzed = analyze_type(&field.ty, generic_params)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
@@ -691,7 +706,7 @@ fn process_field(
         let leaf = parse_leaf_spec(field, &display_name, &override_, analyzed.base)?;
         (leaf, normalize_wrappers(&analyzed.wrappers))
     };
-    Ok(FieldIR {
+    Ok(Some(FieldIR {
         name: name_ident,
         field_index,
         leaf_spec,
@@ -699,7 +714,7 @@ fn process_field(
         decimal_generic_params,
         decimal_backend_path,
         outer_smart_ptr_depth,
-    })
+    }))
 }
 
 /// Parse a `syn::DeriveInput` into the IR consumed by codegen.
@@ -737,19 +752,20 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                     .as_ref()
                     .expect("named fields must have ident")
                     .clone();
-                fields_ir.push(process_field(field, name_ident, None, &generic_params)?);
+                if let Some(field_ir) = process_field(field, name_ident, None, &generic_params)? {
+                    fields_ir.push(field_ir);
+                }
             }
         }
         Fields::Unit => {}
         Fields::Unnamed(unnamed) => {
             for (index, field) in unnamed.unnamed.iter().enumerate() {
                 let name_ident = format_ident!("field_{}", index);
-                fields_ir.push(process_field(
-                    field,
-                    name_ident,
-                    Some(index),
-                    &generic_params,
-                )?);
+                if let Some(field_ir) =
+                    process_field(field, name_ident, Some(index), &generic_params)?
+                {
+                    fields_ir.push(field_ir);
+                }
             }
         }
     }

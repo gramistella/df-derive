@@ -1,4 +1,4 @@
-error: unknown key in #[df_derive(...)] field attribute; expected `as_str`, `as_string`, `as_binary`, `decimal(precision = N, scale = N)`, or `time_unit = "ms"|"us"|"ns"`
+error: unknown key in #[df_derive(...)] field attribute; expected `skip`, `as_str`, `as_string`, `as_binary`, `decimal(precision = N, scale = N)`, or `time_unit = "ms"|"us"|"ns"`
  --> tests/fail/100-fail-unknown-field-attribute.rs:7:17
   |
 7 |     #[df_derive(as_strg)]

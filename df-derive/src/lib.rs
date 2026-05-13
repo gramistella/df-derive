@@ -3,6 +3,18 @@
 //! Most users should depend on this crate, import the prelude, and derive
 //! `ToDataFrame` without any runtime-path attributes:
 //!
+//! ```toml
+//! [dependencies]
+//! df-derive = "0.3"
+//! polars = "0.53"
+//! polars-arrow = "0.53"
+//! ```
+//!
+//! Keep `polars` and `polars-arrow` as direct dependencies in the crate that
+//! invokes the derive. Generated impls name `::polars` and `::polars_arrow`
+//! directly because Polars does not re-export every Arrow builder the macro
+//! uses.
+//!
 //! ```ignore
 //! use df_derive::prelude::*;
 //!

@@ -38,9 +38,10 @@ chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.41", features = ["serde"] }
 ```
 
-`polars-arrow` is still a direct dependency for crates that derive
-`ToDataFrame`; generated code uses public Arrow array builders that Polars
-does not re-export through `polars::prelude`.
+Keep both `polars` and `polars-arrow` as direct dependencies in crates that
+derive `ToDataFrame`. Generated impls name `::polars` for dataframe types and
+`::polars_arrow` for public Arrow array builders that Polars does not
+re-export through `polars::prelude`.
 
 ```rust
 use df_derive::prelude::*;

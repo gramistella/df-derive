@@ -31,7 +31,12 @@
 //! [dependencies]
 //! df-derive-core = "0.3"
 //! df-derive-macros = "0.3"
+//! polars = "0.53"
+//! polars-arrow = "0.53"
 //! ```
+//!
+//! The deriving crate must name `polars` and `polars-arrow` directly because
+//! generated code refers to `::polars` and `::polars_arrow` at the impl site.
 //!
 //! ```ignore
 //! use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};

@@ -246,21 +246,6 @@ fn numeric_leaf_pieces(
     // `emit::pep_leaf_body` binds the leaf as `__df_derive_v`), the option
     // arm gets it from the `Some(v)` pattern. Sharing one `value_expr`
     // avoids two near-duplicate per-spec expressions.
-    // Push expressions match the legacy `try_gen_*` emitters' exact token
-    // shape. Two distinct shapes survive in the legacy emitters:
-    //
-    // - `try_gen_vec_option_numeric_emit` (depth-1 `Vec<Option<numeric>>`):
-    //   wraps the Some-arm value in `{ ... }`, e.g.
-    //   `flat.push({ *__df_derive_v });`. Bench `08_complex_wrappers`
-    //   reproducibly regresses ~5% when this wrap is dropped, even though
-    //   rustc should see equivalent MIR.
-    //
-    // - `try_gen_nested_primitive_vec_emit` (depth-2+ `Vec<Vec<numeric>>`,
-    //   no inner Option): no wrap; uses `flat.push(*v)` directly. Adding a
-    //   wrap here regresses `vec_vec_i32` ~3-5%.
-    //
-    // The split is by `has_inner_option`: Some-arm gets the wrap, bare arm
-    // does not. This locks in both bench-targeted shapes.
     let push = if has_inner_option {
         quote! {
             match #v {
@@ -474,7 +459,7 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 /// field's column name, and pushes it onto the call site's `columns` vec.
 /// The block is scoped so the per-field intermediate buffers (offsets vecs,
 /// validity bitmaps, the field Series itself) are confined to the field's
-/// scope, matching the pre-Step-4 emission shape.
+/// scope.
 ///
 /// Lowers `VecLeafSpec` (the per-element-push leaf description local to
 /// this file) into [`LeafKind::PerElementPush`] and routes through the
@@ -593,8 +578,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
 }
 
 /// `Vec<bool>` body: `Vec::extend` per outer row into a flat `Vec<bool>`,
-/// then `BooleanArray::from_slice` at the end. No bit-packing because
-/// `from_slice` is bulk and faster than `set` for the all-non-null case.
+/// then `BooleanArray::from_slice` at the end.
 fn bool_bare_depth1_body(
     access: &TokenStream,
     leaf_dtype: &TokenStream,

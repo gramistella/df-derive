@@ -44,11 +44,7 @@
 //! and `OwnPolicy::Clone` when the buffer rides across multiple downstream
 //! arms (the nested encoder's four-arm dispatch reuses the same offsets
 //! buffer per arm). The helper emits the reversed `LargeListArray::new`
-//! chain plus the routed `__df_derive_assemble_list_series_unchecked` call
-//! at the outermost layer. Per-layer `OffsetsBuffer::try_from(...)?` freeze
-//! decls stay interleaved with each wrap rather than hoisted upfront —
-//! moving them to the top produced a reproducible regression on
-//! `vec_vec_opt_string`.
+//! chain plus the routed `__df_derive_assemble_list_series_unchecked` call.
 //!
 //! Dtype/array compatibility ownership lives in this module. Leaf-specific
 //! encoders may create physical Arrow leaf arrays and provide logical Polars
@@ -247,10 +243,7 @@ impl ShapeScan<'_> {
             // `opt_layers` of nesting. Collapse to `Option<&Vec<...>>` and
             // match: Some(v) pushes validity=true and iterates v; None
             // pushes validity=false and skips. Polars folds every nested
-            // None into the same null. For `opt_layers == 1`, default
-            // binding modes match `&Option<Vec<...>>` directly without an
-            // explicit `.as_ref()` call, which LLVM doesn't always
-            // eliminate — so we keep the bind unchanged in that case.
+            // None into the same null.
             let collapsed = layer_access.expr;
             quote! {
                 match #collapsed {
@@ -432,19 +425,13 @@ pub(super) struct LayerWrap<'a> {
     pub offsets_buf: OwnPolicy<'a>,
     pub validity_bm: Option<&'a syn::Ident>,
     /// Optional per-layer freeze decl emitted immediately before this
-    /// layer's `LargeListArray::new` call. The flat-vec path uses this to
-    /// interleave each layer's `OffsetsBuffer::try_from(...)?` with its
-    /// wrap (matching the pre-refactor emission shape — hoisting the
-    /// freezes out of the wrap loop reproducibly regresses depth-N
-    /// benches by 4-12% even though it is semantically identical). The
-    /// nested-struct path leaves this empty because its freeze happens
-    /// once, above the four-arm dispatch.
+    /// layer's `LargeListArray::new` call. The nested-struct path leaves
+    /// this empty because its freezes are hoisted.
     pub freeze_decl: TokenStream,
 }
 
 /// Freeze a per-layer `Vec<i64>` into an `OffsetsBuffer<i64>` (single
-/// statement). Centralized for all list-stack emitters so tuple fields and
-/// nested/primitive paths keep the same generated token shape.
+/// statement). Centralized for all list-stack emitters.
 pub(super) fn freeze_offsets_buf(
     buf: &syn::Ident,
     offsets: &syn::Ident,
@@ -479,10 +466,7 @@ pub(super) fn freeze_validity_bitmap(
 /// for the flat-vec path, `chunks()[0].clone()` for the nested path). It
 /// is moved verbatim into the innermost `LargeListArray::new` call's
 /// values argument. `seed_dtype` is the arrow dtype of that seed array
-/// as a token expression — captured BEFORE the seed is boxed/moved so
-/// the flat-vec path can keep its static `Array::dtype(&typed_leaf_arr)`
-/// call (a virtual dispatch through `Box<dyn Array>::dtype()` does not
-/// inline and reproducibly regresses several depth-N benches by 5-12%).
+/// as a token expression.
 ///
 /// `leaf_logical_dtype` is the per-leaf logical dtype (e.g. `DataType::String`
 /// for the flat-vec path, `(*__df_derive_dtype).clone()` for the nested

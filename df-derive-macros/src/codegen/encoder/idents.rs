@@ -184,11 +184,8 @@ pub(in crate::codegen) fn nested_inner_chunk() -> Ident {
     format_ident!("__df_derive_inner_chunk")
 }
 
-/// Seed-array arrow dtype local. The flat-vec path captures the typed
-/// leaf array's dtype into this local BEFORE boxing the leaf so the
-/// dtype access keeps its static-dispatch `Array::dtype(&typed_arr)`
-/// shape — boxing then dispatching virtually through `Box<dyn Array>`
-/// reproducibly regresses several depth-N benches.
+/// Seed-array arrow dtype local captured before the typed leaf array is
+/// boxed into an `ArrayRef`.
 pub(in crate::codegen) fn seed_arrow_dtype() -> Ident {
     format_ident!("__df_derive_seed_dt")
 }
@@ -378,11 +375,7 @@ pub(in crate::codegen) fn schema_wrapped_dtype() -> Ident {
 /// Free-function helper emitted at the top of each derive's per-derive
 /// `const _: () = { ... };` scope. The helper holds the only
 /// `Series::from_chunks_and_dtype_unchecked` `unsafe` block in the
-/// generated code; every bulk-list emit site routes through it. Inlining
-/// the `unsafe` call into a `Self::__df_derive_*` method on the user type
-/// re-triggers `clippy::unsafe_derive_deserialize` on downstream
-/// `#[derive(ToDataFrame, Deserialize)]` users — the helper's name and
-/// scope are load-bearing per the encoder-IR doc invariant.
+/// generated code; every bulk-list emit site routes through it.
 pub(in crate::codegen) fn assemble_helper() -> Ident {
     format_ident!("__df_derive_assemble_list_series_unchecked")
 }

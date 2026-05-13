@@ -95,9 +95,9 @@ fn polars_arrow_root() -> TokenStream {
     resolve_or_fallback("polars-arrow", quote! { ::polars_arrow })
 }
 
-/// Dependency roots for custom runtimes, preserving the historical behavior
-/// where the deriving crate's own `polars` and `polars-arrow` dependencies
-/// define the generated code's runtime identity.
+/// Dependency roots for custom runtimes. The deriving crate's own `polars`
+/// and `polars-arrow` dependencies define the generated code's runtime
+/// identity.
 pub fn direct_dependency_paths() -> ExternalPaths {
     ExternalPaths {
         polars_prelude: prelude(),

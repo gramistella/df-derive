@@ -3,7 +3,6 @@ use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
 
 /// Default `Datetime` precision for `chrono::DateTime<Tz>` and
 /// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
-/// Matches the historical default this crate shipped with.
 pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
 /// Default `Duration` precision for `std::time::Duration` and
 /// `chrono::Duration` (`chrono::TimeDelta`) fields without an explicit

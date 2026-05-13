@@ -161,14 +161,13 @@ pub mod dataframe {
     /// Implementers MUST use round-half-to-even (banker's rounding) on
     /// scale-down so the bytes the derive emits match polars's own
     /// `str_to_dec128` path. A `None` return surfaces as a polars
-    /// `ComputeError` from the generated code, matching the historical
-    /// scale-up overflow path.
+    /// `ComputeError` from the generated code.
     ///
     /// The codegen invokes the method via dot syntax (after an anonymous
     /// `use … as _;` import), so method resolution selects the impl from
     /// the value reference's type. Custom backends (`bigdecimal::BigDecimal`,
     /// arbitrary-precision types, …) provide their own impls; this crate
-    /// ships a `rust_decimal::Decimal` impl below for tests and benches.
+    /// ships a `rust_decimal::Decimal` impl below.
     pub trait Decimal128Encode {
         /// Returns the mantissa as `i128` after rescaling `self` to
         /// `target_scale`, or `None` if the conversion would overflow or

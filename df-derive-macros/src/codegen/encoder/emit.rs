@@ -413,9 +413,7 @@ fn ctb_layer_wrap(
 
 /// Materialize the post-scan tokens for the per-element-push leaf kind:
 /// build the typed leaf array, then chain the depth-N `LargeListArray::new`
-/// wraps with offsets/validity freezes interleaved per layer (interleaving
-/// preserves the historical token shape that benches the depth-N path
-/// 4-12% faster than the hoisted alternative — see comment in [`super::vec`]).
+/// wraps with offsets/validity freezes interleaved per layer.
 fn pep_materialize(
     pep: &super::leaf_kind::PerElementPush,
     shape: &VecLayers,
@@ -424,12 +422,8 @@ fn pep_materialize(
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
-    // Capture the leaf's arrow dtype to a named local BEFORE boxing the
-    // leaf — `Box::new(#leaf_arr) as ArrayRef` moves the typed leaf, so a
-    // post-box `Array::dtype(&leaf)` would no longer compile, and a
-    // post-box `Array::dtype(&seed)` would dispatch through the boxed trait
-    // object's vtable (a virtual call that doesn't inline and reproducibly
-    // regresses several depth-N benches by 5-12%).
+    // Capture the leaf dtype before boxing because boxing moves the typed
+    // array into the list stack.
     let leaf_arr = idents::leaf_arr();
     let seed_arrow_dtype_id = idents::seed_arrow_dtype();
     let seed_dtype_decl = quote! {
@@ -476,9 +470,6 @@ fn pep_materialize(
 ///   slots), `flat.is_empty() && total > 0` (all leaves None; typed-null
 ///   Series of length `total`), `flat.len() == total` (all Some; direct),
 ///   else mixed (`IdxCa::take` per column).
-// Bench-sensitive generated-code builder: keeping the dispatch and shared
-// frozen buffers in one emission block avoids repeated work in nested Vec
-// paths, so the ASAP lint fix is a narrow allow instead of a split.
 #[allow(clippy::too_many_lines)]
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
@@ -505,9 +496,7 @@ fn ctb_materialize(
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
 
-    // Hoisted decls reused across match arms. Their splice positions
-    // (relative to `#offsets_freeze` / `#validity_freeze`) are bench-stable
-    // and must not be reordered.
+    // Decls reused across match arms.
     let df_decl = quote! {
         let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
     };
@@ -590,12 +579,7 @@ fn ctb_materialize(
             }
         }
         WrapperShape::Vec(_) if shape.has_inner_option() => {
-            // 4-branch dispatch. The offsets-buffer freeze is emitted inside
-            // each arm rather than hoisted above the dispatch: with the freeze
-            // local to each branch, LLVM specializes register allocation around
-            // the heavily-inlined `columnar_from_refs` on the hot direct/take
-            // paths instead of treating the `OffsetsBuffer` construction as a
-            // global obligation.
+            // 4-branch dispatch. Offsets are frozen only in the selected arm.
             quote! {
                 #validity_freeze
                 if #total == 0 {
@@ -618,8 +602,7 @@ fn ctb_materialize(
         }
         WrapperShape::Vec(_) => {
             // No inner-Option: total == flat.len(). Two branches: empty when
-            // flat is empty (no leaves), direct otherwise. Same
-            // freeze-inside-branch rationale as the four-arm case above.
+            // flat is empty (no leaves), direct otherwise.
             quote! {
                 #validity_freeze
                 if #flat.is_empty() {

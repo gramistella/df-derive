@@ -101,7 +101,7 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
 
 /// Whether a per-field emission produces schema entries (`(name, dtype)`
 /// tuples) or empty-series rows. Both modes iterate the same field set and
-/// share the Primitive-vs-Nested classification; only the leaf token shape
+/// share the Primitive-vs-Nested classification; only the leaf expression
 /// (and the runtime accumulator inside [`super::nested`]) varies.
 #[derive(Clone, Copy)]
 pub(in crate::codegen) enum EmitMode {
@@ -112,8 +112,7 @@ pub(in crate::codegen) enum EmitMode {
 /// Shared per-field emitter for the schema / empty-rows pair. Classifies
 /// the field once, then dispatches to the matching [`super::nested`]
 /// runtime helper for nested fields, or emits a one-element vec literal
-/// for primitive fields. The two leaf shapes are byte-equivalent to the
-/// pre-refactor `build_schema_entries` / `build_empty_series` emissions.
+/// for primitive fields.
 fn build_field_entries(
     field: &FieldIR,
     mode: EmitMode,
@@ -239,12 +238,8 @@ fn build_nested_emit(
 /// Build the columnar emit pieces for a primitive-routed field. `[Vec, ...]`
 /// shapes produce `Encoder::Multi` (the encoder packs precount, buffers,
 /// fill loop, leaf array, list stacking, and the rename + push into one
-/// self-contained block placed AFTER the per-row loop — matches the legacy
-/// direct-fast-path emitters' cache locality, see `vec_vec_i32` /
-/// `vec_opt_datetime` benches: emitting in decls regresses ~4% relative to
-/// placing the same work post-loop). Bare and `[Option]` shapes produce
-/// `Encoder::Leaf` with decls + push + finisher splayed across the three
-/// slots.
+/// self-contained block). Bare and `[Option]` shapes produce `Encoder::Leaf`
+/// with decls + push + finisher split across the three slots.
 fn build_primitive_emit(
     field: &FieldIR,
     config: &super::MacroConfig,

@@ -230,9 +230,7 @@ pub enum StringyBase {
 }
 
 impl StringyBase {
-    /// True when the stringy base is bare `String`. The bare-`String` path
-    /// has tighter token shapes (deref-coercion through `&String`) than the
-    /// UFCS path used for `Struct`/`Generic`.
+    /// True when the stringy base is bare `String`.
     pub const fn is_string(&self) -> bool {
         matches!(self, Self::String)
     }

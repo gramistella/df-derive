@@ -141,7 +141,7 @@ fn override_conflict(
 /// Set `override_` to `incoming` only if no override has been declared yet;
 /// otherwise emit the conflict error for the (existing, incoming) pair. Same-key
 /// repeats (`#[df_derive(as_str, as_str)]`, two `decimal(...)` blocks) are
-/// idempotent / last-wins respectively, matching pre-refactor de facto behavior.
+/// idempotent / last-wins respectively.
 fn set_override(
     field: &syn::Field,
     field_display_name: &str,

@@ -172,15 +172,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
 
     match arm {
         LeafArmKind::Bare => {
-            // Wrap the cloned access expression in `{ ... }` to match the legacy
-            // primitive emitter's exact token shape. The block wrap is a syntactic
-            // no-op (the expression evaluates identically), but the legacy
-            // `try_gen_*` path emitted it and benches like `01_top_level_vec` and
-            // `vec_vec_i32` are sensitive to the resulting MIR shape — emitting
-            // `push(x.clone())` instead of `push({ x.clone() })` reproducibly
-            // regresses these tight loops by 5-12% even though rustc/LLVM should
-            // see equivalent MIR. Match the legacy shape exactly.
-            //
             // Widening (`isize`/`usize` → `i64`/`u64`) casts the field expression to
             // `info.native` (the storage type), not to `info.widen_from` (the
             // source type) — `widen_from.is_some()` is just the gating signal.
@@ -209,8 +200,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             // `<#native>::default()` and `validity.push(false)`. Splitting value vs
             // validity into independent pushes lets the compiler vectorize cleanly.
             // Non-trivial option/smart-pointer access chains are collapsed
-            // before this leaf arm is invoked, so the old single
-            // `Option<numeric>` token shape remains intact here.
+            // before this leaf arm is invoked.
             let v = idents::leaf_value();
             let some_push_value =
                 crate::codegen::type_registry::numeric_stored_value(kind, quote! { #v }, native);
@@ -367,13 +357,9 @@ fn bytes_ref_expr(binding: &proc_macro2::TokenStream) -> proc_macro2::TokenStrea
     quote! { ::core::convert::AsRef::<[u8]>::as_ref(#binding) }
 }
 
-/// `bool` leaf. Bare arm: `Vec<bool>` + `Series::new`. Keeps the slow path
-/// because `BooleanChunked::from_slice` is bulk and faster than
-/// `BooleanArray::new` + `with_chunk` for the all-non-null case. Option arm:
-/// switches to the bitmap-pair layout (`MutableBitmap` values pre-filled
-/// `false` + `MutableBitmap` validity pre-filled `true` + row counter); the
-/// 3-arm match makes `Some(false)` zero work, `Some(true)` flips a value
-/// bit, `None` flips a validity bit.
+/// `bool` leaf. Bare arm: `Vec<bool>` + `Series::new`. Option arm uses a
+/// bitmap-pair layout: values pre-filled `false`, validity pre-filled `true`,
+/// and one row counter.
 pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -395,8 +381,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         }
         LeafArmKind::Option => {
             // Non-trivial option/smart-pointer access chains are collapsed
-            // before this leaf arm is invoked, so this preserves the legacy
-            // single `Option<bool>` match shape.
+            // before this leaf arm is invoked.
             let option_push = quote! {
                 match (#access) {
                     ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
@@ -657,11 +642,6 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
-            // Option-arm decl ordering matches the prior shared
-            // `option_for_string_like` emission: MBVA first, then the `as_string`
-            // scratch as an "extra decl", then the validity bitmap and row
-            // counter. `as_string` has a `String` scratch on top of the MBVA
-            // pair and we preserve that ordering here.
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root),

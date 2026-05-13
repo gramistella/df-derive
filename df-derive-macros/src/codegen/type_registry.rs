@@ -277,22 +277,11 @@ pub fn map_primitive_expr(
             // own the conversion. Each implementer must use round-half-
             // to-even (banker's rounding) on scale-down so observable
             // bytes match polars's `str_to_dec128`. A `None` return
-            // surfaces as a polars `ComputeError`, matching the
-            // historical scale-up overflow path.
+            // surfaces as a polars `ComputeError`.
             //
-            // The trait is imported anonymously (`use ... as _;`) inside
-            // the emitted block so we can call the method via dot syntax
-            // (`receiver.try_to_i128_mantissa(...)`). Dot syntax triggers
-            // method resolution, which auto-derefs through `&Decimal` /
-            // `&&Decimal` etc. — necessary because callers pass receivers
-            // of both shapes (place expressions like `self.field` of
-            // type `Decimal`, and iterator items of type `&Decimal`).
-            // Function-call form on a trait path does NOT auto-deref,
-            // which would force the codegen to know the bare field type.
-            // The anonymous-import idiom doesn't introduce any name into
-            // user scope. The implementer's body is small enough that
-            // the compiler inlines through the trait dispatch (confirmed
-            // by bench 13 not regressing).
+            // Import anonymously so dot syntax can auto-deref both direct
+            // fields and iterator references without introducing a user-
+            // visible name.
             let target = u32::from(*scale);
             let precision = u32::from(*precision);
             let scale = u32::from(*scale);

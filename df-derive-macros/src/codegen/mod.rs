@@ -47,7 +47,7 @@ pub fn resolve_default_dataframe_mod() -> TokenStream {
     // - `df-derive-core` shared runtime (`df_derive_core::dataframe`)
     // - `paft-utils` direct runtime (`paft_utils::dataframe`)
     // - `paft` facade (`paft::dataframe`)
-    // - legacy local fallback (`crate::core::dataframe`)
+    // - local fallback (`crate::core::dataframe`)
     resolve_dataframe_mod_for_crate("df-derive", quote! { ::df_derive::dataframe })
         .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", quote! { crate::dataframe }))
         .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", quote! { crate::dataframe }))
@@ -64,25 +64,9 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let assemble_helper = encoder::idents::assemble_helper();
     let list_assembly = encoder::idents::list_assembly();
 
-    // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`
-    // scope. Inherent impls inside an anonymous const still apply to the outer
-    // type (the same trick `serde_derive` uses), so `Foo::__df_derive_*` calls
-    // from sibling derives keep working. The free helper
-    // `__df_derive_assemble_list_series_unchecked` lives inside the same scope,
-    // hidden from the user's namespace, and delegates to the adjacent
-    // `__DfDeriveListAssembly` wrapper. That wrapper is the only place the
-    // bulk path's `unsafe` call to `Series::from_chunks_and_dtype_unchecked`
-    // lives — so `clippy::unsafe_derive_deserialize` no longer sees `unsafe`
-    // inside any impl method on `Self` and stops firing on downstream
-    // `#[derive(ToDataFrame, Deserialize)]` types.
-    //
-    // The helper is `#[inline(always)]` so the call site collapses; the
-    // bulk path's perf is unchanged. Plain `#[inline]` was insufficient on
-    // `bench/02_empty_nested_vec` (~7% regression), where the per-row work
-    // is dominated by the `Series::from_chunks_and_dtype_unchecked` call
-    // and a non-collapsed call frame is observable. Its signature is fully
-    // concrete (no generics) so a single instantiation per derive serves
-    // every nested-`Vec` bulk emitter site.
+    // Keep helper names private while still emitting inherent impls for the
+    // target type. The list assembly wrapper is the only generated site that
+    // calls `Series::from_chunks_and_dtype_unchecked`.
     quote! {
         const _: () = {
             #eager_asserts

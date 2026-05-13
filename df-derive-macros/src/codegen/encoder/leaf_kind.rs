@@ -77,21 +77,13 @@ impl LeafKind<'_> {
     /// Whether this leaf kind hoists offsets/validity freezes above branch
     /// dispatch (collect-then-bulk) or interleaves them per-layer with each
     /// `LargeListArray::new` (per-element-push).
-    ///
-    /// This is a residual perf-driven choice: hoisting the freezes for the
-    /// per-element-push path reproducibly regresses depth-N benches 4-12%
-    /// (see comment in [`super::vec`]); per-element-push interleaves the
-    /// freeze with each wrap. Conversely, interleaving for the
-    /// collect-then-bulk path would re-freeze the same offsets buffer per
-    /// inner-schema-column iteration of every dispatch arm — wasteful and
-    /// also slower, so the nested path hoists once.
     pub(super) const fn freeze_hoisted(&self) -> bool {
         matches!(self, Self::CollectThenBulk(_))
     }
 
     /// Outer-some-prefix used by the scan walker for this leaf kind.
-    /// `__df_derive_some_` for per-element-push (matches the historical
-    /// flat-vec path); `__df_derive_n_some_` for collect-then-bulk.
+    /// `__df_derive_some_` for per-element-push; `__df_derive_n_some_` for
+    /// collect-then-bulk.
     pub(super) const fn scan_outer_some_prefix(&self) -> &'static str {
         match self {
             Self::PerElementPush(_) => idents::VEC_OUTER_SOME_PREFIX,
@@ -105,9 +97,7 @@ impl LeafKind<'_> {
     /// pattern bindings are scoped to the loop body, so the two for-loops
     /// never collide on shared idents. Collect-then-bulk uses two distinct
     /// prefixes (`__df_derive_n_pre_some_` for precount,
-    /// `__df_derive_n_some_` for scan) for byte-equivalence with the legacy
-    /// emission, where precount and scan emitted under different prefix
-    /// conventions historically.
+    /// `__df_derive_n_some_` for scan).
     pub(super) const fn precount_outer_some_prefix(&self) -> &'static str {
         match self {
             Self::PerElementPush(_) => idents::VEC_OUTER_SOME_PREFIX,

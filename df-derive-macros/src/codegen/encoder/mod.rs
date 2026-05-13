@@ -51,9 +51,9 @@ pub use tuple::{
 };
 
 /// Build the type token stream for a concrete struct field. Plain path types
-/// keep the historical turbofish form on the final segment so the same token
-/// stream is valid for associated calls and type positions, while fuller
-/// `syn::Type` forms such as `<T as Trait>::Item` are emitted verbatim.
+/// add a final-segment turbofish so the same token stream is valid for
+/// associated calls and type positions, while fuller `syn::Type` forms such
+/// as `<T as Trait>::Item` are emitted verbatim.
 pub fn struct_type_tokens(ty: &syn::Type) -> TokenStream {
     if let syn::Type::Path(type_path) = ty
         && type_path.qself.is_none()
@@ -297,7 +297,7 @@ pub(super) fn access_chain_to_ref(base: &TokenStream, chain: &AccessChain) -> Ch
 /// Resolve an access chain containing one or more `Option` steps into a
 /// collapsed `Option<&T>`. Unlike [`access_chain_to_ref`], the single plain
 /// `Option` case always emits `.as_ref()` because callers need a mappable
-/// optional reference rather than the legacy match-friendly `&Option<T>`.
+/// optional reference.
 pub(super) fn access_chain_to_option_ref(base: &TokenStream, chain: &AccessChain) -> TokenStream {
     debug_assert!(chain.option_layers() > 0);
     if chain.is_only_options() {

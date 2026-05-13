@@ -1,9 +1,8 @@
 //! Option/access-chain leaf wrappers.
 //!
 //! `wrap_option_access_chain_primitive` handles `Option` stacks and
-//! smart-pointer steps that cannot use the legacy single plain `Option<T>`
-//! fast path. It collapses the access into a single optional reference at
-//! the exact boundary encoded by `AccessChain` (Polars still folds every
+//! smart-pointer steps by collapsing the access into a single optional
+//! reference at the boundary encoded by `AccessChain` (Polars folds every
 //! nested `None` into one validity bit).
 
 use crate::ir::{AccessChain, LeafSpec, StringyBase};

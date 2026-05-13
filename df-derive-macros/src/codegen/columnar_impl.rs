@@ -72,8 +72,14 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let it_ident = idents::populator_iter();
     let (impl_generics, ty_generics, where_clause) = super::impl_parts_with_bounds(ir, config);
 
-    let direct_body = columnar_method_body(ir, config, &it_ident);
-    let refs_body = columnar_method_body(ir, config, &it_ident);
+    // The method body is intentionally token-identical for `&[Self]` and
+    // `&[&Self]`; field access in the borrowed path relies on Rust's
+    // autoderef. Keep both trait entry points so direct slices avoid the
+    // top-level `Vec<&Self>` allocation while nested emitters can compose
+    // borrowed rows without cloning.
+    let columnar_body = columnar_method_body(ir, config, &it_ident);
+    let direct_body = columnar_body.clone();
+    let refs_body = columnar_body;
 
     quote! {
         #[automatically_derived]

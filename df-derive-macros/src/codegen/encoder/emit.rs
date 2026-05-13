@@ -57,7 +57,7 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
 /// Build the per-layer `LayerWrap` slice the shared list-stack helper
 /// consumes. Each layer's `freeze_decl` is empty for the
 /// collect-then-bulk path (freezes hoisted above) and contains the
-/// `OffsetsBuffer::try_from(...)?` plus optional `Bitmap::from(...)`
+/// fully qualified offsets conversion plus optional `Bitmap::from(...)`
 /// for the per-element-push path (freezes interleaved with each wrap).
 fn layer_wraps<'a>(
     shape: &VecLayers,

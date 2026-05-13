@@ -439,7 +439,7 @@ pub(super) fn freeze_offsets_buf(
 ) -> TokenStream {
     quote! {
         let #buf: #pa_root::offset::OffsetsBuffer<i64> =
-            #pa_root::offset::OffsetsBuffer::try_from(#offsets)?;
+            <#pa_root::offset::OffsetsBuffer<i64> as ::core::convert::TryFrom<::std::vec::Vec<i64>>>::try_from(#offsets)?;
     }
 }
 

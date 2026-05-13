@@ -235,17 +235,17 @@ pub fn map_primitive_expr(
             match source {
                 DurationSource::Std => match unit {
                     DateTimeUnit::Nanoseconds => quote! {
-                        i64::try_from((#var).as_nanos()).map_err(|_| #pp::polars_err!(
+                        <i64 as ::core::convert::TryFrom<u128>>::try_from((#var).as_nanos()).map_err(|_| #pp::polars_err!(
                             ComputeError: "df-derive: std::time::Duration value out of i64 ns range"
                         ))?
                     },
                     DateTimeUnit::Microseconds => quote! {
-                        i64::try_from((#var).as_micros()).map_err(|_| #pp::polars_err!(
+                        <i64 as ::core::convert::TryFrom<u128>>::try_from((#var).as_micros()).map_err(|_| #pp::polars_err!(
                             ComputeError: "df-derive: std::time::Duration value out of i64 us range"
                         ))?
                     },
                     DateTimeUnit::Milliseconds => quote! {
-                        i64::try_from((#var).as_millis()).map_err(|_| #pp::polars_err!(
+                        <i64 as ::core::convert::TryFrom<u128>>::try_from((#var).as_millis()).map_err(|_| #pp::polars_err!(
                             ComputeError: "df-derive: std::time::Duration value out of i64 ms range"
                         ))?
                     },

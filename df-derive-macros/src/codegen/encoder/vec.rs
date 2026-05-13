@@ -610,7 +610,7 @@ fn bool_bare_depth1_body(
         let #leaf_arr: #pa_root::array::BooleanArray =
             #pa_root::array::BooleanArray::from_slice(&#flat);
         let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
-            #pa_root::offset::OffsetsBuffer::try_from(#inner_offsets)?;
+            <#pa_root::offset::OffsetsBuffer<i64> as ::core::convert::TryFrom<::std::vec::Vec<i64>>>::try_from(#inner_offsets)?;
         let #list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
             #pp::LargeListArray::default_datatype(
                 #pa_root::array::Array::dtype(&#leaf_arr).clone(),

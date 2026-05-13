@@ -230,6 +230,55 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn generated_code_works_without_try_from_in_downstream_prelude() {
+    let root = package_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "edition-2018-no-try-from-prelude"
+version = "0.0.0"
+edition = "2018"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive = {{ path = "{}" }}
+{}
+"#,
+        toml_path(root),
+        polars_deps(),
+    );
+
+    check_fixture(
+        "edition-2018-no-try-from-prelude",
+        &manifest,
+        r#"
+use df_derive::prelude::*;
+
+#[derive(ToDataFrame)]
+struct Row {
+    elapsed: std::time::Duration,
+    values: Vec<i32>,
+    flags: Vec<bool>,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = vec![Row {
+        elapsed: std::time::Duration::from_nanos(7),
+        values: vec![1, 2, 3],
+        flags: vec![true, false, true],
+    }];
+
+    let df = rows.as_slice().to_dataframe()?;
+    assert_eq!(df.shape(), (1, 3));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn facade_default_features_false_does_not_enable_core_rust_decimal() {
     let root = package_root();
     let manifest = format!(

@@ -1,5 +1,5 @@
 use crate::ir::{DateTimeUnit, NumericKind};
-use syn::{GenericArgument, Ident, Path, PathArguments, Type, TypePath};
+use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
 
 /// Default `Datetime` precision for `chrono::DateTime<Tz>` and
 /// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
@@ -81,9 +81,10 @@ pub enum AnalyzedBase {
     /// Bare `Decimal` or canonical `rust_decimal::Decimal`. Other decimal
     /// backend names opt in with `decimal(...)`.
     Decimal,
-    /// Concrete user-defined struct path as written at the field's use site
-    /// (for example `Foo`, `models::Foo`, or `models::Foo<M>`).
-    Struct(Path),
+    /// Concrete user-defined struct type as written at the field's use site
+    /// (for example `Foo`, `models::Foo`, `models::Foo<M>`, or
+    /// `<T as Trait>::Item`).
+    Struct(Type),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
     /// Tuple-typed base, with each element recursively analyzed. Empty
@@ -361,7 +362,7 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
         if is_chrono_no_args_type(type_path, "NaiveDateTime") {
             return Ok(AnalyzedBase::NaiveDateTime);
         }
-        return Ok(AnalyzedBase::Struct(type_path.path.clone()));
+        return Ok(AnalyzedBase::Struct(ty.clone()));
     }
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }

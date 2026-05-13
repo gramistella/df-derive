@@ -1,4 +1,4 @@
-use syn::{Ident, Path};
+use syn::{Ident, Type};
 
 /// One transparent access step peeled while analyzing a field type, excluding
 /// `Vec` itself. The normalized wrapper shape stores these steps at the
@@ -78,11 +78,11 @@ pub struct FieldIR {
     /// encoding with `#[df_derive(decimal(...))]`. Codegen uses this to add
     /// `Decimal128Encode` bounds only for the generic params that need them.
     pub decimal_generic_params: Vec<Ident>,
-    /// Concrete custom backend path explicitly opted into decimal encoding with
+    /// Concrete custom backend type explicitly opted into decimal encoding with
     /// `#[df_derive(decimal(...))]`. Codegen adds an exact `Decimal128Encode`
     /// where-predicate on this type instead of guessing bounds for any generic
     /// arguments it contains.
-    pub decimal_backend_path: Option<Path>,
+    pub decimal_backend_ty: Option<Type>,
     /// Number of transparent pointer layers (`Box`/`Rc`/`Arc`/sized `Cow`/
     /// borrowed references) peeled at the OUTER position — above any
     /// `Option`/`Vec` wrapper. The codegen wraps the raw field access in this
@@ -221,9 +221,10 @@ pub enum StringyBase {
     /// Unsized string Cows are semantic string leaves. They cannot be peeled
     /// like sized smart pointers, so codegen borrows through `Cow::as_ref`.
     CowStr,
-    /// Concrete user-defined struct path as written at the field's use site
-    /// (for example `Foo`, `models::Foo`, or `models::Foo<M>`).
-    Struct(Path),
+    /// Concrete user-defined struct type as written at the field's use site
+    /// (for example `Foo`, `models::Foo`, `models::Foo<M>`, or
+    /// `<T as Trait>::Item`).
+    Struct(Type),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
 }
@@ -240,14 +241,14 @@ impl StringyBase {
 /// Bases that need an explicit `Display` requirement for
 /// `#[df_derive(as_string)]`. Built-in leaves such as numbers, booleans,
 /// strings, and chrono values rely on their inherent `Display` impls; custom
-/// struct paths and generic type parameters get exact generated bounds.
+/// struct types and generic type parameters get exact generated bounds.
 #[derive(Clone)]
 pub enum DisplayBase {
     /// Built-in or otherwise parser-known displayable base that does not need
     /// a generated type parameter or where-clause role.
     Inherent,
-    /// Concrete user-defined struct path as written at the field's use site.
-    Struct(Path),
+    /// Concrete user-defined struct type as written at the field's use site.
+    Struct(Type),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
 }
@@ -333,8 +334,9 @@ pub enum LeafSpec {
     /// each row's bytes via `MutableBinaryViewArray::<[u8]>`.
     Binary,
     /// Concrete user-defined struct type, no stringy transform. Stores the
-    /// full path as written at the field's use site.
-    Struct(Path),
+    /// full type as written at the field's use site so qualified associated
+    /// type projections preserve their `qself`.
+    Struct(Type),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
     /// Tuple-typed field. Each element contributes its own column(s) under a

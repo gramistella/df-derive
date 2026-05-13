@@ -48,3 +48,6 @@ mod qualified_custom_wrapper_collisions;
 
 #[path = "runtime/52-skip-field.rs"]
 mod skip_field;
+
+#[path = "runtime/53-associated-type-paths.rs"]
+mod associated_type_paths;

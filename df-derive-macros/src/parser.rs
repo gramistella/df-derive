@@ -384,7 +384,7 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
             precision: DEFAULT_DECIMAL_PRECISION,
             scale: DEFAULT_DECIMAL_SCALE,
         }),
-        AnalyzedBase::Struct(path) => Ok(LeafSpec::Struct(path)),
+        AnalyzedBase::Struct(ty) => Ok(LeafSpec::Struct(ty)),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::Generic(ident)),
         AnalyzedBase::Tuple(elements) => {
             let lowered: Result<Vec<_>, _> = elements
@@ -458,7 +458,7 @@ fn parse_leaf_as_str(
         AnalyzedBase::String => Ok(LeafSpec::AsStr(StringyBase::String)),
         AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
-        AnalyzedBase::Struct(path) => Ok(LeafSpec::AsStr(StringyBase::Struct(path))),
+        AnalyzedBase::Struct(ty) => Ok(LeafSpec::AsStr(StringyBase::Struct(ty))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
         // Tuple bases reach this dispatcher only when `parse_leaf_spec`'s
         // upstream `reject_attrs_on_tuple` was bypassed, which it isn't —
@@ -491,7 +491,7 @@ fn parse_leaf_as_str(
 
 fn display_base_for_as_string(base: &AnalyzedBase) -> DisplayBase {
     match base {
-        AnalyzedBase::Struct(path) => DisplayBase::Struct(path.clone()),
+        AnalyzedBase::Struct(ty) => DisplayBase::Struct(ty.clone()),
         AnalyzedBase::Generic(ident) => DisplayBase::Generic(ident.clone()),
         _ => DisplayBase::Inherent,
     }
@@ -507,7 +507,7 @@ fn parse_leaf_decimal(
     match base {
         // `Decimal` by name is the implicit path (`Decimal` or
         // `rust_decimal::Decimal`). Proc macros cannot resolve whether an
-        // arbitrary custom path is *actually* a decimal type, so the explicit
+        // arbitrary custom type is *actually* a decimal type, so the explicit
         // `decimal(...)` attribute is the user assertion that a differently
         // named custom/generic backend should use the same `Decimal128Encode`
         // dispatch.
@@ -537,13 +537,13 @@ fn decimal_generic_params_for_override(
     }
 }
 
-fn decimal_backend_path_for_override(
+fn decimal_backend_ty_for_override(
     override_: &FieldOverride,
     base: &AnalyzedBase,
-) -> Option<syn::Path> {
+) -> Option<syn::Type> {
     match (override_, base) {
         (FieldOverride::Skip, _) => None,
-        (FieldOverride::Decimal { .. }, AnalyzedBase::Struct(path)) => Some(path.clone()),
+        (FieldOverride::Decimal { .. }, AnalyzedBase::Struct(ty)) => Some(ty.clone()),
         _ => None,
     }
 }
@@ -734,7 +734,7 @@ fn process_field(
     reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
-    let decimal_backend_path = decimal_backend_path_for_override(&override_, &analyzed.base);
+    let decimal_backend_ty = decimal_backend_ty_for_override(&override_, &analyzed.base);
     let (leaf_spec, wrapper_shape) = if matches!(override_, FieldOverride::AsBinary) {
         // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
         // only checks the leaf base, but the tuple itself fails the same
@@ -755,7 +755,7 @@ fn process_field(
         leaf_spec,
         wrapper_shape,
         decimal_generic_params,
-        decimal_backend_path,
+        decimal_backend_ty,
         outer_smart_ptr_depth,
     }))
 }

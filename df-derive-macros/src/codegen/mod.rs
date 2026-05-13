@@ -117,13 +117,13 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 #[derive(Default)]
 struct GenericRequirements {
     nested_params: Vec<syn::Ident>,
-    nested_paths: Vec<syn::Path>,
+    nested_types: Vec<syn::Type>,
     decimal_params: Vec<syn::Ident>,
-    decimal_paths: Vec<syn::Path>,
+    decimal_types: Vec<syn::Type>,
     as_ref_str: Vec<syn::Ident>,
-    as_ref_str_paths: Vec<syn::Path>,
+    as_ref_str_types: Vec<syn::Type>,
     display_params: Vec<syn::Ident>,
-    display_paths: Vec<syn::Path>,
+    display_types: Vec<syn::Type>,
 }
 
 fn push_unique(out: &mut Vec<syn::Ident>, ident: &syn::Ident) {
@@ -136,13 +136,13 @@ fn contains_ident(items: &[syn::Ident], ident: &syn::Ident) -> bool {
     items.iter().any(|item| item == ident)
 }
 
-fn push_unique_path(out: &mut Vec<syn::Path>, path: &syn::Path) {
-    let key = path.to_token_stream().to_string();
+fn push_unique_type(out: &mut Vec<syn::Type>, ty: &syn::Type) {
+    let key = ty.to_token_stream().to_string();
     if !out
         .iter()
         .any(|existing| existing.to_token_stream().to_string() == key)
     {
-        out.push(path.clone());
+        out.push(ty.clone());
     }
 }
 
@@ -155,20 +155,20 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
         LeafSpec::Generic(ident) => {
             push_unique(&mut reqs.nested_params, ident);
         }
-        LeafSpec::Struct(path) => {
-            push_unique_path(&mut reqs.nested_paths, path);
+        LeafSpec::Struct(ty) => {
+            push_unique_type(&mut reqs.nested_types, ty);
         }
         LeafSpec::AsStr(StringyBase::Generic(ident)) => {
             push_unique(&mut reqs.as_ref_str, ident);
         }
-        LeafSpec::AsStr(StringyBase::Struct(path)) => {
-            push_unique_path(&mut reqs.as_ref_str_paths, path);
+        LeafSpec::AsStr(StringyBase::Struct(ty)) => {
+            push_unique_type(&mut reqs.as_ref_str_types, ty);
         }
         LeafSpec::AsString(DisplayBase::Generic(ident)) => {
             push_unique(&mut reqs.display_params, ident);
         }
-        LeafSpec::AsString(DisplayBase::Struct(path)) => {
-            push_unique_path(&mut reqs.display_paths, path);
+        LeafSpec::AsString(DisplayBase::Struct(ty)) => {
+            push_unique_type(&mut reqs.display_types, ty);
         }
         LeafSpec::Tuple(elements) => {
             for elem in elements {
@@ -200,8 +200,8 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
             push_unique(&mut reqs.decimal_params, ident);
         }
 
-        if let Some(path) = &field.decimal_backend_path {
-            push_unique_path(&mut reqs.decimal_paths, path);
+        if let Some(ty) = &field.decimal_backend_ty {
+            push_unique_type(&mut reqs.decimal_types, ty);
         }
     }
 
@@ -213,7 +213,7 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
 /// each parameter's role: direct generic dataframe payloads need `ToDataFrame
 /// + Columnar`, decimal backends need `Decimal128Encode`, generic `as_str`
 /// leaves need `AsRef<str>`, generic `as_string` leaves need `Display`, and
-/// concrete conversion/nested paths receive exact `where` predicates.
+/// concrete conversion/nested types receive exact `where` predicates.
 pub fn impl_parts_with_bounds(
     ir: &StructIR,
     config: &MacroConfig,
@@ -259,15 +259,15 @@ pub fn impl_parts_with_bounds(
         }
     }
 
-    if !reqs.nested_paths.is_empty()
-        || !reqs.as_ref_str_paths.is_empty()
-        || !reqs.display_paths.is_empty()
-        || !reqs.decimal_paths.is_empty()
+    if !reqs.nested_types.is_empty()
+        || !reqs.as_ref_str_types.is_empty()
+        || !reqs.display_types.is_empty()
+        || !reqs.decimal_types.is_empty()
     {
         let where_clause_mut = generics.make_where_clause();
 
-        for path in &reqs.nested_paths {
-            let nested_ty = quote! { #path };
+        for ty in &reqs.nested_types {
+            let nested_ty = quote! { #ty };
 
             where_clause_mut.predicates.push(
                 syn::parse2(quote! { #nested_ty: #to_df_trait })
@@ -278,24 +278,24 @@ pub fn impl_parts_with_bounds(
                     .expect("nested Columnar where predicate should parse"),
             );
         }
-        for path in &reqs.as_ref_str_paths {
-            let as_str_ty = quote! { #path };
+        for ty in &reqs.as_ref_str_types {
+            let as_str_ty = quote! { #ty };
 
             where_clause_mut.predicates.push(
                 syn::parse2(quote! { #as_str_ty: ::core::convert::AsRef<str> })
-                    .expect("as_str path where predicate should parse"),
+                    .expect("as_str type where predicate should parse"),
             );
         }
-        for path in &reqs.display_paths {
-            let display_ty = quote! { #path };
+        for ty in &reqs.display_types {
+            let display_ty = quote! { #ty };
 
             where_clause_mut.predicates.push(
                 syn::parse2(quote! { #display_ty: ::core::fmt::Display })
-                    .expect("as_string path where predicate should parse"),
+                    .expect("as_string type where predicate should parse"),
             );
         }
-        for path in &reqs.decimal_paths {
-            let decimal_ty = quote! { #path };
+        for ty in &reqs.decimal_types {
+            let decimal_ty = quote! { #ty };
 
             where_clause_mut.predicates.push(
                 syn::parse2(quote! { #decimal_ty: #decimal_trait })

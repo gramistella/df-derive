@@ -2,7 +2,7 @@ use crate::codegen::encoder::idents;
 use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{GenericArgument, GenericParam, Ident, Path, PathArguments, Type};
+use syn::{GenericArgument, GenericParam, Ident, PathArguments, Type};
 
 struct GenericContext {
     type_params: Vec<Ident>,
@@ -48,15 +48,15 @@ impl GenericContext {
 
 pub fn generate_eager_asserts(ir: &StructIR) -> TokenStream {
     let generic_ctx = GenericContext::new(ir);
-    let mut as_ref_str_paths = Vec::new();
-    let mut display_paths = Vec::new();
+    let mut as_ref_str_types = Vec::new();
+    let mut display_types = Vec::new();
 
     for field in &ir.fields {
-        collect_as_ref_str_asserts(&field.leaf_spec, &generic_ctx, &mut as_ref_str_paths);
-        collect_display_asserts(&field.leaf_spec, &generic_ctx, &mut display_paths);
+        collect_as_ref_str_asserts(&field.leaf_spec, &generic_ctx, &mut as_ref_str_types);
+        collect_display_asserts(&field.leaf_spec, &generic_ctx, &mut display_types);
     }
 
-    if as_ref_str_paths.is_empty() && display_paths.is_empty() {
+    if as_ref_str_types.is_empty() && display_types.is_empty() {
         return TokenStream::new();
     }
 
@@ -72,19 +72,19 @@ pub fn generate_eager_asserts(ir: &StructIR) -> TokenStream {
         >() {}
 
         #(
-            #assert_as_ref_str::<#as_ref_str_paths>();
+            #assert_as_ref_str::<#as_ref_str_types>();
         )*
         #(
-            #assert_display::<#display_paths>();
+            #assert_display::<#display_types>();
         )*
     }
 }
 
-fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Path>) {
+fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
     match leaf {
-        LeafSpec::AsStr(StringyBase::Struct(path)) => {
-            if !path_depends_on_generics(path, generic_ctx) {
-                push_unique_path(out, path);
+        LeafSpec::AsStr(StringyBase::Struct(ty)) => {
+            if !type_depends_on_generics(ty, generic_ctx) {
+                push_unique_type(out, ty);
             }
         }
         LeafSpec::Tuple(elements) => {
@@ -109,11 +109,11 @@ fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out
     }
 }
 
-fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Path>) {
+fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
     match leaf {
-        LeafSpec::AsString(DisplayBase::Struct(path)) => {
-            if !path_depends_on_generics(path, generic_ctx) {
-                push_unique_path(out, path);
+        LeafSpec::AsString(DisplayBase::Struct(ty)) => {
+            if !type_depends_on_generics(ty, generic_ctx) {
+                push_unique_type(out, ty);
             }
         }
         LeafSpec::Tuple(elements) => {
@@ -138,17 +138,17 @@ fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &
     }
 }
 
-fn push_unique_path(out: &mut Vec<Path>, path: &Path) {
-    let key = path.to_token_stream().to_string();
+fn push_unique_type(out: &mut Vec<Type>, ty: &Type) {
+    let key = ty.to_token_stream().to_string();
     if !out
         .iter()
         .any(|existing| existing.to_token_stream().to_string() == key)
     {
-        out.push(path.clone());
+        out.push(ty.clone());
     }
 }
 
-fn path_depends_on_generics(path: &Path, generic_ctx: &GenericContext) -> bool {
+fn path_depends_on_generics(path: &syn::Path, generic_ctx: &GenericContext) -> bool {
     path.segments.iter().any(|segment| {
         if generic_ctx.has_type_param(&segment.ident) {
             return true;
@@ -193,6 +193,12 @@ fn type_depends_on_generics(ty: &Type, generic_ctx: &GenericContext) -> bool {
         Type::Group(group) => type_depends_on_generics(group.elem.as_ref(), generic_ctx),
         Type::Paren(paren) => type_depends_on_generics(paren.elem.as_ref(), generic_ctx),
         Type::Path(type_path) => {
+            if let Some(qself) = &type_path.qself
+                && type_depends_on_generics(qself.ty.as_ref(), generic_ctx)
+            {
+                return true;
+            }
+
             if type_path.qself.is_none()
                 && type_path.path.segments.len() == 1
                 && let Some(segment) = type_path.path.segments.last()

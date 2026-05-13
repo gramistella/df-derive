@@ -31,7 +31,8 @@ use super::shape_walk::{
     shape_validity_decls,
 };
 use super::{
-    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder, struct_type_path,
+    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder,
+    struct_type_tokens,
 };
 
 // ============================================================================
@@ -105,8 +106,8 @@ fn build_element_entries(
     let pp = crate::codegen::external_paths::prelude();
     let total_layers = outer_layers + elem.wrapper_shape.vec_depth();
     match &elem.leaf_spec {
-        LeafSpec::Struct(path) => {
-            let type_path = struct_type_path(path);
+        LeafSpec::Struct(ty) => {
+            let type_path = struct_type_tokens(ty);
             element_nested_entries(&type_path, column_prefix, total_layers, mode, config)
         }
         LeafSpec::Generic(id) => {
@@ -452,8 +453,8 @@ fn emit_vec_parent(
     };
 
     match &elem.leaf_spec {
-        LeafSpec::Struct(path) => {
-            let type_path = struct_type_path(path);
+        LeafSpec::Struct(ty) => {
+            let type_path = struct_type_tokens(ty);
             let leaf_projection_access =
                 deepest_leaf_projection_access(&composed_shape, projection, elem);
             emit_vec_parent_nested(
@@ -980,8 +981,8 @@ fn emit_via_standard_encoder(
     let pp = crate::codegen::external_paths::prelude();
     let nested_ty: TokenStream;
     let nested_ctx = match leaf {
-        LeafSpec::Struct(path) => {
-            nested_ty = struct_type_path(path);
+        LeafSpec::Struct(ty) => {
+            nested_ty = struct_type_tokens(ty);
             Some(NestedLeafCtx {
                 base: BaseCtx {
                     access,

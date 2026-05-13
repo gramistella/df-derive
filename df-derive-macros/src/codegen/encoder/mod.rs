@@ -48,18 +48,23 @@ pub use tuple::{
     build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
 };
 
-/// Build the type-as-path token stream for a concrete struct field. Generic
-/// args on the final segment are emitted as turbofish so the same token stream
-/// is valid for associated calls (`Foo::<T>::schema()`) and type positions
-/// (`<Foo::<T> as Trait>`), while preserving module qualification.
-pub fn struct_type_path(path: &syn::Path) -> TokenStream {
-    let mut path = path.clone();
-    if let Some(segment) = path.segments.last_mut()
-        && let PathArguments::AngleBracketed(args) = &mut segment.arguments
+/// Build the type token stream for a concrete struct field. Plain path types
+/// keep the historical turbofish form on the final segment so the same token
+/// stream is valid for associated calls and type positions, while fuller
+/// `syn::Type` forms such as `<T as Trait>::Item` are emitted verbatim.
+pub fn struct_type_tokens(ty: &syn::Type) -> TokenStream {
+    if let syn::Type::Path(type_path) = ty
+        && type_path.qself.is_none()
     {
-        args.colon2_token.get_or_insert_with(Default::default);
+        let mut path = type_path.path.clone();
+        if let Some(segment) = path.segments.last_mut()
+            && let PathArguments::AngleBracketed(args) = &mut segment.arguments
+        {
+            args.colon2_token.get_or_insert_with(Default::default);
+        }
+        return quote! { #path };
     }
-    quote! { #path }
+    quote! { #ty }
 }
 
 /// Token stream for the type-as-path expression used in UFCS calls
@@ -70,7 +75,7 @@ pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream
         crate::ir::StringyBase::String => quote! { ::std::string::String },
         crate::ir::StringyBase::BorrowedStr => quote! { &'_ str },
         crate::ir::StringyBase::CowStr => quote! { ::std::borrow::Cow<'_, str> },
-        crate::ir::StringyBase::Struct(path) => struct_type_path(path),
+        crate::ir::StringyBase::Struct(ty) => struct_type_tokens(ty),
         crate::ir::StringyBase::Generic(ident) => quote! { #ident },
     }
 }

@@ -10,7 +10,7 @@
 //! to a primitive leaf encoder — because it sits at the leaf/vec boundary
 //! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, StringyBase, VecLayers, WrapperShape};
+use crate::ir::{LeafSpec, VecLayers, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -81,6 +81,11 @@ enum VecLeafSpec {
     /// uses a flat `Vec<bool>` fast path and is served by
     /// `vec_encoder_bool_bare` directly, not this enum.
     Bool,
+}
+
+struct VecLeafPlan {
+    spec: VecLeafSpec,
+    leaf_dtype: TokenStream,
 }
 
 /// Bool-specific helper: returns the leaf-array construction tokens given
@@ -545,6 +550,19 @@ fn lower_to_pep(
     }
 }
 
+/// Build the per-element-push payload for a primitive Vec leaf. Tuple Vec
+/// emission reuses this after its scan has projected the tuple element and
+/// rebound `__df_derive_v` to the actual leaf, keeping all string-like,
+/// numeric, bool, binary, and mapped-numeric leaf behavior in one place.
+pub(super) fn pep_for_primitive_leaf(
+    leaf: &LeafSpec,
+    ctx: &LeafCtx<'_>,
+    shape: &VecLayers,
+) -> PerElementPush {
+    let plan = vec_leaf_plan(leaf, ctx);
+    lower_to_pep(ctx, &plan.spec, shape, &plan.leaf_dtype)
+}
+
 /// Bare-bool variant of the vec encoder. At depth 1 with no inner-Option and
 /// no outer-Option layers, uses `BooleanArray::from_slice` (bulk, no
 /// bit-packing). For deeper or option-bearing shapes, routes through the
@@ -628,23 +646,166 @@ fn bool_bare_depth1_body(
     }
 }
 
-/// `Vec<...>` (`as_str` transform) — same MBVA-based encoder as the bare
-/// `String` path, but the value expression sources `&str` via UFCS through
-/// `AsRef<str>`. The bytes are copied into the view array once, identical
-/// to the `String::as_str()` path. The `String`-vs-UFCS branch is shared
-/// with the single-Option leaf and the multi-Option wrapper through
-/// [`super::stringy_value_expr`].
-fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecLayers, base: &StringyBase) -> Encoder {
+fn mapped_numeric_plan(
+    ctx: &LeafCtx<'_>,
+    leaf: &LeafSpec,
+    native: TokenStream,
+    leaf_dtype: TokenStream,
+    needs_decimal_import: bool,
+) -> VecLeafPlan {
     let v = idents::leaf_value();
-    let value_expr =
-        super::stringy_value_expr(base, &quote! { #v }, super::StringyExprKind::MbvaValue);
-    let spec = VecLeafSpec::StringLike {
-        value_expr,
-        extra_decls: Vec::new(),
-    };
+    let mapped_v = crate::codegen::type_registry::map_primitive_expr(
+        &quote! { #v },
+        leaf,
+        ctx.decimal128_encode_trait,
+    );
+    VecLeafPlan {
+        spec: VecLeafSpec::Numeric {
+            native,
+            value_expr: mapped_v,
+            needs_decimal_import,
+        },
+        leaf_dtype,
+    }
+}
+
+fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
     let pp = crate::codegen::external_paths::prelude();
-    let leaf_dtype = quote! { #pp::DataType::String };
-    vec_encoder(ctx, &spec, shape, &leaf_dtype)
+    let v = idents::leaf_value();
+    match leaf {
+        LeafSpec::Numeric(kind) => {
+            let info = crate::codegen::type_registry::numeric_info_for(*kind);
+            let value_expr = crate::codegen::type_registry::numeric_stored_value(
+                *kind,
+                quote! { *#v },
+                &info.native,
+            );
+            VecLeafPlan {
+                spec: VecLeafSpec::Numeric {
+                    native: info.native.clone(),
+                    value_expr,
+                    needs_decimal_import: false,
+                },
+                leaf_dtype: info.dtype,
+            }
+        }
+        LeafSpec::String => VecLeafPlan {
+            spec: VecLeafSpec::StringLike {
+                value_expr: quote! { #v.as_str() },
+                extra_decls: Vec::new(),
+            },
+            leaf_dtype: quote! { #pp::DataType::String },
+        },
+        LeafSpec::Binary => VecLeafPlan {
+            spec: VecLeafSpec::BinaryLike {
+                value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
+            },
+            leaf_dtype: quote! { #pp::DataType::Binary },
+        },
+        LeafSpec::Bool => VecLeafPlan {
+            spec: VecLeafSpec::Bool,
+            leaf_dtype: quote! { #pp::DataType::Boolean },
+        },
+        LeafSpec::DateTime(unit) => {
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            mapped_numeric_plan(
+                ctx,
+                leaf,
+                quote! { i64 },
+                quote! {
+                    #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
+                },
+                false,
+            )
+        }
+        LeafSpec::NaiveDateTime(unit) => {
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            mapped_numeric_plan(
+                ctx,
+                leaf,
+                quote! { i64 },
+                quote! {
+                    #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
+                },
+                false,
+            )
+        }
+        LeafSpec::NaiveDate => mapped_numeric_plan(
+            ctx,
+            leaf,
+            quote! { i32 },
+            quote! { #pp::DataType::Date },
+            false,
+        ),
+        LeafSpec::NaiveTime => mapped_numeric_plan(
+            ctx,
+            leaf,
+            quote! { i64 },
+            quote! { #pp::DataType::Time },
+            false,
+        ),
+        LeafSpec::Duration { unit, .. } => {
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            mapped_numeric_plan(
+                ctx,
+                leaf,
+                quote! { i64 },
+                quote! { #pp::DataType::Duration(#unit_tokens) },
+                false,
+            )
+        }
+        LeafSpec::Decimal { precision, scale } => {
+            let p = *precision as usize;
+            let s = *scale as usize;
+            mapped_numeric_plan(
+                ctx,
+                leaf,
+                quote! { i128 },
+                quote! { #pp::DataType::Decimal(#p, #s) },
+                true,
+            )
+        }
+        LeafSpec::AsString(_) => {
+            let scratch = idents::primitive_str_scratch(ctx.base.idx);
+            let value_expr = quote! {{
+                use ::std::fmt::Write as _;
+                #scratch.clear();
+                ::std::write!(&mut #scratch, "{}", #v).unwrap();
+                #scratch.as_str()
+            }};
+            VecLeafPlan {
+                spec: VecLeafSpec::StringLike {
+                    value_expr,
+                    extra_decls: vec![quote! {
+                        let mut #scratch: ::std::string::String =
+                            ::std::string::String::new();
+                    }],
+                },
+                leaf_dtype: quote! { #pp::DataType::String },
+            }
+        }
+        LeafSpec::AsStr(stringy) => {
+            let value_expr = super::stringy_value_expr(
+                stringy,
+                &quote! { #v },
+                super::StringyExprKind::MbvaValue,
+            );
+            VecLeafPlan {
+                spec: VecLeafSpec::StringLike {
+                    value_expr,
+                    extra_decls: Vec::new(),
+                },
+                leaf_dtype: quote! { #pp::DataType::String },
+            }
+        }
+        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
+            unreachable_struct_in_primitive_dispatcher("vec_leaf_plan")
+        }
+        LeafSpec::Tuple(_) => unreachable!(
+            "df-derive: vec_leaf_plan reached with Tuple leaf — tuple fields route \
+             through the tuple emitter, not the primitive vec dispatcher",
+        ),
+    }
 }
 
 // --- Top-level dispatcher pieces ---
@@ -674,73 +835,29 @@ pub(super) fn try_build_vec_encoder(
     ctx: &LeafCtx<'_>,
     vec_shape: &VecLayers,
 ) -> Encoder {
-    let v = idents::leaf_value();
     match leaf {
-        LeafSpec::Numeric(kind) => {
-            let info = crate::codegen::type_registry::numeric_info_for(*kind);
-            // The loop binding is `&T` for Copy primitives, so dereferencing
-            // produces the storage value directly. Bare and inner-Option
-            // arms share the same expression because `build_vec_leaf_pieces`
-            // re-binds the bare loop variable as `__df_derive_v` before
-            // splicing the value expression in.
-            //
-            // `ISize`/`USize` widen to `i64`/`u64` at the leaf push site.
-            // The loop binding is `&isize`/`&usize`, so the cast reads the
-            // pointed-to value first (`*v`) then widens to the target.
-            let value_expr = crate::codegen::type_registry::numeric_stored_value(
-                *kind,
-                quote! { *#v },
-                &info.native,
-            );
-            let spec = VecLeafSpec::Numeric {
-                native: info.native.clone(),
-                value_expr,
-                needs_decimal_import: false,
-            };
-            vec_encoder(ctx, &spec, vec_shape, &info.dtype)
-        }
-        LeafSpec::String => {
-            let pp = crate::codegen::external_paths::prelude();
-            let leaf_dtype = quote! { #pp::DataType::String };
-            let spec = VecLeafSpec::StringLike {
-                value_expr: quote! { #v.as_str() },
-                extra_decls: Vec::new(),
-            };
-            vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
-        }
-        LeafSpec::Binary => {
-            // The loop binds a borrowed binary carrier (`&Vec<u8>` or
-            // `&Cow<'_, [u8]>`); `AsRef<[u8]>` produces the slice accepted by
-            // `MutableBinaryViewArray<[u8]>`.
-            let pp = crate::codegen::external_paths::prelude();
-            let leaf_dtype = quote! { #pp::DataType::Binary };
-            let spec = VecLeafSpec::BinaryLike {
-                value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
-            };
-            vec_encoder(ctx, &spec, vec_shape, &leaf_dtype)
-        }
         LeafSpec::Bool => {
             if vec_shape.has_inner_option() {
-                let pp = crate::codegen::external_paths::prelude();
-                let leaf_dtype = quote! { #pp::DataType::Boolean };
-                vec_encoder(ctx, &VecLeafSpec::Bool, vec_shape, &leaf_dtype)
+                let plan = vec_leaf_plan(leaf, ctx);
+                vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype)
             } else {
                 vec_encoder_bool_bare(ctx, vec_shape)
             }
         }
-        LeafSpec::DateTime(unit) => vec_encoder_datetime(ctx, *unit, vec_shape),
-        LeafSpec::NaiveDateTime(unit) => vec_encoder_naive_datetime(ctx, *unit, vec_shape),
-        LeafSpec::NaiveDate => vec_encoder_naive_date(ctx, vec_shape),
-        LeafSpec::NaiveTime => vec_encoder_naive_time(ctx, vec_shape),
-        LeafSpec::Duration { unit, source } => vec_encoder_duration(ctx, *unit, *source, vec_shape),
-        LeafSpec::Decimal { precision, scale } => {
-            vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Binary
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::AsString(_)
+        | LeafSpec::AsStr(_) => {
+            let plan = vec_leaf_plan(leaf, ctx);
+            vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype)
         }
-        LeafSpec::AsString(_) => vec_encoder_to_string(ctx, vec_shape),
-        // `as_str` borrow path: same MBVA-based encoder as `String`, but
-        // the value expression goes through UFCS (`AsRef<str>`) instead of
-        // `String::as_str`. Bytes are copied into the view array once.
-        LeafSpec::AsStr(stringy) => vec_encoder_as_str(ctx, vec_shape, stringy),
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
             unreachable_struct_in_primitive_dispatcher("try_build_vec_encoder")
         }
@@ -750,149 +867,6 @@ pub(super) fn try_build_vec_encoder(
              dispatcher",
         ),
     }
-}
-
-/// Shared body of `vec_encoder_datetime` / `vec_encoder_decimal`: build a
-/// `VecLeafSpec::Numeric` wrapping a per-row mapped value (chrono epoch i64
-/// for `DateTime`, mantissa i128 for `Decimal`). The leaf-specific pieces
-/// (`leaf` for `map_primitive_expr` dispatch, `native`, `leaf_dtype`,
-/// `needs_decimal_import`) are passed in.
-fn vec_encoder_mapped_numeric(
-    ctx: &LeafCtx<'_>,
-    shape: &VecLayers,
-    leaf: &LeafSpec,
-    native: TokenStream,
-    leaf_dtype: &TokenStream,
-    needs_decimal_import: bool,
-) -> Encoder {
-    let v = idents::leaf_value();
-    let mapped_v = crate::codegen::type_registry::map_primitive_expr(
-        &quote! { #v },
-        leaf,
-        ctx.decimal128_encode_trait,
-    );
-    let spec = VecLeafSpec::Numeric {
-        native,
-        value_expr: mapped_v,
-        needs_decimal_import,
-    };
-    vec_encoder(ctx, &spec, shape, leaf_dtype)
-}
-
-fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
-    let leaf_dtype = quote! {
-        #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
-    };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::DateTime(unit),
-        quote! { i64 },
-        &leaf_dtype,
-        false,
-    )
-}
-
-fn vec_encoder_naive_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
-    let leaf_dtype = quote! {
-        #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
-    };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::NaiveDateTime(unit),
-        quote! { i64 },
-        &leaf_dtype,
-        false,
-    )
-}
-
-fn vec_encoder_naive_date(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let leaf_dtype = quote! { #pp::DataType::Date };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::NaiveDate,
-        quote! { i32 },
-        &leaf_dtype,
-        false,
-    )
-}
-
-fn vec_encoder_naive_time(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let leaf_dtype = quote! { #pp::DataType::Time };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::NaiveTime,
-        quote! { i64 },
-        &leaf_dtype,
-        false,
-    )
-}
-
-fn vec_encoder_duration(
-    ctx: &LeafCtx<'_>,
-    unit: DateTimeUnit,
-    source: DurationSource,
-    shape: &VecLayers,
-) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
-    let leaf_dtype = quote! { #pp::DataType::Duration(#unit_tokens) };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::Duration { unit, source },
-        quote! { i64 },
-        &leaf_dtype,
-        false,
-    )
-}
-
-fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let p = precision as usize;
-    let s = scale as usize;
-    let leaf_dtype = quote! { #pp::DataType::Decimal(#p, #s) };
-    vec_encoder_mapped_numeric(
-        ctx,
-        shape,
-        &LeafSpec::Decimal { precision, scale },
-        quote! { i128 },
-        &leaf_dtype,
-        true,
-    )
-}
-
-fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::external_paths::prelude();
-    let leaf_dtype = quote! { #pp::DataType::String };
-    // `to_string` materializes via `Display::fmt` into a reusable `String`
-    // scratch — we splice that scratch's `as_str()` into the MBVA-push
-    // expression, so the per-element work allocates the scratch once at
-    // decl time and reuses on every row.
-    let scratch = idents::primitive_str_scratch(ctx.base.idx);
-    let v = idents::leaf_value();
-    let value_expr = quote! {{
-        use ::std::fmt::Write as _;
-        #scratch.clear();
-        ::std::write!(&mut #scratch, "{}", #v).unwrap();
-        #scratch.as_str()
-    }};
-    let spec = VecLeafSpec::StringLike {
-        value_expr,
-        extra_decls: vec![
-            quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); },
-        ],
-    };
-    vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
 
 /// Build a single arm of the leaf encoder for a primitive `LeafSpec`. The

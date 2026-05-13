@@ -133,6 +133,18 @@ struct VecOptBoxTupleWithVecElement {
     items: Vec<Option<Box<(Vec<i32>, String)>>>,
 }
 
+// 21. Parent tuple is required, while a projected primitive element is optional.
+#[derive(ToDataFrame, Clone)]
+struct VecTupleWithOptionalElement {
+    xs: Vec<(Option<i32>, String)>,
+}
+
+// 22. Borrowed string tuple elements lower to LeafSpec::AsStr without attrs.
+#[derive(ToDataFrame, Clone)]
+struct BorrowedStrTupleVec<'a> {
+    xs: Vec<(&'a str, i32)>,
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -612,6 +624,56 @@ fn runtime_semantics() {
                 .unwrap()
         ),
         vec![Some("left".to_string()), None, Some("right".to_string())],
+    );
+
+    // 21. Vec<(Option<i32>, String)>: the Option belongs to field_0 only;
+    // field_1 remains present for every tuple item.
+    let optional_elem = VecTupleWithOptionalElement {
+        xs: vec![
+            (Some(1), "one".to_string()),
+            (None, "missing".to_string()),
+            (Some(3), "three".to_string()),
+        ],
+    };
+    let optional_elem_df = optional_elem.to_dataframe().unwrap();
+    assert_eq!(
+        list_i32s(
+            optional_elem_df
+                .column("xs.field_0")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![Some(1), None, Some(3)],
+    );
+    assert_eq!(
+        list_strings(
+            optional_elem_df
+                .column("xs.field_1")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![
+            Some("one".to_string()),
+            Some("missing".to_string()),
+            Some("three".to_string()),
+        ],
+    );
+
+    // 22. Vec<(&str, i32)>: borrowed string tuple elements use the default
+    // AsStr lowering and should share the same list string emitter.
+    let borrowed = BorrowedStrTupleVec {
+        xs: vec![("alpha", 10), ("beta", 20)],
+    };
+    let borrowed_df = borrowed.to_dataframe().unwrap();
+    assert_eq!(
+        list_strings(borrowed_df.column("xs.field_0").unwrap().get(0).unwrap()),
+        vec![Some("alpha".to_string()), Some("beta".to_string())],
+    );
+    assert_eq!(
+        list_i32s(borrowed_df.column("xs.field_1").unwrap().get(0).unwrap()),
+        vec![Some(10), Some(20)],
     );
 
     // Batch round-trip

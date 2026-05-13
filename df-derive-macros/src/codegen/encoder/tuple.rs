@@ -454,10 +454,13 @@ fn emit_vec_parent(
     match &elem.leaf_spec {
         LeafSpec::Struct(path) => {
             let type_path = struct_type_path(path);
+            let leaf_projection_access =
+                deepest_leaf_projection_access(&composed_shape, projection, elem);
             emit_vec_parent_nested(
                 parent_access,
                 &composed_shape,
                 projection,
+                leaf_projection_access,
                 &type_path,
                 field_idx,
                 column_prefix,
@@ -466,10 +469,13 @@ fn emit_vec_parent(
         }
         LeafSpec::Generic(id) => {
             let type_path = quote! { #id };
+            let leaf_projection_access =
+                deepest_leaf_projection_access(&composed_shape, projection, elem);
             emit_vec_parent_nested(
                 parent_access,
                 &composed_shape,
                 projection,
+                leaf_projection_access,
                 &type_path,
                 field_idx,
                 column_prefix,
@@ -514,9 +520,6 @@ fn emit_vec_parent_primitive(
         .collect();
     let layer_counters = tuple_layer_counters(field_idx, composed_shape.depth());
 
-    // Build leaf pieces (storage decls, per-element push, leaf-array
-    // construction, post-push offsets value) for the element's primitive
-    // leaf.
     let dummy_access = TokenStream::new();
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
@@ -526,27 +529,8 @@ fn emit_vec_parent_primitive(
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
     };
-    // Projection placement: when the projection lands AT the deepest
-    // composed layer (i.e., the element has no own wrappers), the leaf
-    // binding `__df_derive_v: &Tuple` needs in-leaf projection. When the
-    // projection is at an interior layer (the element has its own
-    // wrappers), the iteration source at that layer projects, and the
-    // leaf binding is `&Leaf` directly — no in-leaf projection needed.
-    let leaf_value_override = build_leaf_projection_value_expr(
-        &elem.leaf_spec,
-        projection.path,
-        composed_shape.depth(),
-        projection.layer,
-        elem.outer_smart_ptr_depth,
-    );
-
-    let leaf_pieces = build_primitive_leaf_pieces(
-        &leaf_ctx,
-        &elem.leaf_spec,
-        composed_shape.has_inner_option(),
-        &pa_root,
-        leaf_value_override.as_ref(),
-    );
+    let pep = super::vec::pep_for_primitive_leaf(&elem.leaf_spec, &leaf_ctx, composed_shape);
+    let leaf_projection_access = deepest_leaf_projection_access(composed_shape, projection, elem);
 
     let precount = build_precount(
         composed_shape,
@@ -561,8 +545,9 @@ fn emit_vec_parent_primitive(
         &layers,
         parent_access,
         projection,
-        &leaf_pieces.per_elem_push,
-        &leaf_pieces.leaf_offsets_post_push,
+        leaf_projection_access,
+        &pep.per_elem_push,
+        &pep.leaf_offsets_post_push,
     );
     let offsets_decls = build_offsets_decls(&layers, &layer_counters);
     let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, &pa_root);
@@ -571,14 +556,14 @@ fn emit_vec_parent_primitive(
         composed_shape,
         &layers,
         &leaf_arr,
-        &elem.leaf_spec.dtype(),
-        &leaf_pieces.leaf_arr_expr,
+        &pep.leaf_logical_dtype,
+        &pep.leaf_arr_expr,
         &pp,
         &pa_root,
     );
 
-    let extra_imports = leaf_pieces.extra_imports;
-    let storage_decls = leaf_pieces.storage_decls;
+    let extra_imports = pep.extra_imports;
+    let storage_decls = pep.storage_decls;
 
     quote! {
         {
@@ -609,6 +594,7 @@ fn emit_vec_parent_nested(
     parent_access: &TokenStream,
     composed_shape: &VecLayers,
     projection: TupleProjection<'_>,
+    leaf_projection_access: Option<&AccessChain>,
     type_path: &TokenStream,
     field_idx: usize,
     column_prefix: &str,
@@ -650,24 +636,11 @@ fn emit_vec_parent_nested(
     let has_inner_option = composed_shape.has_inner_option();
 
     // Per-element push body: collect &Inner refs (and positions on
-    // inner-Option). When the projection lands at the deepest layer
-    // (the typical `Vec<(Inner, i32)>` shape), the leaf binding is
-    // `&Tuple` and we project `&v.<i>` to get `&Inner`. When the
-    // projection is at an interior layer (the element itself has Vec
-    // wrappers), the iteration source already yielded the projected
-    // refs, so the binding is `&Inner` directly.
+    // inner-Option). The scan applies tuple projection before this body, so
+    // the leaf binding is always `&Inner` or `Option<&Inner>`.
     let leaf_v = idents::leaf_value();
     let inner_v = idents::tuple_nested_inner_v();
-    let projected_leaf = if projection.layer == composed_shape.depth() {
-        let projection_path = projection.path;
-        let mut projected = quote! { (*#leaf_v) #projection_path };
-        for _ in 0..projection.smart_ptr_depth {
-            projected = quote! { (*(#projected)) };
-        }
-        quote! { &(#projected) }
-    } else {
-        quote! { #leaf_v }
-    };
+    let projected_leaf = quote! { #leaf_v };
     let per_elem_push = if has_inner_option {
         quote! {
             match #projected_leaf {
@@ -698,6 +671,7 @@ fn emit_vec_parent_nested(
         &layers,
         parent_access,
         projection,
+        leaf_projection_access,
         &per_elem_push,
         &leaf_offsets_post_push,
     );
@@ -1108,6 +1082,20 @@ impl<'a> TupleProjection<'a> {
     }
 }
 
+fn deepest_leaf_projection_access<'a>(
+    shape: &VecLayers,
+    projection: TupleProjection<'_>,
+    elem: &'a TupleElement,
+) -> Option<&'a AccessChain> {
+    if projection.layer != shape.depth() {
+        return None;
+    }
+    match &elem.wrapper_shape {
+        WrapperShape::Leaf { access, .. } => Some(access),
+        WrapperShape::Vec(_) => None,
+    }
+}
+
 fn build_precount(
     shape: &VecLayers,
     layers: &[LayerIdents],
@@ -1133,11 +1121,15 @@ fn build_scan(
     layers: &[LayerIdents],
     access: &TokenStream,
     projection: TupleProjection<'_>,
+    leaf_projection_access: Option<&AccessChain>,
     per_elem_push: &TokenStream,
     leaf_offsets_post_push: &TokenStream,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
     let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
+        if let Some(element_access) = leaf_projection_access {
+            return projected_leaf_body(vec_bind, projection, element_access, per_elem_push);
+        }
         if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
             quote! {
                 for #leaf_bind in #vec_bind.iter() {
@@ -1175,6 +1167,82 @@ fn build_scan(
         projection: projection.as_layer_projection(shape),
     }
     .build()
+}
+
+fn project_tuple_element_ref(
+    tuple_ref: &TokenStream,
+    projection: TupleProjection<'_>,
+) -> TokenStream {
+    let path = projection.path;
+    let mut projected = quote! { (*(#tuple_ref)) #path };
+    for _ in 0..projection.smart_ptr_depth {
+        projected = quote! { (*(#projected)) };
+    }
+    quote! { &(#projected) }
+}
+
+fn apply_element_access(
+    projected_ref: &TokenStream,
+    element_access: &AccessChain,
+) -> (TokenStream, bool) {
+    if element_access.option_layers() > 0 {
+        return (
+            super::access_chain_to_option_ref(projected_ref, element_access),
+            true,
+        );
+    }
+    let chain_ref = super::access_chain_to_ref(projected_ref, element_access);
+    (chain_ref.expr, chain_ref.has_option)
+}
+
+fn projected_leaf_expr(
+    raw_bind: &syn::Ident,
+    projection: TupleProjection<'_>,
+    element_access: &AccessChain,
+) -> (TokenStream, bool) {
+    let raw_ref = quote! { #raw_bind };
+    if projection.parent_access.option_layers() > 0 {
+        let tuple_ref = super::access_chain_to_option_ref(&raw_ref, projection.parent_access);
+        let param = idents::tuple_proj_param();
+        let projected_ref = project_tuple_element_ref(&quote! { #param }, projection);
+        if element_access.option_layers() > 0 {
+            let elem_ref = super::access_chain_to_option_ref(&projected_ref, element_access);
+            (quote! { (#tuple_ref).and_then(|#param| #elem_ref) }, true)
+        } else {
+            let elem_ref = super::access_chain_to_ref(&projected_ref, element_access).expr;
+            (quote! { (#tuple_ref).map(|#param| #elem_ref) }, true)
+        }
+    } else {
+        let tuple_ref = super::access_chain_to_ref(&raw_ref, projection.parent_access).expr;
+        let projected_ref = project_tuple_element_ref(&tuple_ref, projection);
+        apply_element_access(&projected_ref, element_access)
+    }
+}
+
+fn projected_leaf_body(
+    vec_bind: &TokenStream,
+    projection: TupleProjection<'_>,
+    element_access: &AccessChain,
+    per_elem_push: &TokenStream,
+) -> TokenStream {
+    let raw_bind = idents::leaf_value_raw();
+    let leaf_bind = idents::leaf_value();
+    let (leaf_expr, has_option) = projected_leaf_expr(&raw_bind, projection, element_access);
+    if has_option {
+        quote! {
+            for #raw_bind in #vec_bind.iter() {
+                let #leaf_bind: ::std::option::Option<_> = #leaf_expr;
+                #per_elem_push
+            }
+        }
+    } else {
+        quote! {
+            for #raw_bind in #vec_bind.iter() {
+                let #leaf_bind = #leaf_expr;
+                #per_elem_push
+            }
+        }
+    }
 }
 
 fn build_offsets_decls(layers: &[LayerIdents], layer_counters: &[syn::Ident]) -> TokenStream {
@@ -1268,488 +1336,5 @@ fn build_materialize(
         #leaf_arr_expr
         #seed_dtype_decl
         #stack
-    }
-}
-
-/// Build the leaf-level value expression for a tuple-element column that
-/// includes the per-element projection. Returns `None` when no projection is
-/// needed at the leaf level (the element has its own wrappers, so the
-/// projection is applied at an interior layer's iteration source by
-/// `build_scan_iter`'s interior-layer arm). Returns `Some(expr)` when the
-/// projection lands at the deepest layer — the for-loop binding
-/// `__df_derive_v` is `&Tuple` and the leaf reads `(*v).<i>` (or with smart-
-/// pointer derefs for elements like `(Box<i32>, String)`).
-fn build_leaf_projection_value_expr(
-    leaf: &LeafSpec,
-    projection_path: &TokenStream,
-    composed_depth: usize,
-    projection_layer: usize,
-    elem_outer_smart_ptr_depth: usize,
-) -> Option<TokenStream> {
-    if projection_layer != composed_depth {
-        // Interior projection: handled by `build_scan_iter`. The leaf
-        // binding `__df_derive_v` already points at the leaf, no
-        // projection needed in the value expression.
-        return None;
-    }
-    let v = idents::leaf_value();
-    // Projected element value expression. For Copy primitive leaves we
-    // read by value via `(*v).<i>` (the .<i> field access copies through
-    // the deref of the &Tuple binding). For non-Copy leaves (String,
-    // Decimal) we read by reference via `&(*v).<i>` so the leaf can
-    // borrow without moving out of the tuple.
-    //
-    // Smart-pointer derefs on the element apply on top of the
-    // projection — for `(Box<i32>, String)` element 0 is `Box<i32>`, so
-    // the element's outer-smart-pointer-depth is 1; the projected
-    // expression is `*((*v).0)`.
-    let copy_projected = {
-        let mut p = quote! { (*#v) #projection_path };
-        for _ in 0..elem_outer_smart_ptr_depth {
-            p = quote! { (*(#p)) };
-        }
-        p
-    };
-    let ref_projected = {
-        // For each element-side smart-pointer layer, dereference inside
-        // the projected expression: `&Box<T>` → `&T` via `*` on the
-        // inner. Without smart pointers this collapses to `&((*v).<i>)`.
-        let mut inner = quote! { (*#v) #projection_path };
-        for _ in 0..elem_outer_smart_ptr_depth {
-            inner = quote! { (*(#inner)) };
-        }
-        quote! { &(#inner) }
-    };
-    match leaf {
-        LeafSpec::Numeric(kind) => {
-            let info = crate::codegen::type_registry::numeric_info_for(*kind);
-            Some(crate::codegen::type_registry::numeric_stored_value(
-                *kind,
-                copy_projected,
-                &info.native,
-            ))
-        }
-        LeafSpec::Bool => Some(copy_projected),
-        LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. } => {
-            // Mapped-numeric leaves run a per-row `map_primitive_expr` on
-            // the binding `__df_derive_v` (e.g. `(__df_derive_v).timestamp_millis()`).
-            // For tuple projection we want the mapping to operate on the
-            // projected element. The leaf-pieces builder accepts a
-            // `leaf_value_expr` override that names the projected
-            // *receiver* of the mapping; the builder applies the standard
-            // `map_primitive_expr` on top.
-            //
-            // For DateTime / NaiveDateTime / NaiveDate / NaiveTime / Duration / Decimal we
-            // pass a reference to the projected element so the mapping's
-            // method calls (`timestamp_millis`, `signed_duration_since`,
-            // `num_nanoseconds`, etc.) autoderef through `&Element`.
-            Some(ref_projected)
-        }
-        LeafSpec::String => {
-            // The String arm in `build_primitive_leaf_pieces` reads
-            // `.as_str()` on the override expression. We return the
-            // projected `&String` reference so the caller wraps with
-            // `.as_str()`.
-            Some(ref_projected)
-        }
-        LeafSpec::Binary
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Struct(..)
-        | LeafSpec::Generic(_)
-        | LeafSpec::Tuple(_) => None,
-    }
-}
-
-// ============================================================================
-// Primitive leaf pieces (per-element-push storage + push + leaf-array build)
-// ============================================================================
-
-struct PrimitiveLeafPieces {
-    storage_decls: TokenStream,
-    per_elem_push: TokenStream,
-    leaf_arr_expr: TokenStream,
-    leaf_offsets_post_push: TokenStream,
-    extra_imports: TokenStream,
-}
-
-/// Build the per-element-push pieces for a primitive leaf at the bottom of
-/// a Vec-bearing tuple shape. `leaf_value_expr` is the expression that
-/// reads the leaf value FROM the for-loop binding `__df_derive_v` —
-/// `*__df_derive_v` for non-projected paths and `(*__df_derive_v).<i>` (or
-/// equivalent) for tuple-element projections. The leaf binding must be
-/// `&LeafType` (the standard for-loop iteration shape); when the per-row
-/// binding is `&Tuple`, the caller computes the projection and passes the
-/// resulting `LeafType`-yielding expression.
-// Bench-sensitive generated-code builder: these primitive arms preserve the
-// current per-leaf emission shape used by the Vec tuple benchmarks, so this
-// lint is allowed until a measured split lands.
-#[allow(clippy::too_many_lines)]
-fn build_primitive_leaf_pieces(
-    ctx: &LeafCtx<'_>,
-    leaf: &LeafSpec,
-    has_inner_option: bool,
-    pa_root: &TokenStream,
-    leaf_value_expr: Option<&TokenStream>,
-) -> PrimitiveLeafPieces {
-    use super::leaf::{mb_decl_filled, validity_into_option};
-    let v = idents::leaf_value();
-    let total_leaves_id = idents::total_leaves();
-    let leaf_capacity_expr = quote! { #total_leaves_id };
-    let leaf_arr = idents::leaf_arr();
-
-    match leaf {
-        LeafSpec::Numeric(kind) => {
-            let info = crate::codegen::type_registry::numeric_info_for(*kind);
-            // `leaf_value_expr` is the projection-aware value expression
-            // when provided; otherwise compute the standard `*__df_derive_v`
-            // shape (with widening for `isize`/`usize`).
-            let value_expr = leaf_value_expr.cloned().unwrap_or_else(|| {
-                crate::codegen::type_registry::numeric_stored_value(
-                    *kind,
-                    quote! { *#v },
-                    &info.native,
-                )
-            });
-            let native = &info.native;
-            let flat = idents::vec_flat();
-            let validity = idents::bool_validity();
-            let storage = if has_inner_option {
-                let validity_decl = mb_decl_filled(&validity, &leaf_capacity_expr, true);
-                quote! {
-                    let mut #flat: ::std::vec::Vec<#native> =
-                        ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-                    #validity_decl
-                }
-            } else {
-                quote! {
-                    let mut #flat: ::std::vec::Vec<#native> =
-                        ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-                }
-            };
-            let push = if has_inner_option {
-                quote! {
-                    match #v {
-                        ::std::option::Option::Some(#v) => {
-                            #flat.push({ #value_expr });
-                        }
-                        ::std::option::Option::None => {
-                            #flat.push(<#native as ::std::default::Default>::default());
-                            #validity.set(#flat.len() - 1, false);
-                        }
-                    }
-                }
-            } else {
-                quote! { #flat.push(#value_expr); }
-            };
-            let leaf_arr_expr = if has_inner_option {
-                let valid_opt = validity_into_option(&validity);
-                quote! {
-                    let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                        #pa_root::array::PrimitiveArray::<#native>::new(
-                            <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-                            #flat.into(),
-                            #valid_opt,
-                        );
-                }
-            } else {
-                quote! {
-                    let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                        #pa_root::array::PrimitiveArray::<#native>::from_vec(#flat);
-                }
-            };
-            PrimitiveLeafPieces {
-                storage_decls: storage,
-                per_elem_push: push,
-                leaf_arr_expr,
-                leaf_offsets_post_push: quote! { #flat.len() },
-                extra_imports: TokenStream::new(),
-            }
-        }
-        LeafSpec::String => {
-            let view_buf = idents::vec_view_buf();
-            let validity = idents::bool_validity();
-            let leaf_idx = idents::vec_leaf_idx();
-            // The String leaf reads via `.as_str()` on the per-element
-            // binding. The projection override (if provided) becomes the
-            // receiver of `.as_str()`.
-            let str_value_some = leaf_value_expr
-                .map_or_else(|| quote! { #v.as_str() }, |e| quote! { (#e).as_str() });
-            let str_value_bare = str_value_some.clone();
-            let storage = if has_inner_option {
-                let validity_decl = mb_decl_filled(&validity, &leaf_capacity_expr, true);
-                quote! {
-                    let mut #view_buf: #pa_root::array::MutableBinaryViewArray<str> =
-                        #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
-                    #validity_decl
-                    let mut #leaf_idx: usize = 0;
-                }
-            } else {
-                quote! {
-                    let mut #view_buf: #pa_root::array::MutableBinaryViewArray<str> =
-                        #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
-                }
-            };
-            let push = if has_inner_option {
-                quote! {
-                    match #v {
-                        ::std::option::Option::Some(#v) => {
-                            #view_buf.push_value_ignore_validity({ #str_value_some });
-                        }
-                        ::std::option::Option::None => {
-                            #view_buf.push_value_ignore_validity("");
-                            #validity.set(#leaf_idx, false);
-                        }
-                    }
-                    #leaf_idx += 1;
-                }
-            } else {
-                quote! { #view_buf.push_value_ignore_validity({ #str_value_bare }); }
-            };
-            let leaf_arr_expr = if has_inner_option {
-                let valid_opt = validity_into_option(&validity);
-                quote! {
-                    let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf
-                        .freeze()
-                        .with_validity(#valid_opt);
-                }
-            } else {
-                quote! {
-                    let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf.freeze();
-                }
-            };
-            PrimitiveLeafPieces {
-                storage_decls: storage,
-                per_elem_push: push,
-                leaf_arr_expr,
-                leaf_offsets_post_push: quote! { #view_buf.len() },
-                extra_imports: TokenStream::new(),
-            }
-        }
-        LeafSpec::Bool => {
-            let values_ident = idents::bool_values();
-            let validity_ident = idents::bool_validity();
-            let leaf_idx = idents::vec_leaf_idx();
-            let values_decl = mb_decl_filled(&values_ident, &leaf_capacity_expr, false);
-            let storage = if has_inner_option {
-                let validity_decl = mb_decl_filled(&validity_ident, &leaf_capacity_expr, true);
-                quote! {
-                    #values_decl
-                    #validity_decl
-                    let mut #leaf_idx: usize = 0;
-                }
-            } else {
-                quote! {
-                    #values_decl
-                    let mut #leaf_idx: usize = 0;
-                }
-            };
-            let push = if has_inner_option {
-                quote! {
-                    match #v {
-                        ::std::option::Option::Some(true) => {
-                            #values_ident.set(#leaf_idx, true);
-                        }
-                        ::std::option::Option::Some(false) => {}
-                        ::std::option::Option::None => {
-                            #validity_ident.set(#leaf_idx, false);
-                        }
-                    }
-                    #leaf_idx += 1;
-                }
-            } else {
-                quote! {
-                    if *#v {
-                        #values_ident.set(#leaf_idx, true);
-                    }
-                    #leaf_idx += 1;
-                }
-            };
-            let leaf_arr_expr = if has_inner_option {
-                let valid_opt = validity_into_option(&validity_ident);
-                quote! {
-                    let #leaf_arr: #pa_root::array::BooleanArray =
-                        #pa_root::array::BooleanArray::new(
-                            #pa_root::datatypes::ArrowDataType::Boolean,
-                            ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#values_ident),
-                            #valid_opt,
-                        );
-                }
-            } else {
-                quote! {
-                    let #leaf_arr: #pa_root::array::BooleanArray =
-                        #pa_root::array::BooleanArray::new(
-                            #pa_root::datatypes::ArrowDataType::Boolean,
-                            ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#values_ident),
-                            ::std::option::Option::None,
-                        );
-                }
-            };
-            PrimitiveLeafPieces {
-                storage_decls: storage,
-                per_elem_push: push,
-                leaf_arr_expr,
-                leaf_offsets_post_push: quote! { #leaf_idx },
-                extra_imports: TokenStream::new(),
-            }
-        }
-        LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. } => {
-            // The mapped-numeric path runs `map_primitive_expr` on a
-            // receiver expression. For tuple projection the receiver is
-            // the projected element (`&(*v).<i>`); for non-projected
-            // shapes, it's the standard for-loop binding `__df_derive_v`.
-            // The Some-arm rebinds `__df_derive_v` so the override is
-            // only consulted at the bare arm.
-            let receiver_bare = leaf_value_expr.cloned().unwrap_or_else(|| quote! { #v });
-            let mapped_v = crate::codegen::type_registry::map_primitive_expr(
-                &receiver_bare,
-                leaf,
-                ctx.decimal128_encode_trait,
-            );
-            let native: TokenStream = match leaf {
-                LeafSpec::DateTime(_)
-                | LeafSpec::NaiveDateTime(_)
-                | LeafSpec::NaiveTime
-                | LeafSpec::Duration { .. } => quote! { i64 },
-                LeafSpec::NaiveDate => quote! { i32 },
-                LeafSpec::Decimal { .. } => quote! { i128 },
-                _ => unreachable!(),
-            };
-            let flat = idents::vec_flat();
-            let validity = idents::bool_validity();
-            let needs_decimal_import = matches!(leaf, LeafSpec::Decimal { .. });
-            let extra_imports = if needs_decimal_import {
-                let trait_path = ctx.decimal128_encode_trait;
-                quote! { use #trait_path as _; }
-            } else {
-                TokenStream::new()
-            };
-            let storage = if has_inner_option {
-                let validity_decl = mb_decl_filled(&validity, &leaf_capacity_expr, true);
-                quote! {
-                    let mut #flat: ::std::vec::Vec<#native> =
-                        ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-                    #validity_decl
-                }
-            } else {
-                quote! {
-                    let mut #flat: ::std::vec::Vec<#native> =
-                        ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
-                }
-            };
-            let push = if has_inner_option {
-                quote! {
-                    match #v {
-                        ::std::option::Option::Some(#v) => {
-                            #flat.push({ #mapped_v });
-                        }
-                        ::std::option::Option::None => {
-                            #flat.push(<#native as ::std::default::Default>::default());
-                            #validity.set(#flat.len() - 1, false);
-                        }
-                    }
-                }
-            } else {
-                quote! { #flat.push(#mapped_v); }
-            };
-            let leaf_arr_expr = if has_inner_option {
-                let valid_opt = validity_into_option(&validity);
-                quote! {
-                    let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                        #pa_root::array::PrimitiveArray::<#native>::new(
-                            <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-                            #flat.into(),
-                            #valid_opt,
-                        );
-                }
-            } else {
-                quote! {
-                    let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                        #pa_root::array::PrimitiveArray::<#native>::from_vec(#flat);
-                }
-            };
-            PrimitiveLeafPieces {
-                storage_decls: storage,
-                per_elem_push: push,
-                leaf_arr_expr,
-                leaf_offsets_post_push: quote! { #flat.len() },
-                extra_imports,
-            }
-        }
-        LeafSpec::Binary => {
-            let view_buf = idents::vec_view_buf();
-            let validity = idents::bool_validity();
-            let leaf_idx = idents::vec_leaf_idx();
-            let storage = if has_inner_option {
-                let validity_decl = mb_decl_filled(&validity, &leaf_capacity_expr, true);
-                quote! {
-                    let mut #view_buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
-                        #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
-                    #validity_decl
-                    let mut #leaf_idx: usize = 0;
-                }
-            } else {
-                quote! {
-                    let mut #view_buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
-                        #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
-                }
-            };
-            let empty = quote! { &[][..] };
-            let push = if has_inner_option {
-                quote! {
-                    match #v {
-                        ::std::option::Option::Some(#v) => {
-                            #view_buf.push_value_ignore_validity(&#v[..]);
-                        }
-                        ::std::option::Option::None => {
-                            #view_buf.push_value_ignore_validity(#empty);
-                            #validity.set(#leaf_idx, false);
-                        }
-                    }
-                    #leaf_idx += 1;
-                }
-            } else {
-                quote! { #view_buf.push_value_ignore_validity(&#v[..]); }
-            };
-            let leaf_arr_expr = if has_inner_option {
-                let valid_opt = validity_into_option(&validity);
-                quote! {
-                    let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf
-                        .freeze()
-                        .with_validity(#valid_opt);
-                }
-            } else {
-                quote! {
-                    let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf.freeze();
-                }
-            };
-            PrimitiveLeafPieces {
-                storage_decls: storage,
-                per_elem_push: push,
-                leaf_arr_expr,
-                leaf_offsets_post_push: quote! { #view_buf.len() },
-                extra_imports: TokenStream::new(),
-            }
-        }
-        LeafSpec::AsString(_) => unreachable!(
-            "as_string is rejected on tuple-typed fields by parser::reject_attrs_on_tuple",
-        ),
-        LeafSpec::AsStr(_) => unreachable!(
-            "as_str is rejected on tuple-typed fields by parser::reject_attrs_on_tuple",
-        ),
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) | LeafSpec::Tuple(_) => unreachable!(
-            "build_primitive_leaf_pieces reached with non-primitive leaf — those route \
-             through emit_vec_parent_nested or emit_inner_tuple",
-        ),
     }
 }

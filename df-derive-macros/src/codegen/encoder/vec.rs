@@ -693,10 +693,17 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
         LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }, true),
         LeafSpec::AsString(_) => {
             let scratch = idents::primitive_str_scratch(ctx.base.idx);
+            let pp = ctx.paths.prelude();
             let value_expr = quote! {{
                 use ::std::fmt::Write as _;
                 #scratch.clear();
-                ::std::write!(&mut #scratch, "{}", #v).unwrap();
+                ::std::write!(&mut #scratch, "{}", #v).map_err(|__df_fmt_err| {
+                    #pp::polars_err!(
+                        ComputeError:
+                        "df-derive: as_string Display formatting failed: {}",
+                        __df_fmt_err,
+                    )
+                })?;
                 #scratch.as_str()
             }};
             VecLeafPlan {

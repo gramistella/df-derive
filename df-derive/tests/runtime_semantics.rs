@@ -75,3 +75,6 @@ mod raw_ident_column_names;
 
 #[path = "runtime/55-manual-nested-validation.rs"]
 mod manual_nested_validation;
+
+#[path = "runtime/56-as-string-fmt-error.rs"]
+mod as_string_fmt_error;

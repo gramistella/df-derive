@@ -608,7 +608,13 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 {
                     use ::std::fmt::Write as _;
                     #scratch.clear();
-                    ::std::write!(&mut #scratch, "{}", &(#access)).unwrap();
+                    ::std::write!(&mut #scratch, "{}", &(#access)).map_err(|__df_fmt_err| {
+                        #pp::polars_err!(
+                            ComputeError:
+                            "df-derive: as_string Display formatting failed: {}",
+                            __df_fmt_err,
+                        )
+                    })?;
                     #buf.push_value_ignore_validity(#scratch.as_str());
                 }
             };
@@ -626,7 +632,13 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                     ::std::option::Option::Some(#v) => {
                         use ::std::fmt::Write as _;
                         #scratch.clear();
-                        ::std::write!(&mut #scratch, "{}", #v).unwrap();
+                        ::std::write!(&mut #scratch, "{}", #v).map_err(|__df_fmt_err| {
+                            #pp::polars_err!(
+                                ComputeError:
+                                "df-derive: as_string Display formatting failed: {}",
+                                __df_fmt_err,
+                            )
+                        })?;
                         #buf.push_value_ignore_validity(#scratch.as_str());
                     }
                     ::std::option::Option::None => {

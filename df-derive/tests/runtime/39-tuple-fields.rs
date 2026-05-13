@@ -145,6 +145,24 @@ struct BorrowedStrTupleVec<'a> {
     xs: Vec<(&'a str, i32)>,
 }
 
+// 23. Parent Option tuple with borrowed Copy element.
+#[derive(ToDataFrame, Clone)]
+struct OptTupleWithBorrowedCopy<'a> {
+    pair: Option<(&'a i32, bool)>,
+}
+
+// 24. Parent Option tuple with boxed Copy element.
+#[derive(ToDataFrame, Clone)]
+struct OptTupleWithBoxedCopy {
+    pair: Option<(Box<i32>,)>,
+}
+
+// 25. Parent Option tuple with boxed non-Copy element.
+#[derive(ToDataFrame, Clone)]
+struct OptTupleWithBoxedString {
+    pair: Option<(Box<String>,)>,
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -674,6 +692,101 @@ fn runtime_semantics() {
     assert_eq!(
         list_i32s(borrowed_df.column("xs.field_1").unwrap().get(0).unwrap()),
         vec![Some(10), Some(20)],
+    );
+
+    // 23. Option<(&i32, bool)>: parent Option projection must dereference the
+    // borrowed numeric element before feeding the Copy Option leaf.
+    let borrowed_scalar = 123;
+    let borrowed_copy = vec![
+        OptTupleWithBorrowedCopy {
+            pair: Some((&borrowed_scalar, true)),
+        },
+        OptTupleWithBorrowedCopy { pair: None },
+    ];
+    let borrowed_copy_df = borrowed_copy.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        borrowed_copy_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Int32(123),
+    );
+    assert_eq!(
+        borrowed_copy_df
+            .column("pair.field_1")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Boolean(true),
+    );
+    assert_eq!(
+        borrowed_copy_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        borrowed_copy_df
+            .column("pair.field_1")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null,
+    );
+
+    // 24. Option<(Box<i32>,)>: projection must not move the Box out of the
+    // borrowed tuple; it dereferences first and copies the i32.
+    let boxed_copy = vec![
+        OptTupleWithBoxedCopy {
+            pair: Some((Box::new(456),)),
+        },
+        OptTupleWithBoxedCopy { pair: None },
+    ];
+    let boxed_copy_df = boxed_copy.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        boxed_copy_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Int32(456),
+    );
+    assert_eq!(
+        boxed_copy_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null,
+    );
+
+    // 25. Option<(Box<String>,)>: non-Copy smart-pointer elements project as
+    // references after applying the element smart-pointer depth.
+    let boxed_string = vec![
+        OptTupleWithBoxedString {
+            pair: Some((Box::new("boxed".to_string()),)),
+        },
+        OptTupleWithBoxedString { pair: None },
+    ];
+    let boxed_string_df = boxed_string.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        boxed_string_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::String("boxed"),
+    );
+    assert_eq!(
+        boxed_string_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null,
     );
 
     // Batch round-trip

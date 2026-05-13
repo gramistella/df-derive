@@ -270,29 +270,13 @@ fn emit_element(
             )
         }
         // `Option<(A, B)>` / `Option<...<Option<(A, B)>>>`. Collapse parent
-        // Options to `Option<&Tuple>` per row, project to `Option<&Inner>`
-        // (or `Option<Inner>` for Copy primitive leaves) via `.map(...)`,
-        // and route through the standard encoder with the composed wrapper.
+        // Options to `Option<&Tuple>` per row, project through an element
+        // reference that has already applied the element's outer smart-pointer
+        // depth, then route through the standard encoder with the composed
+        // wrapper.
         WrapperShape::Leaf { access, .. } => {
-            let elem_li = syn::Index::from(elem_idx);
             let collapsed_parent = super::access_chain_to_option_ref(parent_access, access);
-            // The standard primitive Option-leaf machinery expects an
-            // access expression that yields `Option<T>` for Copy primitives
-            // (numeric / Bool / NaiveDate / NaiveTime / Duration). Project
-            // by value only when the whole element wrapper stack is also
-            // Copy-projectable from `&Tuple`: bare leaves and Option-only
-            // stacks over Copy leaves. Vecs and smart pointers must project
-            // by reference so we never move out of a borrowed tuple.
-            let proj_param = idents::tuple_proj_param();
-            let projected = if is_copy_element_projection(elem) {
-                quote! {
-                    ((#collapsed_parent).map(|#proj_param| #proj_param.#elem_li))
-                }
-            } else {
-                quote! {
-                    ((#collapsed_parent).map(|#proj_param| &#proj_param.#elem_li))
-                }
-            };
+            let projected = project_parent_option_tuple_element(&collapsed_parent, elem, elem_idx);
             let composed_shape = compose_option_with_element(&elem.wrapper_shape);
             emit_via_standard_encoder(
                 &projected,
@@ -328,9 +312,11 @@ fn is_copy_element_projection(elem: &TupleElement) -> bool {
 
 /// True when the element's leaf is `Copy` AND a primitive that the
 /// standard Option-leaf encoder expects to receive by value (not by
-/// reference). The numeric / Bool / `NaiveDate` / `NaiveTime` / Duration
-/// leaves all match this; String / Decimal / `DateTime` / Binary do not
-/// (their Option-arm push bodies do `match &access` and bind by ref).
+/// reference). The parent-Option tuple projection first forms a smart-pointer
+/// resolved element reference, so outer `Box<T>` / `&T` wrappers over these
+/// leaves are still copy-projectable. Option-only element stacks over Copy
+/// leaves are also copy-projectable because `Option<Copy>` is Copy. Vecs and
+/// access chains with smart pointers below an Option stay reference-oriented.
 const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
     matches!(
         leaf,
@@ -1170,16 +1156,47 @@ fn build_scan(
     .build()
 }
 
+fn project_tuple_element_ref_with_path(
+    tuple_ref: &TokenStream,
+    path: &TokenStream,
+    smart_ptr_depth: usize,
+) -> TokenStream {
+    let mut projected = quote! { (*(#tuple_ref)) #path };
+    for _ in 0..smart_ptr_depth {
+        projected = quote! { (*(#projected)) };
+    }
+    quote! { &(#projected) }
+}
+
 fn project_tuple_element_ref(
     tuple_ref: &TokenStream,
     projection: TupleProjection<'_>,
 ) -> TokenStream {
-    let path = projection.path;
-    let mut projected = quote! { (*(#tuple_ref)) #path };
-    for _ in 0..projection.smart_ptr_depth {
-        projected = quote! { (*(#projected)) };
+    project_tuple_element_ref_with_path(tuple_ref, projection.path, projection.smart_ptr_depth)
+}
+
+fn project_parent_option_tuple_element(
+    collapsed_parent: &TokenStream,
+    elem: &TupleElement,
+    elem_idx: usize,
+) -> TokenStream {
+    let elem_li = syn::Index::from(elem_idx);
+    let projection_path = quote! { .#elem_li };
+    let proj_param = idents::tuple_proj_param();
+    let projected_ref = project_tuple_element_ref_with_path(
+        &quote! { #proj_param },
+        &projection_path,
+        elem.outer_smart_ptr_depth,
+    );
+    if is_copy_element_projection(elem) {
+        quote! {
+            ((#collapsed_parent).map(|#proj_param| *(#projected_ref)))
+        }
+    } else {
+        quote! {
+            ((#collapsed_parent).map(|#proj_param| #projected_ref))
+        }
     }
-    quote! { &(#projected) }
 }
 
 fn apply_element_access(

@@ -162,3 +162,11 @@ fn rust_decimal_reference_impl_returns_none_on_scale_up_overflow() {
         );
     }
 }
+
+#[test]
+fn rust_decimal_reference_impl_returns_none_for_invalid_target_scale() {
+    let value = Decimal::from_str("1").expect("literal decimal parses");
+
+    assert!(value.try_to_i128_mantissa(39).is_none());
+    assert!(value.try_to_i128_mantissa(u32::MAX).is_none());
+}

@@ -65,6 +65,8 @@
 pub mod dataframe {
     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
 
+    const DECIMAL128_MAX_SCALE: u32 = 38;
+
     /// Hidden dependency re-exports used by generated code for the default
     /// dataframe runtime. This is not part of the public API surface.
     #[doc(hidden)]
@@ -189,10 +191,15 @@ pub mod dataframe {
         #[inline]
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
             // Bounds: `rust_decimal::Decimal::scale()` is capped at 28,
-            // polars caps decimal scale at 38, so the scale-up `diff` is at
-            // most 38 and the scale-down `diff` is at most 28.
+            // polars caps decimal scale at `DECIMAL128_MAX_SCALE`, so the
+            // scale-up `diff` is at most 38 and the scale-down `diff` is at
+            // most 28.
             // `10i128.pow(diff)` therefore fits in i128 for either direction
             // (max `10^38 < 2^127`).
+            if target_scale > DECIMAL128_MAX_SCALE {
+                return None;
+            }
+
             let source_scale = self.scale();
             let mantissa: i128 = self.mantissa();
             if source_scale == target_scale {

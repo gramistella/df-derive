@@ -27,6 +27,7 @@ use proc_macro2::TokenStream;
 use super::emit::vec_emit_general;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::{BaseCtx, Encoder};
+use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// type-as-path expression and the fully-qualified trait paths used in UFCS
@@ -37,6 +38,7 @@ pub struct NestedLeafCtx<'a> {
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a TokenStream,
     pub to_df_trait: &'a TokenStream,
+    pub paths: &'a ExternalPaths,
 }
 
 impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
@@ -58,6 +60,6 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
 pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> Encoder {
     let ctb = CollectThenBulk::from(ctx);
     let kind = LeafKind::CollectThenBulk(ctb);
-    let columnar = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, wrapper);
+    let columnar = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, wrapper, ctx.paths);
     Encoder::Multi { columnar }
 }

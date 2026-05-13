@@ -490,10 +490,10 @@ pub(super) fn shape_assemble_list_stack(
     seed_dtype: TokenStream,
     layers: &[LayerWrap<'_>],
     leaf_logical_dtype: TokenStream,
+    pp: &TokenStream,
+    pa_root: &TokenStream,
     arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
 ) -> TokenStream {
-    let pa_root = crate::codegen::external_paths::polars_arrow_root();
-    let pp = crate::codegen::external_paths::prelude();
     let depth = layers.len();
 
     let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
@@ -526,7 +526,7 @@ pub(super) fn shape_assemble_list_stack(
     }
 
     let helper_logical = crate::codegen::external_paths::wrap_list_layers_compile_time(
-        &pp,
+        pp,
         leaf_logical_dtype,
         depth.saturating_sub(1),
     );

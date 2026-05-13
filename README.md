@@ -31,17 +31,17 @@ types, duration types, byte blobs, and decimal backends.
 [dependencies]
 df-derive = "0.3"
 polars = { version = "0.53", features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
-polars-arrow = "0.53"
 
 # If your models use these types:
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.41", features = ["serde"] }
 ```
 
-Keep both `polars` and `polars-arrow` as direct dependencies in crates that
-derive `ToDataFrame`. Generated impls name `::polars` for dataframe types and
-`::polars_arrow` for public Arrow array builders that Polars does not
-re-export through `polars::prelude`.
+With the default `df-derive` facade, generated impls use hidden runtime
+re-exports for implementation details such as `polars-arrow`; downstream
+crates do not need to depend on `polars-arrow` directly. Keep `polars` direct
+when your code names Polars types or needs feature unification for the dtypes
+your models use.
 
 ```rust
 use df_derive::prelude::*;
@@ -242,7 +242,9 @@ respected. For example, a dependency declared as
 
 The final `crate::core::dataframe` fallback is for legacy/local runtimes in
 crates that use `df-derive-macros` directly without `df-derive`,
-`df-derive-core`, `paft-utils`, or `paft`.
+`df-derive-core`, `paft-utils`, or `paft`. Any runtime reached by this default
+discovery path must expose `dataframe::__private::{polars, polars_arrow}` for
+generated-code dependency roots.
 
 ## Power-User Runtime Choices
 
@@ -264,7 +266,6 @@ Use the macro crate directly with the shared core runtime:
 df-derive-core = "0.3"
 df-derive-macros = "0.3"
 polars = "0.53"
-polars-arrow = "0.53"
 ```
 
 ```rust
@@ -277,8 +278,11 @@ struct Row {
 }
 ```
 
-Use a custom runtime by providing compatible traits and overriding paths. The
-minimum trait surface is:
+Use a custom runtime by providing compatible traits and overriding paths.
+Custom runtimes selected with `#[df_derive(trait = "...")]` keep the
+historical dependency contract: the deriving crate must name compatible
+`polars` and `polars-arrow` dependencies directly. The minimum trait surface
+is:
 
 ```rust
 mod runtime {
@@ -352,8 +356,9 @@ struct Tx {
 
 - **Rust edition**: 2024
 - **Polars**: 0.53
-- **polars-arrow**: 0.53, required as a direct dependency because generated
-  code uses public Arrow array builders that Polars does not re-export
+- **polars-arrow**: 0.53 through the default runtime facade. Custom runtimes
+  selected with explicit trait overrides still need a compatible direct
+  dependency because generated code uses public Arrow array builders.
 - **Polars feature flags**: enable `timezones` for timezone-aware
   `DateTime<Tz>`, `dtype-date` for `NaiveDate`, `dtype-time` for
   `NaiveTime`, `dtype-duration` for duration columns, `dtype-i8` /

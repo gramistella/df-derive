@@ -16,6 +16,10 @@ All notable changes to this project will be documented in this file.
   allocation while preserving borrowed nested composition.
 - Default runtime discovery now checks `df-derive`, `df-derive-core`,
   `paft-utils`, `paft`, then the legacy `crate::core::dataframe` fallback.
+- Default `df-derive` / `df-derive-core` generated code now routes Polars
+  implementation dependency paths through hidden runtime re-exports, so
+  downstream crates no longer need a direct `polars-arrow` dependency unless
+  they use explicit custom trait-path overrides.
 
 ## [0.3.0] - 2026-05-11
 

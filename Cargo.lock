@@ -704,6 +704,7 @@ name = "df-derive-core"
 version = "0.3.0"
 dependencies = [
  "polars",
+ "polars-arrow",
  "rust_decimal",
 ]
 

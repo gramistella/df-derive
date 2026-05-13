@@ -61,7 +61,7 @@ fn build_tuple_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
+    let pp = config.external_paths.prelude();
     let mut per_elem: Vec<TokenStream> = Vec::with_capacity(elements.len());
     for (i, elem) in elements.iter().enumerate() {
         let elem_prefix = format!("{column_prefix}.field_{i}");
@@ -103,7 +103,7 @@ fn build_element_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
+    let pp = config.external_paths.prelude();
     let total_layers = outer_layers + elem.wrapper_shape.vec_depth();
     match &elem.leaf_spec {
         LeafSpec::Struct(ty) => {
@@ -118,9 +118,9 @@ fn build_element_entries(
             build_tuple_entries(inner, column_prefix, total_layers, mode, config)
         }
         _ => {
-            let elem_dtype = elem.leaf_spec.dtype();
+            let elem_dtype = elem.leaf_spec.dtype(&config.external_paths);
             let full_dtype = crate::codegen::external_paths::wrap_list_layers_compile_time_pub(
-                &pp,
+                pp,
                 elem_dtype,
                 total_layers,
             );
@@ -151,12 +151,14 @@ fn element_nested_entries(
             &config.to_dataframe_trait_path,
             column_prefix,
             total_layers,
+            &config.external_paths,
         ),
         EmitMode::EmptyRows => crate::codegen::nested::nested_empty_series_row(
             type_path,
             &config.to_dataframe_trait_path,
             column_prefix,
             total_layers,
+            &config.external_paths,
         ),
     }
 }
@@ -495,8 +497,8 @@ fn emit_vec_parent_primitive(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
-    let pa_root = crate::codegen::external_paths::polars_arrow_root();
+    let pp = config.external_paths.prelude();
+    let pa_root = config.external_paths.polars_arrow_root();
     let series_local = idents::vec_field_series(field_idx);
     let named = idents::field_named_series();
     let leaf_arr = idents::leaf_arr();
@@ -515,6 +517,7 @@ fn emit_vec_parent_primitive(
             name: column_prefix,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        paths: &config.external_paths,
     };
     let pep = super::vec::pep_for_primitive_leaf(&elem.leaf_spec, &leaf_ctx, composed_shape);
     let leaf_projection_access = deepest_leaf_projection_access(composed_shape, projection, elem);
@@ -537,7 +540,7 @@ fn emit_vec_parent_primitive(
         &pep.leaf_offsets_post_push,
     );
     let offsets_decls = build_offsets_decls(&layers, &layer_counters);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, &pa_root);
+    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
 
     let materialize = build_materialize(
         composed_shape,
@@ -545,8 +548,8 @@ fn emit_vec_parent_primitive(
         &leaf_arr,
         &pep.leaf_logical_dtype,
         &pep.leaf_arr_expr,
-        &pp,
-        &pa_root,
+        pp,
+        pa_root,
     );
 
     let extra_imports = pep.extra_imports;
@@ -587,8 +590,8 @@ fn emit_vec_parent_nested(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
-    let pa_root = crate::codegen::external_paths::polars_arrow_root();
+    let pp = config.external_paths.prelude();
+    let pa_root = config.external_paths.polars_arrow_root();
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
     let total_leaves = idents::nested_total(field_idx);
@@ -663,7 +666,7 @@ fn emit_vec_parent_nested(
         &leaf_offsets_post_push,
     );
     let offsets_decls = build_offsets_decls(&layers, &layer_counters);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, &pa_root);
+    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
 
     let positions_decl = if has_inner_option {
         quote! {
@@ -692,41 +695,45 @@ fn emit_vec_parent_nested(
         composed_shape,
         &layers,
         &inner_col_direct,
-        &pp,
+        pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
+        pa_root,
     );
     let series_take = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_take,
-        &pp,
+        pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
+        pa_root,
     );
     let series_empty = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_empty,
-        &pp,
+        pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
+        pa_root,
     );
     let series_all_absent = wrap_per_column_layers(
         composed_shape,
         &layers,
         &inner_col_all_absent,
-        &pp,
+        pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
+        pa_root,
     );
 
     let consume = |series_expr: &TokenStream| -> TokenStream {
@@ -770,7 +777,7 @@ fn emit_vec_parent_nested(
         validity_freezes.push(freeze_validity_bitmap(
             &layer.validity_bm,
             &layer.validity_mb,
-            &pa_root,
+            pa_root,
         ));
     }
     let mut offsets_freezes: Vec<TokenStream> = Vec::new();
@@ -778,7 +785,7 @@ fn emit_vec_parent_nested(
         offsets_freezes.push(freeze_offsets_buf(
             &layer.offsets_buf,
             &layer.offsets,
-            &pa_root,
+            pa_root,
         ));
     }
     let validity_freeze = quote! { #(#validity_freezes)* };
@@ -845,6 +852,7 @@ fn wrap_per_column_layers(
     inner_col: &syn::Ident,
     inner_rech: &syn::Ident,
     dtype: &syn::Ident,
+    pa_root: &TokenStream,
 ) -> TokenStream {
     if shape.depth() == 0 {
         return inner_col_expr.clone();
@@ -860,6 +868,8 @@ fn wrap_per_column_layers(
         quote! { #inner_chunk.dtype().clone() },
         &wrap_layers,
         quote! { (*#dtype).clone() },
+        pp,
+        pa_root,
         &idents::tuple_layer_list_arr,
     );
     quote! {{
@@ -964,7 +974,7 @@ fn emit_via_standard_encoder(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
+    let pp = config.external_paths.prelude();
     let nested_ty: TokenStream;
     let nested_ctx = match leaf {
         LeafSpec::Struct(ty) => {
@@ -978,6 +988,7 @@ fn emit_via_standard_encoder(
                 ty: &nested_ty,
                 columnar_trait: &config.columnar_trait_path,
                 to_df_trait: &config.to_dataframe_trait_path,
+                paths: &config.external_paths,
             })
         }
         LeafSpec::Generic(id) => {
@@ -991,6 +1002,7 @@ fn emit_via_standard_encoder(
                 ty: &nested_ty,
                 columnar_trait: &config.columnar_trait_path,
                 to_df_trait: &config.to_dataframe_trait_path,
+                paths: &config.external_paths,
             })
         }
         _ => None,
@@ -1002,6 +1014,7 @@ fn emit_via_standard_encoder(
             name: column_prefix,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        paths: &config.external_paths,
     };
     let enc = nested_ctx.as_ref().map_or_else(
         || build_encoder(leaf, wrapper, &leaf_ctx),
@@ -1348,6 +1361,8 @@ fn build_materialize(
         quote! { #seed_arrow_dtype_id },
         &wrap_layers,
         leaf_logical_dtype.clone(),
+        pp,
+        pa_root,
         &idents::tuple_layer_list_arr,
     );
     quote! {

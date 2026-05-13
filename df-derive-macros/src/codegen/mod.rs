@@ -1,6 +1,6 @@
 mod columnar_impl;
 mod encoder;
-mod external_paths;
+pub(crate) mod external_paths;
 mod helpers;
 mod nested;
 mod strategy;
@@ -25,6 +25,9 @@ pub struct MacroConfig {
     /// (`<default-or-user-mod>::Decimal128Encode`); custom decimal backends
     /// override this with `#[df_derive(decimal128_encode = "...")]`.
     pub decimal128_encode_trait_path: TokenStream,
+    /// External runtime dependency roots (`polars::prelude`,
+    /// `polars_arrow`) used by generated code.
+    pub external_paths: external_paths::ExternalPaths,
 }
 
 fn resolve_dataframe_mod_for_crate(name: &str, itself: TokenStream) -> Option<TokenStream> {
@@ -56,7 +59,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let eager_asserts = helpers::generate_eager_asserts(ir);
-    let pp = external_paths::prelude();
+    let pp = config.external_paths.prelude();
     let assemble_helper = encoder::idents::assemble_helper();
 
     // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`

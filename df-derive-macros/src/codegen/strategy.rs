@@ -127,6 +127,7 @@ fn build_field_entries(
                 &config.to_dataframe_trait_path,
                 &name,
                 field.wrapper_shape.vec_depth(),
+                &config.external_paths,
             )
         }
         (FieldRoute::Nested { type_path }, EmitMode::EmptyRows) => {
@@ -135,15 +136,16 @@ fn build_field_entries(
                 &config.to_dataframe_trait_path,
                 &name,
                 field.wrapper_shape.vec_depth(),
+                &config.external_paths,
             )
         }
         (FieldRoute::Primitive, EmitMode::SchemaEntries) => {
-            let dtype = field_full_dtype(field);
+            let dtype = field_full_dtype(field, config);
             quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
         }
         (FieldRoute::Primitive, EmitMode::EmptyRows) => {
-            let dtype = field_full_dtype(field);
-            let pp = super::external_paths::prelude();
+            let dtype = field_full_dtype(field, config);
+            let pp = config.external_paths.prelude();
             quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
         }
         (FieldRoute::Tuple, _) => {
@@ -170,8 +172,12 @@ pub fn build_empty_series(field: &FieldIR, config: &super::MacroConfig) -> Token
     build_field_entries(field, EmitMode::EmptyRows, config)
 }
 
-fn field_full_dtype(field: &FieldIR) -> TokenStream {
-    super::type_registry::full_dtype(&field.leaf_spec, &field.wrapper_shape)
+fn field_full_dtype(field: &FieldIR, config: &super::MacroConfig) -> TokenStream {
+    super::type_registry::full_dtype(
+        &field.leaf_spec,
+        &field.wrapper_shape,
+        &config.external_paths,
+    )
 }
 
 /// Build the columnar emit pieces for one field. Routes every primitive
@@ -217,6 +223,7 @@ fn build_nested_emit(
         ty: type_path,
         columnar_trait: &config.columnar_trait_path,
         to_df_trait: &config.to_dataframe_trait_path,
+        paths: &config.external_paths,
     };
     let enc = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
     let Encoder::Multi { columnar } = enc else {
@@ -253,6 +260,7 @@ fn build_primitive_emit(
             name: &name,
         },
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        paths: &config.external_paths,
     };
     let enc = encoder::build_encoder(&field.leaf_spec, &field.wrapper_shape, &leaf_ctx);
     match enc {

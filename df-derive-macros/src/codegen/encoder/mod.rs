@@ -43,6 +43,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::PathArguments;
 
+use super::external_paths::ExternalPaths;
+
 pub use nested::{NestedLeafCtx, build_nested_encoder};
 pub use tuple::{
     build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
@@ -338,6 +340,7 @@ pub struct BaseCtx<'a> {
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub decimal128_encode_trait: &'a TokenStream,
+    pub paths: &'a ExternalPaths,
 }
 
 // --- Top-level dispatcher ---

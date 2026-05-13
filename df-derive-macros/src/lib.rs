@@ -176,6 +176,8 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         }
     }
 
+    let uses_default_dataframe_runtime =
+        to_df_trait_path.is_none() && columnar_trait_path.is_none();
     let to_df_trait_path_ts = to_df_trait_path.as_ref().map_or_else(
         || quote! { #default_df_mod::ToDataFrame },
         |path| quote! { #path },
@@ -196,11 +198,17 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         }
         (None, None) => quote! { #default_df_mod::Decimal128Encode },
     };
+    let external_paths = if uses_default_dataframe_runtime {
+        codegen::external_paths::default_runtime_paths(&default_df_mod)
+    } else {
+        codegen::external_paths::direct_dependency_paths()
+    };
 
     let config = codegen::MacroConfig {
         to_dataframe_trait_path: to_df_trait_path_ts,
         columnar_trait_path: columnar_trait_path_ts,
         decimal128_encode_trait_path: decimal128_encode_trait_path_ts,
+        external_paths,
     };
     // Build the intermediate representation
     let ir = match parser::parse_to_ir(&ast) {

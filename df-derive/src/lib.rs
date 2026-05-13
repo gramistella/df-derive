@@ -7,13 +7,11 @@
 //! [dependencies]
 //! df-derive = "0.3"
 //! polars = "0.53"
-//! polars-arrow = "0.53"
 //! ```
 //!
-//! Keep `polars` and `polars-arrow` as direct dependencies in the crate that
-//! invokes the derive. Generated impls name `::polars` and `::polars_arrow`
-//! directly because Polars does not re-export every Arrow builder the macro
-//! uses.
+//! The default facade hides the macro's `polars-arrow` implementation
+//! dependency behind `df_derive::dataframe`; custom runtimes still need to
+//! provide their own compatible direct dependencies.
 //!
 //! ```ignore
 //! use df_derive::prelude::*;

@@ -2,6 +2,8 @@ use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, WrapperShap
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+use super::external_paths::ExternalPaths;
+
 /// Token bundle for one numeric-shaped primitive base. Every fast-path
 /// emitter consumes some subset of these — collected here so the 14-arm
 /// match per metadata kind doesn't have to be repeated at every call site.
@@ -37,8 +39,8 @@ pub(super) struct NumericInfo {
 /// classified the leaf as numeric, so the encoder consumer knows the result
 /// is non-empty. The 14-arm match here is the one place that translates the
 /// parser-tagged kind into the polars-prelude token shape.
-pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
-    let pp = super::external_paths::prelude();
+pub(super) fn numeric_info_for(kind: NumericKind, paths: &ExternalPaths) -> NumericInfo {
+    let pp = paths.prelude();
     let info = |native: TokenStream, variant: &str, widen_from: Option<TokenStream>| {
         let chunked_ident = format_ident!("{}Chunked", variant);
         let dtype_ident = format_ident!("{}", variant);
@@ -102,8 +104,8 @@ pub(super) fn numeric_stored_value(
 }
 
 /// Tokens for `polars::prelude::TimeUnit::<variant>`.
-pub(super) fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
-    let pp = super::external_paths::prelude();
+pub(super) fn time_unit_tokens(unit: DateTimeUnit, paths: &ExternalPaths) -> TokenStream {
+    let pp = paths.prelude();
     match unit {
         DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
         DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
@@ -122,22 +124,22 @@ impl LeafSpec {
     /// this fallback element type, but keeping them aligned means a stray
     /// code path that doesn't yet handle `AsStr` degrades to allocating,
     /// not panicking.
-    pub(super) fn dtype(&self) -> TokenStream {
-        let pp = super::external_paths::prelude();
+    pub(super) fn dtype(&self, paths: &ExternalPaths) -> TokenStream {
+        let pp = paths.prelude();
         let dt = quote! { #pp::DataType };
         match self {
-            Self::Numeric(kind) => numeric_info_for(*kind).dtype,
+            Self::Numeric(kind) => numeric_info_for(*kind, paths).dtype,
             Self::String | Self::AsString(_) | Self::AsStr(_) => quote! { #dt::String },
             Self::Bool => quote! { #dt::Boolean },
             Self::Binary => quote! { #dt::Binary },
             Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
-                let unit = time_unit_tokens(*unit);
+                let unit = time_unit_tokens(*unit, paths);
                 quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
             }
             Self::NaiveDate => quote! { #dt::Date },
             Self::NaiveTime => quote! { #dt::Time },
             Self::Duration { unit, .. } => {
-                let unit = time_unit_tokens(*unit);
+                let unit = time_unit_tokens(*unit, paths);
                 quote! { #dt::Duration(#unit) }
             }
             Self::Decimal { precision, scale } => {
@@ -163,10 +165,10 @@ impl LeafSpec {
 /// `Vec` layer in the wrapper stack. Consumers that want the leaf-only
 /// dtype (e.g. the encoder's per-leaf logical-dtype payload) call
 /// [`LeafSpec::dtype`] directly.
-pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape) -> TokenStream {
-    let pp = super::external_paths::prelude();
-    let elem_dtype = leaf.dtype();
-    super::external_paths::wrap_list_layers_compile_time(&pp, elem_dtype, wrapper.vec_depth())
+pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape, paths: &ExternalPaths) -> TokenStream {
+    let pp = paths.prelude();
+    let elem_dtype = leaf.dtype(paths);
+    super::external_paths::wrap_list_layers_compile_time(pp, elem_dtype, wrapper.vec_depth())
 }
 
 /// Map a per-row primitive value through any leaf-injected transform
@@ -179,13 +181,14 @@ pub fn map_primitive_expr(
     var: &TokenStream,
     leaf: &LeafSpec,
     decimal128_encode_trait: &TokenStream,
+    paths: &ExternalPaths,
 ) -> TokenStream {
     match leaf {
         LeafSpec::DateTime(unit) => match unit {
             DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
-                let pp = super::external_paths::prelude();
+                let pp = paths.prelude();
                 quote! {
                     (#var).timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: DateTime<Tz> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
@@ -197,7 +200,7 @@ pub fn map_primitive_expr(
             DateTimeUnit::Milliseconds => quote! { (#var).and_utc().timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).and_utc().timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
-                let pp = super::external_paths::prelude();
+                let pp = paths.prelude();
                 quote! {
                     (#var).and_utc().timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: NaiveDateTime value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
@@ -224,7 +227,7 @@ pub fn map_primitive_expr(
             }
         }
         LeafSpec::Duration { unit, source } => {
-            let pp = super::external_paths::prelude();
+            let pp = paths.prelude();
             match source {
                 DurationSource::Std => match unit {
                     DateTimeUnit::Nanoseconds => quote! {
@@ -289,7 +292,7 @@ pub fn map_primitive_expr(
             let target = u32::from(*scale);
             let precision = u32::from(*precision);
             let scale = u32::from(*scale);
-            let pp = super::external_paths::prelude();
+            let pp = paths.prelude();
             quote! {{
                 use #decimal128_encode_trait as _;
                 match (#var).try_to_i128_mantissa(#target) {

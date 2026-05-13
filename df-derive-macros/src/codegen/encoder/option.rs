@@ -63,6 +63,7 @@ pub(super) fn wrap_option_access_chain_primitive(
             name: ctx.base.name,
         },
         decimal128_encode_trait: ctx.decimal128_encode_trait,
+        paths: ctx.paths,
     };
     let LeafArm {
         decls,
@@ -101,7 +102,7 @@ fn wrap_option_access_chain_as_str(
         super::StringyExprKind::CollapsedOption,
     );
     let push = quote! { #buf.push(#value); };
-    let finish_series = named_from_buf(name, &buf);
+    let finish_series = named_from_buf(name, &buf, ctx.paths.prelude());
     Encoder::Leaf {
         decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
         push,

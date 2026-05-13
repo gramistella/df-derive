@@ -97,7 +97,7 @@ fn bool_leaf_array_tokens(
     validity_ident: &syn::Ident,
 ) -> TokenStream {
     if has_inner_option {
-        let valid_opt = validity_into_option(validity_ident);
+        let valid_opt = validity_into_option(validity_ident, pa_root);
         quote! {
             #pa_root::array::BooleanArray::new(
                 #pa_root::datatypes::ArrowDataType::Boolean,
@@ -196,7 +196,7 @@ fn bool_bare_leaf_pieces(
     let validity_ident = idents::bool_validity();
     let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
-    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false);
+    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false, pa_root);
     let storage = quote! {
         #values_decl
         let mut #leaf_idx: usize = 0;
@@ -229,7 +229,7 @@ fn numeric_leaf_pieces(
     // Numeric / Decimal / DateTime: `Vec<#native>` flat values.
     // Inner-Option carries a parallel `MutableBitmap` pre-filled `true`.
     let storage = if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
         quote! {
             let mut #flat: ::std::vec::Vec<#native> =
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
@@ -279,7 +279,7 @@ fn numeric_leaf_pieces(
         }
     };
     let leaf_arr_expr = if has_inner_option {
-        let valid_opt = validity_into_option(&validity);
+        let valid_opt = validity_into_option(&validity, pa_root);
         quote! {
             let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
                 #pa_root::array::PrimitiveArray::<#native>::new(
@@ -322,7 +322,7 @@ fn string_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
         storage_parts.push(quote! {
             #validity_decl
             let mut #leaf_idx: usize = 0;
@@ -348,7 +348,7 @@ fn string_like_leaf_pieces(
         }
     };
     let leaf_arr_expr = if has_inner_option {
-        let valid_opt = validity_into_option(&validity);
+        let valid_opt = validity_into_option(&validity, pa_root);
         quote! {
             let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf
                 .freeze()
@@ -383,7 +383,7 @@ fn binary_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true);
+        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
         storage_parts.push(quote! {
             #validity_decl
             let mut #leaf_idx: usize = 0;
@@ -410,7 +410,7 @@ fn binary_like_leaf_pieces(
         }
     };
     let leaf_arr_expr = if has_inner_option {
-        let valid_opt = validity_into_option(&validity);
+        let valid_opt = validity_into_option(&validity, pa_root);
         quote! {
             let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf
                 .freeze()
@@ -436,8 +436,8 @@ fn bool_inner_option_leaf_pieces(
     // `vec_encoder_bool_bare`. Bit-packed values bitmap (pre-filled `false`)
     // + parallel validity bitmap (pre-filled `true`) + leaf index counter so
     // `set(i, ...)` lands on the right bit.
-    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false);
-    let validity_decl = mb_decl_filled(&validity_ident, leaf_capacity_expr, true);
+    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false, pa_root);
+    let validity_decl = mb_decl_filled(&validity_ident, leaf_capacity_expr, true, pa_root);
     let storage = quote! {
         #values_decl
         #validity_decl
@@ -494,7 +494,7 @@ fn vec_encoder(
     let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
     let kind = LeafKind::PerElementPush(pep);
     let wrapper = WrapperShape::Vec(shape.clone());
-    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, &wrapper);
+    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, &wrapper, ctx.paths);
     let name = ctx.base.name;
     let named = idents::field_named_series();
     let columnar = quote! {
@@ -520,15 +520,11 @@ fn lower_to_pep(
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
 ) -> PerElementPush {
-    let pa_root = crate::codegen::external_paths::polars_arrow_root();
+    let pa_root = ctx.paths.polars_arrow_root();
     let total_leaves = idents::total_leaves();
     let leaf_capacity_expr = quote! { #total_leaves };
-    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) = build_vec_leaf_pieces(
-        spec,
-        shape.has_inner_option(),
-        &leaf_capacity_expr,
-        &pa_root,
-    );
+    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) =
+        build_vec_leaf_pieces(spec, shape.has_inner_option(), &leaf_capacity_expr, pa_root);
     let extra_imports = if let VecLeafSpec::Numeric {
         needs_decimal_import: true,
         ..
@@ -575,10 +571,10 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     // (Option or smart-pointer boundary) routes through the generalized
     // scanner so that boundary is resolved before the leaf push.
     if shape.depth() == 1 && !shape.any_outer_validity() && shape.inner_access.is_empty() {
-        let pa_root = crate::codegen::external_paths::polars_arrow_root();
-        let pp = crate::codegen::external_paths::prelude();
+        let pa_root = ctx.paths.polars_arrow_root();
+        let pp = ctx.paths.prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
-        let body = bool_bare_depth1_body(ctx.base.access, &pa_root, &pp);
+        let body = bool_bare_depth1_body(ctx.base.access, pa_root, pp);
         let name = ctx.base.name;
         let named = idents::field_named_series();
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
@@ -591,7 +587,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         };
         return Encoder::Multi { columnar };
     }
-    let pp = crate::codegen::external_paths::prelude();
+    let pp = ctx.paths.prelude();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
@@ -658,6 +654,7 @@ fn mapped_numeric_plan(
         &quote! { #v },
         leaf,
         ctx.decimal128_encode_trait,
+        ctx.paths,
     );
     VecLeafPlan {
         spec: VecLeafSpec::Numeric {
@@ -670,11 +667,11 @@ fn mapped_numeric_plan(
 }
 
 fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
-    let pp = crate::codegen::external_paths::prelude();
+    let pp = ctx.paths.prelude();
     let v = idents::leaf_value();
     match leaf {
         LeafSpec::Numeric(kind) => {
-            let info = crate::codegen::type_registry::numeric_info_for(*kind);
+            let info = crate::codegen::type_registry::numeric_info_for(*kind, ctx.paths);
             let value_expr = crate::codegen::type_registry::numeric_stored_value(
                 *kind,
                 quote! { *#v },
@@ -707,7 +704,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             leaf_dtype: quote! { #pp::DataType::Boolean },
         },
         LeafSpec::DateTime(unit) => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
             mapped_numeric_plan(
                 ctx,
                 leaf,
@@ -719,7 +716,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             )
         }
         LeafSpec::NaiveDateTime(unit) => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
             mapped_numeric_plan(
                 ctx,
                 leaf,
@@ -745,7 +742,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             false,
         ),
         LeafSpec::Duration { unit, .. } => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit);
+            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
             mapped_numeric_plan(
                 ctx,
                 leaf,

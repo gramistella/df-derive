@@ -70,7 +70,6 @@ fn check_fixture(name: &str, manifest: &str, main_rs: &str) {
 fn polars_deps() -> &'static str {
     r#"
 polars = { version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }
-polars-arrow = "0.53.0"
 "#
 }
 
@@ -346,6 +345,7 @@ publish = false
 
 [dependencies]
 polars = { version = "0.53.0", default-features = false }
+polars-arrow = { version = "0.53.0", default-features = false }
 "#,
             ),
             (
@@ -353,6 +353,12 @@ polars = { version = "0.53.0", default-features = false }
                 r#"
 pub mod dataframe {
     use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+    #[doc(hidden)]
+    pub mod __private {
+        pub use polars;
+        pub use polars_arrow;
+    }
 
     pub trait ToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
@@ -446,7 +452,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
-fn renamed_facade_and_polars_dependencies_are_respected() {
+fn renamed_facade_and_polars_dependency_is_respected_without_direct_arrow() {
     let root = package_root();
     let manifest = format!(
         r#"
@@ -461,7 +467,6 @@ publish = false
 [dependencies]
 dfd = {{ package = "df-derive", path = "{}" }}
 pl = {{ package = "polars", version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.53.0" }}
 time_crate = {{ package = "chrono", version = "0.4.41" }}
 "#,
         toml_path(root),
@@ -512,10 +517,10 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-{}
+polars = {{ version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.53.0" }}
 "#,
         toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
     );
 
     check_fixture(
@@ -528,6 +533,12 @@ use crate::core::dataframe::ToDataFrame as _;
 mod core {
     pub mod dataframe {
         use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+        #[doc(hidden)]
+        pub mod __private {
+            pub use polars;
+            pub use pa as polars_arrow;
+        }
 
         pub trait ToDataFrame {
             fn to_dataframe(&self) -> PolarsResult<DataFrame>;

@@ -32,11 +32,11 @@
 //! df-derive-core = "0.3"
 //! df-derive-macros = "0.3"
 //! polars = "0.53"
-//! polars-arrow = "0.53"
 //! ```
 //!
-//! The deriving crate must name `polars` and `polars-arrow` directly because
-//! generated code refers to `::polars` and `::polars_arrow` at the impl site.
+//! Default-runtime generated code uses hidden dependency re-exports from this
+//! crate, so direct `polars-arrow` dependencies are not required unless you
+//! use a custom runtime.
 //!
 //! ```ignore
 //! use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
@@ -64,6 +64,15 @@
 #[allow(dead_code)]
 pub mod dataframe {
     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
+
+    /// Hidden dependency re-exports used by generated code for the default
+    /// dataframe runtime. This is not part of the public API surface.
+    #[doc(hidden)]
+    pub mod __private {
+        pub use polars;
+        pub use polars_arrow;
+    }
+
     pub trait ToDataFrame {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.

@@ -116,6 +116,7 @@ struct VecTupleWithOptVecElement {
 
 // 18. Optional tuple whose elements have non-Copy wrapper stacks.
 #[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
 struct OptTupleWithWrappedElements {
     pair: Option<(Vec<i32>, Option<Box<i32>>, Vec<Box<Option<i32>>>)>,
 }
@@ -129,6 +130,7 @@ struct OptionBoxOptionTuple {
 // 20. Parent tuple item has an Option and smart pointer above the tuple, and
 // the projected element has its own Vec layer.
 #[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
 struct VecOptBoxTupleWithVecElement {
     items: Vec<Option<Box<(Vec<i32>, String)>>>,
 }
@@ -159,6 +161,7 @@ struct OptTupleWithBoxedCopy {
 
 // 25. Parent Option tuple with boxed non-Copy element.
 #[derive(ToDataFrame, Clone)]
+#[allow(clippy::box_collection)]
 struct OptTupleWithBoxedString {
     pair: Option<(Box<String>,)>,
 }

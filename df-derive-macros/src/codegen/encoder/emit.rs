@@ -27,6 +27,7 @@ use super::shape_walk::{
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
 use super::{access_chain_to_ref, collapse_options_to_ref};
+use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-layer ident bundle factory. `field_idx == None` produces the
 /// per-element-push path's flat-vec idents (`__df_derive_layer_*_{layer}`,
@@ -265,9 +266,9 @@ fn ctb_leaf_body<'a>(
     shape: &'a VecLayers,
     flat: &'a syn::Ident,
     positions: &'a syn::Ident,
+    pp: &'a TokenStream,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
-        let pp = crate::codegen::external_paths::prelude();
         let maybe = idents::nested_maybe();
         let v = idents::leaf_value();
         if shape.inner_access.is_empty() {
@@ -334,8 +335,8 @@ fn nested_consume_columns(
     to_df_trait: &TokenStream,
     ty: &TokenStream,
     series_expr: &TokenStream,
+    pp: &TokenStream,
 ) -> TokenStream {
-    let pp = crate::codegen::external_paths::prelude();
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let prefixed = idents::nested_prefixed_name();
@@ -400,6 +401,8 @@ fn ctb_layer_wrap(
         seed_dtype,
         &wrap_layers,
         quote! { (*#dtype).clone() },
+        pp,
+        pa_root,
         &idents::nested_layer_list_arr,
     );
     quote! {{
@@ -441,6 +444,8 @@ fn pep_materialize(
         seed_dtype,
         &wrap_layers,
         pep.leaf_logical_dtype.clone(),
+        pp,
+        pa_root,
         &idents::vec_layer_list_arr,
     );
     let leaf_arr_expr = &pep.leaf_arr_expr;
@@ -549,10 +554,10 @@ fn ctb_materialize(
     let series_empty = ctb_layer_wrap(shape, layers, kind, &inner_col_empty, pp, pa_root);
     let series_all_absent = ctb_layer_wrap(shape, layers, kind, &inner_col_all_absent, pp, pa_root);
 
-    let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct);
-    let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take);
-    let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty);
-    let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent);
+    let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct, pp);
+    let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take, pp);
+    let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty, pp);
+    let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent, pp);
 
     let (validity_freeze, offsets_freeze) = hoisted_freezes(shape, layers, kind, pa_root);
 
@@ -702,6 +707,7 @@ fn ctb_leaf_scan_depth0(
     positions: &syn::Ident,
     option_layers: usize,
     access_chain: &AccessChain,
+    pp: &TokenStream,
 ) -> TokenStream {
     let it = idents::populator_iter();
     let v = idents::leaf_value();
@@ -713,7 +719,6 @@ fn ctb_leaf_scan_depth0(
             }
         }
     } else {
-        let pp = crate::codegen::external_paths::prelude();
         // `option_layers == 1`: match `&Option<T>` directly. `>= 2`:
         // collapse to `Option<&T>` first, then match by value. Mirrors
         // `ShapeScan::build_layer`'s opt_layers branch on outer-Vec layers.
@@ -771,7 +776,7 @@ fn ctb_emit(
             access: access_chain,
         } => {
             let scan =
-                ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers, access_chain);
+                ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers, access_chain, pp);
             (
                 TokenStream::new(),
                 scan,
@@ -789,7 +794,7 @@ fn ctb_emit(
                 total,
                 layer_counters,
             );
-            let leaf_body = ctb_leaf_body(shape, &flat, &positions);
+            let leaf_body = ctb_leaf_body(shape, &flat, &positions, pp);
             let leaf_offsets_post_push = if shape.has_inner_option() {
                 quote! { #positions.len() }
             } else {
@@ -865,9 +870,10 @@ pub(super) fn vec_emit_general(
     access: &TokenStream,
     idx: usize,
     wrapper: &WrapperShape,
+    paths: &ExternalPaths,
 ) -> TokenStream {
-    let pa_root = crate::codegen::external_paths::polars_arrow_root();
-    let pp = crate::codegen::external_paths::prelude();
+    let pa_root = paths.polars_arrow_root();
+    let pp = paths.prelude();
     let depth = wrapper.vec_depth();
     // The walker needs a `VecLayers` even at depth 0; synthesize an empty
     // one for the `Leaf` wrapper case so the layer/precount helpers fall
@@ -916,8 +922,8 @@ pub(super) fn vec_emit_general(
                 kind,
                 &layer_counters,
                 &total,
-                &pa_root,
-                &pp,
+                pa_root,
+                pp,
             )
         }
         (LeafKind::CollectThenBulk(ctb), _) => ctb_emit(
@@ -929,8 +935,8 @@ pub(super) fn vec_emit_general(
             kind,
             &layer_counters,
             &total,
-            &pa_root,
-            &pp,
+            pa_root,
+            pp,
         ),
         (LeafKind::PerElementPush(_), WrapperShape::Leaf { .. }) => unreachable!(
             "df-derive: PerElementPush leaves with WrapperShape::Leaf route through \

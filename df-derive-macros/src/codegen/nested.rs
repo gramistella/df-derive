@@ -7,16 +7,17 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::encoder::idents;
+use super::external_paths::ExternalPaths;
 use super::strategy::EmitMode;
 
 /// Emit a runtime loop that wraps the per-iteration `DataType` accumulator
 /// (named via [`idents::schema_wrapped_dtype`]) in `layers` `List<>` envelopes.
 /// Thin wrapper over [`super::external_paths::wrap_list_layers_runtime`] that
 /// pins the wrapped-variable ident to the schema-helpers' shared local.
-fn gen_wrap_dtype_layers(layers: usize) -> TokenStream {
-    let pp = super::external_paths::prelude();
+fn gen_wrap_dtype_layers(layers: usize, paths: &ExternalPaths) -> TokenStream {
+    let pp = paths.prelude();
     let wrapped = idents::schema_wrapped_dtype();
-    super::external_paths::wrap_list_layers_runtime(&pp, &wrapped, layers)
+    super::external_paths::wrap_list_layers_runtime(pp, &wrapped, layers)
 }
 
 pub fn nested_empty_series_row(
@@ -24,6 +25,7 @@ pub fn nested_empty_series_row(
     to_df_trait: &TokenStream,
     name: &str,
     list_layers: usize,
+    paths: &ExternalPaths,
 ) -> TokenStream {
     generate_for_struct(
         type_path,
@@ -31,6 +33,7 @@ pub fn nested_empty_series_row(
         name,
         list_layers,
         EmitMode::EmptyRows,
+        paths,
     )
 }
 
@@ -41,6 +44,7 @@ pub fn generate_schema_entries_for_struct(
     to_df_trait: &TokenStream,
     column_name: &str,
     list_layers: usize,
+    paths: &ExternalPaths,
 ) -> TokenStream {
     generate_for_struct(
         type_path,
@@ -48,6 +52,7 @@ pub fn generate_schema_entries_for_struct(
         column_name,
         list_layers,
         EmitMode::SchemaEntries,
+        paths,
     )
 }
 
@@ -63,9 +68,10 @@ fn generate_for_struct(
     column_name: &str,
     list_layers: usize,
     mode: EmitMode,
+    paths: &ExternalPaths,
 ) -> TokenStream {
-    let pp = super::external_paths::prelude();
-    let wrap_layers = gen_wrap_dtype_layers(list_layers);
+    let pp = paths.prelude();
+    let wrap_layers = gen_wrap_dtype_layers(list_layers, paths);
     let wrapped = idents::schema_wrapped_dtype();
     match mode {
         EmitMode::SchemaEntries => quote! {

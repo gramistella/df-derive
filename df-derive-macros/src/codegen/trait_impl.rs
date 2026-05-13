@@ -6,7 +6,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     let struct_name = &ir.name;
     let to_df_trait = &config.to_dataframe_trait_path;
     let columnar_trait = &config.columnar_trait_path;
-    let pp = super::external_paths::prelude();
+    let pp = config.external_paths.prelude();
     let (impl_generics, ty_generics, where_clause) = super::impl_parts_with_bounds(ir, config);
 
     if ir.fields.is_empty() {

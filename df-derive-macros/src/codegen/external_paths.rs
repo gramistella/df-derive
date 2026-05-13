@@ -12,6 +12,37 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+/// Runtime crate paths used by generated code.
+///
+/// Default derives point these at the shared dataframe runtime's hidden
+/// dependency re-exports so downstream crates do not have to name every
+/// implementation dependency directly. Custom trait/columnar runtimes keep
+/// using resolved direct dependency roots so their Polars identity stays under
+/// the caller's control.
+pub struct ExternalPaths {
+    polars_prelude: TokenStream,
+    polars_arrow_root: TokenStream,
+}
+
+impl ExternalPaths {
+    pub fn prelude(&self) -> &TokenStream {
+        &self.polars_prelude
+    }
+
+    pub fn polars_arrow_root(&self) -> &TokenStream {
+        &self.polars_arrow_root
+    }
+
+    /// `polars::prelude::Int128Chunked` — used by the Decimal columnar
+    /// finisher to bypass the `Series::new(&Vec<i128>) + cast(Decimal)`
+    /// round-trip and build the `DecimalChunked` directly via
+    /// `into_decimal_unchecked`.
+    pub fn int128_chunked(&self) -> TokenStream {
+        let pp = self.prelude();
+        quote! { #pp::Int128Chunked }
+    }
+}
+
 /// Resolve a crate by package name to a `::<resolved-name>` path token, or
 /// splice the caller's `fallback` when the crate is not found or refers to
 /// the expanding crate itself. This fits generated references to external
@@ -43,35 +74,45 @@ fn polars_root() -> TokenStream {
 }
 
 /// `polars::prelude` — namespace for ~all polars items the macro emits.
-pub fn prelude() -> TokenStream {
+fn prelude() -> TokenStream {
     let root = polars_root();
     quote! { #root::prelude }
 }
 
-/// `polars::prelude::Int128Chunked` — used by the Decimal columnar finisher
-/// to bypass the `Series::new(&Vec<i128>) + cast(Decimal)` round-trip and
-/// build the `DecimalChunked` directly via `into_decimal_unchecked`.
-pub fn int128_chunked() -> TokenStream {
-    let pp = prelude();
-    quote! { #pp::Int128Chunked }
-}
-
 /// Token tree for the user-visible `polars-arrow` crate root.
 ///
-/// `polars-arrow` is a hard requirement for downstream crates that use
-/// `#[derive(ToDataFrame)]`: the macro emits `OffsetsBuffer` and
-/// `LargeListArray` paths to construct list arrays directly, which
-/// achieves 7-10× speedups on `Vec<Struct>` columns. `polars` 0.53
-/// already compiles `polars-arrow` transitively but doesn't re-export it
-/// under any public path, so a user pinning `polars` must declare
-/// `polars-arrow` as a direct dep too.
+/// `polars-arrow` remains a direct dependency requirement for custom
+/// trait/columnar runtimes: the macro emits `OffsetsBuffer` and
+/// `LargeListArray` paths to construct list arrays directly, which achieves
+/// 7-10× speedups on `Vec<Struct>` columns. The default runtime instead
+/// routes through `dataframe::__private::polars_arrow`.
 ///
 /// `Itself` and `Err` collapse to `::polars_arrow` for the same reason as
 /// `polars_root()` — the macro never expands inside `polars-arrow`, and a
 /// missing direct dep is best surfaced as `unresolved import
 /// ::polars_arrow` at the call site.
-pub fn polars_arrow_root() -> TokenStream {
+fn polars_arrow_root() -> TokenStream {
     resolve_or_fallback("polars-arrow", quote! { ::polars_arrow })
+}
+
+/// Dependency roots for custom runtimes, preserving the historical behavior
+/// where the deriving crate's own `polars` and `polars-arrow` dependencies
+/// define the generated code's runtime identity.
+pub fn direct_dependency_paths() -> ExternalPaths {
+    ExternalPaths {
+        polars_prelude: prelude(),
+        polars_arrow_root: polars_arrow_root(),
+    }
+}
+
+/// Dependency roots for the default dataframe runtime. The facade re-exports
+/// these from `df_derive::dataframe` and direct-core users get the same shape
+/// from `df_derive_core::dataframe`.
+pub fn default_runtime_paths(dataframe_mod: &TokenStream) -> ExternalPaths {
+    ExternalPaths {
+        polars_prelude: quote! { #dataframe_mod::__private::polars::prelude },
+        polars_arrow_root: quote! { #dataframe_mod::__private::polars_arrow },
+    }
 }
 
 /// Token tree for the user-visible `chrono` crate root.

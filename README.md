@@ -231,8 +231,12 @@ struct when you need an attributed field. Nested tuples inside an outer
 
 ## Limitations And Guidance
 
-- Maps and sets such as `HashMap<_, _>` are not supported; use `Vec<(K, V)>`
-  or a named row struct when you need a tabular representation.
+- Maps such as `HashMap<_, _>` and `BTreeMap<_, _>` are not supported; use
+  `Vec<(K, V)>` or a named row struct when you need a tabular representation.
+- Sets such as `HashSet<_>` and `BTreeSet<_>` are not supported; use
+  `Vec<T>` when you need a list representation.
+- Sequence collections such as `VecDeque<T>` and `LinkedList<T>` are not
+  supported; use `Vec<T>` instead.
 - All nested custom structs must also derive `ToDataFrame`.
 - Consecutive `Option` layers above a `Vec` collapse to one list-level
   validity bit, so `None` and `Some(None)` are indistinguishable in the

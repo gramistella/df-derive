@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Unsupported collection diagnostics now cover `BTreeSet`, `VecDeque`, and
+  `LinkedList` with tailored migration hints.
+
 ## [0.3.0] - 2026-05-11
 
 ### Added

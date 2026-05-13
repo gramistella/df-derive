@@ -244,24 +244,27 @@ fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Er
     if let Type::Path(type_path) = current_type
         && let Some(collection) = unsupported_collection_name(type_path)
     {
-        let hint: Option<&'static str> = match collection {
-            "HashMap" => Some(
-                "df-derive does not support `HashMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment.",
-            ),
-            "BTreeMap" => Some(
-                "df-derive does not support `BTreeMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment.",
-            ),
-            "HashSet" => Some(
-                "df-derive does not support `HashSet` fields. Convert to \
-                 `Vec<T>` (order will be set-defined, not insertion-defined).",
-            ),
-            _ => None,
+        let message = match collection {
+            "HashMap" => "df-derive does not support `HashMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
+                .to_owned(),
+            "BTreeMap" => "df-derive does not support `BTreeMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
+                .to_owned(),
+            "HashSet" => "df-derive does not support `HashSet` fields. Convert to \
+                 `Vec<T>` (order will be set-defined, not insertion-defined)."
+                .to_owned(),
+            "BTreeSet" => "df-derive does not support `BTreeSet` fields. Convert to \
+                 `Vec<T>` (order will follow the set's sorted iteration order)."
+                .to_owned(),
+            "VecDeque" | "LinkedList" => {
+                format!(
+                    "df-derive does not support `{collection}` fields. Convert to `Vec<T>` before assignment."
+                )
+            }
+            _ => unreachable!("unsupported collection list and diagnostic match diverged"),
         };
-        if let Some(message) = hint {
-            return Err(syn::Error::new_spanned(current_type, message));
-        }
+        return Err(syn::Error::new_spanned(current_type, message));
     }
     Ok(())
 }
@@ -396,9 +399,16 @@ fn path_is_exact_with_leaf_args(type_path: &TypePath, segments: &[&str]) -> bool
 }
 
 fn unsupported_collection_name(type_path: &TypePath) -> Option<&'static str> {
-    ["HashMap", "BTreeMap", "HashSet"]
-        .into_iter()
-        .find(|&name| path_is_bare_or_std_collection(type_path, name))
+    [
+        "HashMap",
+        "BTreeMap",
+        "HashSet",
+        "BTreeSet",
+        "VecDeque",
+        "LinkedList",
+    ]
+    .into_iter()
+    .find(|&name| path_is_bare_or_std_collection(type_path, name))
 }
 
 fn path_is_bare_or_std_collection(type_path: &TypePath, leaf: &str) -> bool {

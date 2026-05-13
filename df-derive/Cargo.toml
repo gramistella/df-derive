@@ -26,7 +26,7 @@ trybuild = "1.0.116"
 polars = { workspace = true, features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
 polars-arrow.workspace = true
 chrono = { version = "0.4.41", features = ["serde"] }
-rust_decimal.workspace = true
+rust_decimal = { workspace = true, features = ["serde", "std"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 pretty_assertions = "1.4"
 serde = { version = "1", features = ["derive"] }

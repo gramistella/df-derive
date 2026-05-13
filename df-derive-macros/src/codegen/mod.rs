@@ -30,25 +30,28 @@ pub struct MacroConfig {
     pub external_paths: external_paths::ExternalPaths,
 }
 
-fn resolve_dataframe_mod_for_crate(name: &str, itself: TokenStream) -> Option<TokenStream> {
+fn resolve_dataframe_mod_for_crate(name: &str, lib_crate_name: &str) -> Option<TokenStream> {
     match crate_name(name) {
         Ok(FoundCrate::Name(resolved)) => {
             let ident = format_ident!("{}", resolved);
             Some(quote! { ::#ident::dataframe })
         }
-        Ok(FoundCrate::Itself) if name == "df-derive" && is_expanding_facade_lib_target() => {
+        Ok(FoundCrate::Itself) if is_expanding_lib_target(lib_crate_name) => {
             Some(quote! { crate::dataframe })
         }
-        Ok(FoundCrate::Itself) => Some(itself),
+        Ok(FoundCrate::Itself) => {
+            let ident = format_ident!("{}", lib_crate_name);
+            Some(quote! { ::#ident::dataframe })
+        }
         Err(_) => None,
     }
 }
 
-fn is_expanding_facade_lib_target() -> bool {
+fn is_expanding_lib_target(lib_crate_name: &str) -> bool {
     // `proc_macro_crate` reports `Itself` for every target in a package.
-    // Only the facade library target has `crate::dataframe`; package
-    // examples and benches still need the fallback path to the facade crate.
-    std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("df_derive")
+    // Only the library target has `crate::dataframe`; package examples,
+    // benches, and integration tests need the path through the library crate.
+    std::env::var("CARGO_CRATE_NAME").as_deref() == Ok(lib_crate_name)
 }
 
 pub fn resolve_default_dataframe_mod() -> TokenStream {
@@ -58,10 +61,10 @@ pub fn resolve_default_dataframe_mod() -> TokenStream {
     // - `paft-utils` direct runtime (`paft_utils::dataframe`)
     // - `paft` facade (`paft::dataframe`)
     // - local fallback (`crate::core::dataframe`)
-    resolve_dataframe_mod_for_crate("df-derive", quote! { ::df_derive::dataframe })
-        .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", quote! { crate::dataframe }))
-        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", quote! { crate::dataframe }))
-        .or_else(|| resolve_dataframe_mod_for_crate("paft", quote! { crate::dataframe }))
+    resolve_dataframe_mod_for_crate("df-derive", "df_derive")
+        .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", "df_derive_core"))
+        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", "paft_utils"))
+        .or_else(|| resolve_dataframe_mod_for_crate("paft", "paft"))
         .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 

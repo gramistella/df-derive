@@ -35,6 +35,16 @@ fn check_fixture_with_files(
     main_rs: &str,
     extra_files: &[(&str, &str)],
 ) {
+    check_fixture_with_files_and_args(name, manifest, main_rs, extra_files, &[]);
+}
+
+fn check_fixture_with_files_and_args(
+    name: &str,
+    manifest: &str,
+    main_rs: &str,
+    extra_files: &[(&str, &str)],
+    cargo_args: &[&str],
+) {
     let root = repo_root();
     let fixture_root = root.join("target").join("architecture-fixtures").join(name);
     if fixture_root.exists() {
@@ -52,6 +62,7 @@ fn check_fixture_with_files(
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(fixture_root.join("Cargo.toml"))
+        .args(cargo_args)
         .env(
             "CARGO_TARGET_DIR",
             root.join("target").join("architecture-fixtures-target"),
@@ -69,6 +80,57 @@ fn check_fixture_with_files(
 
 fn check_fixture(name: &str, manifest: &str, main_rs: &str) {
     check_fixture_with_files(name, manifest, main_rs, &[]);
+}
+
+fn paft_like_runtime_lib() -> &'static str {
+    r#"
+pub use df_derive_macros::ToDataFrame;
+
+pub mod dataframe {
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+    #[doc(hidden)]
+    pub mod __private {
+        pub use polars;
+        pub use pa as polars_arrow;
+    }
+
+    pub trait ToDataFrame {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    }
+
+    pub trait Columnar: Sized {
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+    }
+
+    pub trait ToDataFrameVec {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+    }
+
+    impl<T> ToDataFrameVec for [T]
+    where
+        T: Columnar + ToDataFrame,
+    {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            if self.is_empty() {
+                return <T as ToDataFrame>::empty_dataframe();
+            }
+            <T as Columnar>::columnar_to_dataframe(self)
+        }
+    }
+
+    pub trait Decimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+}
+"#
 }
 
 fn polars_deps() -> &'static str {
@@ -402,6 +464,112 @@ pub mod dataframe {
 "#,
             ),
         ],
+    );
+}
+
+#[test]
+fn paft_package_examples_use_library_runtime_path() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "paft"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-macros = {{ path = "{}" }}
+polars = {{ version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.53.0" }}
+
+[[example]]
+name = "unannotated"
+"#,
+        toml_path(&root.join("df-derive-macros")),
+    );
+
+    check_fixture_with_files_and_args(
+        "paft-package-example-runtime",
+        &manifest,
+        "fn main() {}",
+        &[
+            ("src/lib.rs", paft_like_runtime_lib()),
+            (
+                "examples/unannotated.rs",
+                r#"
+#[derive(Clone, paft::ToDataFrame)]
+struct Row {
+    id: u32,
+}
+
+fn assert_runtime<T: paft::dataframe::ToDataFrame + paft::dataframe::Columnar>() {}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    assert_runtime::<Row>();
+    let df = paft::dataframe::ToDataFrame::to_dataframe(&Row { id: 1 })?;
+    assert_eq!(df.shape(), (1, 1));
+    Ok(())
+}
+"#,
+            ),
+        ],
+        &["--example", "unannotated"],
+    );
+}
+
+#[test]
+fn paft_utils_package_examples_use_library_runtime_path() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "paft-utils"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-macros = {{ path = "{}" }}
+polars = {{ version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.53.0" }}
+
+[[example]]
+name = "unannotated"
+"#,
+        toml_path(&root.join("df-derive-macros")),
+    );
+
+    check_fixture_with_files_and_args(
+        "paft-utils-package-example-runtime",
+        &manifest,
+        "fn main() {}",
+        &[
+            ("src/lib.rs", paft_like_runtime_lib()),
+            (
+                "examples/unannotated.rs",
+                r#"
+#[derive(Clone, paft_utils::ToDataFrame)]
+struct Row {
+    id: u32,
+}
+
+fn assert_runtime<T: paft_utils::dataframe::ToDataFrame + paft_utils::dataframe::Columnar>() {}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    assert_runtime::<Row>();
+    let df = paft_utils::dataframe::ToDataFrame::to_dataframe(&Row { id: 1 })?;
+    assert_eq!(df.shape(), (1, 1));
+    Ok(())
+}
+"#,
+            ),
+        ],
+        &["--example", "unannotated"],
     );
 }
 

@@ -50,3 +50,38 @@ pub mod prelude {
         Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait, ToDataFrameVec,
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::ToDataFrame;
+
+    #[derive(ToDataFrame)]
+    struct SelfCrateRow {
+        id: u32,
+        label: String,
+    }
+
+    #[test]
+    fn derive_uses_facade_runtime_inside_facade_crate() -> polars::prelude::PolarsResult<()> {
+        use crate::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+
+        let row = SelfCrateRow {
+            id: 1,
+            label: "facade".to_owned(),
+        };
+        let single = row.to_dataframe()?;
+        assert_eq!(single.shape(), (1, 2));
+
+        let rows = [
+            row,
+            SelfCrateRow {
+                id: 2,
+                label: "self".to_owned(),
+            },
+        ];
+        let batch = rows.as_slice().to_dataframe()?;
+        assert_eq!(batch.shape(), (2, 2));
+
+        Ok(())
+    }
+}

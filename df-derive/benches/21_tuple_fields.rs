@@ -1,10 +1,7 @@
-// Empirical validation that tuple-field encoding has the same throughput
-// as the equivalent named-field shape. The derive expands a tuple field
-// into N parallel column pipelines, one per element; each pipeline
-// projects `.<i>` from the tuple binding and runs an otherwise-identical
-// per-element-push loop. The expectation: the projection compiles to the
-// same MIR a direct named-field access would, so the two shapes should
-// bench within margin of error.
+// Empirical validation that tuple-field encoding stays close to the
+// equivalent named-field shape. Tuple fields expand into per-projection
+// column pipelines, so this bench keeps the tuple and named variants visible
+// side by side.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;

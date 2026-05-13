@@ -409,8 +409,17 @@ The generated `columnar_to_dataframe(&[Self])` path avoids the old top-level
 `Vec<&Self>` allocation. Nested and generic emitters still use
 `columnar_from_refs(&[&Self])` so borrowed composition remains clone-free.
 
+The generated hot path is shape-dependent. Primitive scalar fields are
+populated in one row loop. Nested fields collect references and call the
+nested type's columnar implementation, so each nested field may add a scan
+over the outer items. Tuple-typed fields are emitted per projection path, so
+tuple elements may each add their own scan; Vec-bearing tuple projections also
+scan the outer items to build offsets, validity, and leaf buffers. This cost
+model matters most for wide nested schemas and tuple-heavy shapes.
+
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
-deep Vec shapes, decimals, strings, borrowed data, and tuple fields.
+deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted
+tuple-heavy / nested-heavy cost-model shapes.
 
 Performance is continuously monitored with
 [Bencher](https://bencher.dev/perf/df-derive).

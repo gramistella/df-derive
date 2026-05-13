@@ -113,3 +113,7 @@ harness = false
 [[bench]]
 name = "21_tuple_fields"
 harness = false
+
+[[bench]]
+name = "22_cost_model_passes"
+harness = false

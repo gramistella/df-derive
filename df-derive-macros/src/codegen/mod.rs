@@ -36,14 +36,24 @@ fn resolve_dataframe_mod_for_crate(name: &str, itself: TokenStream) -> Option<To
             let ident = format_ident!("{}", resolved);
             Some(quote! { ::#ident::dataframe })
         }
+        Ok(FoundCrate::Itself) if name == "df-derive" && is_expanding_facade_lib_target() => {
+            Some(quote! { crate::dataframe })
+        }
         Ok(FoundCrate::Itself) => Some(itself),
         Err(_) => None,
     }
 }
 
+fn is_expanding_facade_lib_target() -> bool {
+    // `proc_macro_crate` reports `Itself` for every target in a package.
+    // Only the facade library target has `crate::dataframe`; package
+    // examples and benches still need the fallback path to the facade crate.
+    std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("df_derive")
+}
+
 pub fn resolve_default_dataframe_mod() -> TokenStream {
     // Default discovery order:
-    // - `df-derive` facade (`df_derive::dataframe`)
+    // - `df-derive` facade (`df_derive::dataframe`, or `crate::dataframe` inside the facade)
     // - `df-derive-core` shared runtime (`df_derive_core::dataframe`)
     // - `paft-utils` direct runtime (`paft_utils::dataframe`)
     // - `paft` facade (`paft::dataframe`)

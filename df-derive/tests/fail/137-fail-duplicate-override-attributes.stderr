@@ -1,0 +1,47 @@
+error: field `amount` declares duplicate `decimal(...)` overrides with different values; first is `precision = 10, scale = 2`, second is `precision = 20, scale = 5`; pick one
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:11:17
+   |
+11 |     #[df_derive(decimal(precision = 20, scale = 5))]
+   |                 ^^^^^^^
+
+error: first `decimal(...)` override declared here
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:10:17
+   |
+10 |     #[df_derive(decimal(precision = 10, scale = 2))]
+   |                 ^^^^^^^
+
+error: field `ts` declares duplicate `time_unit` overrides with different values; first is `ms`, second is `ns`; pick one
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:18:17
+   |
+18 |     #[df_derive(time_unit = "ns")]
+   |                 ^^^^^^^^^
+
+error: first `time_unit` override declared here
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:17:17
+   |
+17 |     #[df_derive(time_unit = "ms")]
+   |                 ^^^^^^^^^
+
+error: field `name` declares duplicate `as_str` override; remove one
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:25:17
+   |
+25 |     #[df_derive(as_str)]
+   |                 ^^^^^^
+
+error: first `as_str` override declared here
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:24:17
+   |
+24 |     #[df_derive(as_str)]
+   |                 ^^^^^^
+
+error: field `name` declares duplicate `as_string` override; remove one
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:32:17
+   |
+32 |     #[df_derive(as_string)]
+   |                 ^^^^^^^^^
+
+error: first `as_string` override declared here
+  --> tests/fail/137-fail-duplicate-override-attributes.rs:31:17
+   |
+31 |     #[df_derive(as_string)]
+   |                 ^^^^^^^^^

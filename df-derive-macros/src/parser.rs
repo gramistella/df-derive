@@ -7,7 +7,9 @@ use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
     DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
 };
+use proc_macro2::Span;
 use quote::{ToTokens, format_ident};
+use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Fields, Ident};
 
 /// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
@@ -139,26 +141,105 @@ fn override_conflict(
     syn::Error::new_spanned(field, message)
 }
 
+const fn override_key(override_: &FieldOverride) -> &'static str {
+    match override_ {
+        FieldOverride::None => "none",
+        FieldOverride::Skip => "skip",
+        FieldOverride::AsStr => "as_str",
+        FieldOverride::AsString => "as_string",
+        FieldOverride::AsBinary => "as_binary",
+        FieldOverride::Decimal { .. } => "decimal(...)",
+        FieldOverride::TimeUnit(_) => "time_unit",
+    }
+}
+
+const fn time_unit_attr_value(unit: DateTimeUnit) -> &'static str {
+    match unit {
+        DateTimeUnit::Milliseconds => "ms",
+        DateTimeUnit::Microseconds => "us",
+        DateTimeUnit::Nanoseconds => "ns",
+    }
+}
+
+fn duplicate_override_conflict(
+    field_display_name: &str,
+    existing: &FieldOverride,
+    incoming: &FieldOverride,
+    existing_span: Span,
+    incoming_span: Span,
+) -> syn::Error {
+    let key = override_key(incoming);
+    let message = match (existing, incoming) {
+        (
+            FieldOverride::Decimal {
+                precision: existing_precision,
+                scale: existing_scale,
+            },
+            FieldOverride::Decimal {
+                precision: incoming_precision,
+                scale: incoming_scale,
+            },
+        ) if existing_precision != incoming_precision || existing_scale != incoming_scale => {
+            format!(
+                "field `{field_display_name}` declares duplicate `decimal(...)` overrides with \
+                 different values; first is `precision = {existing_precision}, scale = {existing_scale}`, \
+                 second is `precision = {incoming_precision}, scale = {incoming_scale}`; pick one"
+            )
+        }
+        (FieldOverride::TimeUnit(existing_unit), FieldOverride::TimeUnit(incoming_unit))
+            if existing_unit != incoming_unit =>
+        {
+            let existing_unit = time_unit_attr_value(*existing_unit);
+            let incoming_unit = time_unit_attr_value(*incoming_unit);
+            format!(
+                "field `{field_display_name}` declares duplicate `time_unit` overrides with \
+                 different values; first is `{existing_unit}`, second is `{incoming_unit}`; pick one"
+            )
+        }
+        _ => {
+            format!("field `{field_display_name}` declares duplicate `{key}` override; remove one")
+        }
+    };
+
+    let mut error = syn::Error::new(incoming_span, message);
+    error.combine(syn::Error::new(
+        existing_span,
+        format!("first `{key}` override declared here"),
+    ));
+    error
+}
+
 /// Set `override_` to `incoming` only if no override has been declared yet;
 /// otherwise emit the conflict error for the (existing, incoming) pair. Same-key
 /// repeats (`#[df_derive(as_str, as_str)]`, two `decimal(...)` blocks) are
-/// idempotent / last-wins respectively.
+/// rejected so users do not accidentally rely on declaration order.
 fn set_override(
     field: &syn::Field,
     field_display_name: &str,
     override_: &mut FieldOverride,
+    override_span: &mut Option<Span>,
     incoming: FieldOverride,
+    incoming_span: Span,
 ) -> Result<(), syn::Error> {
     match (&*override_, &incoming) {
-        (FieldOverride::None, _)
-        | (FieldOverride::Skip, FieldOverride::Skip)
+        (FieldOverride::None, _) => {
+            *override_ = incoming;
+            *override_span = Some(incoming_span);
+            Ok(())
+        }
+        (FieldOverride::Skip, FieldOverride::Skip)
         | (FieldOverride::AsStr, FieldOverride::AsStr)
         | (FieldOverride::AsString, FieldOverride::AsString)
         | (FieldOverride::AsBinary, FieldOverride::AsBinary)
         | (FieldOverride::Decimal { .. }, FieldOverride::Decimal { .. })
         | (FieldOverride::TimeUnit(_), FieldOverride::TimeUnit(_)) => {
-            *override_ = incoming;
-            Ok(())
+            Err(duplicate_override_conflict(
+                field_display_name,
+                override_,
+                &incoming,
+                override_span.expect("set override span before stored override"),
+                incoming_span,
+            ))
         }
         _ => Err(override_conflict(
             field,
@@ -174,24 +255,56 @@ fn parse_field_override(
     field_display_name: &str,
 ) -> Result<FieldOverride, syn::Error> {
     let mut override_ = FieldOverride::None;
+    let mut override_span = None;
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
             attr.parse_nested_meta(|meta| {
+                let incoming_span = meta.path.span();
                 if meta.path.is_ident("skip") {
-                    set_override(field, field_display_name, &mut override_, FieldOverride::Skip)
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        &mut override_span,
+                        FieldOverride::Skip,
+                        incoming_span,
+                    )
                 } else if meta.path.is_ident("as_string") {
-                    set_override(field, field_display_name, &mut override_, FieldOverride::AsString)
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        &mut override_span,
+                        FieldOverride::AsString,
+                        incoming_span,
+                    )
                 } else if meta.path.is_ident("as_str") {
-                    set_override(field, field_display_name, &mut override_, FieldOverride::AsStr)
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        &mut override_span,
+                        FieldOverride::AsStr,
+                        incoming_span,
+                    )
                 } else if meta.path.is_ident("as_binary") {
-                    set_override(field, field_display_name, &mut override_, FieldOverride::AsBinary)
+                    set_override(
+                        field,
+                        field_display_name,
+                        &mut override_,
+                        &mut override_span,
+                        FieldOverride::AsBinary,
+                        incoming_span,
+                    )
                 } else if meta.path.is_ident("decimal") {
                     let (precision, scale) = parse_decimal_attr(&meta)?;
                     set_override(
                         field,
                         field_display_name,
                         &mut override_,
+                        &mut override_span,
                         FieldOverride::Decimal { precision, scale },
+                        incoming_span,
                     )
                 } else if meta.path.is_ident("time_unit") {
                     let unit = parse_time_unit_attr(&meta)?;
@@ -199,7 +312,9 @@ fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
+                        &mut override_span,
                         FieldOverride::TimeUnit(unit),
+                        incoming_span,
                     )
                 } else {
                     Err(meta.error(

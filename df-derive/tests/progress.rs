@@ -83,4 +83,5 @@ fn tests() {
     t.compile_fail("tests/fail/134-fail-as-string-concrete-type-without-display.rs");
     t.compile_fail("tests/fail/135-fail-wrapped-nested-tuple-parent.rs");
     t.compile_fail("tests/fail/136-fail-wrapped-nested-tuple-element.rs");
+    t.compile_fail("tests/fail/137-fail-duplicate-override-attributes.rs");
 }

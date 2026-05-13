@@ -2,6 +2,7 @@
 name = "df-derive-macros"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 description = "Procedural derive macro implementation for df-derive."
 license.workspace = true

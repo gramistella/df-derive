@@ -2,6 +2,7 @@
 name = "df-derive"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 description = "Derive fast conversions from Rust structs into Polars DataFrames."
 license.workspace = true

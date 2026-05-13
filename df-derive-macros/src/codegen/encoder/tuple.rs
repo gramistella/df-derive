@@ -19,7 +19,7 @@
 use crate::codegen::MacroConfig;
 use crate::codegen::strategy::{EmitMode, FieldEmit};
 use crate::ir::{
-    AccessChain, AccessStep, FieldIR, LeafSpec, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
+    AccessChain, AccessStep, FieldIR, LeafSpec, TupleElement, VecLayers, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -398,7 +398,7 @@ fn emit_vec_parent(
     // immediately above the leaf, which is the projected tuple) become
     // outer-Option above the element's first Vec layer. Polars folds
     // consecutive Options into one bit, so the carry is additive.
-    let mut composed_layers: Vec<VecLayerSpec> = parent_layers.layers.clone();
+    let mut composed_layers = parent_layers.layers.clone();
     let carried_inner_option = parent_layers.inner_option_layers;
 
     let composed_inner_option = match &elem.wrapper_shape {

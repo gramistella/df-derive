@@ -369,21 +369,21 @@ fn nested_consume_columns(
 /// expression (direct/take/empty/all-absent) but shares the layer-wrap
 /// stack.
 ///
-/// At depth 0 (`layers.is_empty()`) the helper degenerates to the
+/// At depth 0 (`WrapperShape::Leaf`) the helper degenerates to the
 /// `inner_col_expr` unchanged — the depth-0 shape (bare/option `Nested`) has
 /// no list layers, so rechunking and stacking would just round-trip the
 /// inner Series through `chunks()[0]`.
 fn ctb_layer_wrap(
-    shape: &VecLayers,
+    wrapper: &WrapperShape,
     layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> TokenStream {
-    if layers.is_empty() {
+    let WrapperShape::Vec(shape) = wrapper else {
         return inner_col_expr.clone();
-    }
+    };
     let inner_chunk = idents::nested_inner_chunk();
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
@@ -474,7 +474,6 @@ fn pep_materialize(
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,
-    shape: &VecLayers,
     layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     pa_root: &TokenStream,
@@ -538,17 +537,21 @@ fn ctb_materialize(
             .extend_constant(#pp::AnyValue::Null, #absent_len)?
     };
 
-    let series_direct = ctb_layer_wrap(shape, layers, kind, &inner_col_direct, pp, pa_root);
-    let series_take = ctb_layer_wrap(shape, layers, kind, &inner_col_take, pp, pa_root);
-    let series_empty = ctb_layer_wrap(shape, layers, kind, &inner_col_empty, pp, pa_root);
-    let series_all_absent = ctb_layer_wrap(shape, layers, kind, &inner_col_all_absent, pp, pa_root);
+    let series_direct = ctb_layer_wrap(wrapper, layers, kind, &inner_col_direct, pp, pa_root);
+    let series_take = ctb_layer_wrap(wrapper, layers, kind, &inner_col_take, pp, pa_root);
+    let series_empty = ctb_layer_wrap(wrapper, layers, kind, &inner_col_empty, pp, pa_root);
+    let series_all_absent =
+        ctb_layer_wrap(wrapper, layers, kind, &inner_col_all_absent, pp, pa_root);
 
     let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct, pp);
     let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take, pp);
     let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty, pp);
     let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent, pp);
 
-    let (validity_freeze, offsets_freeze) = hoisted_freezes(shape, layers, kind, pa_root);
+    let (validity_freeze, offsets_freeze) = match wrapper {
+        WrapperShape::Leaf { .. } => (TokenStream::new(), TokenStream::new()),
+        WrapperShape::Vec(shape) => hoisted_freezes(shape, layers, kind, pa_root),
+    };
 
     match wrapper {
         WrapperShape::Leaf {
@@ -578,7 +581,7 @@ fn ctb_materialize(
                 }
             }
         }
-        WrapperShape::Vec(_) if shape.has_inner_option() => {
+        WrapperShape::Vec(shape) if shape.has_inner_option() => {
             // 4-branch dispatch. Offsets are frozen only in the selected arm.
             quote! {
                 #validity_freeze
@@ -738,7 +741,6 @@ fn ctb_emit(
     ctb: &CollectThenBulk<'_>,
     access: &TokenStream,
     wrapper: &WrapperShape,
-    shape: &VecLayers,
     layers: &[LayerIdents],
     kind: &LeafKind<'_>,
     layer_counters: &[syn::Ident],
@@ -768,7 +770,7 @@ fn ctb_emit(
                 quote! { items.len() },
             )
         }
-        WrapperShape::Vec(_) => {
+        WrapperShape::Vec(shape) => {
             let precount = build_precount(
                 access,
                 shape,
@@ -811,7 +813,7 @@ fn ctb_emit(
     // any outer Option, or at depth >= 1 with an inner Option above the leaf.
     let needs_positions = match wrapper {
         WrapperShape::Leaf { option_layers, .. } => *option_layers > 0,
-        WrapperShape::Vec(_) => shape.has_inner_option(),
+        WrapperShape::Vec(shape) => shape.has_inner_option(),
     };
     let positions_decl = if needs_positions {
         quote! {
@@ -822,7 +824,7 @@ fn ctb_emit(
         TokenStream::new()
     };
 
-    let materialize = ctb_materialize(ctb, wrapper, shape, layers, kind, pa_root, pp);
+    let materialize = ctb_materialize(ctb, wrapper, layers, kind, pa_root, pp);
 
     quote! {{
         #precount
@@ -858,18 +860,6 @@ pub(super) fn vec_emit_general(
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
     let depth = wrapper.vec_depth();
-    // The walker needs a `VecLayers` even at depth 0; synthesize an empty
-    // one for the `Leaf` wrapper case so the layer/precount helpers fall
-    // out to no-ops.
-    let empty_shape = VecLayers {
-        layers: Vec::new(),
-        inner_option_layers: 0,
-        inner_access: AccessChain::empty(),
-    };
-    let shape: &VecLayers = match wrapper {
-        WrapperShape::Leaf { .. } => &empty_shape,
-        WrapperShape::Vec(s) => s,
-    };
 
     // Per-leaf-kind layer-ident factory: per-element-push uses flat-vec
     // idents (no field namespacing); collect-then-bulk uses per-(field,
@@ -894,7 +884,7 @@ pub(super) fn vec_emit_general(
     };
 
     match (kind, wrapper) {
-        (LeafKind::PerElementPush(pep), WrapperShape::Vec(_)) => {
+        (LeafKind::PerElementPush(pep), WrapperShape::Vec(shape)) => {
             let series_local = idents::vec_field_series(idx);
             pep_emit(
                 pep,
@@ -913,7 +903,6 @@ pub(super) fn vec_emit_general(
             ctb,
             access,
             wrapper,
-            shape,
             &layers,
             kind,
             &layer_counters,

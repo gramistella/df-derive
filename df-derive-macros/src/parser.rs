@@ -1,6 +1,7 @@
 use crate::ir::{
     AccessChain, AccessStep, DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec,
-    NumericKind, StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
+    NonEmpty, NumericKind, StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers,
+    WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -620,12 +621,12 @@ fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
             }
         }
     }
-    if layers.is_empty() {
+    let Some(layers) = NonEmpty::from_vec(layers) else {
         return WrapperShape::Leaf {
             option_layers: pending_access.option_layers(),
             access: pending_access,
         };
-    }
+    };
     WrapperShape::Vec(VecLayers {
         layers,
         inner_option_layers: pending_access.option_layers(),

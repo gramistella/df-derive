@@ -23,6 +23,9 @@ All notable changes to this project will be documented in this file.
 - Container-level `#[df_derive(...)]` runtime overrides now reject duplicate
   keys, and `columnar = "..."` is rejected unless it is paired with
   `trait = "..."` to avoid mixed-runtime impls.
+- `df-derive = { default-features = false }` now also disables
+  `df-derive-core`'s default `rust_decimal` feature instead of enabling it
+  through the facade's core dependency.
 
 ## [0.3.0] - 2026-05-11
 

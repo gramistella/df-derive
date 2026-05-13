@@ -29,6 +29,26 @@ fn write_fixture_file(root: &Path, rel_path: &str, contents: &str) {
     fs::write(path, contents).expect("write fixture file");
 }
 
+fn write_fixture(
+    name: &str,
+    manifest: &str,
+    main_rs: &str,
+    extra_files: &[(&str, &str)],
+) -> PathBuf {
+    let root = repo_root();
+    let fixture_root = root.join("target").join("architecture-fixtures").join(name);
+    if fixture_root.exists() {
+        fs::remove_dir_all(&fixture_root).expect("remove stale fixture");
+    }
+    fs::create_dir_all(fixture_root.join("src")).expect("create fixture src");
+    write_fixture_file(&fixture_root, "Cargo.toml", manifest);
+    write_fixture_file(&fixture_root, "src/main.rs", main_rs);
+    for (rel_path, contents) in extra_files {
+        write_fixture_file(&fixture_root, rel_path, contents);
+    }
+    fixture_root
+}
+
 fn check_fixture_with_files(
     name: &str,
     manifest: &str,
@@ -46,16 +66,7 @@ fn check_fixture_with_files_and_args(
     cargo_args: &[&str],
 ) {
     let root = repo_root();
-    let fixture_root = root.join("target").join("architecture-fixtures").join(name);
-    if fixture_root.exists() {
-        fs::remove_dir_all(&fixture_root).expect("remove stale fixture");
-    }
-    fs::create_dir_all(fixture_root.join("src")).expect("create fixture src");
-    write_fixture_file(&fixture_root, "Cargo.toml", manifest);
-    write_fixture_file(&fixture_root, "src/main.rs", main_rs);
-    for (rel_path, contents) in extra_files {
-        write_fixture_file(&fixture_root, rel_path, contents);
-    }
+    let fixture_root = write_fixture(name, manifest, main_rs, extra_files);
 
     let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .arg("check")
@@ -80,6 +91,39 @@ fn check_fixture_with_files_and_args(
 
 fn check_fixture(name: &str, manifest: &str, main_rs: &str) {
     check_fixture_with_files(name, manifest, main_rs, &[]);
+}
+
+fn cargo_tree_fixture_with_files(
+    name: &str,
+    manifest: &str,
+    main_rs: &str,
+    extra_files: &[(&str, &str)],
+    cargo_args: &[&str],
+) -> String {
+    let root = repo_root();
+    let fixture_root = write_fixture(name, manifest, main_rs, extra_files);
+
+    let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .arg("tree")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(fixture_root.join("Cargo.toml"))
+        .args(cargo_args)
+        .env(
+            "CARGO_TARGET_DIR",
+            root.join("target").join("architecture-fixtures-target"),
+        )
+        .output()
+        .expect("run cargo tree");
+
+    assert!(
+        output.status.success(),
+        "fixture `{name}` cargo tree failed\n\nstdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    String::from_utf8(output.stdout).expect("cargo tree stdout is valid UTF-8")
 }
 
 fn paft_like_runtime_lib() -> &'static str {
@@ -182,6 +226,59 @@ fn main() -> polars::prelude::PolarsResult<()> {
     Ok(())
 }
 "#,
+    );
+}
+
+#[test]
+fn facade_default_features_false_does_not_enable_core_rust_decimal() {
+    let root = package_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "facade-no-default-features"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive = {{ path = "{}", default-features = false }}
+"#,
+        toml_path(root),
+    );
+
+    let tree = cargo_tree_fixture_with_files(
+        "facade-no-default-features",
+        &manifest,
+        "fn main() {}",
+        &[],
+        &["--edges", "features"],
+    );
+
+    assert!(
+        tree.contains("df-derive v"),
+        "feature tree should include the facade crate\n\n{tree}"
+    );
+    assert!(
+        tree.contains("df-derive-core v"),
+        "feature tree should include the core crate\n\n{tree}"
+    );
+    assert!(
+        !tree.contains("df-derive feature \"rust_decimal\""),
+        "facade rust_decimal feature should stay disabled\n\n{tree}"
+    );
+    assert!(
+        !tree.contains("df-derive-core feature \"default\""),
+        "facade default-features = false must not enable core defaults\n\n{tree}"
+    );
+    assert!(
+        !tree.contains("df-derive-core feature \"rust_decimal\""),
+        "facade default-features = false must not enable core rust_decimal\n\n{tree}"
+    );
+    assert!(
+        !tree.contains("rust_decimal v"),
+        "rust_decimal should not appear in the resolved dependency tree\n\n{tree}"
     );
 }
 

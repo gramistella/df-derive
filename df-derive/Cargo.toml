@@ -13,7 +13,7 @@ keywords = ["polars", "dataframe", "derive", "finance"]
 categories = ["data-structures", "finance"]
 
 [dependencies]
-df-derive-core.workspace = true
+df-derive-core = { workspace = true, default-features = false }
 df-derive-macros.workspace = true
 
 [features]

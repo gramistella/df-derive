@@ -51,3 +51,6 @@ mod skip_field;
 
 #[path = "runtime/53-associated-type-paths.rs"]
 mod associated_type_paths;
+
+#[path = "runtime/54-raw-ident-column-names.rs"]
+mod raw_ident_column_names;

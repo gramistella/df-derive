@@ -49,7 +49,7 @@ pub fn build_field_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let parent_name = field.name.to_string();
+    let parent_name = crate::codegen::helpers::column_name_for_ident(&field.name);
     let outer_layers = field.wrapper_shape.vec_depth();
     build_tuple_entries(elements, &parent_name, outer_layers, mode, config)
 }
@@ -179,7 +179,7 @@ pub fn build_field_emit(
 ) -> FieldEmit {
     let inner_it = idents::populator_iter();
     let parent_access = field_access(field, &inner_it);
-    let parent_name = field.name.to_string();
+    let parent_name = crate::codegen::helpers::column_name_for_ident(&field.name);
 
     let mut builders: Vec<TokenStream> = Vec::with_capacity(elements.len());
     for (elem_idx, elem) in elements.iter().enumerate() {

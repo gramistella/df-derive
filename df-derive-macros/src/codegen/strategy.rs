@@ -119,7 +119,7 @@ fn build_field_entries(
     mode: EmitMode,
     config: &super::MacroConfig,
 ) -> TokenStream {
-    let name = field.name.to_string();
+    let name = super::helpers::column_name_for_ident(&field.name);
     match (field.leaf_spec.route(), mode) {
         (FieldRoute::Nested { type_path }, EmitMode::SchemaEntries) => {
             super::nested::generate_schema_entries_for_struct(
@@ -213,7 +213,7 @@ fn build_nested_emit(
     // call site's outer-loop binding.
     let inner_it = idents::populator_iter();
     let access = it_access(field, &inner_it);
-    let name = field.name.to_string();
+    let name = super::helpers::column_name_for_ident(&field.name);
     let ctx = NestedLeafCtx {
         base: BaseCtx {
             access: &access,
@@ -251,7 +251,7 @@ fn build_primitive_emit(
     idx: usize,
     it_ident: &Ident,
 ) -> FieldEmit {
-    let name = field.name.to_string();
+    let name = super::helpers::column_name_for_ident(&field.name);
     let access = it_access(field, it_ident);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {

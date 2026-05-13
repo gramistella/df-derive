@@ -96,10 +96,11 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   should remain on the Rust struct but not become columns. Mutually
 ///   exclusive with conversion attributes.
 /// - Field-level: `#[df_derive(as_string)]` to stringify values via `Display` (e.g., enums) during
-///   conversion, resulting in `DataType::String` or `List<String>`. Allocates a `String` per row.
+///   conversion, resulting in `DataType::String` or `List<String>`. Generated encoders reuse a
+///   `String` scratch buffer per field; the column builder still copies the formatted bytes.
 /// - Field-level: `#[df_derive(as_str)]` to borrow `&str` via `AsRef<str>` for the duration of the
-///   conversion. Same column type as `as_string` but avoids the per-row allocation. The two
-///   attributes are mutually exclusive on a given field.
+///   conversion. Same column type as `as_string` but avoids `Display` formatting and the
+///   intermediate scratch buffer. The two attributes are mutually exclusive on a given field.
 /// - Field-level: `#[df_derive(as_binary)]` to route a `Vec<u8>`, `&[u8]`, or
 ///   `Cow<'_, [u8]>` field through a Polars `Binary` column instead of the default
 ///   `List(UInt8)` for `Vec<u8>`. Accepted shapes:

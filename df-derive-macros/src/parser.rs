@@ -88,8 +88,8 @@ fn override_conflict(
         (FieldOverride::AsStr, FieldOverride::AsString)
         | (FieldOverride::AsString, FieldOverride::AsStr) => format!(
             "field `{field_display_name}` has both `as_str` and `as_string`; \
-             pick one — `as_str` borrows via `AsRef<str>` (no allocation), \
-             `as_string` formats via `Display` (allocates per row)"
+             pick one — `as_str` borrows via `AsRef<str>` without formatting, \
+             `as_string` formats via `Display` into a reused scratch buffer"
         ),
         (FieldOverride::Decimal { .. }, FieldOverride::AsStr | FieldOverride::AsString)
         | (FieldOverride::AsStr | FieldOverride::AsString, FieldOverride::Decimal { .. }) => {

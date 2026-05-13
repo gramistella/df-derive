@@ -152,8 +152,8 @@ Common leaf types:
 Useful field attributes:
 
 - `#[df_derive(skip)]`: omit a field from generated schema and DataFrame output.
-- `#[df_derive(as_string)]`: format values with `Display` into a string column.
-- `#[df_derive(as_str)]`: borrow via `AsRef<str>` without per-row string allocation.
+- `#[df_derive(as_string)]`: format values with `Display` into a string column using a reused scratch buffer.
+- `#[df_derive(as_str)]`: borrow via `AsRef<str>` without `Display` formatting or an intermediate scratch buffer.
 - `#[df_derive(as_binary)]`: encode byte-buffer shapes as Binary.
 - `#[df_derive(decimal(precision = N, scale = S))]`: choose a decimal dtype or opt a custom decimal backend into `Decimal128Encode`.
 - `#[df_derive(time_unit = "ms" | "us" | "ns")]`: choose datetime or duration units.
@@ -165,10 +165,13 @@ not analyzed or emitted. Tuple struct fields can be skipped too; remaining
 tuple columns keep their original `field_{index}` names.
 
 `as_string` is useful for enums or validated newtypes that should appear as
-string columns. If a field already implements `AsRef<str>`, prefer `as_str`:
-it borrows through the same columnar buffer used for bare `String`/`&str`
-fields and avoids per-row string allocation. The two attributes are mutually
-exclusive.
+string columns. It formats each value into a reusable `String` scratch buffer
+before pushing the resulting `&str` into the column builder; the builder still
+copies bytes into the output column, and the scratch can grow to fit the
+largest formatted value. If a field already implements `AsRef<str>`, prefer
+`as_str`: it borrows through the same columnar buffer used for bare
+`String`/`&str` fields and skips both `Display` formatting and the scratch
+buffer. The two attributes are mutually exclusive.
 
 `as_binary` accepts `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
 `Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`, and the same shapes over

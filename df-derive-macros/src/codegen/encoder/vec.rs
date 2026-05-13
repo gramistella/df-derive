@@ -736,7 +736,7 @@ pub(super) fn try_build_vec_encoder(
         LeafSpec::Decimal { precision, scale } => {
             vec_encoder_decimal(ctx, *precision, *scale, vec_shape)
         }
-        LeafSpec::AsString => vec_encoder_to_string(ctx, vec_shape),
+        LeafSpec::AsString(_) => vec_encoder_to_string(ctx, vec_shape),
         // `as_str` borrow path: same MBVA-based encoder as `String`, but
         // the value expression goes through UFCS (`AsRef<str>`) instead of
         // `String::as_str`. Bytes are copied into the view array once.
@@ -916,7 +916,7 @@ pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) 
         LeafSpec::NaiveTime => leaf::naive_time_leaf(ctx, kind),
         LeafSpec::Duration { unit, source } => leaf::duration_leaf(ctx, *unit, *source, kind),
         LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale, kind),
-        LeafSpec::AsString => leaf::as_string_leaf(ctx, kind),
+        LeafSpec::AsString(_) => leaf::as_string_leaf(ctx, kind),
         LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
             unreachable_struct_in_primitive_dispatcher("build_leaf")

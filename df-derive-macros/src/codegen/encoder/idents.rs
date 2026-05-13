@@ -393,6 +393,12 @@ pub(in crate::codegen) fn as_ref_str_assert_helper() -> Ident {
     format_ident!("__df_derive_assert_as_ref_str")
 }
 
+/// Per-derive helper used to eagerly assert that concrete
+/// `#[df_derive(as_string)]` custom paths implement `Display`.
+pub(in crate::codegen) fn display_assert_helper() -> Ident {
+    format_ident!("__df_derive_assert_display")
+}
+
 /// Per-row inner-Option binding inside the nested-struct deepest leaf body.
 pub(in crate::codegen) fn nested_maybe() -> Ident {
     format_ident!("__df_derive_maybe")

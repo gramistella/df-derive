@@ -1373,7 +1373,7 @@ fn build_leaf_projection_value_expr(
             Some(ref_projected)
         }
         LeafSpec::Binary
-        | LeafSpec::AsString
+        | LeafSpec::AsString(_)
         | LeafSpec::AsStr(_)
         | LeafSpec::Struct(..)
         | LeafSpec::Generic(_)
@@ -1756,7 +1756,7 @@ fn build_primitive_leaf_pieces(
                 extra_imports: TokenStream::new(),
             }
         }
-        LeafSpec::AsString => unreachable!(
+        LeafSpec::AsString(_) => unreachable!(
             "as_string is rejected on tuple-typed fields by parser::reject_attrs_on_tuple",
         ),
         LeafSpec::AsStr(_) => unreachable!(

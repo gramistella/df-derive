@@ -1,6 +1,7 @@
 use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
+use std::fmt;
 
 #[derive(ToDataFrame)]
 struct Payload {
@@ -32,9 +33,21 @@ impl AsRef<str> for LabelOnly {
     }
 }
 
+impl fmt::Display for LabelOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
 #[derive(ToDataFrame)]
 struct AsStrOnly<T> {
     #[df_derive(as_str)]
+    label: T,
+}
+
+#[derive(ToDataFrame)]
+struct AsStringOnly<T> {
+    #[df_derive(as_string)]
     label: T,
 }
 
@@ -100,6 +113,20 @@ impl<T: AsRef<str>> AsRef<str> for WrappedLabel<T> {
 struct AsStrStructPath<T> {
     #[df_derive(as_str)]
     label: WrappedLabel<T>,
+}
+
+struct WrappedDisplay<T>(T);
+
+impl<T: fmt::Display> fmt::Display for WrappedDisplay<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(ToDataFrame)]
+struct AsStringStructPath<T> {
+    #[df_derive(as_string)]
+    label: WrappedDisplay<T>,
 }
 
 struct Money<T>(T);
@@ -168,6 +195,21 @@ fn runtime_semantics() {
         AnyValue::String("hello")
     );
 
+    let as_string_df = AsStringOnly {
+        label: LabelOnly::new("display"),
+    }
+    .to_dataframe()
+    .unwrap();
+
+    assert_eq!(
+        as_string_df.column("label").unwrap().dtype(),
+        &DataType::String
+    );
+    assert_eq!(
+        as_string_df.column("label").unwrap().get(0).unwrap(),
+        AnyValue::String("display")
+    );
+
     let decimal_df = DecimalOnly {
         amount: Cents::new(123, 0),
     }
@@ -212,6 +254,20 @@ fn generic_as_str_struct_path_gets_exact_as_ref_bound() {
     assert_eq!(
         df.column("label").unwrap().get(0).unwrap(),
         AnyValue::String("wrapped")
+    );
+}
+
+#[test]
+fn generic_as_string_struct_path_gets_exact_display_bound() {
+    let row = AsStringStructPath {
+        label: WrappedDisplay(LabelOnly::new("shown")),
+    };
+
+    let df = row.to_dataframe().unwrap();
+    assert_eq!(df.shape(), (1, 1));
+    assert_eq!(
+        df.column("label").unwrap().get(0).unwrap(),
+        AnyValue::String("shown")
     );
 }
 

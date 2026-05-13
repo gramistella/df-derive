@@ -1,6 +1,6 @@
 use crate::ir::{
-    AccessChain, AccessStep, DateTimeUnit, DurationSource, FieldIR, LeafSpec, NumericKind,
-    StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
+    AccessChain, AccessStep, DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec,
+    NumericKind, StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers, WrapperShape,
 };
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -236,7 +236,7 @@ fn parse_leaf_spec(
     match override_ {
         FieldOverride::None => default_leaf_for_base(field, field_display_name, base, true),
         FieldOverride::Skip => unreachable!("skip fields are filtered before leaf parsing"),
-        FieldOverride::AsString => Ok(LeafSpec::AsString),
+        FieldOverride::AsString => Ok(LeafSpec::AsString(display_base_for_as_string(&base))),
         FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
         FieldOverride::AsBinary => {
             unreachable!("AsBinary handled by process_field before parse_leaf_spec runs")
@@ -452,6 +452,14 @@ fn parse_leaf_as_str(
                  change the field type"
             ),
         )),
+    }
+}
+
+fn display_base_for_as_string(base: &AnalyzedBase) -> DisplayBase {
+    match base {
+        AnalyzedBase::Struct(path) => DisplayBase::Struct(path.clone()),
+        AnalyzedBase::Generic(ident) => DisplayBase::Generic(ident.clone()),
+        _ => DisplayBase::Inherent,
     }
 }
 

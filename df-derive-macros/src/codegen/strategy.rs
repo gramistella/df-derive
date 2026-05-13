@@ -64,7 +64,7 @@ impl LeafSpec {
             | Self::NaiveTime
             | Self::Duration { .. }
             | Self::Decimal { .. }
-            | Self::AsString
+            | Self::AsString(_)
             | Self::AsStr(_)
             | Self::Binary => FieldRoute::Primitive,
         }

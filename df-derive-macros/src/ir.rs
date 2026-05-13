@@ -237,6 +237,21 @@ impl StringyBase {
     }
 }
 
+/// Bases that need an explicit `Display` requirement for
+/// `#[df_derive(as_string)]`. Built-in leaves such as numbers, booleans,
+/// strings, and chrono values rely on their inherent `Display` impls; custom
+/// struct paths and generic type parameters get exact generated bounds.
+#[derive(Clone)]
+pub enum DisplayBase {
+    /// Built-in or otherwise parser-known displayable base that does not need
+    /// a generated type parameter or where-clause role.
+    Inherent,
+    /// Concrete user-defined struct path as written at the field's use site.
+    Struct(Path),
+    /// Generic type parameter declared on the enclosing struct.
+    Generic(Ident),
+}
+
 /// One element of a tuple-typed field. Each element contributes one or more
 /// columns to the parent struct's flattened layout (one column per primitive
 /// leaf; multiple per nested struct or further tuple). The
@@ -305,7 +320,7 @@ pub enum LeafSpec {
     Decimal { precision: u8, scale: u8 },
     /// `#[df_derive(as_string)]` — convert any `Display` value to `String`
     /// at codegen time. Materializes as `DataType::String`.
-    AsString,
+    AsString(DisplayBase),
     /// `#[df_derive(as_str)]` — borrow `&str` via `<T as AsRef<str>>::as_ref`
     /// for the duration of the columnar populator pass. The `StringyBase`
     /// distinguishes the bare-`String` deref-coercion path from the UFCS

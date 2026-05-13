@@ -127,7 +127,7 @@ impl LeafSpec {
         let dt = quote! { #pp::DataType };
         match self {
             Self::Numeric(kind) => numeric_info_for(*kind).dtype,
-            Self::String | Self::AsString | Self::AsStr(_) => quote! { #dt::String },
+            Self::String | Self::AsString(_) | Self::AsStr(_) => quote! { #dt::String },
             Self::Bool => quote! { #dt::Boolean },
             Self::Binary => quote! { #dt::Binary },
             Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
@@ -254,7 +254,7 @@ pub fn map_primitive_expr(
                 },
             }
         }
-        LeafSpec::AsString => {
+        LeafSpec::AsString(_) => {
             quote! { (#var).to_string() }
         }
         LeafSpec::Decimal { precision, scale } => {

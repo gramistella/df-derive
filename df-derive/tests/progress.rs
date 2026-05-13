@@ -79,4 +79,5 @@ fn tests() {
     t.compile_fail("tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs");
     t.compile_fail("tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs");
     t.compile_fail("tests/fail/133-fail-skip-with-conversion-attr.rs");
+    t.compile_fail("tests/fail/134-fail-as-string-concrete-type-without-display.rs");
 }

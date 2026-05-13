@@ -1,0 +1,31 @@
+error[E0277]: `custom::Option<NotDisplay>` doesn't implement `std::fmt::Display`
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `std::fmt::Display` is not implemented for `custom::Option<NotDisplay>`
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:6:5
+   |
+ 6 |     pub struct Option<T>(pub T);
+   |     ^^^^^^^^^^^^^^^^^^^^
+   = help: see issue #48214
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `custom::Option<NotDisplay>` doesn't implement `std::fmt::Display`
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:14:12
+   |
+14 |     label: custom::Option<NotDisplay>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `std::fmt::Display` is not implemented for `custom::Option<NotDisplay>`
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:6:5
+   |
+ 6 |     pub struct Option<T>(pub T);
+   |     ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__df_derive_assert_display`
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ required by this bound in `__df_derive_assert_display`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

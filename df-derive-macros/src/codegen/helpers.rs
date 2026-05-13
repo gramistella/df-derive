@@ -1,5 +1,5 @@
 use crate::codegen::encoder::idents;
-use crate::ir::{LeafSpec, StringyBase, StructIR};
+use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{GenericArgument, GenericParam, Ident, Path, PathArguments, Type};
@@ -49,24 +49,33 @@ impl GenericContext {
 pub fn generate_eager_asserts(ir: &StructIR) -> TokenStream {
     let generic_ctx = GenericContext::new(ir);
     let mut as_ref_str_paths = Vec::new();
+    let mut display_paths = Vec::new();
 
     for field in &ir.fields {
         collect_as_ref_str_asserts(&field.leaf_spec, &generic_ctx, &mut as_ref_str_paths);
+        collect_display_asserts(&field.leaf_spec, &generic_ctx, &mut display_paths);
     }
 
-    if as_ref_str_paths.is_empty() {
+    if as_ref_str_paths.is_empty() && display_paths.is_empty() {
         return TokenStream::new();
     }
 
     let assert_as_ref_str = idents::as_ref_str_assert_helper();
+    let assert_display = idents::display_assert_helper();
 
     quote! {
         const fn #assert_as_ref_str<
             __DfDeriveT: ?::core::marker::Sized + ::core::convert::AsRef<str>
         >() {}
+        const fn #assert_display<
+            __DfDeriveT: ?::core::marker::Sized + ::core::fmt::Display
+        >() {}
 
         #(
             #assert_as_ref_str::<#as_ref_str_paths>();
+        )*
+        #(
+            #assert_display::<#display_paths>();
         )*
     }
 }
@@ -94,7 +103,36 @@ fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out
         | LeafSpec::Decimal { .. }
         | LeafSpec::Struct(_)
         | LeafSpec::Generic(_)
-        | LeafSpec::AsString
+        | LeafSpec::AsString(_)
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Binary => {}
+    }
+}
+
+fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Path>) {
+    match leaf {
+        LeafSpec::AsString(DisplayBase::Struct(path)) => {
+            if !path_depends_on_generics(path, generic_ctx) {
+                push_unique_path(out, path);
+            }
+        }
+        LeafSpec::Tuple(elements) => {
+            for element in elements {
+                collect_display_asserts(&element.leaf_spec, generic_ctx, out);
+            }
+        }
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::Struct(_)
+        | LeafSpec::Generic(_)
+        | LeafSpec::AsString(_)
         | LeafSpec::AsStr(_)
         | LeafSpec::Binary => {}
     }

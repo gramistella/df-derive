@@ -48,9 +48,7 @@ mod my_traits {
     }
 }
 
-// == STRUCT A: Uses the default path ==
-// Note: The derive macro will find the current paft facade or utilities crate first
-// if either is a dependency.
+// == STRUCT A: Uses an explicit runtime path ==
 // The `#[df_derive]` attribute lets us target a non-default runtime. The
 // default facade/core/local fallback discovery is covered by integration
 // tests in `tests/architecture.rs`.

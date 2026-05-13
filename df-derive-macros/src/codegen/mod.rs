@@ -15,9 +15,9 @@ use quote::{ToTokens, format_ident, quote};
 /// Macro-wide configuration for generated code
 #[allow(clippy::struct_field_names)]
 pub struct MacroConfig {
-    /// Fully-qualified path to the `ToDataFrame` trait (e.g., `paft::dataframe::ToDataFrame`)
+    /// Fully-qualified path to the `ToDataFrame` trait (e.g., `df_derive::dataframe::ToDataFrame`)
     pub to_dataframe_trait_path: TokenStream,
-    /// Fully-qualified path to the Columnar trait (e.g., `paft::dataframe::Columnar`)
+    /// Fully-qualified path to the Columnar trait (e.g., `df_derive::dataframe::Columnar`)
     pub columnar_trait_path: TokenStream,
     /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
     /// fields to dispatch the value-to-i128-mantissa rescale through
@@ -40,15 +40,15 @@ fn resolve_dataframe_mod_for_crate(name: &str, itself: TokenStream) -> Option<To
 
 pub fn resolve_default_dataframe_mod() -> TokenStream {
     // Default discovery order:
-    // - `paft` facade (`paft::dataframe`)
-    // - `paft-utils` direct runtime (`paft_utils::dataframe`)
     // - `df-derive` facade (`df_derive::dataframe`)
     // - `df-derive-core` shared runtime (`df_derive_core::dataframe`)
+    // - `paft-utils` direct runtime (`paft_utils::dataframe`)
+    // - `paft` facade (`paft::dataframe`)
     // - legacy local fallback (`crate::core::dataframe`)
-    resolve_dataframe_mod_for_crate("paft", quote! { crate::dataframe })
-        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", quote! { crate::dataframe }))
-        .or_else(|| resolve_dataframe_mod_for_crate("df-derive", quote! { ::df_derive::dataframe }))
+    resolve_dataframe_mod_for_crate("df-derive", quote! { ::df_derive::dataframe })
         .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", quote! { crate::dataframe }))
+        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", quote! { crate::dataframe }))
+        .or_else(|| resolve_dataframe_mod_for_crate("paft", quote! { crate::dataframe }))
         .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 

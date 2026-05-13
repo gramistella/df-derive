@@ -229,10 +229,10 @@ overridden.
 
 Without overrides, the macro discovers a `dataframe` module in this order:
 
-1. `paft::dataframe`
-2. `paft_utils::dataframe`
-3. `df_derive::dataframe`
-4. `df_derive_core::dataframe`
+1. `df_derive::dataframe`
+2. `df_derive_core::dataframe`
+3. `paft_utils::dataframe`
+4. `paft::dataframe`
 5. `crate::core::dataframe`
 
 Discovery uses `proc_macro_crate::crate_name`, so dependency renames are
@@ -241,8 +241,8 @@ respected. For example, a dependency declared as
 `::dfd::dataframe`.
 
 The final `crate::core::dataframe` fallback is for legacy/local runtimes in
-crates that use `df-derive-macros` directly without `paft`, `df-derive`, or
-`df-derive-core`.
+crates that use `df-derive-macros` directly without `df-derive`,
+`df-derive-core`, `paft-utils`, or `paft`.
 
 ## Power-User Runtime Choices
 

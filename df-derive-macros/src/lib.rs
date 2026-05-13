@@ -7,8 +7,8 @@
 //!
 //! Explicit `#[df_derive(trait = "...")]`, `columnar = "..."`, and
 //! `decimal128_encode = "..."` attributes override runtime paths. Without
-//! overrides, discovery tries `paft`, `paft-utils`, `df-derive`,
-//! `df-derive-core`, then the legacy `crate::core::dataframe` fallback.
+//! overrides, discovery tries `df-derive`, `df-derive-core`, `paft-utils`,
+//! `paft`, then the legacy `crate::core::dataframe` fallback.
 #![warn(missing_docs)]
 extern crate proc_macro;
 

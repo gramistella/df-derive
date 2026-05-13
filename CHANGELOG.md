@@ -14,8 +14,8 @@ All notable changes to this project will be documented in this file.
 - Generated `Columnar` impls now override both `columnar_to_dataframe(&[Self])`
   and `columnar_from_refs(&[&Self])`, avoiding the top-level `Vec<&Self>`
   allocation while preserving borrowed nested composition.
-- Default runtime discovery now checks `paft`, `paft-utils`, `df-derive`,
-  `df-derive-core`, then the legacy `crate::core::dataframe` fallback.
+- Default runtime discovery now checks `df-derive`, `df-derive-core`,
+  `paft-utils`, `paft`, then the legacy `crate::core::dataframe` fallback.
 
 ## [0.3.0] - 2026-05-11
 

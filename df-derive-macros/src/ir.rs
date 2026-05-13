@@ -21,7 +21,7 @@ pub struct AccessChain {
 }
 
 impl AccessChain {
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self { steps: Vec::new() }
     }
 
@@ -32,7 +32,7 @@ impl AccessChain {
             .count()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
 
@@ -56,7 +56,7 @@ pub struct NonEmpty<T> {
 
 #[allow(clippy::len_without_is_empty)]
 impl<T> NonEmpty<T> {
-    pub fn new(first: T, rest: Vec<T>) -> Self {
+    pub const fn new(first: T, rest: Vec<T>) -> Self {
         Self { first, rest }
     }
 
@@ -66,7 +66,7 @@ impl<T> NonEmpty<T> {
         Some(Self::new(first, values.collect()))
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         1 + self.rest.len()
     }
 
@@ -483,12 +483,12 @@ pub struct VecLayers {
 }
 
 impl VecLayers {
-    pub fn depth(&self) -> usize {
+    pub const fn depth(&self) -> usize {
         self.layers.len()
     }
 
     pub fn any_outer_validity(&self) -> bool {
-        self.layers.iter().any(|l| l.has_outer_validity())
+        self.layers.iter().any(VecLayerSpec::has_outer_validity)
     }
 
     pub const fn has_inner_option(&self) -> bool {
@@ -525,7 +525,7 @@ pub enum WrapperShape {
 
 impl WrapperShape {
     /// Number of `Vec<…>` layers in the wrapper stack.
-    pub fn vec_depth(&self) -> usize {
+    pub const fn vec_depth(&self) -> usize {
         match self {
             Self::Leaf { .. } => 0,
             Self::Vec(v) => v.depth(),

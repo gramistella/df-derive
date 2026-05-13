@@ -30,6 +30,12 @@
 //! `#[df_derive(columnar = "...")]`, and
 //! `#[df_derive(decimal128_encode = "...")]` to target a custom runtime.
 
+// `polars` pulls a wide transitive dependency tree where multiple resolved
+// versions are unavoidable. `clippy::multiple_crate_versions` is part of the
+// `clippy::cargo` group `just lint` enables; allow it here so linting stays
+// focused on this crate's own code.
+#![allow(clippy::multiple_crate_versions)]
+
 pub use df_derive_core::dataframe;
 pub use df_derive_macros::ToDataFrame;
 

@@ -91,7 +91,7 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal backends —
 ///   see "Custom decimal backends" in the README for the trait contract.
 /// - Field-level: `#[df_derive(skip)]` to omit a field from generated schema
-///   and DataFrame output. Skipped fields are not type-analyzed, so this can
+///   and `DataFrame` output. Skipped fields are not type-analyzed, so this can
 ///   be used for caches, handles, source metadata, or other helper values that
 ///   should remain on the Rust struct but not become columns. Mutually
 ///   exclusive with conversion attributes.

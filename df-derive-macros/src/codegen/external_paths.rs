@@ -25,11 +25,11 @@ pub struct ExternalPaths {
 }
 
 impl ExternalPaths {
-    pub fn prelude(&self) -> &TokenStream {
+    pub const fn prelude(&self) -> &TokenStream {
         &self.polars_prelude
     }
 
-    pub fn polars_arrow_root(&self) -> &TokenStream {
+    pub const fn polars_arrow_root(&self) -> &TokenStream {
         &self.polars_arrow_root
     }
 

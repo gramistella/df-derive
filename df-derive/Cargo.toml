@@ -22,7 +22,7 @@ rust_decimal = ["df-derive-core/rust_decimal"]
 
 [dev-dependencies]
 trybuild = "1.0.116"
-polars = { workspace = true, features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
+polars = { workspace = true, features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
 polars-arrow.workspace = true
 chrono = { version = "0.4.41", features = ["serde"] }
 rust_decimal.workspace = true

@@ -263,8 +263,7 @@ fn reject_attrs_on_tuple(
     override_: &FieldOverride,
 ) -> Result<(), syn::Error> {
     let attr = match override_ {
-        FieldOverride::None => return Ok(()),
-        FieldOverride::Skip => return Ok(()),
+        FieldOverride::None | FieldOverride::Skip => return Ok(()),
         FieldOverride::AsStr => "as_str",
         FieldOverride::AsString => "as_string",
         FieldOverride::AsBinary => "as_binary",
@@ -416,7 +415,7 @@ fn analyzed_to_tuple_element(
     })
 }
 
-fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
+const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
     !wrappers.is_empty()
 }
 
@@ -532,7 +531,6 @@ fn decimal_generic_params_for_override(
     base: &AnalyzedBase,
 ) -> Vec<Ident> {
     match (override_, base) {
-        (FieldOverride::Skip, _) => Vec::new(),
         (FieldOverride::Decimal { .. }, AnalyzedBase::Generic(ident)) => vec![ident.clone()],
         _ => Vec::new(),
     }
@@ -543,7 +541,6 @@ fn decimal_backend_ty_for_override(
     base: &AnalyzedBase,
 ) -> Option<syn::Type> {
     match (override_, base) {
-        (FieldOverride::Skip, _) => None,
         (FieldOverride::Decimal { .. }, AnalyzedBase::Struct(ty)) => Some(ty.clone()),
         _ => None,
     }

@@ -395,7 +395,7 @@ pub(in crate::codegen) fn validate_nested_frame() -> Ident {
     format_ident!("__df_derive_validate_nested_frame")
 }
 
-/// Per-derive helper that validates a nested DataFrame column's actual dtype
+/// Per-derive helper that validates a nested `DataFrame` column's actual dtype
 /// matches the dtype declared by the nested type's schema before the dtype is
 /// reused for list assembly or positional `take`.
 pub(in crate::codegen) fn validate_nested_column_dtype() -> Ident {

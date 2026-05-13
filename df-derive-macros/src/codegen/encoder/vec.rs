@@ -661,7 +661,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             );
             VecLeafPlan {
                 spec: VecLeafSpec::Numeric {
-                    native: info.native.clone(),
+                    native: info.native,
                     value_expr,
                     needs_decimal_import: false,
                 },
@@ -685,11 +685,11 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             spec: VecLeafSpec::Bool,
             leaf_dtype: leaf.dtype(ctx.paths),
         },
-        LeafSpec::DateTime(_) => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
-        LeafSpec::NaiveDateTime(_) => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
+        LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
         LeafSpec::NaiveDate => mapped_numeric_plan(ctx, leaf, quote! { i32 }, false),
-        LeafSpec::NaiveTime => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
-        LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
         LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }, true),
         LeafSpec::AsString(_) => {
             let scratch = idents::primitive_str_scratch(ctx.base.idx);

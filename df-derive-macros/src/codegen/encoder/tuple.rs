@@ -1088,7 +1088,7 @@ impl<'a> TupleProjection<'a> {
     }
 }
 
-fn deepest_leaf_projection_access<'a>(
+const fn deepest_leaf_projection_access<'a>(
     shape: &VecLayers,
     projection: TupleProjection<'_>,
     elem: &'a TupleElement,

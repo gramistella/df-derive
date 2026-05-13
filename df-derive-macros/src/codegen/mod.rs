@@ -1,6 +1,6 @@
 mod columnar_impl;
 mod encoder;
-pub(crate) mod external_paths;
+pub mod external_paths;
 mod helpers;
 mod nested;
 mod strategy;
@@ -55,6 +55,7 @@ pub fn resolve_default_dataframe_mod() -> TokenStream {
         .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
@@ -289,8 +290,8 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
 
 /// Build `impl_generics`, `ty_generics`, and `where_clause` token streams
 /// suitable for splicing into an `impl` header. Generic bounds are driven by
-/// each parameter's role: direct generic dataframe payloads need `ToDataFrame
-/// + Columnar`, decimal backends need `Decimal128Encode`, generic `as_str`
+/// each parameter's role: direct generic dataframe payloads need
+/// `ToDataFrame` + `Columnar`, decimal backends need `Decimal128Encode`, generic `as_str`
 /// leaves need `AsRef<str>`, generic `as_string` leaves need `Display`, and
 /// concrete conversion/nested types receive exact `where` predicates.
 pub fn impl_parts_with_bounds(

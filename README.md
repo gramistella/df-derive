@@ -30,7 +30,7 @@ types, duration types, byte blobs, and decimal backends.
 ```toml
 [dependencies]
 df-derive = "0.3"
-polars = { version = "0.53", features = ["timezones", "dtype-date", "dtype-time", "dtype-duration", "dtype-decimal"] }
+polars = "0.53"
 
 # If your models use these types:
 chrono = { version = "0.4", features = ["serde"] }
@@ -40,8 +40,8 @@ rust_decimal = { version = "1.41", features = ["serde"] }
 With the default `df-derive` facade, generated impls use hidden runtime
 re-exports for implementation details such as `polars-arrow`; downstream
 crates do not need to depend on `polars-arrow` directly. Keep `polars` direct
-when your code names Polars types or needs feature unification for the dtypes
-your models use.
+when your code names Polars types. The default runtime enables the Polars
+dtype features required by the supported matrix below.
 
 ```rust
 use df_derive::prelude::*;
@@ -148,6 +148,36 @@ Common leaf types:
 - **Binary blobs**: `#[df_derive(as_binary)]` opts `Vec<u8>`, `&[u8]`, or
   `Cow<'_, [u8]>` shapes into Polars `Binary`; unannotated `Vec<u8>` remains
   `List(UInt8)`.
+
+## Dtype Support Matrix
+
+The default `df-derive` facade and `df-derive-core` runtime enable the Polars
+features in this table on their `polars` dependency. If you use
+`df-derive-macros` with a custom runtime and no `df-derive-core` dependency,
+enable the matching features on that runtime's direct `polars` dependency.
+
+| Rust leaf family | Polars dtype emitted | Polars feature for custom runtimes |
+| --- | --- | --- |
+| `bool` | `Boolean` | none |
+| `String`, `&str`, `as_str`, `as_string` | `String` | none |
+| `i8`, `NonZeroI8` | `Int8` | `dtype-i8` |
+| `i16`, `NonZeroI16` | `Int16` | `dtype-i16` |
+| `i32`, `i64`, `isize`, matching `NonZero*` | `Int32` / `Int64` | none |
+| `i128`, `NonZeroI128` | `Int128` | `dtype-i128` |
+| `u8`, `NonZeroU8` | `UInt8` | `dtype-u8` |
+| `u16`, `NonZeroU16` | `UInt16` | `dtype-u16` |
+| `u32`, `u64`, `usize`, matching `NonZero*` | `UInt32` / `UInt64` | none |
+| `u128`, `NonZeroU128` | `UInt128` | `dtype-u128` |
+| `f32`, `f64` | `Float32` / `Float64` | none |
+| `chrono::DateTime<Tz>`, `chrono::NaiveDateTime` | `Datetime` | `dtype-datetime`, plus `timezones` for timezone-aware values |
+| `chrono::NaiveDate` | `Date` | `dtype-date` |
+| `chrono::NaiveTime` | `Time` | `dtype-time` |
+| `std::time::Duration`, `core::time::Duration`, `chrono::Duration` | `Duration` | `dtype-duration` |
+| `Decimal`, `rust_decimal::Decimal`, custom decimal backends | `Decimal` | `dtype-decimal` |
+| `#[df_derive(as_binary)]` byte buffers | `Binary` | none |
+
+`Option<T>`, `Vec<T>`, tuples, and nested structs preserve the leaf dtype;
+each `Vec` layer wraps the leaf in `List(...)`.
 
 Useful field attributes:
 
@@ -362,12 +392,11 @@ struct Tx {
 - **polars-arrow**: 0.53 through the default runtime facade. Custom runtimes
   selected with explicit trait overrides still need a compatible direct
   dependency because generated code uses public Arrow array builders.
-- **Polars feature flags**: enable `timezones` for timezone-aware
-  `DateTime<Tz>`, `dtype-date` for `NaiveDate`, `dtype-time` for
-  `NaiveTime`, `dtype-duration` for duration columns, `dtype-i8` /
-  `dtype-i16` / `dtype-u8` / `dtype-u16` for exact small-integer columns,
-  `dtype-i128` / `dtype-u128` for 128-bit integer columns, and
-  `dtype-decimal` for decimal columns.
+- **Polars feature flags**: the default `df-derive` facade and
+  `df-derive-core` runtime enable every Polars dtype flag required by the
+  support matrix above. If you use `df-derive-macros` with a custom runtime
+  and no `df-derive-core` dependency, enable the matching Polars feature
+  flags on that runtime's `polars` dependency.
 
 ## Performance Notes
 

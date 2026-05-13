@@ -1,3 +1,7 @@
+// Local runtime fixtures mirror the minimum trait surface documented for
+// custom runtimes, so they intentionally omit production API docs.
+#![allow(clippy::missing_errors_doc)]
+
 #[allow(dead_code)]
 pub mod dataframe {
     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};

@@ -1,3 +1,7 @@
+// Architecture fixtures embed small downstream crates as raw strings; keeping
+// those snippets readable is more useful than linting them as production code.
+#![allow(clippy::missing_const_for_fn, clippy::needless_raw_string_hashes)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,7 +73,7 @@ fn check_fixture(name: &str, manifest: &str, main_rs: &str) {
 
 fn polars_deps() -> &'static str {
     r#"
-polars = { version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }
+polars = { version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }
 "#
 }
 
@@ -452,6 +456,76 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn core_runtime_enables_supported_numeric_dtype_features_without_downstream_polars_flags() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "core-runtime-dtype-features"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-core = {{ path = "{}" }}
+df-derive-macros = {{ path = "{}" }}
+polars = {{ version = "0.53.0", default-features = false }}
+"#,
+        toml_path(&root.join("df-derive-core")),
+        toml_path(&root.join("df-derive-macros")),
+    );
+
+    check_fixture(
+        "core-runtime-dtype-features",
+        &manifest,
+        r#"
+use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+use df_derive_macros::ToDataFrame;
+use polars::prelude::{DataType, PolarsResult};
+
+#[derive(ToDataFrame)]
+struct Row {
+    i8_v: i8,
+    i16_v: i16,
+    i128_v: i128,
+    u8_v: u8,
+    u16_v: u16,
+    u128_v: u128,
+}
+
+fn main() -> PolarsResult<()> {
+    let schema = Row::schema()?;
+    assert_eq!(
+        schema,
+        vec![
+            ("i8_v".to_string(), DataType::Int8),
+            ("i16_v".to_string(), DataType::Int16),
+            ("i128_v".to_string(), DataType::Int128),
+            ("u8_v".to_string(), DataType::UInt8),
+            ("u16_v".to_string(), DataType::UInt16),
+            ("u128_v".to_string(), DataType::UInt128),
+        ]
+    );
+
+    let rows = vec![Row {
+        i8_v: -8,
+        i16_v: -16,
+        i128_v: -128,
+        u8_v: 8,
+        u16_v: 16,
+        u128_v: 128,
+    }];
+    let df = rows.as_slice().to_dataframe()?;
+    assert_eq!(df.shape(), (1, 6));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn renamed_facade_and_polars_dependency_is_respected_without_direct_arrow() {
     let root = package_root();
     let manifest = format!(
@@ -466,7 +540,7 @@ publish = false
 
 [dependencies]
 dfd = {{ package = "df-derive", path = "{}" }}
-pl = {{ package = "polars", version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }}
+pl = {{ package = "polars", version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
 time_crate = {{ package = "chrono", version = "0.4.41" }}
 "#,
         toml_path(root),
@@ -517,7 +591,7 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }}
+polars = {{ version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
 pa = {{ package = "polars-arrow", version = "0.53.0" }}
 "#,
         toml_path(&root.join("df-derive-macros")),

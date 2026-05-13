@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{GenericArgument, GenericParam, Ident, PathArguments, Type};
 
-/// Convert a Rust field identifier into the user-facing DataFrame column name.
+/// Convert a Rust field identifier into the user-facing `DataFrame` column name.
 ///
 /// `Ident::to_string()` preserves raw identifier spelling (`r#type`), but
 /// column names should reflect the logical field name users wrote around the
@@ -14,6 +14,7 @@ pub(in crate::codegen) fn column_name_for_ident(ident: &Ident) -> String {
     name.strip_prefix("r#").unwrap_or(&name).to_owned()
 }
 
+#[allow(clippy::struct_field_names)]
 struct GenericContext {
     type_params: Vec<Ident>,
     const_params: Vec<Ident>,
@@ -51,7 +52,7 @@ impl GenericContext {
         self.lifetime_params.iter().any(|param| param == ident)
     }
 
-    fn has_const_params(&self) -> bool {
+    const fn has_const_params(&self) -> bool {
         !self.const_params.is_empty()
     }
 }

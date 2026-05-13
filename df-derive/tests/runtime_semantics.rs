@@ -1,3 +1,21 @@
+// These integration fixtures intentionally favor compact scenario names,
+// long exhaustive cases, and direct assertions over production-style lint
+// polish. Keep `just lint` focused on library behavior.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::items_after_statements,
+    clippy::map_unwrap_or,
+    clippy::missing_const_for_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::semicolon_if_nothing_returned,
+    clippy::similar_names,
+    clippy::struct_field_names,
+    clippy::too_many_lines,
+    clippy::unnecessary_literal_bound
+)]
+
 #[path = "common.rs"]
 mod core;
 

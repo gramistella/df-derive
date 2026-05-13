@@ -60,17 +60,20 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let eager_asserts = helpers::generate_eager_asserts(ir);
     let pp = config.external_paths.prelude();
+    let pa_root = config.external_paths.polars_arrow_root();
     let assemble_helper = encoder::idents::assemble_helper();
+    let list_assembly = encoder::idents::list_assembly();
 
     // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`
     // scope. Inherent impls inside an anonymous const still apply to the outer
     // type (the same trick `serde_derive` uses), so `Foo::__df_derive_*` calls
     // from sibling derives keep working. The free helper
     // `__df_derive_assemble_list_series_unchecked` lives inside the same scope,
-    // hidden from the user's namespace, and is the only place the bulk path's
-    // `unsafe` call to `Series::from_chunks_and_dtype_unchecked` lives — so
-    // `clippy::unsafe_derive_deserialize` no longer sees `unsafe` inside any
-    // impl method on `Self` and stops firing on downstream
+    // hidden from the user's namespace, and delegates to the adjacent
+    // `__DfDeriveListAssembly` wrapper. That wrapper is the only place the
+    // bulk path's `unsafe` call to `Series::from_chunks_and_dtype_unchecked`
+    // lives — so `clippy::unsafe_derive_deserialize` no longer sees `unsafe`
+    // inside any impl method on `Self` and stops firing on downstream
     // `#[derive(ToDataFrame, Deserialize)]` types.
     //
     // The helper is `#[inline(always)]` so the call site collapses; the
@@ -84,31 +87,82 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         const _: () = {
             #eager_asserts
 
+            struct #list_assembly {
+                list_arr: #pp::LargeListArray,
+                logical_dtype: #pp::DataType,
+            }
+
+            impl #list_assembly {
+                #[inline(always)]
+                #[allow(clippy::inline_always)]
+                fn new(
+                    list_arr: #pp::LargeListArray,
+                    inner_logical_dtype: #pp::DataType,
+                ) -> Self {
+                    let assembly = Self {
+                        list_arr,
+                        logical_dtype: #pp::DataType::List(
+                            ::std::boxed::Box::new(inner_logical_dtype),
+                        ),
+                    };
+                    assembly.debug_assert_compatible();
+                    assembly
+                }
+
+                #[inline(always)]
+                #[allow(clippy::inline_always)]
+                fn into_series(self) -> #pp::Series {
+                    self.debug_assert_compatible();
+                    let Self {
+                        list_arr,
+                        logical_dtype,
+                    } = self;
+                    // SAFETY: `Self::new` is the generated list assembly
+                    // boundary. Every caller reaches it through
+                    // `encoder::shape_walk::shape_assemble_list_stack`,
+                    // which builds `list_arr` from the leaf/nested physical
+                    // Arrow dtype and the same logical dtype that schema
+                    // generation emits. In debug builds,
+                    // `debug_assert_compatible` checks the final Arrow
+                    // list dtype against `logical_dtype.to_physical()`,
+                    // covering logical wrappers such as Date, Datetime,
+                    // Duration, Time, Decimal, and nested List envelopes.
+                    unsafe {
+                        #pp::Series::from_chunks_and_dtype_unchecked(
+                            "".into(),
+                            ::std::vec![
+                                ::std::boxed::Box::new(list_arr) as #pp::ArrayRef,
+                            ],
+                            &logical_dtype,
+                        )
+                    }
+                }
+
+                #[inline(always)]
+                #[allow(clippy::inline_always)]
+                fn debug_assert_compatible(&self) {
+                    #[cfg(debug_assertions)]
+                    {
+                        let expected_arrow_dtype: #pa_root::datatypes::ArrowDataType =
+                            self.logical_dtype
+                                .to_physical()
+                                .to_arrow(#pp::CompatLevel::newest());
+                        ::core::debug_assert_eq!(
+                            #pa_root::array::Array::dtype(&self.list_arr),
+                            &expected_arrow_dtype,
+                            "df-derive list assembly invariant violated: physical Arrow list dtype does not match logical Polars dtype",
+                        );
+                    }
+                }
+            }
+
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
             fn #assemble_helper(
                 list_arr: #pp::LargeListArray,
                 inner_logical_dtype: #pp::DataType,
             ) -> #pp::Series {
-                // SAFETY: `list_arr` was constructed with
-                // `LargeListArray::default_datatype(inner_arrow_dtype)`, where
-                // `inner_arrow_dtype` is the arrow dtype of the inner Series
-                // chunk produced by `Inner::columnar_from_refs`. That arrow
-                // dtype is the physical projection of `inner_logical_dtype`
-                // (both derive from the same `Inner::schema()` entry), so
-                // the chunk's arrow dtype matches the
-                // `List(inner_logical_dtype)` declaration. Validity (when
-                // present) was built with one bit per outer row, satisfying
-                // `LargeListArray::new`.
-                unsafe {
-                    #pp::Series::from_chunks_and_dtype_unchecked(
-                        "".into(),
-                        ::std::vec![
-                            ::std::boxed::Box::new(list_arr) as #pp::ArrayRef,
-                        ],
-                        &#pp::DataType::List(::std::boxed::Box::new(inner_logical_dtype)),
-                    )
-                }
+                #list_assembly::new(list_arr, inner_logical_dtype).into_series()
             }
 
             #trait_impl

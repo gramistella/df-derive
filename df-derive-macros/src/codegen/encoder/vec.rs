@@ -574,7 +574,8 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         let pa_root = ctx.paths.polars_arrow_root();
         let pp = ctx.paths.prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
-        let body = bool_bare_depth1_body(ctx.base.access, pa_root, pp);
+        let leaf_dtype = LeafSpec::Bool.dtype(ctx.paths);
+        let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp);
         let name = ctx.base.name;
         let named = idents::field_named_series();
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
@@ -587,8 +588,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         };
         return Encoder::Multi { columnar };
     }
-    let pp = ctx.paths.prelude();
-    let leaf_dtype = quote! { #pp::DataType::Boolean };
+    let leaf_dtype = LeafSpec::Bool.dtype(ctx.paths);
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
 
@@ -597,6 +597,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
 /// `from_slice` is bulk and faster than `set` for the all-non-null case.
 fn bool_bare_depth1_body(
     access: &TokenStream,
+    leaf_dtype: &TokenStream,
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -608,7 +609,6 @@ fn bool_bare_depth1_body(
     let offsets_buf = idents::bool_bare_offsets_buf();
     let list_arr = idents::bool_bare_list_arr();
     let assemble_helper = idents::assemble_helper();
-    let leaf_dtype = quote! { #pp::DataType::Boolean };
     quote! {
         let mut #total_leaves: usize = 0;
         for #it in items {
@@ -646,7 +646,6 @@ fn mapped_numeric_plan(
     ctx: &LeafCtx<'_>,
     leaf: &LeafSpec,
     native: TokenStream,
-    leaf_dtype: TokenStream,
     needs_decimal_import: bool,
 ) -> VecLeafPlan {
     let v = idents::leaf_value();
@@ -662,12 +661,11 @@ fn mapped_numeric_plan(
             value_expr: mapped_v,
             needs_decimal_import,
         },
-        leaf_dtype,
+        leaf_dtype: leaf.dtype(ctx.paths),
     }
 }
 
 fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
-    let pp = ctx.paths.prelude();
     let v = idents::leaf_value();
     match leaf {
         LeafSpec::Numeric(kind) => {
@@ -683,7 +681,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                     value_expr,
                     needs_decimal_import: false,
                 },
-                leaf_dtype: info.dtype,
+                leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
         LeafSpec::String => VecLeafPlan {
@@ -691,77 +689,24 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 value_expr: quote! { #v.as_str() },
                 extra_decls: Vec::new(),
             },
-            leaf_dtype: quote! { #pp::DataType::String },
+            leaf_dtype: leaf.dtype(ctx.paths),
         },
         LeafSpec::Binary => VecLeafPlan {
             spec: VecLeafSpec::BinaryLike {
                 value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
             },
-            leaf_dtype: quote! { #pp::DataType::Binary },
+            leaf_dtype: leaf.dtype(ctx.paths),
         },
         LeafSpec::Bool => VecLeafPlan {
             spec: VecLeafSpec::Bool,
-            leaf_dtype: quote! { #pp::DataType::Boolean },
+            leaf_dtype: leaf.dtype(ctx.paths),
         },
-        LeafSpec::DateTime(unit) => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
-            mapped_numeric_plan(
-                ctx,
-                leaf,
-                quote! { i64 },
-                quote! {
-                    #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
-                },
-                false,
-            )
-        }
-        LeafSpec::NaiveDateTime(unit) => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
-            mapped_numeric_plan(
-                ctx,
-                leaf,
-                quote! { i64 },
-                quote! {
-                    #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
-                },
-                false,
-            )
-        }
-        LeafSpec::NaiveDate => mapped_numeric_plan(
-            ctx,
-            leaf,
-            quote! { i32 },
-            quote! { #pp::DataType::Date },
-            false,
-        ),
-        LeafSpec::NaiveTime => mapped_numeric_plan(
-            ctx,
-            leaf,
-            quote! { i64 },
-            quote! { #pp::DataType::Time },
-            false,
-        ),
-        LeafSpec::Duration { unit, .. } => {
-            let unit_tokens = crate::codegen::type_registry::time_unit_tokens(*unit, ctx.paths);
-            mapped_numeric_plan(
-                ctx,
-                leaf,
-                quote! { i64 },
-                quote! { #pp::DataType::Duration(#unit_tokens) },
-                false,
-            )
-        }
-        LeafSpec::Decimal { precision, scale } => {
-            let p = *precision as usize;
-            let s = *scale as usize;
-            mapped_numeric_plan(
-                ctx,
-                leaf,
-                quote! { i128 },
-                quote! { #pp::DataType::Decimal(#p, #s) },
-                true,
-            )
-        }
+        LeafSpec::DateTime(_) => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
+        LeafSpec::NaiveDateTime(_) => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
+        LeafSpec::NaiveDate => mapped_numeric_plan(ctx, leaf, quote! { i32 }, false),
+        LeafSpec::NaiveTime => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
+        LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
+        LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }, true),
         LeafSpec::AsString(_) => {
             let scratch = idents::primitive_str_scratch(ctx.base.idx);
             let value_expr = quote! {{
@@ -778,7 +723,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                             ::std::string::String::new();
                     }],
                 },
-                leaf_dtype: quote! { #pp::DataType::String },
+                leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
         LeafSpec::AsStr(stringy) => {
@@ -792,7 +737,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                     value_expr,
                     extra_decls: Vec::new(),
                 },
-                leaf_dtype: quote! { #pp::DataType::String },
+                leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
         LeafSpec::Struct(..) | LeafSpec::Generic(_) => {

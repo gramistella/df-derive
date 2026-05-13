@@ -49,6 +49,15 @@
 //! decls stay interleaved with each wrap rather than hoisted upfront —
 //! moving them to the top produced a reproducible regression on
 //! `vec_vec_opt_string`.
+//!
+//! Dtype/array compatibility ownership lives in this module. Leaf-specific
+//! encoders may create physical Arrow leaf arrays and provide logical Polars
+//! leaf dtypes, but the only codegen boundary allowed to pair those pieces
+//! for list Series construction is [`shape_assemble_list_stack`]. It builds
+//! the physical `LargeListArray` stack, wraps the logical `DataType` by the
+//! same list depth, and routes the pair to the generated
+//! `__DfDeriveListAssembly` abstraction, whose debug-only check compares the
+//! final Arrow dtype with `logical_dtype.to_physical().to_arrow(...)`.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -479,8 +488,8 @@ pub(super) fn freeze_validity_bitmap(
 /// for the flat-vec path, `(*__df_derive_dtype).clone()` for the nested
 /// path). The helper wraps it in `(layers.len() - 1)` extra `List<>`
 /// envelopes so the schema dtype matches the runtime list nesting (the
-/// `__df_derive_assemble_list_series_unchecked` helper adds the outermost
-/// `List<>` itself).
+/// generated list-assembly wrapper adds and checks the outermost `List<>`
+/// itself).
 ///
 /// `arr_id_for_layer(cur)` produces the per-layer `LargeListArray` local
 /// ident — the flat-vec path uses [`idents::vec_layer_list_arr`] and the

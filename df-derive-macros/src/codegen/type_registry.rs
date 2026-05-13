@@ -117,6 +117,10 @@ impl LeafSpec {
     /// Compile-time element-level dtype for this leaf, BEFORE the wrapper
     /// stack adds `List<>` envelopes. The encoder also calls this directly
     /// when it needs the leaf's logical dtype for the cast / typed-null path.
+    /// This is the single codegen mapping from [`LeafSpec`] to logical
+    /// Polars dtype; list assembly compatibility is maintained by
+    /// `encoder::shape_walk`, which pairs this logical dtype with the
+    /// physical Arrow arrays emitted by the leaf builders.
     ///
     /// `AsStr` shares the `String` arm because attribute stringification
     /// (`as_string`) and borrowing (`as_str`) both materialize as `String`.

@@ -53,10 +53,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::ir::VecLayers;
+use crate::ir::{AccessChain, VecLayers};
 
-use super::access_chain_to_ref;
 use super::idents;
+use super::{access_chain_to_option_ref, access_chain_to_ref};
 
 /// Optional projection injected at an inter-layer transition. Tuple fields
 /// use this for shapes like `Vec<(Vec<A>, B)>`: the parent tuple's `Vec`
@@ -66,13 +66,23 @@ use super::idents;
 pub(super) struct LayerProjection<'a> {
     pub layer: usize,
     pub path: &'a TokenStream,
-    /// `Option` wrappers between the parent Vec item and the tuple itself.
-    /// These are preserved around the projected bind so the target layer's
-    /// standard outer-validity handling still owns the null semantics.
-    pub parent_option_layers: usize,
+    /// Transparent wrappers between the parent Vec item and the tuple
+    /// itself. Projection resolves this once, then the target layer receives
+    /// either `&Element` or `Option<&Element>`.
+    pub parent_access: &'a AccessChain,
     /// Smart pointers wrapped around the projected element before its own
     /// Vec/Option layers.
     pub smart_ptr_depth: usize,
+}
+
+fn projection_base_to_ref(item_bind: &syn::Ident, parent_access: &AccessChain) -> TokenStream {
+    if parent_access.is_empty() {
+        return quote! { #item_bind };
+    }
+    if parent_access.option_layers() > 0 {
+        return access_chain_to_option_ref(&quote! { #item_bind }, parent_access);
+    }
+    access_chain_to_ref(&quote! { #item_bind }, parent_access).expr
 }
 
 fn projected_layer_bind(
@@ -82,33 +92,22 @@ fn projected_layer_bind(
     cur: usize,
 ) -> TokenStream {
     let path = projection.path;
-    let project_from = |tuple_ref: &syn::Ident| -> TokenStream {
-        let mut projected = quote! { (*#tuple_ref) #path };
+    let project_from = |tuple_ref: &TokenStream| -> TokenStream {
+        let mut projected = quote! { (*(#tuple_ref)) #path };
         for _ in 0..projection.smart_ptr_depth {
             projected = quote! { (*(#projected)) };
         }
         quote! { &(#projected) }
     };
 
-    if projection.parent_option_layers == 0 {
-        return project_from(item_bind);
+    let tuple_ref = projection_base_to_ref(item_bind, projection.parent_access);
+    if projection.parent_access.option_layers() == 0 {
+        return project_from(&tuple_ref);
     }
 
-    let params: Vec<syn::Ident> = (0..projection.parent_option_layers)
-        .map(|level| format_ident!("{bind_prefix}proj_{cur}_{level}"))
-        .collect();
-    let mut expr = project_from(&params[projection.parent_option_layers - 1]);
-    for level in (0..projection.parent_option_layers).rev() {
-        let param = &params[level];
-        let base = if level == 0 {
-            quote! { #item_bind }
-        } else {
-            let prev = &params[level - 1];
-            quote! { #prev }
-        };
-        expr = quote! { (#base).as_ref().map(|#param| #expr) };
-    }
-    expr
+    let param = format_ident!("{bind_prefix}proj_{cur}");
+    let projected = project_from(&quote! { #param });
+    quote! { (#tuple_ref).map(|#param| #projected) }
 }
 
 /// Unified per-layer identifier bundle shared by the flat-vec path and the

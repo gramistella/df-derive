@@ -287,6 +287,19 @@ pub(super) fn access_chain_to_ref(base: &TokenStream, chain: &AccessChain) -> Ch
     ChainRef { expr, has_option }
 }
 
+/// Resolve an access chain containing one or more `Option` steps into a
+/// collapsed `Option<&T>`. Unlike [`access_chain_to_ref`], the single plain
+/// `Option` case always emits `.as_ref()` because callers need a mappable
+/// optional reference rather than the legacy match-friendly `&Option<T>`.
+pub(super) fn access_chain_to_option_ref(base: &TokenStream, chain: &AccessChain) -> TokenStream {
+    debug_assert!(chain.option_layers() > 0);
+    if chain.is_only_options() {
+        collapse_options_to_ref(base, chain.option_layers())
+    } else {
+        access_chain_to_ref(base, chain).expr
+    }
+}
+
 /// Per-field encoder state. Variant determines whether the encoder serves
 /// the single-column primitive path (`Leaf`) or the multi-column nested
 /// path (`Multi`); the field set is type-enforced per variant.

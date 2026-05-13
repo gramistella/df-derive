@@ -272,13 +272,9 @@ fn emit_element(
         // Options to `Option<&Tuple>` per row, project to `Option<&Inner>`
         // (or `Option<Inner>` for Copy primitive leaves) via `.map(...)`,
         // and route through the standard encoder with the composed wrapper.
-        WrapperShape::Leaf { option_layers, .. } => {
+        WrapperShape::Leaf { access, .. } => {
             let elem_li = syn::Index::from(elem_idx);
-            let collapsed_parent = if *option_layers == 1 {
-                quote! { (#parent_access).as_ref() }
-            } else {
-                super::collapse_options_to_ref(parent_access, *option_layers)
-            };
+            let collapsed_parent = super::access_chain_to_option_ref(parent_access, access);
             // The standard primitive Option-leaf machinery expects an
             // access expression that yields `Option<T>` for Copy primitives
             // (numeric / Bool / NaiveDate / NaiveTime / Duration). Project
@@ -385,6 +381,14 @@ fn concat_access_chains(left: &AccessChain, right: &AccessChain) -> AccessChain 
     AccessChain { steps }
 }
 
+fn prepend_parent_option_access(parent_access: &AccessChain, access: &AccessChain) -> AccessChain {
+    if parent_access.option_layers() > 0 {
+        prepend_option_access(access)
+    } else {
+        access.clone()
+    }
+}
+
 /// Emit a tuple element column with a Vec-bearing parent. Composes parent +
 /// element wrappers, with the projection injected at the parent/element
 /// boundary. Uses the shared shape walker with tuple-specific projection
@@ -415,7 +419,7 @@ fn emit_vec_parent(
             // element's outermost Vec as outer validity.
             e_layers[0].option_layers_above += carried_inner_option;
             e_layers[0].access =
-                concat_access_chains(&parent_layers.inner_access, &e_layers[0].access);
+                prepend_parent_option_access(&parent_layers.inner_access, &e_layers[0].access);
             composed_layers.extend(e_layers);
             elem_layers.inner_option_layers
         }
@@ -443,7 +447,7 @@ fn emit_vec_parent(
     let projection = TupleProjection {
         layer: projection_layer,
         path: &projection_path,
-        parent_option_layers: carried_inner_option,
+        parent_access: &parent_layers.inner_access,
         smart_ptr_depth: elem.outer_smart_ptr_depth,
     };
 
@@ -1108,7 +1112,7 @@ fn tuple_layer_counters(field_idx: usize, depth: usize) -> Vec<syn::Ident> {
 struct TupleProjection<'a> {
     layer: usize,
     path: &'a TokenStream,
-    parent_option_layers: usize,
+    parent_access: &'a AccessChain,
     smart_ptr_depth: usize,
 }
 
@@ -1117,7 +1121,7 @@ impl<'a> TupleProjection<'a> {
         (self.layer < shape.depth()).then_some(LayerProjection {
             layer: self.layer,
             path: self.path,
-            parent_option_layers: self.parent_option_layers,
+            parent_access: self.parent_access,
             smart_ptr_depth: self.smart_ptr_depth,
         })
     }

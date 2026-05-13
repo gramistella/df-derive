@@ -120,6 +120,19 @@ struct OptTupleWithWrappedElements {
     pair: Option<(Vec<i32>, Option<Box<i32>>, Vec<Box<Option<i32>>>)>,
 }
 
+// 19. Parent tuple has interleaved Option / smart pointer / Option wrappers.
+#[derive(ToDataFrame, Clone)]
+struct OptionBoxOptionTuple {
+    x: Option<Box<Option<(i32, String)>>>,
+}
+
+// 20. Parent tuple item has an Option and smart pointer above the tuple, and
+// the projected element has its own Vec layer.
+#[derive(ToDataFrame, Clone)]
+struct VecOptBoxTupleWithVecElement {
+    items: Vec<Option<Box<(Vec<i32>, String)>>>,
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -539,6 +552,66 @@ fn runtime_semantics() {
     assert_eq!(
         list_i32s(wrapped_df.column("pair.field_2").unwrap().get(2).unwrap()),
         vec![None],
+    );
+
+    // 19. Option<Box<Option<(i32, String)>>>: collapse the real access chain,
+    // not merely the number of Option layers.
+    let interleaved = vec![
+        OptionBoxOptionTuple {
+            x: Some(Box::new(Some((11, "eleven".to_string())))),
+        },
+        OptionBoxOptionTuple {
+            x: Some(Box::new(None)),
+        },
+        OptionBoxOptionTuple { x: None },
+    ];
+    let interleaved_df = interleaved.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        interleaved_df.column("x.field_0").unwrap().get(0).unwrap(),
+        AnyValue::Int32(11),
+    );
+    assert_eq!(
+        interleaved_df.column("x.field_1").unwrap().get(0).unwrap(),
+        AnyValue::String("eleven"),
+    );
+    assert_eq!(
+        interleaved_df.column("x.field_0").unwrap().get(1).unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        interleaved_df.column("x.field_1").unwrap().get(2).unwrap(),
+        AnyValue::Null,
+    );
+
+    // 20. Vec<Option<Box<(Vec<i32>, String)>>>: projection consumes the
+    // parent access chain once before the element's Vec layer is walked.
+    let vec_interleaved = VecOptBoxTupleWithVecElement {
+        items: vec![
+            Some(Box::new((vec![1, 2], "left".to_string()))),
+            None,
+            Some(Box::new((vec![3], "right".to_string()))),
+        ],
+    };
+    let vec_interleaved_df = vec_interleaved.to_dataframe().unwrap();
+    assert_eq!(
+        nested_i32_lists(
+            vec_interleaved_df
+                .column("items.field_0")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![Some(vec![Some(1), Some(2)]), None, Some(vec![Some(3)])],
+    );
+    assert_eq!(
+        list_strings(
+            vec_interleaved_df
+                .column("items.field_1")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![Some("left".to_string()), None, Some("right".to_string())],
     );
 
     // Batch round-trip

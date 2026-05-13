@@ -11,6 +11,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
 
     if ir.fields.is_empty() {
         return quote! {
+            #[automatically_derived]
             impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
                 fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
                     <Self as #columnar_trait>::columnar_from_refs(&[self])
@@ -50,6 +51,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     // `empty_dataframe` through `columnar_from_refs(&[])` would recurse,
     // since that helper delegates to `empty_dataframe` on empty input.
     quote! {
+        #[automatically_derived]
         impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
             fn to_dataframe(&self) -> #pp::PolarsResult<#pp::DataFrame> {
                 <Self as #columnar_trait>::columnar_from_refs(&[self])

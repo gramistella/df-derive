@@ -76,6 +76,7 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let refs_body = columnar_method_body(ir, config, &it_ident);
 
     quote! {
+        #[automatically_derived]
         impl #impl_generics #columnar_trait for #struct_name #ty_generics #where_clause {
             fn columnar_to_dataframe(items: &[Self]) -> #pp::PolarsResult<#pp::DataFrame> {
                 #direct_body

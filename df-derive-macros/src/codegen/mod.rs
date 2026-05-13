@@ -404,3 +404,62 @@ pub fn impl_parts_with_bounds(
         quote! { #where_clause },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{AccessChain, FieldIR, LeafSpec, NumericKind, StructIR, WrapperShape};
+    use quote::{format_ident, quote};
+
+    fn test_config() -> MacroConfig {
+        let dataframe_mod = quote! { crate::dataframe };
+        MacroConfig {
+            to_dataframe_trait_path: quote! { crate::dataframe::ToDataFrame },
+            columnar_trait_path: quote! { crate::dataframe::Columnar },
+            decimal128_encode_trait_path: quote! { crate::dataframe::Decimal128Encode },
+            external_paths: external_paths::default_runtime_paths(&dataframe_mod),
+        }
+    }
+
+    fn assert_generated_impls_are_automatically_derived(ir: &StructIR) {
+        let generated = generate_code(ir, &test_config()).to_string();
+        let struct_name = ir.name.to_string();
+        let to_df_impl = format!(
+            "# [automatically_derived] impl crate :: dataframe :: ToDataFrame for {struct_name}"
+        );
+        let columnar_impl = format!(
+            "# [automatically_derived] impl crate :: dataframe :: Columnar for {struct_name}"
+        );
+
+        assert!(generated.contains(&to_df_impl), "{generated}");
+        assert!(generated.contains(&columnar_impl), "{generated}");
+    }
+
+    #[test]
+    fn generated_trait_impls_are_automatically_derived() {
+        let empty_ir = StructIR {
+            name: format_ident!("EmptyRow"),
+            generics: syn::Generics::default(),
+            fields: Vec::new(),
+        };
+        assert_generated_impls_are_automatically_derived(&empty_ir);
+
+        let non_empty_ir = StructIR {
+            name: format_ident!("Row"),
+            generics: syn::Generics::default(),
+            fields: vec![FieldIR {
+                name: format_ident!("id"),
+                field_index: None,
+                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+                wrapper_shape: WrapperShape::Leaf {
+                    option_layers: 0,
+                    access: AccessChain::empty(),
+                },
+                decimal_generic_params: Vec::new(),
+                decimal_backend_ty: None,
+                outer_smart_ptr_depth: 0,
+            }],
+        };
+        assert_generated_impls_are_automatically_derived(&non_empty_ir);
+    }
+}

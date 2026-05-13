@@ -26,6 +26,8 @@ All notable changes to this project will be documented in this file.
 - `df-derive = { default-features = false }` now also disables
   `df-derive-core`'s default `rust_decimal` feature instead of enabling it
   through the facade's core dependency.
+- Generated `ToDataFrame` and `Columnar` impls are now marked
+  `#[automatically_derived]` for better lint and tooling behavior.
 
 ## [0.3.0] - 2026-05-11
 

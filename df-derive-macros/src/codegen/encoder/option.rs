@@ -24,11 +24,11 @@ use super::{BaseCtx, Encoder, LeafCtx, access_chain_to_ref};
 ///   chain) and push it directly. Borrows from the field, lives for the
 ///   whole pass.
 /// - **Owning leaves (numeric, `ISize`/`USize`, `Bool`, `String`, `Decimal`,
-///   `DateTime`, `to_string`)**: the buffer holds owned values, so a per-row
-///   `Option<T>` local materialised by `.copied()` (Copy types) or
-///   `.cloned()` (non-Copy) and fed back through the standard single-Option
-///   leaf machinery is sound. The clone is per-row only on this rare slow
-///   path; the fast paths still apply for `[]` and `[Option]` shapes.
+///   `DateTime`, `to_string`)**: Copy leaves materialise a per-row
+///   `Option<T>` with `.copied()` because their single-Option push bodies
+///   consume the value in pattern position. Non-Copy leaves keep the
+///   collapsed `Option<&T>` and feed that to the same option leaf machinery,
+///   whose push bodies already borrow before formatting/encoding/pushing.
 pub(super) fn wrap_option_access_chain_primitive(
     leaf: &LeafSpec,
     ctx: &LeafCtx<'_>,
@@ -42,20 +42,19 @@ pub(super) fn wrap_option_access_chain_primitive(
     let orig_access = ctx.base.access.clone();
     let local = idents::multi_option_local(ctx.base.idx);
     let local_access = quote! { #local };
-    let access_ref = access_chain_to_ref(&quote! { &(#orig_access) }, access);
-    debug_assert!(access_ref.has_option);
-    let collapsed_chain = access_ref.expr;
-    // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`) flatten
-    // through `.copied()`; everything else through `.cloned()`. The local
-    // shadows the field for the inner option-leaf machinery so its existing
-    // `match #access { Some(v) => ... }` push body just works.
-    let materializer = if leaf.is_copy() {
-        quote! { .copied() }
+    let collapsed_chain = super::access_chain_to_option_ref(&quote! { &(#orig_access) }, access);
+    // Copy-eligible primitives (numeric, `ISize`/`USize`, `Bool`, copy-like
+    // chrono leaves) flatten through `.copied()`. Non-Copy leaves stay as
+    // `Option<&T>` so this path does not synthesize a hidden `T: Clone`
+    // bound for display, decimal, datetime, binary, or string leaves.
+    let setup = if leaf.is_copy() {
+        quote! {
+            let #local: ::std::option::Option<_> = #collapsed_chain.copied();
+        }
     } else {
-        quote! { .cloned() }
-    };
-    let setup = quote! {
-        let #local: ::std::option::Option<_> = #collapsed_chain #materializer;
+        quote! {
+            let #local: ::std::option::Option<_> = #collapsed_chain;
+        }
     };
     let new_ctx = LeafCtx {
         base: BaseCtx {

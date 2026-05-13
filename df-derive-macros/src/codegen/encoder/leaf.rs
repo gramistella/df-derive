@@ -4,9 +4,11 @@
 //! [`LeafArmKind`]: `Bare` for the unwrapped shape, `Option` for the
 //! `[Option]` shape. The dispatcher in [`super::mod`] selects `Bare` for
 //! `WrapperShape::Leaf { option_layers: 0 }` and `Option` for
-//! `option_layers == 1`. Deeper Option stacks reuse the `Option` arm after
-//! collapsing the access into a single `Option<&T>` (Polars folds every
-//! nested None into one validity bit).
+//! `option_layers == 1`. Deeper or smart-pointer-interleaved Option stacks
+//! reuse the `Option` arm after collapsing the access into a single
+//! `Option<&T>`; Copy leaves materialize that as `Option<T>` with `.copied()`
+//! first because their push bodies consume the value in pattern position.
+//! Polars folds every nested None into one validity bit.
 
 use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, StringyBase};
 use proc_macro2::TokenStream;

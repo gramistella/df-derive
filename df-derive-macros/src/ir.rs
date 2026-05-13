@@ -352,11 +352,10 @@ pub enum LeafSpec {
 impl LeafSpec {
     /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
     /// (including `ISize`/`USize`), `Bool`, `NaiveDate`, `NaiveTime`,
-    /// `NaiveDateTime`, and `Duration` are `Copy`; `String`, `Binary`,
-    /// `DateTime`, `Decimal`, `AsString`, and the `AsStr` borrow path are not.
-    /// The `AsStr` path takes its own branch in the multi-Option wrapper before
-    /// reaching this helper, so its `false` answer here is only consulted on
-    /// dead arms.
+    /// `NaiveDateTime`, and `Duration` are copied from collapsed `Option<&T>`
+    /// into `Option<T>` because their option push bodies consume values in
+    /// pattern position. `String`, `Binary`, `DateTime`, `Decimal`, `AsString`,
+    /// and the `AsStr` borrow path stay reference-oriented.
     pub const fn is_copy(&self) -> bool {
         matches!(
             self,

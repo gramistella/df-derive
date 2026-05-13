@@ -84,4 +84,6 @@ fn tests() {
     t.compile_fail("tests/fail/135-fail-wrapped-nested-tuple-parent.rs");
     t.compile_fail("tests/fail/136-fail-wrapped-nested-tuple-element.rs");
     t.compile_fail("tests/fail/137-fail-duplicate-override-attributes.rs");
+    t.compile_fail("tests/fail/138-fail-columnar-without-trait.rs");
+    t.compile_fail("tests/fail/139-fail-duplicate-container-attributes.rs");
 }

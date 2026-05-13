@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
   implementation dependency paths through hidden runtime re-exports, so
   downstream crates no longer need a direct `polars-arrow` dependency unless
   they use explicit custom trait-path overrides.
+- Container-level `#[df_derive(...)]` runtime overrides now reject duplicate
+  keys, and `columnar = "..."` is rejected unless it is paired with
+  `trait = "..."` to avoid mixed-runtime impls.
 
 ## [0.3.0] - 2026-05-11
 

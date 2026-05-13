@@ -5,8 +5,9 @@
 //! on `df-derive-macros` directly when you want to target `paft`,
 //! `df-derive-core`, or a custom runtime without the facade.
 //!
-//! Explicit `#[df_derive(trait = "...")]`, `columnar = "..."`, and
-//! `decimal128_encode = "..."` attributes override runtime paths. Without
+//! Explicit `#[df_derive(trait = "...")]` selects a custom runtime path.
+//! `columnar = "..."` may be provided alongside `trait = "..."`, and
+//! `decimal128_encode = "..."` may override decimal dispatch. Without runtime
 //! overrides, discovery tries `df-derive`, `df-derive-core`, `paft-utils`,
 //! `paft`, then the `crate::core::dataframe` fallback.
 #![warn(missing_docs)]
@@ -17,8 +18,15 @@ mod ir;
 mod parser;
 mod type_analysis;
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::{DeriveInput, parse_macro_input};
+
+struct RuntimeOverridePath {
+    path: syn::Path,
+    span: Span,
+}
 
 /// Parse a `key = "path::Trait"` attribute value into a `syn::Path`, with a
 /// uniform error message of the form `"invalid {label} path: {e}"`. Callers
@@ -42,6 +50,40 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
         last_segment.ident = syn::Ident::new(name, last_segment.ident.span());
     }
     new_path
+}
+
+fn set_runtime_override(
+    slot: &mut Option<RuntimeOverridePath>,
+    key: &'static str,
+    path: syn::Path,
+    incoming_span: Span,
+) -> syn::Result<()> {
+    if let Some(existing) = slot {
+        let mut error = syn::Error::new(
+            incoming_span,
+            format!("container attribute declares duplicate `{key}` override; remove one"),
+        );
+        error.combine(syn::Error::new(
+            existing.span,
+            format!("first `{key}` override declared here"),
+        ));
+        return Err(error);
+    }
+
+    *slot = Some(RuntimeOverridePath {
+        path,
+        span: incoming_span,
+    });
+    Ok(())
+}
+
+fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
+    syn::Error::new(
+        columnar_span,
+        "`columnar = \"...\"` requires `trait = \"...\"`; overriding only \
+         `Columnar` would generate mixed runtime impls that do not satisfy \
+         either runtime's `ToDataFrameVec`",
+    )
 }
 
 /// Derive `ToDataFrame` for structs and tuple structs to generate fast conversions to Polars.
@@ -87,9 +129,10 @@ fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
 ///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last
 ///   path segment with `Columnar` / `Decimal128Encode`. Optionally, set them explicitly with
 ///   `#[df_derive(columnar = "path::Columnar")]` and
-///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. The latter is the dispatch
-///   point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal backends —
-///   see "Custom decimal backends" in the README for the trait contract.
+///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. A `columnar` override
+///   must be paired with `trait` to avoid mixed-runtime impls. `decimal128_encode` is the
+///   dispatch point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal
+///   backends — see "Custom decimal backends" in the README for the trait contract.
 /// - Field-level: `#[df_derive(skip)]` to omit a field from generated schema
 ///   and `DataFrame` output. Skipped fields are not type-analyzed, so this can
 ///   be used for caches, handles, source metadata, or other helper values that
@@ -148,25 +191,28 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     // Parse helper attribute configuration (trait paths)
     let default_df_mod = codegen::resolve_default_dataframe_mod();
-    let mut to_df_trait_path: Option<syn::Path> = None;
-    let mut columnar_trait_path: Option<syn::Path> = None;
-    let mut decimal128_encode_trait_path: Option<syn::Path> = None;
+    let mut to_df_trait_path: Option<RuntimeOverridePath> = None;
+    let mut columnar_trait_path: Option<RuntimeOverridePath> = None;
+    let mut decimal128_encode_trait_path: Option<RuntimeOverridePath> = None;
 
     for attr in &ast.attrs {
         if attr.path().is_ident("df_derive") {
             let parse_res = attr.parse_nested_meta(|meta| {
+                let key_span = meta.path.span();
                 if meta.path.is_ident("trait") {
                     let path = parse_trait_path_attr(&meta, "trait")?;
-                    to_df_trait_path = Some(path);
-                    Ok(())
+                    set_runtime_override(&mut to_df_trait_path, "trait", path, key_span)
                 } else if meta.path.is_ident("columnar") {
                     let path = parse_trait_path_attr(&meta, "columnar trait")?;
-                    columnar_trait_path = Some(path);
-                    Ok(())
+                    set_runtime_override(&mut columnar_trait_path, "columnar", path, key_span)
                 } else if meta.path.is_ident("decimal128_encode") {
                     let path = parse_trait_path_attr(&meta, "decimal128_encode trait")?;
-                    decimal128_encode_trait_path = Some(path);
-                    Ok(())
+                    set_runtime_override(
+                        &mut decimal128_encode_trait_path,
+                        "decimal128_encode",
+                        path,
+                        key_span,
+                    )
                 } else {
                     Err(meta.error("unsupported key in #[df_derive(...)] attribute"))
                 }
@@ -177,24 +223,39 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         }
     }
 
+    if let (Some(columnar), None) = (&columnar_trait_path, &to_df_trait_path) {
+        return reject_columnar_without_trait(columnar.span)
+            .to_compile_error()
+            .into();
+    }
+
     let uses_default_dataframe_runtime =
         to_df_trait_path.is_none() && columnar_trait_path.is_none();
     let to_df_trait_path_ts = to_df_trait_path.as_ref().map_or_else(
         || quote! { #default_df_mod::ToDataFrame },
-        |path| quote! { #path },
+        |override_| {
+            let path = &override_.path;
+            quote! { #path }
+        },
     );
     let columnar_trait_path_ts = match (&columnar_trait_path, &to_df_trait_path) {
-        (Some(path), _) => quote! { #path },
-        (None, Some(path)) => {
-            let columnar_path = rebase_last_segment(path, "Columnar");
+        (Some(override_), _) => {
+            let path = &override_.path;
+            quote! { #path }
+        }
+        (None, Some(override_)) => {
+            let columnar_path = rebase_last_segment(&override_.path, "Columnar");
             quote! { #columnar_path }
         }
         (None, None) => quote! { #default_df_mod::Columnar },
     };
     let decimal128_encode_trait_path_ts = match (&decimal128_encode_trait_path, &to_df_trait_path) {
-        (Some(path), _) => quote! { #path },
-        (None, Some(path)) => {
-            let decimal_path = rebase_last_segment(path, "Decimal128Encode");
+        (Some(override_), _) => {
+            let path = &override_.path;
+            quote! { #path }
+        }
+        (None, Some(override_)) => {
+            let decimal_path = rebase_last_segment(&override_.path, "Decimal128Encode");
             quote! { #decimal_path }
         }
         (None, None) => quote! { #default_df_mod::Decimal128Encode },

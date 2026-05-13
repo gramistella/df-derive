@@ -1,0 +1,35 @@
+error: container attribute declares duplicate `trait` override; remove one
+ --> tests/fail/139-fail-duplicate-container-attributes.rs:7:13
+  |
+7 | #[df_derive(trait = "core::dataframe::ToDataFrame")]
+  |             ^^^^^
+
+error: first `trait` override declared here
+ --> tests/fail/139-fail-duplicate-container-attributes.rs:6:13
+  |
+6 | #[df_derive(trait = "core::dataframe::ToDataFrame")]
+  |             ^^^^^
+
+error: container attribute declares duplicate `columnar` override; remove one
+  --> tests/fail/139-fail-duplicate-container-attributes.rs:17:13
+   |
+17 | #[df_derive(columnar = "core::dataframe::Columnar")]
+   |             ^^^^^^^^
+
+error: first `columnar` override declared here
+  --> tests/fail/139-fail-duplicate-container-attributes.rs:15:5
+   |
+15 |     columnar = "core::dataframe::Columnar",
+   |     ^^^^^^^^
+
+error: container attribute declares duplicate `decimal128_encode` override; remove one
+  --> tests/fail/139-fail-duplicate-container-attributes.rs:24:13
+   |
+24 | #[df_derive(decimal128_encode = "core::dataframe::Decimal128Encode")]
+   |             ^^^^^^^^^^^^^^^^^
+
+error: first `decimal128_encode` override declared here
+  --> tests/fail/139-fail-duplicate-container-attributes.rs:23:13
+   |
+23 | #[df_derive(decimal128_encode = "core::dataframe::Decimal128Encode")]
+   |             ^^^^^^^^^^^^^^^^^

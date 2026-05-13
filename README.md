@@ -260,6 +260,10 @@ If only `trait = "x::ToDataFrame"` is provided, the macro infers
 `x::Columnar` and `x::Decimal128Encode` unless those paths are explicitly
 overridden.
 
+`columnar = "..."` must be paired with `trait = "..."`; a standalone
+`Columnar` override would create mixed runtime impls that are incompatible
+with both runtimes' `ToDataFrameVec` extension traits.
+
 Without overrides, the macro discovers a `dataframe` module in this order:
 
 1. `df_derive::dataframe`

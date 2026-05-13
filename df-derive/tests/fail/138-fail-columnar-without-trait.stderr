@@ -1,0 +1,5 @@
+error: `columnar = "..."` requires `trait = "..."`; overriding only `Columnar` would generate mixed runtime impls that do not satisfy either runtime's `ToDataFrameVec`
+ --> tests/fail/138-fail-columnar-without-trait.rs:6:13
+  |
+6 | #[df_derive(columnar = "core::dataframe::Columnar")]
+  |             ^^^^^^^^

@@ -198,6 +198,20 @@ pub(super) fn stringy_value_expr(
     }
 }
 
+/// Build a fallible generated expression for the current flat-ref index.
+/// This feeds `IdxCa::take` positions, so truncation under `idx-u32` must
+/// surface as a Polars error instead of silently wrapping.
+pub(super) fn idx_size_len_expr(flat: &syn::Ident, pp: &TokenStream) -> TokenStream {
+    quote! {
+        <#pp::IdxSize as ::core::convert::TryFrom<usize>>::try_from(#flat.len())
+            .map_err(|_| #pp::polars_err!(
+                ComputeError:
+                "df-derive: nested inner-option position {} exceeds IdxSize range",
+                #flat.len(),
+            ))?
+    }
+}
+
 /// Build an expression that collapses `n` `Option` layers above a base
 /// expression into a single `Option<&Inner>`. `base` must already be a
 /// reference (or place expression that auto-derefs to a reference). For

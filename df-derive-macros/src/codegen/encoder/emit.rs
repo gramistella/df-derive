@@ -26,7 +26,7 @@ use super::shape_walk::{
     LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
-use super::{access_chain_to_ref, collapse_options_to_ref};
+use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-layer ident bundle factory. `field_idx == None` produces the
@@ -278,12 +278,13 @@ fn ctb_leaf_body<'a>(
                 }
             }
         } else if shape.inner_access.is_single_plain_option() {
+            let flat_idx = idx_size_len_expr(flat, pp);
             quote! {
                 for #maybe in #vec_bind.iter() {
                     match #maybe {
                         ::std::option::Option::Some(#v) => {
                             #positions.push(::std::option::Option::Some(
-                                #flat.len() as #pp::IdxSize,
+                                #flat_idx,
                             ));
                             #flat.push(#v);
                         }
@@ -298,12 +299,13 @@ fn ctb_leaf_body<'a>(
             let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
             let resolved = chain_ref.expr;
             if chain_ref.has_option {
+                let flat_idx = idx_size_len_expr(flat, pp);
                 quote! {
                     for #raw_bind in #vec_bind.iter() {
                         match #resolved {
                             ::std::option::Option::Some(#v) => {
                                 #positions.push(::std::option::Option::Some(
-                                    #flat.len() as #pp::IdxSize,
+                                    #flat_idx,
                                 ));
                                 #flat.push(#v);
                             }
@@ -713,12 +715,13 @@ fn ctb_leaf_scan_depth0(
         // collapse to `Option<&T>` first, then match by value. Mirrors
         // `ShapeScan::build_layer`'s opt_layers branch on outer-Vec layers.
         let match_expr = ctb_depth0_match_expr(access, access_chain, option_layers);
+        let flat_idx = idx_size_len_expr(flat, pp);
         quote! {
             for #it in items {
                 match #match_expr {
                     ::std::option::Option::Some(#v) => {
                         #positions.push(::std::option::Option::Some(
-                            #flat.len() as #pp::IdxSize,
+                            #flat_idx,
                         ));
                         #flat.push(#v);
                     }

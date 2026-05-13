@@ -32,7 +32,7 @@ use super::shape_walk::{
 };
 use super::{
     BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder,
-    struct_type_tokens,
+    idx_size_len_expr, struct_type_tokens,
 };
 
 // ============================================================================
@@ -634,11 +634,12 @@ fn emit_vec_parent_nested(
     let inner_v = idents::tuple_nested_inner_v();
     let projected_leaf = quote! { #leaf_v };
     let per_elem_push = if has_inner_option {
+        let flat_idx = idx_size_len_expr(&flat, pp);
         quote! {
             match #projected_leaf {
                 ::std::option::Option::Some(#inner_v) => {
                     #positions.push(::std::option::Option::Some(
-                        #flat.len() as #pp::IdxSize,
+                        #flat_idx,
                     ));
                     #flat.push(#inner_v);
                 }

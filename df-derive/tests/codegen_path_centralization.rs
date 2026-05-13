@@ -1,8 +1,9 @@
 //! Safety net for generated external crate paths.
 //!
-//! `df-derive-macros/src/codegen/polars_paths.rs` is the only place codegen should spell raw
-//! `::polars` or `::polars_arrow` roots. Everywhere else should go through the
-//! resolver helpers so downstream dependency renames keep working.
+//! `df-derive-macros/src/codegen/external_paths.rs` is the only place codegen should spell raw
+//! external crate roots such as `::polars`, `::polars_arrow`, or `::chrono`.
+//! Everywhere else should go through resolver helpers so downstream dependency
+//! renames keep working.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,7 +56,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn generated_polars_roots_are_centralized() {
+fn generated_external_roots_are_centralized() {
     let manifest =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
     let repo_root = PathBuf::from(&manifest)
@@ -66,13 +67,14 @@ fn generated_polars_roots_are_centralized() {
         .join("df-derive-macros")
         .join("src")
         .join("codegen");
-    let allowed = fs::canonicalize(codegen_root.join("polars_paths.rs"))
-        .expect("polars_paths.rs should exist");
+    let allowed = fs::canonicalize(codegen_root.join("external_paths.rs"))
+        .expect("external_paths.rs should exist");
 
     let mut files = Vec::new();
     collect_rs_files(&codegen_root, &mut files);
     files.sort();
 
+    let raw_external_roots = ["::polars::", "::polars_arrow::", "::chrono::"];
     let mut violations: Vec<String> = Vec::new();
     for path in &files {
         let path_canon = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
@@ -83,7 +85,10 @@ fn generated_polars_roots_are_centralized() {
             fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let stripped = strip_comments(&src);
         for (lineno, line) in stripped.lines().enumerate() {
-            if line.contains("::polars::") || line.contains("::polars_arrow::") {
+            if raw_external_roots
+                .iter()
+                .any(|needle| line.contains(needle))
+            {
                 let original = src.lines().nth(lineno).unwrap_or("<line out of range>");
                 let display_path = path
                     .strip_prefix(&repo_root)
@@ -100,7 +105,7 @@ fn generated_polars_roots_are_centralized() {
 
     assert!(
         violations.is_empty(),
-        "generated Polars roots must go through df-derive-macros/src/codegen/polars_paths.rs \
+        "generated external crate roots must go through df-derive-macros/src/codegen/external_paths.rs \
          so dependency renames are honored.\n\nviolations:\n{}",
         violations.join("\n"),
     );

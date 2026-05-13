@@ -11,12 +11,12 @@ use super::strategy::EmitMode;
 
 /// Emit a runtime loop that wraps the per-iteration `DataType` accumulator
 /// (named via [`idents::schema_wrapped_dtype`]) in `layers` `List<>` envelopes.
-/// Thin wrapper over [`super::polars_paths::wrap_list_layers_runtime`] that
+/// Thin wrapper over [`super::external_paths::wrap_list_layers_runtime`] that
 /// pins the wrapped-variable ident to the schema-helpers' shared local.
 fn gen_wrap_dtype_layers(layers: usize) -> TokenStream {
-    let pp = super::polars_paths::prelude();
+    let pp = super::external_paths::prelude();
     let wrapped = idents::schema_wrapped_dtype();
-    super::polars_paths::wrap_list_layers_runtime(&pp, &wrapped, layers)
+    super::external_paths::wrap_list_layers_runtime(&pp, &wrapped, layers)
 }
 
 pub fn nested_empty_series_row(
@@ -64,7 +64,7 @@ fn generate_for_struct(
     list_layers: usize,
     mode: EmitMode,
 ) -> TokenStream {
-    let pp = super::polars_paths::prelude();
+    let pp = super::external_paths::prelude();
     let wrap_layers = gen_wrap_dtype_layers(list_layers);
     let wrapped = idents::schema_wrapped_dtype();
     match mode {

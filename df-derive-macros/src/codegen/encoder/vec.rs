@@ -515,7 +515,7 @@ fn lower_to_pep(
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
 ) -> PerElementPush {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     let total_leaves = idents::total_leaves();
     let leaf_capacity_expr = quote! { #total_leaves };
     let (leaf_storage_decls, per_elem_push, leaf_arr_expr) = build_vec_leaf_pieces(
@@ -557,8 +557,8 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     // (Option or smart-pointer boundary) routes through the generalized
     // scanner so that boundary is resolved before the leaf push.
     if shape.depth() == 1 && !shape.any_outer_validity() && shape.inner_access.is_empty() {
-        let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-        let pp = crate::codegen::polars_paths::prelude();
+        let pa_root = crate::codegen::external_paths::polars_arrow_root();
+        let pp = crate::codegen::external_paths::prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
         let body = bool_bare_depth1_body(ctx.base.access, &pa_root, &pp);
         let name = ctx.base.name;
@@ -573,7 +573,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         };
         return Encoder::Multi { columnar };
     }
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Boolean };
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
@@ -642,7 +642,7 @@ fn vec_encoder_as_str(ctx: &LeafCtx<'_>, shape: &VecLayers, base: &StringyBase) 
         value_expr,
         extra_decls: Vec::new(),
     };
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::String };
     vec_encoder(ctx, &spec, shape, &leaf_dtype)
 }
@@ -700,7 +700,7 @@ pub(super) fn try_build_vec_encoder(
             vec_encoder(ctx, &spec, vec_shape, &info.dtype)
         }
         LeafSpec::String => {
-            let pp = crate::codegen::polars_paths::prelude();
+            let pp = crate::codegen::external_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::String };
             let spec = VecLeafSpec::StringLike {
                 value_expr: quote! { #v.as_str() },
@@ -712,7 +712,7 @@ pub(super) fn try_build_vec_encoder(
             // The loop binds a borrowed binary carrier (`&Vec<u8>` or
             // `&Cow<'_, [u8]>`); `AsRef<[u8]>` produces the slice accepted by
             // `MutableBinaryViewArray<[u8]>`.
-            let pp = crate::codegen::polars_paths::prelude();
+            let pp = crate::codegen::external_paths::prelude();
             let leaf_dtype = quote! { #pp::DataType::Binary };
             let spec = VecLeafSpec::BinaryLike {
                 value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
@@ -721,7 +721,7 @@ pub(super) fn try_build_vec_encoder(
         }
         LeafSpec::Bool => {
             if vec_shape.has_inner_option() {
-                let pp = crate::codegen::polars_paths::prelude();
+                let pp = crate::codegen::external_paths::prelude();
                 let leaf_dtype = quote! { #pp::DataType::Boolean };
                 vec_encoder(ctx, &VecLeafSpec::Bool, vec_shape, &leaf_dtype)
             } else {
@@ -780,7 +780,7 @@ fn vec_encoder_mapped_numeric(
 }
 
 fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
     let leaf_dtype = quote! {
         #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
@@ -796,7 +796,7 @@ fn vec_encoder_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers
 }
 
 fn vec_encoder_naive_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
     let leaf_dtype = quote! {
         #pp::DataType::Datetime(#unit_tokens, ::std::option::Option::None)
@@ -812,7 +812,7 @@ fn vec_encoder_naive_datetime(ctx: &LeafCtx<'_>, unit: DateTimeUnit, shape: &Vec
 }
 
 fn vec_encoder_naive_date(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Date };
     vec_encoder_mapped_numeric(
         ctx,
@@ -825,7 +825,7 @@ fn vec_encoder_naive_date(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
 }
 
 fn vec_encoder_naive_time(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::Time };
     vec_encoder_mapped_numeric(
         ctx,
@@ -843,7 +843,7 @@ fn vec_encoder_duration(
     source: DurationSource,
     shape: &VecLayers,
 ) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let unit_tokens = crate::codegen::type_registry::time_unit_tokens(unit);
     let leaf_dtype = quote! { #pp::DataType::Duration(#unit_tokens) };
     vec_encoder_mapped_numeric(
@@ -857,7 +857,7 @@ fn vec_encoder_duration(
 }
 
 fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let p = precision as usize;
     let s = scale as usize;
     let leaf_dtype = quote! { #pp::DataType::Decimal(#p, #s) };
@@ -872,7 +872,7 @@ fn vec_encoder_decimal(ctx: &LeafCtx<'_>, precision: u8, scale: u8, shape: &VecL
 }
 
 fn vec_encoder_to_string(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let leaf_dtype = quote! { #pp::DataType::String };
     // `to_string` materializes via `Display::fmt` into a reusable `String`
     // scratch — we splice that scratch's `as_str()` into the MBVA-push

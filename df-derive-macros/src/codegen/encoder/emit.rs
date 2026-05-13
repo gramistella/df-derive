@@ -267,7 +267,7 @@ fn ctb_leaf_body<'a>(
     positions: &'a syn::Ident,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
-        let pp = crate::codegen::polars_paths::prelude();
+        let pp = crate::codegen::external_paths::prelude();
         let maybe = idents::nested_maybe();
         let v = idents::leaf_value();
         if shape.inner_access.is_empty() {
@@ -335,7 +335,7 @@ fn nested_consume_columns(
     ty: &TokenStream,
     series_expr: &TokenStream,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let prefixed = idents::nested_prefixed_name();
@@ -713,7 +713,7 @@ fn ctb_leaf_scan_depth0(
             }
         }
     } else {
-        let pp = crate::codegen::polars_paths::prelude();
+        let pp = crate::codegen::external_paths::prelude();
         // `option_layers == 1`: match `&Option<T>` directly. `>= 2`:
         // collapse to `Option<&T>` first, then match by value. Mirrors
         // `ShapeScan::build_layer`'s opt_layers branch on outer-Vec layers.
@@ -866,8 +866,8 @@ pub(super) fn vec_emit_general(
     idx: usize,
     wrapper: &WrapperShape,
 ) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-    let pp = crate::codegen::polars_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
     let depth = wrapper.vec_depth();
     // The walker needs a `VecLayers` even at depth 0; synthesize an empty
     // one for the `Leaf` wrapper case so the layer/precount helpers fall

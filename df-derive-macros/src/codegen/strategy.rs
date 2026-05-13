@@ -143,7 +143,7 @@ fn build_field_entries(
         }
         (FieldRoute::Primitive, EmitMode::EmptyRows) => {
             let dtype = field_full_dtype(field);
-            let pp = super::polars_paths::prelude();
+            let pp = super::external_paths::prelude();
             quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
         }
         (FieldRoute::Tuple, _) => {

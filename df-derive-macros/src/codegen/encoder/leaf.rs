@@ -56,7 +56,7 @@ pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream) -> TokenStream {
 /// `let mut #ident: MutableBitmap = MutableBitmap::with_capacity(items.len());`
 /// (no pre-fill — push-based use only).
 pub(super) fn mb_decl(ident: &syn::Ident) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap =
             #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
@@ -69,7 +69,7 @@ pub(super) fn mb_decl_filled(
     capacity: &TokenStream,
     value: bool,
 ) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     let b = idents::bitmap_builder();
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap = {
@@ -87,7 +87,7 @@ pub(super) fn row_idx_decl(ident: &syn::Ident) -> TokenStream {
 
 /// `let mut #buf: MutableBinaryViewArray<str> = MutableBinaryViewArray::<str>::with_capacity(items.len());`
 pub(super) fn mbva_decl(buf: &syn::Ident) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<str> =
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
@@ -99,7 +99,7 @@ pub(super) fn mbva_decl(buf: &syn::Ident) -> TokenStream {
 /// (`#[df_derive(as_binary)]` over `Vec<u8>`) to build a `BinaryView` column
 /// without round-tripping through a `Vec<&[u8]>` intermediate.
 pub(super) fn mbva_bytes_decl(buf: &syn::Ident) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
             #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(items.len());
@@ -110,7 +110,7 @@ pub(super) fn mbva_bytes_decl(buf: &syn::Ident) -> TokenStream {
 /// `with_chunk` / `with_validity` arms expect. `MutableBitmap -> Option<Bitmap>`
 /// collapses to `None` when no bits are unset, preserving the no-null fast path.
 pub(super) fn validity_into_option(validity: &syn::Ident) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     quote! {
         ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
             #validity,
@@ -120,7 +120,7 @@ pub(super) fn validity_into_option(validity: &syn::Ident) -> TokenStream {
 
 /// Build a Series via `into_series(StringChunked::with_chunk(name, arr))`.
 pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     quote! {
         #pp::IntoSeries::into_series(
             #pp::StringChunked::with_chunk(#name.into(), { #arr_expr }),
@@ -131,7 +131,7 @@ pub(super) fn string_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 /// Build a Series via `into_series(BinaryChunked::with_chunk(name, arr))`.
 /// Byte-blob analogue of [`string_chunked_series`].
 pub(super) fn binary_chunked_series(name: &str, arr_expr: &TokenStream) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     quote! {
         #pp::IntoSeries::into_series(
             #pp::BinaryChunked::with_chunk(#name.into(), { #arr_expr }),
@@ -143,7 +143,7 @@ pub(super) fn binary_chunked_series(name: &str, arr_expr: &TokenStream) -> Token
 /// The `.into()` and the `&` borrow are part of the emitted shape and are
 /// preserved by callers that splice this into a larger expression.
 pub(super) fn named_from_buf(name: &str, buf: &syn::Ident) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) }
 }
 
@@ -164,8 +164,8 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
     let chunked = &info.chunked;
     let access = ctx.base.access;
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
 
     match arm {
         LeafArmKind::Bare => {
@@ -367,8 +367,8 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
 
     match arm {
         LeafArmKind::Bare => {
@@ -461,8 +461,8 @@ pub(super) fn decimal_leaf(
 ) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
-    let pp = crate::codegen::polars_paths::prelude();
-    let int128 = crate::codegen::polars_paths::int128_chunked();
+    let pp = crate::codegen::external_paths::prelude();
+    let int128 = crate::codegen::external_paths::int128_chunked();
     let p = precision as usize;
     let s = scale as usize;
     let leaf = LeafSpec::Decimal { precision, scale };

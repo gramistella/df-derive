@@ -60,7 +60,7 @@ fn build_tuple_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let mut per_elem: Vec<TokenStream> = Vec::with_capacity(elements.len());
     for (i, elem) in elements.iter().enumerate() {
         let elem_prefix = format!("{column_prefix}.field_{i}");
@@ -102,7 +102,7 @@ fn build_element_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let total_layers = outer_layers + elem.wrapper_shape.vec_depth();
     match &elem.leaf_spec {
         LeafSpec::Struct(path) => {
@@ -118,7 +118,7 @@ fn build_element_entries(
         }
         _ => {
             let elem_dtype = elem.leaf_spec.dtype();
-            let full_dtype = crate::codegen::polars_paths::wrap_list_layers_compile_time_pub(
+            let full_dtype = crate::codegen::external_paths::wrap_list_layers_compile_time_pub(
                 &pp,
                 elem_dtype,
                 total_layers,
@@ -502,8 +502,8 @@ fn emit_vec_parent_primitive(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     let series_local = idents::vec_field_series(field_idx);
     let named = idents::field_named_series();
     let leaf_arr = idents::leaf_arr();
@@ -614,8 +614,8 @@ fn emit_vec_parent_nested(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
     let columnar_trait = &config.columnar_trait_path;
     let to_df_trait = &config.to_dataframe_trait_path;
     let total_leaves = idents::nested_total(field_idx);
@@ -1003,7 +1003,7 @@ fn emit_via_standard_encoder(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    let pp = crate::codegen::polars_paths::prelude();
+    let pp = crate::codegen::external_paths::prelude();
     let nested_ty: TokenStream;
     let nested_ctx = match leaf {
         LeafSpec::Struct(path) => {

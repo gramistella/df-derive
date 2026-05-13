@@ -167,6 +167,7 @@ publish = false
 dfd = {{ package = "df-derive", path = "{}" }}
 pl = {{ package = "polars", version = "0.53.0", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-time", "dtype-duration"] }}
 pa = {{ package = "polars-arrow", version = "0.53.0" }}
+time_crate = {{ package = "chrono", version = "0.4.41" }}
 "#,
         toml_path(root),
     );
@@ -176,17 +177,25 @@ pa = {{ package = "polars-arrow", version = "0.53.0" }}
         &manifest,
         r#"
 use dfd::prelude::*;
+use time_crate::{NaiveDate, NaiveTime};
 
 #[derive(ToDataFrame)]
 struct Row {
     id: u32,
     values: Vec<i64>,
+    day: NaiveDate,
+    at: NaiveTime,
 }
 
 fn main() -> pl::prelude::PolarsResult<()> {
-    let rows = vec![Row { id: 1, values: vec![10, 20] }];
+    let rows = vec![Row {
+        id: 1,
+        values: vec![10, 20],
+        day: NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
+        at: NaiveTime::from_hms_opt(12, 34, 56).unwrap(),
+    }];
     let df = rows.as_slice().to_dataframe()?;
-    assert_eq!(df.shape(), (1, 2));
+    assert_eq!(df.shape(), (1, 4));
     Ok(())
 }
 "#,

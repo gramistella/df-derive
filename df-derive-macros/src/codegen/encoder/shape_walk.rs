@@ -492,8 +492,8 @@ pub(super) fn shape_assemble_list_stack(
     leaf_logical_dtype: TokenStream,
     arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
 ) -> TokenStream {
-    let pa_root = crate::codegen::polars_paths::polars_arrow_root();
-    let pp = crate::codegen::polars_paths::prelude();
+    let pa_root = crate::codegen::external_paths::polars_arrow_root();
+    let pp = crate::codegen::external_paths::prelude();
     let depth = layers.len();
 
     let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
@@ -525,7 +525,7 @@ pub(super) fn shape_assemble_list_stack(
         prev_dtype = quote! { #pa_root::array::Array::dtype(&#arr_id).clone() };
     }
 
-    let helper_logical = crate::codegen::polars_paths::wrap_list_layers_compile_time(
+    let helper_logical = crate::codegen::external_paths::wrap_list_layers_compile_time(
         &pp,
         leaf_logical_dtype,
         depth.saturating_sub(1),

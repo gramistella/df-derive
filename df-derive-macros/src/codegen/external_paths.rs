@@ -1,26 +1,27 @@
-// Centralized polars path resolution for generated code.
+// Centralized external-crate path resolution for generated code.
 //
 // Every other codegen file produces token streams that reference items in
-// `polars`. Funneling those references through this module gives us a single
-// fix point if polars reshuffles its modules (`prelude::Foo` → `dtype::Foo`
-// has happened across major versions), and lets `proc_macro_crate::crate_name`
-// honour `[package]` renames in the downstream `Cargo.toml` so a user pinning
-// polars under a different name still gets working generated code.
+// external crates. Funneling those references through this module gives us a
+// single fix point if an upstream crate reshuffles its modules
+// (`polars::prelude::Foo` → `polars::dtype::Foo` has happened across major
+// versions), and lets `proc_macro_crate::crate_name` honour `[package]`
+// renames in the downstream `Cargo.toml` so users pinning dependencies under
+// different names still get working generated code.
 
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-/// Resolve a crate by name to a `::<resolved-name>` path token, or splice
-/// the caller's `fallback` when the crate is not found or refers to the
-/// expanding crate itself. Used by [`root`] and [`polars_arrow_root`] —
-/// neither of those macros realistically expands inside the polars or
-/// polars-arrow crate, and a missing direct dep is best surfaced as
-/// `unresolved import ::<name>` at the call site rather than `unresolved
-/// name <name>`. The `mod::resolve_default_dataframe_mod` site is bespoke
-/// because its `Itself` arm maps to `crate::dataframe` (a substantive
-/// path), not to the fallback — a different cascade shape that this
-/// helper cannot model cleanly.
+/// Resolve a crate by package name to a `::<resolved-name>` path token, or
+/// splice the caller's `fallback` when the crate is not found or refers to
+/// the expanding crate itself. This fits generated references to external
+/// runtime crates: missing direct deps are best surfaced as `unresolved
+/// import ::<name>` at the call site rather than `unresolved name <name>`.
+///
+/// The `mod::resolve_default_dataframe_mod` site is bespoke because its
+/// `Itself` arm maps to `crate::dataframe` (a substantive path), not to the
+/// fallback — a different cascade shape that this helper cannot model
+/// cleanly.
 pub(super) fn resolve_or_fallback(name: &str, fallback: TokenStream) -> TokenStream {
     match crate_name(name) {
         Ok(FoundCrate::Name(resolved)) => {
@@ -37,13 +38,13 @@ pub(super) fn resolve_or_fallback(name: &str, fallback: TokenStream) -> TokenStr
 /// expand inside the polars crate itself in any realistic scenario, and a
 /// missing direct dep is better surfaced as `unresolved import ::polars`
 /// than `unresolved name polars` — same eventual error, more specific span.
-fn root() -> TokenStream {
+fn polars_root() -> TokenStream {
     resolve_or_fallback("polars", quote! { ::polars })
 }
 
 /// `polars::prelude` — namespace for ~all polars items the macro emits.
 pub fn prelude() -> TokenStream {
-    let root = root();
+    let root = polars_root();
     quote! { #root::prelude }
 }
 
@@ -66,11 +67,21 @@ pub fn int128_chunked() -> TokenStream {
 /// `polars-arrow` as a direct dep too.
 ///
 /// `Itself` and `Err` collapse to `::polars_arrow` for the same reason as
-/// `root()` — the macro never expands inside `polars-arrow`, and a
+/// `polars_root()` — the macro never expands inside `polars-arrow`, and a
 /// missing direct dep is best surfaced as `unresolved import
 /// ::polars_arrow` at the call site.
 pub fn polars_arrow_root() -> TokenStream {
     resolve_or_fallback("polars-arrow", quote! { ::polars_arrow })
+}
+
+/// Token tree for the user-visible `chrono` crate root.
+///
+/// Chrono field detection accepts bare imports such as `use time_crate::NaiveDate;`
+/// when `chrono` has been renamed in `Cargo.toml`. Generated helper calls must
+/// therefore resolve the package name the same way Polars paths do, instead of
+/// spelling `::chrono` directly.
+pub fn chrono_root() -> TokenStream {
+    resolve_or_fallback("chrono", quote! { ::chrono })
 }
 
 /// Wrap an inner `DataType` token expression in `layers` `List<>` envelopes

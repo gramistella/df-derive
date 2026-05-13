@@ -1,8 +1,8 @@
 mod columnar_impl;
 mod encoder;
+mod external_paths;
 mod helpers;
 mod nested;
-mod polars_paths;
 mod strategy;
 mod trait_impl;
 mod type_registry;
@@ -56,7 +56,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let eager_asserts = helpers::generate_eager_asserts(ir);
-    let pp = polars_paths::prelude();
+    let pp = external_paths::prelude();
     let assemble_helper = encoder::idents::assemble_helper();
 
     // Wrap the entire generated impl set in a per-derive `const _: () = { ... };`

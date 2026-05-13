@@ -38,7 +38,7 @@ pub(super) struct NumericInfo {
 /// is non-empty. The 14-arm match here is the one place that translates the
 /// parser-tagged kind into the polars-prelude token shape.
 pub(super) fn numeric_info_for(kind: NumericKind) -> NumericInfo {
-    let pp = super::polars_paths::prelude();
+    let pp = super::external_paths::prelude();
     let info = |native: TokenStream, variant: &str, widen_from: Option<TokenStream>| {
         let chunked_ident = format_ident!("{}Chunked", variant);
         let dtype_ident = format_ident!("{}", variant);
@@ -103,7 +103,7 @@ pub(super) fn numeric_stored_value(
 
 /// Tokens for `polars::prelude::TimeUnit::<variant>`.
 pub(super) fn time_unit_tokens(unit: DateTimeUnit) -> TokenStream {
-    let pp = super::polars_paths::prelude();
+    let pp = super::external_paths::prelude();
     match unit {
         DateTimeUnit::Milliseconds => quote! { #pp::TimeUnit::Milliseconds },
         DateTimeUnit::Microseconds => quote! { #pp::TimeUnit::Microseconds },
@@ -123,7 +123,7 @@ impl LeafSpec {
     /// code path that doesn't yet handle `AsStr` degrades to allocating,
     /// not panicking.
     pub(super) fn dtype(&self) -> TokenStream {
-        let pp = super::polars_paths::prelude();
+        let pp = super::external_paths::prelude();
         let dt = quote! { #pp::DataType };
         match self {
             Self::Numeric(kind) => numeric_info_for(*kind).dtype,
@@ -164,9 +164,9 @@ impl LeafSpec {
 /// dtype (e.g. the encoder's per-leaf logical-dtype payload) call
 /// [`LeafSpec::dtype`] directly.
 pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape) -> TokenStream {
-    let pp = super::polars_paths::prelude();
+    let pp = super::external_paths::prelude();
     let elem_dtype = leaf.dtype();
-    super::polars_paths::wrap_list_layers_compile_time(&pp, elem_dtype, wrapper.vec_depth())
+    super::external_paths::wrap_list_layers_compile_time(&pp, elem_dtype, wrapper.vec_depth())
 }
 
 /// Map a per-row primitive value through any leaf-injected transform
@@ -185,7 +185,7 @@ pub fn map_primitive_expr(
             DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
-                let pp = super::polars_paths::prelude();
+                let pp = super::external_paths::prelude();
                 quote! {
                     (#var).timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: DateTime<Tz> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
@@ -197,7 +197,7 @@ pub fn map_primitive_expr(
             DateTimeUnit::Milliseconds => quote! { (#var).and_utc().timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).and_utc().timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
-                let pp = super::polars_paths::prelude();
+                let pp = super::external_paths::prelude();
                 quote! {
                     (#var).and_utc().timestamp_nanos_opt().ok_or_else(|| #pp::polars_err!(
                         ComputeError: "df-derive: NaiveDateTime value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)"
@@ -205,20 +205,26 @@ pub fn map_primitive_expr(
                 }
             }
         },
-        LeafSpec::NaiveDate => quote! {
-            ((#var).signed_duration_since(
-                ::chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
-            ).num_days() as i32)
-        },
-        LeafSpec::NaiveTime => quote! {
-            {
-                use ::chrono::Timelike as _;
-                ((#var).num_seconds_from_midnight() as i64) * 1_000_000_000
-                    + ((#var).nanosecond() as i64)
+        LeafSpec::NaiveDate => {
+            let chrono = super::external_paths::chrono_root();
+            quote! {
+                ((#var).signed_duration_since(
+                    #chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+                ).num_days() as i32)
             }
-        },
+        }
+        LeafSpec::NaiveTime => {
+            let chrono = super::external_paths::chrono_root();
+            quote! {
+                {
+                    use #chrono::Timelike as _;
+                    ((#var).num_seconds_from_midnight() as i64) * 1_000_000_000
+                        + ((#var).nanosecond() as i64)
+                }
+            }
+        }
         LeafSpec::Duration { unit, source } => {
-            let pp = super::polars_paths::prelude();
+            let pp = super::external_paths::prelude();
             match source {
                 DurationSource::Std => match unit {
                     DateTimeUnit::Nanoseconds => quote! {
@@ -283,7 +289,7 @@ pub fn map_primitive_expr(
             let target = u32::from(*scale);
             let precision = u32::from(*precision);
             let scale = u32::from(*scale);
-            let pp = super::polars_paths::prelude();
+            let pp = super::external_paths::prelude();
             quote! {{
                 use #decimal128_encode_trait as _;
                 match (#var).try_to_i128_mantissa(#target) {

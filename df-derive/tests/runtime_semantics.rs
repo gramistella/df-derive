@@ -54,3 +54,6 @@ mod associated_type_paths;
 
 #[path = "runtime/54-raw-ident-column-names.rs"]
 mod raw_ident_column_names;
+
+#[path = "runtime/55-manual-nested-validation.rs"]
+mod manual_nested_validation;

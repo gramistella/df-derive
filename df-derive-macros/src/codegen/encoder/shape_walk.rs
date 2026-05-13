@@ -52,8 +52,8 @@
 //! for list Series construction is [`shape_assemble_list_stack`]. It builds
 //! the physical `LargeListArray` stack, wraps the logical `DataType` by the
 //! same list depth, and routes the pair to the generated
-//! `__DfDeriveListAssembly` abstraction, whose debug-only check compares the
-//! final Arrow dtype with `logical_dtype.to_physical().to_arrow(...)`.
+//! `__DfDeriveListAssembly` abstraction, whose release-mode check compares
+//! the final Arrow dtype with `logical_dtype.to_physical().to_arrow(...)`.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -530,7 +530,7 @@ pub(super) fn shape_assemble_list_stack(
         #assemble_helper(
             #outer,
             #helper_logical,
-        )
+        )?
     }
 }
 

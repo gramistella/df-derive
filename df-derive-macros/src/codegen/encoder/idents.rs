@@ -388,6 +388,20 @@ pub(in crate::codegen) fn list_assembly() -> Ident {
     format_ident!("__DfDeriveListAssembly")
 }
 
+/// Per-derive helper that validates a manual nested `Columnar` implementation
+/// returned exactly one row per gathered nested value before generated code
+/// reads columns from it.
+pub(in crate::codegen) fn validate_nested_frame() -> Ident {
+    format_ident!("__df_derive_validate_nested_frame")
+}
+
+/// Per-derive helper that validates a nested DataFrame column's actual dtype
+/// matches the dtype declared by the nested type's schema before the dtype is
+/// reused for list assembly or positional `take`.
+pub(in crate::codegen) fn validate_nested_column_dtype() -> Ident {
+    format_ident!("__df_derive_validate_nested_column_dtype")
+}
+
 /// Per-derive helper used to eagerly assert that concrete
 /// `#[df_derive(as_str)]` custom paths implement `AsRef<str>`.
 pub(in crate::codegen) fn as_ref_str_assert_helper() -> Ident {

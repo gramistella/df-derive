@@ -494,10 +494,13 @@ fn ctb_materialize(
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
+    let validate_nested_frame = idents::validate_nested_frame();
+    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     // Decls reused across match arms.
     let df_decl = quote! {
         let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#ty>())?;
     };
     let take_decl = quote! {
         let #take: #pp::IdxCa =
@@ -510,15 +513,16 @@ fn ctb_materialize(
     // Per-column inner-Series expressions for the four branches (or two,
     // when no inner Option). The list-array wrap is identical across
     // branches; only the seed expression differs.
-    let inner_col_direct = quote! {
-        #df.column(#col_name)?
-            .as_materialized_series()
-            .clone()
-    };
+    let inner_col_direct = quote! {{
+        let #inner_full = #df.column(#col_name)?.as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
+        #inner_full.clone()
+    }};
     let inner_col_take = quote! {{
         let #inner_full = #df
             .column(#col_name)?
             .as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
         #inner_full.take(&#take)?
     }};
     let inner_col_empty = quote! {

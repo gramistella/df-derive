@@ -622,7 +622,7 @@ fn bool_bare_depth1_body(
         #assemble_helper(
             #list_arr,
             #leaf_dtype,
-        )
+        )?
     }
 }
 

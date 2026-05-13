@@ -63,6 +63,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let pa_root = config.external_paths.polars_arrow_root();
     let assemble_helper = encoder::idents::assemble_helper();
     let list_assembly = encoder::idents::list_assembly();
+    let validate_nested_frame = encoder::idents::validate_nested_frame();
+    let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
 
     // Keep helper names private while still emitting inherent impls for the
     // target type. The list assembly wrapper is the only generated site that
@@ -83,20 +85,30 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
                     list_arr: #pp::LargeListArray,
                     inner_logical_dtype: #pp::DataType,
                 ) -> Self {
-                    let assembly = Self {
+                    Self {
                         list_arr,
                         logical_dtype: #pp::DataType::List(
                             ::std::boxed::Box::new(inner_logical_dtype),
                         ),
-                    };
-                    assembly.debug_assert_compatible();
-                    assembly
+                    }
                 }
 
                 #[inline(always)]
                 #[allow(clippy::inline_always)]
-                fn into_series(self) -> #pp::Series {
-                    self.debug_assert_compatible();
+                fn into_series(self) -> #pp::PolarsResult<#pp::Series> {
+                    let expected_arrow_dtype: #pa_root::datatypes::ArrowDataType =
+                        self.logical_dtype
+                            .to_physical()
+                            .to_arrow(#pp::CompatLevel::newest());
+                    let actual_arrow_dtype = #pa_root::array::Array::dtype(&self.list_arr);
+                    if actual_arrow_dtype != &expected_arrow_dtype {
+                        return ::std::result::Result::Err(#pp::polars_err!(
+                            ComputeError:
+                            "df-derive: list assembly dtype mismatch: actual Arrow dtype {:?}, logical dtype {:?}",
+                            actual_arrow_dtype,
+                            self.logical_dtype,
+                        ));
+                    }
                     let Self {
                         list_arr,
                         logical_dtype,
@@ -106,36 +118,22 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
                     // `encoder::shape_walk::shape_assemble_list_stack`,
                     // which builds `list_arr` from the leaf/nested physical
                     // Arrow dtype and the same logical dtype that schema
-                    // generation emits. In debug builds,
-                    // `debug_assert_compatible` checks the final Arrow
-                    // list dtype against `logical_dtype.to_physical()`,
-                    // covering logical wrappers such as Date, Datetime,
-                    // Duration, Time, Decimal, and nested List envelopes.
+                    // generation emits. The release-mode check above
+                    // compares the final Arrow list dtype against
+                    // `logical_dtype.to_physical()`, covering logical
+                    // wrappers such as Date, Datetime, Duration, Time,
+                    // Decimal, and nested List envelopes. This matters for
+                    // safe manual `ToDataFrame` / `Columnar` implementations:
+                    // a bad schema can no longer violate the unchecked
+                    // constructor's dtype invariant.
                     unsafe {
-                        #pp::Series::from_chunks_and_dtype_unchecked(
+                        ::std::result::Result::Ok(#pp::Series::from_chunks_and_dtype_unchecked(
                             "".into(),
                             ::std::vec![
                                 ::std::boxed::Box::new(list_arr) as #pp::ArrayRef,
                             ],
                             &logical_dtype,
-                        )
-                    }
-                }
-
-                #[inline(always)]
-                #[allow(clippy::inline_always)]
-                fn debug_assert_compatible(&self) {
-                    #[cfg(debug_assertions)]
-                    {
-                        let expected_arrow_dtype: #pa_root::datatypes::ArrowDataType =
-                            self.logical_dtype
-                                .to_physical()
-                                .to_arrow(#pp::CompatLevel::newest());
-                        ::core::debug_assert_eq!(
-                            #pa_root::array::Array::dtype(&self.list_arr),
-                            &expected_arrow_dtype,
-                            "df-derive list assembly invariant violated: physical Arrow list dtype does not match logical Polars dtype",
-                        );
+                        ))
                     }
                 }
             }
@@ -145,8 +143,48 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
             fn #assemble_helper(
                 list_arr: #pp::LargeListArray,
                 inner_logical_dtype: #pp::DataType,
-            ) -> #pp::Series {
+            ) -> #pp::PolarsResult<#pp::Series> {
                 #list_assembly::new(list_arr, inner_logical_dtype).into_series()
+            }
+
+            #[inline(always)]
+            #[allow(non_snake_case, clippy::inline_always)]
+            fn #validate_nested_frame(
+                df: &#pp::DataFrame,
+                expected_height: usize,
+                type_name: &str,
+            ) -> #pp::PolarsResult<()> {
+                let actual_height = df.height();
+                if actual_height != expected_height {
+                    return ::std::result::Result::Err(#pp::polars_err!(
+                        ComputeError:
+                        "df-derive: nested Columnar::columnar_from_refs for {} returned height {}, expected {}",
+                        type_name,
+                        actual_height,
+                        expected_height,
+                    ));
+                }
+                ::std::result::Result::Ok(())
+            }
+
+            #[inline(always)]
+            #[allow(non_snake_case, clippy::inline_always)]
+            fn #validate_nested_column_dtype(
+                series: &#pp::Series,
+                column_name: &str,
+                declared_dtype: &#pp::DataType,
+            ) -> #pp::PolarsResult<()> {
+                let actual_dtype = series.dtype();
+                if actual_dtype != declared_dtype {
+                    return ::std::result::Result::Err(#pp::polars_err!(
+                        ComputeError:
+                        "df-derive: nested column `{}` dtype mismatch: actual dtype {:?}, declared schema dtype {:?}",
+                        column_name,
+                        actual_dtype,
+                        declared_dtype,
+                    ));
+                }
+                ::std::result::Result::Ok(())
             }
 
             #trait_impl

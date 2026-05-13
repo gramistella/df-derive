@@ -608,6 +608,8 @@ fn emit_vec_parent_nested(
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
     let named = idents::field_named_series();
+    let validate_nested_frame = idents::validate_nested_frame();
+    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     let layers: Vec<LayerIdents> = (0..composed_shape.depth())
         .map(|i| tuple_layer_idents(field_idx, i))
@@ -678,11 +680,14 @@ fn emit_vec_parent_nested(
     };
 
     // Per-column inner-Series expressions for the four dispatch branches.
-    let inner_col_direct = quote! {
-        #df.column(#col_name)?.as_materialized_series().clone()
-    };
+    let inner_col_direct = quote! {{
+        let #inner_full = #df.column(#col_name)?.as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
+        #inner_full.clone()
+    }};
     let inner_col_take = quote! {{
         let #inner_full = #df.column(#col_name)?.as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
         #inner_full.take(&#take)?
     }};
     let inner_col_empty = quote! { #pp::Series::new_empty("".into(), #dtype) };
@@ -758,6 +763,7 @@ fn emit_vec_parent_nested(
 
     let df_decl = quote! {
         let #df = <#type_path as #columnar_trait>::columnar_from_refs(&#flat)?;
+        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#type_path>())?;
     };
     let take_decl = quote! {
         let #take: #pp::IdxCa =

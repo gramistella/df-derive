@@ -10,7 +10,7 @@ mod type_registry;
 use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR, TupleElement};
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 
 /// Macro-wide configuration for generated code
 #[allow(clippy::struct_field_names)]
@@ -229,16 +229,6 @@ fn contains_ident(items: &[syn::Ident], ident: &syn::Ident) -> bool {
     items.iter().any(|item| item == ident)
 }
 
-fn push_unique_type(out: &mut Vec<syn::Type>, ty: &syn::Type) {
-    let key = ty.to_token_stream().to_string();
-    if !out
-        .iter()
-        .any(|existing| existing.to_token_stream().to_string() == key)
-    {
-        out.push(ty.clone());
-    }
-}
-
 fn collect_tuple_element_requirements(elem: &TupleElement, reqs: &mut GenericRequirements) {
     collect_leaf_requirements(&elem.leaf_spec, reqs);
 }
@@ -249,19 +239,19 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
             push_unique(&mut reqs.nested_params, ident);
         }
         LeafSpec::Struct(ty) => {
-            push_unique_type(&mut reqs.nested_types, ty);
+            helpers::push_unique_type(&mut reqs.nested_types, ty);
         }
         LeafSpec::AsStr(StringyBase::Generic(ident)) => {
             push_unique(&mut reqs.as_ref_str, ident);
         }
         LeafSpec::AsStr(StringyBase::Struct(ty)) => {
-            push_unique_type(&mut reqs.as_ref_str_types, ty);
+            helpers::push_unique_type(&mut reqs.as_ref_str_types, ty);
         }
         LeafSpec::AsString(DisplayBase::Generic(ident)) => {
             push_unique(&mut reqs.display_params, ident);
         }
         LeafSpec::AsString(DisplayBase::Struct(ty)) => {
-            push_unique_type(&mut reqs.display_types, ty);
+            helpers::push_unique_type(&mut reqs.display_types, ty);
         }
         LeafSpec::Tuple(elements) => {
             for elem in elements {
@@ -294,7 +284,7 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
         }
 
         if let Some(ty) = &field.decimal_backend_ty {
-            push_unique_type(&mut reqs.decimal_types, ty);
+            helpers::push_unique_type(&mut reqs.decimal_types, ty);
         }
     }
 

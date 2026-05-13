@@ -149,7 +149,7 @@ fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &
     }
 }
 
-fn push_unique_type(out: &mut Vec<Type>, ty: &Type) {
+pub(in crate::codegen) fn push_unique_type(out: &mut Vec<Type>, ty: &Type) {
     let key = ty.to_token_stream().to_string();
     if !out
         .iter()

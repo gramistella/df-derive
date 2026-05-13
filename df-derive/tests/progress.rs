@@ -80,4 +80,6 @@ fn tests() {
     t.compile_fail("tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs");
     t.compile_fail("tests/fail/133-fail-skip-with-conversion-attr.rs");
     t.compile_fail("tests/fail/134-fail-as-string-concrete-type-without-display.rs");
+    t.compile_fail("tests/fail/135-fail-wrapped-nested-tuple-parent.rs");
+    t.compile_fail("tests/fail/136-fail-wrapped-nested-tuple-element.rs");
 }

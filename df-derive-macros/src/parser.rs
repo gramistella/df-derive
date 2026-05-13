@@ -415,6 +415,40 @@ fn analyzed_to_tuple_element(
     })
 }
 
+fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
+    !wrappers.is_empty()
+}
+
+fn reject_unsupported_wrapped_nested_tuples(
+    analyzed: &crate::type_analysis::AnalyzedType,
+    field_display_name: &str,
+) -> Result<(), syn::Error> {
+    let AnalyzedBase::Tuple(elements) = &analyzed.base else {
+        return Ok(());
+    };
+    let parent_wrapped = has_semantic_wrappers(&analyzed.wrappers);
+
+    for element in elements {
+        if matches!(element.base, AnalyzedBase::Tuple(_))
+            && (parent_wrapped || has_semantic_wrappers(&element.wrappers))
+        {
+            return Err(syn::Error::new_spanned(
+                &element.field_ty,
+                format!(
+                    "field `{field_display_name}` contains a nested tuple whose projection path \
+                     is wrapped; nested tuples are supported only when each tuple on that path is \
+                     unwrapped. Hoist the inner tuple into a named struct deriving `ToDataFrame`, \
+                     or remove the `Option`/`Vec` wrapper around the tuple."
+                ),
+            ));
+        }
+
+        reject_unsupported_wrapped_nested_tuples(element, field_display_name)?;
+    }
+
+    Ok(())
+}
+
 fn parse_leaf_as_str(
     field: &syn::Field,
     field_display_name: &str,
@@ -697,6 +731,7 @@ fn process_field(
         return Ok(None);
     }
     let analyzed = analyze_type(&field.ty, generic_params)?;
+    reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let decimal_generic_params = decimal_generic_params_for_override(&override_, &analyzed.base);
     let decimal_backend_path = decimal_backend_path_for_override(&override_, &analyzed.base);

@@ -923,9 +923,9 @@ fn wrap_per_column_layers(
 ///   new `parent_access`.
 /// - **Wrapped outer** (rare — `Vec<((A, B), C)>` or
 ///   `Option<((A, B), C)>`): the projection cannot be a single static
-///   path because the wrappers must be walked per-row. Defer with a
-///   compile-time error pointing the user at hoisting the inner tuple
-///   into a named struct.
+///   path because the wrappers must be walked per-row. The parser rejects
+///   these shapes before codegen and points the user at hoisting the inner
+///   tuple into a named struct.
 #[allow(clippy::too_many_arguments)]
 fn emit_inner_tuple(
     parent_access: &TokenStream,
@@ -980,28 +980,9 @@ fn emit_inner_tuple(
         }
         return quote! { #(#blocks)* };
     }
-    // Wrapped outer cases: defer until we have a use case driving the
-    // implementation. The complexity here is non-trivial because the
-    // outer projection must be applied inside the parent's wrapper
-    // walk, and the inner tuple's columns each need their own walk
-    // through the composed shape.
-    let _ = (
-        parent_access,
-        parent_wrapper,
-        outer_elem,
-        outer_elem_idx,
-        inner_elements,
-        field_idx,
-        column_prefix,
-        config,
-    );
-    quote! {
-        compile_error!(
-            "df-derive: nested tuples whose outer tuple is wrapped (Vec<...> or Option<...>) \
-             are not yet supported. Hoist the inner tuple into a named struct deriving \
-             ToDataFrame, or unwrap the outer wrappers."
-        );
-    }
+    unreachable!(
+        "df-derive: parser should reject wrapped nested tuple projection paths before codegen"
+    )
 }
 
 // ============================================================================

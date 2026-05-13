@@ -1,0 +1,5 @@
+error: field `nested` contains a nested tuple whose projection path is wrapped; nested tuples are supported only when each tuple on that path is unwrapped. Hoist the inner tuple into a named struct deriving `ToDataFrame`, or remove the `Option`/`Vec` wrapper around the tuple.
+ --> tests/fail/135-fail-wrapped-nested-tuple-parent.rs:7:21
+  |
+7 |     nested: Option<((i32, String), bool)>,
+  |                     ^^^^^^^^^^^^^

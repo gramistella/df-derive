@@ -68,6 +68,7 @@ use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_exp
 /// layer is walked first, then the next layer receives `&tuple.0`.
 /// When the tuple element has no own `Vec` layer, projection happens at the
 /// leaf instead and this stays `None`.
+#[derive(Clone, Copy)]
 pub(super) struct LayerProjection<'a> {
     pub layer: usize,
     pub path: &'a TokenStream,
@@ -387,6 +388,71 @@ impl ShapePrecount<'_> {
         } else {
             self.build_iter(cur, &layer_access.expr)
         }
+    }
+}
+
+#[allow(dead_code)]
+pub(super) struct ShapeEmitter<'a> {
+    pub shape: &'a VecLayers,
+    pub access: &'a TokenStream,
+    pub layers: &'a [LayerIdents],
+    pub outer_some_prefix: &'a str,
+    pub precount_outer_some_prefix: &'a str,
+    pub total_counter: &'a syn::Ident,
+    pub layer_counters: &'a [syn::Ident],
+    pub pp: &'a TokenStream,
+    pub pa_root: &'a TokenStream,
+    pub projection: Option<LayerProjection<'a>>,
+}
+
+#[allow(dead_code)]
+impl<'a> ShapeEmitter<'a> {
+    pub(super) fn precount(&self) -> TokenStream {
+        ShapePrecount {
+            shape: self.shape,
+            access: self.access,
+            layers: self.layers,
+            outer_some_prefix: self.precount_outer_some_prefix,
+            total_counter: self.total_counter,
+            layer_counters: self.layer_counters,
+            projection: self.projection,
+        }
+        .build()
+    }
+
+    pub(super) fn scan(
+        &self,
+        leaf_body: &'a dyn Fn(&TokenStream) -> TokenStream,
+        leaf_offsets_post_push: &'a TokenStream,
+    ) -> TokenStream {
+        ShapeScan {
+            shape: self.shape,
+            access: self.access,
+            layers: self.layers,
+            outer_some_prefix: self.outer_some_prefix,
+            leaf_body,
+            leaf_offsets_post_push,
+            pp: self.pp,
+            projection: self.projection,
+        }
+        .build()
+    }
+
+    pub(super) fn offsets_decls(
+        &self,
+        counter_for_depth: &dyn Fn(usize) -> TokenStream,
+    ) -> TokenStream {
+        let offsets: Vec<&syn::Ident> = self.layers.iter().map(|layer| &layer.offsets).collect();
+        shape_offsets_decls(&offsets, counter_for_depth)
+    }
+
+    pub(super) fn validity_decls(
+        &self,
+        counter_for_depth: &dyn Fn(usize) -> TokenStream,
+    ) -> TokenStream {
+        let validity: Vec<&syn::Ident> =
+            self.layers.iter().map(|layer| &layer.validity_mb).collect();
+        shape_validity_decls(self.shape, &validity, counter_for_depth, self.pa_root)
     }
 }
 

@@ -6,7 +6,7 @@ use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 
 #[derive(Clone, Copy)]
-pub(crate) enum FieldOverrideRef<'a> {
+pub enum FieldOverrideRef<'a> {
     Field(&'a FieldOverride),
     Leaf(&'a LeafOverride),
 }
@@ -17,7 +17,7 @@ pub(crate) enum FieldOverrideRef<'a> {
 /// / `as_binary` / `decimal(...)` / `time_unit = "..."` over a tuple is
 /// always ambiguous. The fix is to hoist the tuple into a named struct
 /// where per-element attributes can be applied at field level.
-pub(crate) fn reject_attrs_on_tuple(
+pub fn reject_attrs_on_tuple(
     field: &syn::Field,
     field_display_name: &str,
     override_: Option<FieldOverrideRef<'_>>,
@@ -47,7 +47,7 @@ pub(crate) fn reject_attrs_on_tuple(
 /// the element, and normalizes the element's wrapper stack independently of
 /// the parent's. Field-level attributes are not applied here — they are
 /// rejected on the parent field by [`reject_attrs_on_tuple`] before this runs.
-pub(crate) fn analyzed_to_tuple_element(
+pub fn analyzed_to_tuple_element(
     analyzed: AnalyzedType,
     field_display_name: &str,
 ) -> Result<TupleElement, syn::Error> {
@@ -65,7 +65,7 @@ const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
     !wrappers.is_empty()
 }
 
-pub(crate) fn reject_unsupported_wrapped_nested_tuples(
+pub fn reject_unsupported_wrapped_nested_tuples(
     analyzed: &AnalyzedType,
     field_display_name: &str,
 ) -> Result<(), syn::Error> {

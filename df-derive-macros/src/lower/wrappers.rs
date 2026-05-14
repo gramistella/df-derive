@@ -10,7 +10,7 @@ use crate::type_analysis::RawWrapper;
 /// Polars folds consecutive `Option`s into a single validity bit per
 /// position, so the count is also cached to choose the direct single-Option
 /// path versus the collapsed multi-Option path.
-pub(crate) fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
+pub fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
     let mut layers: Vec<VecLayerSpec> = Vec::new();
     let mut pending_access = AccessChain::empty();
     for w in wrappers {

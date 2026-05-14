@@ -1,5 +1,6 @@
 //! Lowering helpers between type analysis and codegen IR.
 
-pub(crate) mod field;
-pub(crate) mod tuple;
-pub(crate) mod wrappers;
+pub mod field;
+pub mod tuple;
+pub mod validation;
+pub mod wrappers;

@@ -154,89 +154,33 @@ pub fn generate_eager_asserts(
 }
 
 fn collect_nested_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    match leaf {
-        LeafSpec::Struct(ty) => {
-            if !type_depends_on_generics(ty, generic_ctx) {
-                push_unique_type(out, ty);
-            }
+    leaf.walk_leaves(&mut |leaf| {
+        if let LeafSpec::Struct(ty) = leaf
+            && !type_depends_on_generics(ty, generic_ctx)
+        {
+            push_unique_type(out, ty);
         }
-        LeafSpec::Tuple(elements) => {
-            for element in elements {
-                collect_nested_asserts(&element.leaf_spec, generic_ctx, out);
-            }
-        }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::Generic(_)
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => {}
-    }
+    });
 }
 
 fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    match leaf {
-        LeafSpec::AsStr(StringyBase::Struct(ty)) => {
-            if !type_depends_on_generics(ty, generic_ctx) {
-                push_unique_type(out, ty);
-            }
+    leaf.walk_leaves(&mut |leaf| {
+        if let LeafSpec::AsStr(StringyBase::Struct(ty)) = leaf
+            && !type_depends_on_generics(ty, generic_ctx)
+        {
+            push_unique_type(out, ty);
         }
-        LeafSpec::Tuple(elements) => {
-            for element in elements {
-                collect_as_ref_str_asserts(&element.leaf_spec, generic_ctx, out);
-            }
-        }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::Struct(_)
-        | LeafSpec::Generic(_)
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => {}
-    }
+    });
 }
 
 fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    match leaf {
-        LeafSpec::AsString(DisplayBase::Struct(ty)) => {
-            if !type_depends_on_generics(ty, generic_ctx) {
-                push_unique_type(out, ty);
-            }
+    leaf.walk_leaves(&mut |leaf| {
+        if let LeafSpec::AsString(DisplayBase::Struct(ty)) = leaf
+            && !type_depends_on_generics(ty, generic_ctx)
+        {
+            push_unique_type(out, ty);
         }
-        LeafSpec::Tuple(elements) => {
-            for element in elements {
-                collect_display_asserts(&element.leaf_spec, generic_ctx, out);
-            }
-        }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::Struct(_)
-        | LeafSpec::Generic(_)
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => {}
-    }
+    });
 }
 
 pub(in crate::codegen) fn push_unique_type(out: &mut Vec<Type>, ty: &Type) {

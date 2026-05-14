@@ -68,6 +68,36 @@ pub fn resolve_default_dataframe_mod() -> TokenStream {
         .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 
+fn leaf_needs_list_assembly(leaf: &LeafSpec) -> bool {
+    match leaf {
+        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_list_assembly),
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::AsString(_)
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Binary
+        | LeafSpec::Struct(_)
+        | LeafSpec::Generic(_) => false,
+    }
+}
+
+fn tuple_element_needs_list_assembly(element: &TupleElement) -> bool {
+    element.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&element.leaf_spec)
+}
+
+fn needs_list_assembly(ir: &StructIR) -> bool {
+    ir.fields.iter().any(|field| {
+        field.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&field.leaf_spec)
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
@@ -80,13 +110,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let validate_nested_frame = encoder::idents::validate_nested_frame();
     let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
 
-    // Keep helper names private while still emitting inherent impls for the
-    // target type. The list assembly wrapper is the only generated site that
-    // calls `Series::from_chunks_and_dtype_unchecked`.
-    quote! {
-        const _: () = {
-            #eager_asserts
-
+    let list_assembly_helpers = if needs_list_assembly(ir) {
+        quote! {
             struct #list_assembly {
                 list_arr: #pp::LargeListArray,
                 logical_dtype: #pp::DataType,
@@ -160,6 +185,19 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
             ) -> #pp::PolarsResult<#pp::Series> {
                 #list_assembly::new(list_arr, inner_logical_dtype).into_series()
             }
+        }
+    } else {
+        TokenStream::new()
+    };
+
+    // Keep helper names private while still emitting inherent impls for the
+    // target type. The list assembly wrapper is emitted only for derives that
+    // actually need `LargeListArray` stacking.
+    quote! {
+        const _: () = {
+            #eager_asserts
+
+            #list_assembly_helpers
 
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
@@ -398,7 +436,10 @@ pub fn impl_parts_with_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{FieldIR, LeafSpec, NumericKind, StructIR, WrapperShape};
+    use crate::ir::{
+        AccessChain, FieldIR, LeafShape, LeafSpec, NonEmpty, NumericKind, StructIR, VecLayerSpec,
+        VecLayers, WrapperShape,
+    };
     use quote::{format_ident, quote};
 
     fn test_config() -> MacroConfig {
@@ -448,5 +489,60 @@ mod tests {
             }],
         };
         assert_generated_impls_are_automatically_derived(&non_empty_ir);
+    }
+
+    #[test]
+    fn list_assembly_helper_is_emitted_only_for_vec_shapes() {
+        let scalar_ir = StructIR {
+            name: format_ident!("ScalarRow"),
+            generics: syn::Generics::default(),
+            fields: vec![FieldIR {
+                name: format_ident!("id"),
+                field_index: None,
+                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+                wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
+                decimal_generic_params: Vec::new(),
+                decimal_backend_ty: None,
+                outer_smart_ptr_depth: 0,
+            }],
+        };
+        let scalar = generate_code(&scalar_ir, &test_config()).to_string();
+        assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
+        assert!(
+            !scalar.contains("from_chunks_and_dtype_unchecked"),
+            "{scalar}"
+        );
+        assert!(!scalar.contains("unsafe"), "{scalar}");
+
+        let vec_ir = StructIR {
+            name: format_ident!("VecRow"),
+            generics: syn::Generics::default(),
+            fields: vec![FieldIR {
+                name: format_ident!("ids"),
+                field_index: None,
+                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+                wrapper_shape: WrapperShape::Vec(VecLayers {
+                    layers: NonEmpty::new(
+                        VecLayerSpec {
+                            option_layers_above: 0,
+                            access: AccessChain::empty(),
+                        },
+                        Vec::new(),
+                    ),
+                    inner_option_layers: 0,
+                    inner_access: AccessChain::empty(),
+                }),
+                decimal_generic_params: Vec::new(),
+                decimal_backend_ty: None,
+                outer_smart_ptr_depth: 0,
+            }],
+        };
+        let with_vec = generate_code(&vec_ir, &test_config()).to_string();
+        assert!(with_vec.contains("__DfDeriveListAssembly"), "{with_vec}");
+        assert!(
+            with_vec.contains("from_chunks_and_dtype_unchecked"),
+            "{with_vec}"
+        );
+        assert!(with_vec.contains("unsafe"), "{with_vec}");
     }
 }

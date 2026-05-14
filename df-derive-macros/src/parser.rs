@@ -1,4 +1,5 @@
 use crate::attrs::field::{FieldOverride, LeafOverride, parse_field_override};
+use crate::diagnostics;
 use crate::ir::{
     AccessChain, AccessStep, DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafShape,
     LeafSpec, NonEmpty, NumericKind, StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers,
@@ -80,14 +81,10 @@ fn reject_attrs_on_tuple(
             LeafOverride::TimeUnit(_) => "time_unit = \"...\"",
         },
     };
-    Err(syn::Error::new_spanned(
+    Err(diagnostics::unsupported_tuple_attr(
         field,
-        format!(
-            "field `{field_display_name}` has `{attr}` but its type is a tuple; \
-             field-level attributes do not apply to multi-column tuple fields. \
-             Hoist the tuple into a named struct that derives \
-             `ToDataFrame` if you need per-element attributes."
-        ),
+        field_display_name,
+        attr,
     ))
 }
 
@@ -100,56 +97,6 @@ fn reject_attrs_on_tuple(
 /// Tuple bases recurse: each element runs through the same default pipeline
 /// (no field-level overrides apply at element level — the parser rejects
 /// them on the parent field).
-fn unannotated_cow_bytes_error(field_display_name: &str, can_add_as_binary: bool) -> String {
-    if can_add_as_binary {
-        format!(
-            "field `{field_display_name}` uses `Cow<'_, [u8]>` without `as_binary`; \
-             add `#[df_derive(as_binary)]` to encode it as Binary, or use \
-             `Vec<u8>` if you want the default `List(UInt8)` representation"
-        )
-    } else {
-        format!(
-            "field `{field_display_name}` contains `Cow<'_, [u8]>` in a tuple element; \
-             tuple elements cannot be annotated with `as_binary`, so use `Vec<u8>` for \
-             the default `List(UInt8)` representation or hoist the bytes into a named \
-             struct field with `#[df_derive(as_binary)]`"
-        )
-    }
-}
-
-fn unannotated_borrowed_bytes_error(field_display_name: &str, can_add_as_binary: bool) -> String {
-    if can_add_as_binary {
-        format!(
-            "field `{field_display_name}` uses `&[u8]` without `as_binary`; \
-             add `#[df_derive(as_binary)]` to encode it as Binary, or use \
-             `Vec<u8>` if you want the default `List(UInt8)` representation"
-        )
-    } else {
-        format!(
-            "field `{field_display_name}` contains `&[u8]` in a tuple element; \
-             tuple elements cannot be annotated with `as_binary`, so use `Vec<u8>` \
-             for the default `List(UInt8)` representation or hoist the bytes into \
-             a named struct field with `#[df_derive(as_binary)]`"
-        )
-    }
-}
-
-fn borrowed_slice_error(field_display_name: &str) -> String {
-    format!(
-        "field `{field_display_name}` uses `&[T]`, but df-derive only \
-         supports `&[u8]` with `#[df_derive(as_binary)]`; use `Vec<T>` \
-         for list columns"
-    )
-}
-
-fn cow_slice_error(field_display_name: &str) -> String {
-    format!(
-        "field `{field_display_name}` uses `Cow<'_, [T]>`, but df-derive only \
-         supports `Cow<'_, [u8]>` with `#[df_derive(as_binary)]`; use `Vec<T>` \
-         for list columns"
-    )
-}
-
 fn default_leaf_for_base<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
@@ -161,22 +108,18 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
         AnalyzedBase::String => Ok(LeafSpec::String),
         AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
-        AnalyzedBase::BorrowedBytes => Err(syn::Error::new_spanned(
+        AnalyzedBase::BorrowedBytes => Err(diagnostics::unannotated_borrowed_bytes(
             span,
-            unannotated_borrowed_bytes_error(field_display_name, can_add_as_binary),
+            field_display_name,
+            can_add_as_binary,
         )),
-        AnalyzedBase::CowBytes => Err(syn::Error::new_spanned(
+        AnalyzedBase::CowBytes => Err(diagnostics::unannotated_cow_bytes(
             span,
-            unannotated_cow_bytes_error(field_display_name, can_add_as_binary),
+            field_display_name,
+            can_add_as_binary,
         )),
-        AnalyzedBase::BorrowedSlice => Err(syn::Error::new_spanned(
-            span,
-            borrowed_slice_error(field_display_name),
-        )),
-        AnalyzedBase::CowSlice => Err(syn::Error::new_spanned(
-            span,
-            cow_slice_error(field_display_name),
-        )),
+        AnalyzedBase::BorrowedSlice => Err(diagnostics::borrowed_slice(span, field_display_name)),
+        AnalyzedBase::CowSlice => Err(diagnostics::cow_slice(span, field_display_name)),
         AnalyzedBase::Bool => Ok(LeafSpec::Bool),
         AnalyzedBase::DateTimeTz => Ok(LeafSpec::DateTime(DEFAULT_DATETIME_UNIT)),
         AnalyzedBase::NaiveDate => Ok(LeafSpec::NaiveDate),
@@ -242,14 +185,9 @@ fn reject_unsupported_wrapped_nested_tuples(
         if matches!(element.base, AnalyzedBase::Tuple(_))
             && (parent_wrapped || has_semantic_wrappers(&element.wrappers))
         {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::unsupported_wrapped_nested_tuple(
                 &element.field_ty,
-                format!(
-                    "field `{field_display_name}` contains a nested tuple whose projection path \
-                     is wrapped; nested tuples are supported only when each tuple on that path is \
-                     unwrapped. Hoist the inner tuple into a named struct deriving `ToDataFrame`, \
-                     or remove the `Option`/`Vec` wrapper around the tuple."
-                ),
+                field_display_name,
             ));
         }
 
@@ -295,17 +233,9 @@ fn reject_direct_self_reference(
     struct_name: &Ident,
 ) -> Result<(), syn::Error> {
     match &analyzed.base {
-        AnalyzedBase::Struct(ty) if is_direct_self_type(ty, struct_name) => {
-            Err(syn::Error::new_spanned(
-                ty,
-                format!(
-                    "field `{field_display_name}` recursively references `{struct_name}` after \
-                     transparent wrapper peeling; recursive nested DataFrame schemas are not \
-                     supported. Store an identifier or foreign key, flatten the structure \
-                     before deriving, or mark the field `#[df_derive(skip)]`."
-                ),
-            ))
-        }
+        AnalyzedBase::Struct(ty) if is_direct_self_type(ty, struct_name) => Err(
+            diagnostics::direct_self_reference(ty, field_display_name, struct_name),
+        ),
         AnalyzedBase::Tuple(elements) => {
             for element in elements {
                 reject_direct_self_reference(element, field_display_name, struct_name)?;
@@ -344,15 +274,7 @@ fn parse_leaf_as_str(
         | AnalyzedBase::NaiveDateTime
         | AnalyzedBase::StdDuration
         | AnalyzedBase::ChronoDuration
-        | AnalyzedBase::Decimal => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `as_str` but its base type does not implement \
-                 `AsRef<str>`; `as_str` only applies to `String`, `&str`, `Cow<'_, str>`, \
-                 custom struct types, or generic type parameters — drop the attribute or \
-                 change the field type"
-            ),
-        )),
+        | AnalyzedBase::Decimal => Err(diagnostics::as_str_wrong_base(field, field_display_name)),
     }
 }
 
@@ -383,46 +305,20 @@ fn display_base_for_as_string(
         | AnalyzedBase::Decimal => Ok(DisplayBase::Inherent),
         AnalyzedBase::Struct(ty) => Ok(DisplayBase::Struct(ty.clone())),
         AnalyzedBase::Generic(ident) => Ok(DisplayBase::Generic(ident.clone())),
-        AnalyzedBase::StdDuration => Err(syn::Error::new_spanned(
+        AnalyzedBase::StdDuration => Err(diagnostics::as_string_std_duration(
             field,
-            format!(
-                "field `{field_display_name}` has `as_string`, but \
-                 `std::time::Duration` and `core::time::Duration` do not implement \
-                 `Display`; drop `as_string` to encode a Duration column, or wrap \
-                 the value in a custom type that implements `Display`"
-            ),
+            field_display_name,
         )),
-        AnalyzedBase::BorrowedBytes | AnalyzedBase::CowBytes => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `as_string`, but byte slices \
-                 (`&[u8]`/`Cow<'_, [u8]>`) do not implement `Display`; use \
-                 `#[df_derive(as_binary)]` for a Binary column, use `Vec<u8>` \
-                 for a `List(UInt8)` column, or wrap the value in a custom type \
-                 that implements `Display`"
-            ),
-        )),
-        AnalyzedBase::BorrowedSlice | AnalyzedBase::CowSlice => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `as_string`, but borrowed slices \
-                 (`&[T]`/`Cow<'_, [T]>`) do not implement `Display`; use `Vec<T>` \
-                 for list columns, or wrap the value in a custom type that \
-                 implements `Display`"
-            ),
-        )),
+        AnalyzedBase::BorrowedBytes | AnalyzedBase::CowBytes => {
+            Err(diagnostics::as_string_bytes(field, field_display_name))
+        }
+        AnalyzedBase::BorrowedSlice | AnalyzedBase::CowSlice => {
+            Err(diagnostics::as_string_slice(field, field_display_name))
+        }
         // Tuple bases are rejected by `reject_attrs_on_tuple` before this
         // function runs. Keep this branch explicit so any bypass still emits
         // the same public diagnostic family instead of silently accepting it.
-        AnalyzedBase::Tuple(_) => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `as_string` but its type is a tuple; \
-                 field-level attributes do not apply to multi-column tuple fields. \
-                 Hoist the tuple into a named struct that derives `ToDataFrame` if \
-                 you need per-element attributes."
-            ),
-        )),
+        AnalyzedBase::Tuple(_) => Err(diagnostics::as_string_tuple(field, field_display_name)),
     }
 }
 
@@ -443,15 +339,7 @@ fn parse_leaf_decimal(
         AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
             Ok(LeafSpec::Decimal { precision, scale })
         }
-        _ => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `decimal(...)` but its base type is not \
-                 a decimal backend candidate; `decimal(...)` applies to types named \
-                 `Decimal`, custom struct types, or generic type parameters that \
-                 implement `Decimal128Encode`"
-            ),
-        )),
+        _ => Err(diagnostics::decimal_wrong_base(field, field_display_name)),
     }
 }
 
@@ -496,31 +384,13 @@ fn parse_leaf_time_unit(
             unit,
             source: DurationSource::Chrono,
         }),
-        AnalyzedBase::NaiveDate => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 `chrono::NaiveDate`, which has a fixed encoding (i32 days since 1970-01-01) \
-                 and offers no unit choice — remove the attribute"
-            ),
-        )),
-        AnalyzedBase::NaiveTime => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 `chrono::NaiveTime`, which has a fixed encoding (i64 nanoseconds since \
-                 midnight) and offers no unit choice — remove the attribute"
-            ),
-        )),
-        _ => Err(syn::Error::new_spanned(
-            field,
-            format!(
-                "field `{field_display_name}` has `time_unit = \"...\"` but its base type is \
-                 not `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, \
-                 `std::time::Duration`, `core::time::Duration`, or \
-                 `chrono::Duration`; remove the attribute or change the field type"
-            ),
-        )),
+        AnalyzedBase::NaiveDate => {
+            Err(diagnostics::time_unit_naive_date(field, field_display_name))
+        }
+        AnalyzedBase::NaiveTime => {
+            Err(diagnostics::time_unit_naive_time(field, field_display_name))
+        }
+        _ => Err(diagnostics::time_unit_wrong_base(field, field_display_name)),
     }
 }
 
@@ -580,61 +450,31 @@ fn parse_as_binary_shape(
     base: &AnalyzedBase,
     wrappers: &[RawWrapper],
 ) -> Result<(LeafSpec, Vec<RawWrapper>), syn::Error> {
-    let bare_u8_msg = || {
-        format!(
-            "field `{field_display_name}` has `as_binary` but its type is a single `u8`; \
-             `as_binary` requires a `Vec<u8>` shape — bare `u8` is a single byte, not \
-             a binary blob. Wrap the field in `Vec<u8>` to opt into Binary."
-        )
-    };
-    let inner_option_msg = || {
-        format!(
-            "field `{field_display_name}` has `as_binary` but the wrapper stack places an \
-             `Option` between the `Vec` and the `u8` leaf; BinaryView cannot carry \
-             per-byte nulls. Use `Vec<u8>` directly (drop the inner `Option`)."
-        )
-    };
-    let wrong_base_msg = || {
-        format!(
-            "field `{field_display_name}` has `as_binary` but its base type is not `u8`; \
-             `as_binary` requires a `Vec<u8>` shape (the innermost `Vec` becomes the \
-             Binary blob). Change the field type or drop the attribute."
-        )
-    };
-    let cow_slice_msg = || {
-        format!(
-            "field `{field_display_name}` has `as_binary` on `Cow<'_, [T]>`, but \
-             `as_binary` only supports `Cow<'_, [u8]>`; use `Vec<T>` for list columns"
-        )
-    };
-    let borrowed_slice_msg = || {
-        format!(
-            "field `{field_display_name}` has `as_binary` on `&[T]`, but \
-             `as_binary` only supports `&[u8]`; use `Vec<T>` for list columns"
-        )
-    };
     if matches!(base, AnalyzedBase::CowBytes | AnalyzedBase::BorrowedBytes) {
         return Ok((LeafSpec::Binary, wrappers.to_vec()));
     }
     if matches!(base, AnalyzedBase::BorrowedSlice) {
-        return Err(syn::Error::new_spanned(field, borrowed_slice_msg()));
+        return Err(diagnostics::binary_borrowed_slice(
+            field,
+            field_display_name,
+        ));
     }
     if matches!(base, AnalyzedBase::CowSlice) {
-        return Err(syn::Error::new_spanned(field, cow_slice_msg()));
+        return Err(diagnostics::binary_cow_slice(field, field_display_name));
     }
     if !matches!(base, AnalyzedBase::Numeric(NumericKind::U8)) {
-        return Err(syn::Error::new_spanned(field, wrong_base_msg()));
+        return Err(diagnostics::binary_wrong_base(field, field_display_name));
     }
     match wrappers.last() {
-        None => Err(syn::Error::new_spanned(field, bare_u8_msg())),
+        None => Err(diagnostics::bare_binary_u8(field, field_display_name)),
         Some(RawWrapper::Option) => {
             // Either bare `Option<u8>` (single `Option` wrapper) or any deeper
             // stack ending in `Option`-immediately-above-`u8`. Both share the
             // "no per-byte nulls" rejection.
             if wrappers.len() == 1 {
-                Err(syn::Error::new_spanned(field, bare_u8_msg()))
+                Err(diagnostics::bare_binary_u8(field, field_display_name))
             } else {
-                Err(syn::Error::new_spanned(field, inner_option_msg()))
+                Err(diagnostics::binary_inner_option(field, field_display_name))
             }
         }
         Some(RawWrapper::Vec) => {
@@ -642,7 +482,9 @@ fn parse_as_binary_shape(
             trimmed.pop();
             Ok((LeafSpec::Binary, trimmed))
         }
-        Some(RawWrapper::SmartPtr) => Err(syn::Error::new_spanned(field, wrong_base_msg())),
+        Some(RawWrapper::SmartPtr) => {
+            Err(diagnostics::binary_wrong_base(field, field_display_name))
+        }
     }
 }
 

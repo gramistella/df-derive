@@ -1,4 +1,4 @@
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use chrono::{NaiveDate, NaiveTime};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
@@ -202,6 +202,42 @@ struct BoxNestedTupleWithArc {
     nested: Box<((i32, String), Arc<bool>)>,
 }
 
+// 30. Parent Option tuple with an implicit rust_decimal::Decimal leaf.
+#[derive(ToDataFrame, Clone)]
+struct OptTupleWithRustDecimal {
+    pair: Option<(rust_decimal::Decimal,)>,
+}
+
+#[derive(Clone)]
+struct MyDecimal(i128);
+
+impl Decimal128Encode for MyDecimal {
+    fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+        Some(self.0 + i128::from(target_scale))
+    }
+}
+
+mod custom_decimal_tuple_backend {
+    use super::*;
+
+    type Decimal = MyDecimal;
+
+    // 31. Parent Option tuple with a custom backend routed through the
+    // default Decimal128Encode trait. Tuple elements cannot carry field-level
+    // decimal attrs, so the syntactic `Decimal` alias exercises the implicit
+    // decimal backend path while the impl lives on the custom type.
+    #[derive(ToDataFrame, Clone)]
+    pub(super) struct OptTupleWithCustomDecimal {
+        pair: Option<(Decimal,)>,
+    }
+
+    pub(super) fn row(mantissa: Option<i128>) -> OptTupleWithCustomDecimal {
+        OptTupleWithCustomDecimal {
+            pair: mantissa.map(|value| (MyDecimal(value),)),
+        }
+    }
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -259,6 +295,14 @@ fn nested_string_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<String>>>> 
             other => panic!("expected inner string List or Null, got {other:?}"),
         })
         .collect()
+}
+
+fn decimal_mantissa(value: AnyValue<'_>) -> Option<i128> {
+    match value {
+        AnyValue::Decimal(value, _precision, _scale) => Some(value),
+        AnyValue::Null => None,
+        other => panic!("expected decimal or null, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1065,6 +1109,72 @@ fn runtime_semantics() {
             .get(0)
             .unwrap(),
         AnyValue::Boolean(true),
+    );
+
+    // 30. Option<(rust_decimal::Decimal,)>: parent Option projection yields
+    // Option<&Decimal>; decimal UFCS dispatch must still reach the backend.
+    let rust_decimal_rows = vec![
+        OptTupleWithRustDecimal {
+            pair: Some((rust_decimal::Decimal::new(123, 2),)),
+        },
+        OptTupleWithRustDecimal { pair: None },
+    ];
+    let rust_decimal_df = rust_decimal_rows.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        rust_decimal_df.column("pair.field_0").unwrap().dtype(),
+        &DataType::Decimal(38, 10),
+    );
+    assert_eq!(
+        decimal_mantissa(
+            rust_decimal_df
+                .column("pair.field_0")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        Some(12_300_000_000),
+    );
+    assert_eq!(
+        decimal_mantissa(
+            rust_decimal_df
+                .column("pair.field_0")
+                .unwrap()
+                .get(1)
+                .unwrap()
+        ),
+        None,
+    );
+
+    // 31. Option<(Decimal alias to MyDecimal,)>: custom backend dispatch
+    // uses the same projected Option<&T> shape as rust_decimal.
+    let custom_decimal_rows = vec![
+        custom_decimal_tuple_backend::row(Some(700)),
+        custom_decimal_tuple_backend::row(None),
+    ];
+    let custom_decimal_df = custom_decimal_rows.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        custom_decimal_df.column("pair.field_0").unwrap().dtype(),
+        &DataType::Decimal(38, 10),
+    );
+    assert_eq!(
+        decimal_mantissa(
+            custom_decimal_df
+                .column("pair.field_0")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        Some(710),
+    );
+    assert_eq!(
+        decimal_mantissa(
+            custom_decimal_df
+                .column("pair.field_0")
+                .unwrap()
+                .get(1)
+                .unwrap()
+        ),
+        None,
     );
 
     // Batch round-trip

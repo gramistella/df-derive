@@ -170,3 +170,21 @@ fn rust_decimal_reference_impl_returns_none_for_invalid_target_scale() {
     assert!(value.try_to_i128_mantissa(39).is_none());
     assert!(value.try_to_i128_mantissa(u32::MAX).is_none());
 }
+
+struct CustomReferenceBackend(i128);
+
+impl df_derive_core::dataframe::Decimal128Encode for CustomReferenceBackend {
+    fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+        Some(self.0 + i128::from(target_scale))
+    }
+}
+
+#[test]
+fn decimal128_encode_delegates_through_references() {
+    let value = CustomReferenceBackend(100);
+    let by_ref = &value;
+    let by_ref_ref = &&value;
+
+    assert_eq!(by_ref.try_to_i128_mantissa(2), Some(102));
+    assert_eq!(by_ref_ref.try_to_i128_mantissa(3), Some(103));
+}

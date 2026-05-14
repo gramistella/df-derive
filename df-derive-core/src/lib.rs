@@ -178,6 +178,16 @@ pub mod dataframe {
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
     }
 
+    impl<T> Decimal128Encode for &T
+    where
+        T: Decimal128Encode + ?Sized,
+    {
+        #[inline]
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+            <T as Decimal128Encode>::try_to_i128_mantissa(*self, target_scale)
+        }
+    }
+
     /// Reference [`Decimal128Encode`] impl for [`rust_decimal::Decimal`].
     ///
     /// Banker's-rounding contract: round-half-to-even on scale-down,

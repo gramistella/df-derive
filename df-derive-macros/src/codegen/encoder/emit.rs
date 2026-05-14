@@ -29,8 +29,8 @@ use super::nested_columns::{
     inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
 };
 use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
-    shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
+    LayerIdents, LayerWrap, ShapeEmitter, ShapePrecount, ShapeScan, freeze_offsets_buf,
+    freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
@@ -596,30 +596,25 @@ fn pep_emit(
     pp: &TokenStream,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
-    let precount = build_precount(
-        access,
+    let emitter = ShapeEmitter {
         shape,
+        access,
         layers,
-        kind.precount_outer_some_prefix(),
-        total,
+        outer_some_prefix: kind.scan_outer_some_prefix(),
+        precount_outer_some_prefix: kind.precount_outer_some_prefix(),
+        total_counter: total,
         layer_counters,
-    );
-    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
-    let scan = build_scan(
-        access,
-        shape,
-        layers,
-        kind.scan_outer_some_prefix(),
-        &leaf_body,
-        &pep.leaf_offsets_post_push,
         pp,
-    );
+        pa_root,
+        projection: None,
+    };
+    let precount = emitter.precount();
+    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
+    let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
 
     let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
-    let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
-    let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
-    let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
-    let validity_decls = shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
+    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
+    let validity_decls = emitter.validity_decls(&counter_for_depth);
 
     let materialize = pep_materialize(pep, shape, layers, kind, pa_root, pp);
     let storage_decls = &pep.storage_decls;

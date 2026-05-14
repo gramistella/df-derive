@@ -391,7 +391,6 @@ impl ShapePrecount<'_> {
     }
 }
 
-#[allow(dead_code)]
 pub(super) struct ShapeEmitter<'a> {
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
@@ -405,7 +404,6 @@ pub(super) struct ShapeEmitter<'a> {
     pub projection: Option<LayerProjection<'a>>,
 }
 
-#[allow(dead_code)]
 impl<'a> ShapeEmitter<'a> {
     pub(super) fn precount(&self) -> TokenStream {
         ShapePrecount {

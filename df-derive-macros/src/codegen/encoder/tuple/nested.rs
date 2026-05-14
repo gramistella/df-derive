@@ -3,7 +3,7 @@ use crate::ir::{AccessChain, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::super::nested_columns::consume_nested_columns;
+use super::super::nested_columns::{consume_nested_columns, nested_df_decl, nested_take_decl};
 use super::super::shape_walk::{
     LayerIdents, freeze_offsets_buf, freeze_validity_bitmap, shape_assemble_list_stack,
 };
@@ -47,7 +47,6 @@ pub(super) fn emit_vec_parent_nested(
     let inner_chunk = idents::nested_inner_chunk();
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
-    let validate_nested_frame = idents::validate_nested_frame();
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     let layers: Vec<LayerIdents> = (0..composed_shape.depth())
@@ -198,17 +197,8 @@ pub(super) fn emit_vec_parent_nested(
         pp,
     );
 
-    let df_decl = quote! {
-        let #df = <#type_path as #columnar_trait>::columnar_from_refs(&#flat)?;
-        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#type_path>())?;
-    };
-    let take_decl = quote! {
-        let #take: #pp::IdxCa =
-            <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                "".into(),
-                #positions.iter().copied(),
-            );
-    };
+    let df_decl = nested_df_decl(&df, type_path, columnar_trait, &flat);
+    let take_decl = nested_take_decl(&take, &positions, pp);
 
     // Hoist offsets/validity freezes above the dispatch — collect-then-bulk
     // path reuses them per-column.

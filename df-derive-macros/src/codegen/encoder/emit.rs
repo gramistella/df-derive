@@ -22,7 +22,7 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
-use super::nested_columns::consume_nested_columns;
+use super::nested_columns::{consume_nested_columns, nested_df_decl, nested_take_decl};
 use super::shape_walk::{
     LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
@@ -463,21 +463,11 @@ fn ctb_materialize(
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
-    let validate_nested_frame = idents::validate_nested_frame();
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     // Decls reused across match arms.
-    let df_decl = quote! {
-        let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#ty>())?;
-    };
-    let take_decl = quote! {
-        let #take: #pp::IdxCa =
-            <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
-                "".into(),
-                #positions.iter().copied(),
-            );
-    };
+    let df_decl = nested_df_decl(&df, ty, columnar_trait, &flat);
+    let take_decl = nested_take_decl(&take, &positions, pp);
 
     // Per-column inner-Series expressions for the four branches (or two,
     // when no inner Option). The list-array wrap is identical across

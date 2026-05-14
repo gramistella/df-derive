@@ -3,6 +3,33 @@ use quote::quote;
 
 use super::idents;
 
+pub(super) fn nested_df_decl(
+    df: &syn::Ident,
+    ty: &TokenStream,
+    columnar_trait: &TokenStream,
+    flat: &syn::Ident,
+) -> TokenStream {
+    let validate_nested_frame = idents::validate_nested_frame();
+    quote! {
+        let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
+        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#ty>())?;
+    }
+}
+
+pub(super) fn nested_take_decl(
+    take: &syn::Ident,
+    positions: &syn::Ident,
+    pp: &TokenStream,
+) -> TokenStream {
+    quote! {
+        let #take: #pp::IdxCa =
+            <#pp::IdxCa as #pp::NewChunkedArray<_, _>>::from_iter_options(
+                "".into(),
+                #positions.iter().copied(),
+            );
+    }
+}
+
 /// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
 /// and pushes each inner-Series-yielding expression onto `columns` with the
 /// parent name prefixed. Shared by every nested dispatch arm, with each arm

@@ -405,6 +405,59 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }
 
+#[allow(dead_code)]
+struct PathView<'a> {
+    path: &'a syn::Path,
+}
+
+#[allow(dead_code)]
+impl<'a> PathView<'a> {
+    fn from_type_path(type_path: &'a TypePath) -> Option<Self> {
+        type_path.qself.is_none().then_some(Self {
+            path: &type_path.path,
+        })
+    }
+
+    fn exact_no_args(&self, segments: &[&str]) -> bool {
+        self.path.segments.len() == segments.len()
+            && self
+                .path
+                .segments
+                .iter()
+                .zip(segments)
+                .all(|(segment, expected)| {
+                    segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
+                })
+    }
+
+    fn exact_with_leaf_args(&self, segments: &[&str]) -> bool {
+        self.path.segments.len() == segments.len()
+            && self.path.segments.iter().zip(segments).enumerate().all(
+                |(idx, (segment, expected))| {
+                    segment.ident == *expected
+                        && (idx + 1 == segments.len()
+                            || matches!(segment.arguments, PathArguments::None))
+                },
+            )
+    }
+
+    fn prefix_no_args(&self, prefix: &[&str]) -> bool {
+        self.path.segments.len() > prefix.len()
+            && self
+                .path
+                .segments
+                .iter()
+                .zip(prefix)
+                .all(|(segment, expected)| {
+                    segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
+                })
+    }
+
+    fn leaf(&self) -> Option<&'a syn::PathSegment> {
+        self.path.segments.last()
+    }
+}
+
 fn path_is_exact_no_args(type_path: &TypePath, segments: &[&str]) -> bool {
     type_path.qself.is_none()
         && type_path.path.segments.len() == segments.len()

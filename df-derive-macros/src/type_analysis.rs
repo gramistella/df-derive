@@ -252,35 +252,7 @@ fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Er
     if let Type::Path(type_path) = current_type
         && let Some(collection) = unsupported_collection_kind(type_path)
     {
-        let message = match collection {
-            UnsupportedCollection::HashMap => {
-                "df-derive does not support `HashMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
-                    .to_owned()
-            }
-            UnsupportedCollection::BTreeMap => {
-                "df-derive does not support `BTreeMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
-                    .to_owned()
-            }
-            UnsupportedCollection::HashSet => {
-                "df-derive does not support `HashSet` fields. Convert to \
-                 `Vec<T>` (order will be set-defined, not insertion-defined)."
-                    .to_owned()
-            }
-            UnsupportedCollection::BTreeSet => {
-                "df-derive does not support `BTreeSet` fields. Convert to \
-                 `Vec<T>` (order will follow the set's sorted iteration order)."
-                    .to_owned()
-            }
-            UnsupportedCollection::VecDeque | UnsupportedCollection::LinkedList => {
-                let collection = collection.name();
-                format!(
-                    "df-derive does not support `{collection}` fields. Convert to `Vec<T>` before assignment."
-                )
-            }
-        };
-        return Err(syn::Error::new_spanned(current_type, message));
+        return Err(collection.diagnostic(current_type));
     }
     Ok(())
 }
@@ -493,6 +465,30 @@ impl UnsupportedCollection {
             Self::VecDeque => "VecDeque",
             Self::LinkedList => "LinkedList",
         }
+    }
+
+    fn diagnostic(self, current_type: &Type) -> syn::Error {
+        let message = match self {
+            Self::HashMap => "df-derive does not support `HashMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
+                .to_owned(),
+            Self::BTreeMap => "df-derive does not support `BTreeMap` fields. Convert to \
+                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
+                .to_owned(),
+            Self::HashSet => "df-derive does not support `HashSet` fields. Convert to \
+                 `Vec<T>` (order will be set-defined, not insertion-defined)."
+                .to_owned(),
+            Self::BTreeSet => "df-derive does not support `BTreeSet` fields. Convert to \
+                 `Vec<T>` (order will follow the set's sorted iteration order)."
+                .to_owned(),
+            Self::VecDeque | Self::LinkedList => {
+                let collection = self.name();
+                format!(
+                    "df-derive does not support `{collection}` fields. Convert to `Vec<T>` before assignment."
+                )
+            }
+        };
+        syn::Error::new_spanned(current_type, message)
     }
 }
 

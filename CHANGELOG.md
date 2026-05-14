@@ -15,6 +15,9 @@ All notable changes to this project will be documented in this file.
   `scale` keys instead of silently using the last value.
 - Unsupported collection diagnostics now cover `BTreeSet`, `VecDeque`, and
   `LinkedList` with tailored migration hints.
+- Obvious direct self-recursive nested fields such as `Option<Box<Node>>` are
+  now rejected before codegen instead of producing recursive schemas or
+  unusable impls.
 
 ## [0.3.0] - 2026-05-11
 

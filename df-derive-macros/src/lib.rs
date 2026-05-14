@@ -183,6 +183,9 @@ fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
 ///   valid generic payload (zero columns); direct `field: ()` fields are
 ///   rejected.
 /// - All nested custom structs must also derive `ToDataFrame`.
+/// - Obvious direct self-recursive nested fields using `Self` or the bare
+///   deriving struct name are rejected after transparent wrapper peeling,
+///   including `Box<T>`/`Option<Box<T>>` forms and tuple fields containing the same.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.
 #[proc_macro_derive(ToDataFrame, attributes(df_derive))]

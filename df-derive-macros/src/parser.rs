@@ -4,8 +4,8 @@ use crate::ir::{
     WrapperShape,
 };
 use crate::type_analysis::{
-    AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
-    DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
+    AnalyzedBase, AnalyzedType, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION,
+    DEFAULT_DECIMAL_SCALE, DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
 };
 use proc_macro2::Span;
 use quote::{ToTokens, format_ident};
@@ -622,7 +622,7 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
 /// the parent's. Field-level attributes are not applied here — they are
 /// rejected on the parent field by [`reject_attrs_on_tuple`] before this runs.
 fn analyzed_to_tuple_element(
-    analyzed: crate::type_analysis::AnalyzedType,
+    analyzed: AnalyzedType,
     field_display_name: &str,
 ) -> Result<TupleElement, syn::Error> {
     let leaf_spec =
@@ -640,7 +640,7 @@ const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
 }
 
 fn reject_unsupported_wrapped_nested_tuples(
-    analyzed: &crate::type_analysis::AnalyzedType,
+    analyzed: &AnalyzedType,
     field_display_name: &str,
 ) -> Result<(), syn::Error> {
     let AnalyzedBase::Tuple(elements) = &analyzed.base else {
@@ -667,6 +667,46 @@ fn reject_unsupported_wrapped_nested_tuples(
     }
 
     Ok(())
+}
+
+fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return false;
+    }
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    segment.ident == "Self" || &segment.ident == struct_name
+}
+
+fn reject_direct_self_reference(
+    analyzed: &AnalyzedType,
+    field_display_name: &str,
+    struct_name: &Ident,
+) -> Result<(), syn::Error> {
+    match &analyzed.base {
+        AnalyzedBase::Struct(ty) if is_direct_self_type(ty, struct_name) => {
+            Err(syn::Error::new_spanned(
+                ty,
+                format!(
+                    "field `{field_display_name}` recursively references `{struct_name}` after \
+                     transparent wrapper peeling; recursive nested DataFrame schemas are not \
+                     supported. Store an identifier or foreign key, flatten the structure \
+                     before deriving, or mark the field `#[df_derive(skip)]`."
+                ),
+            ))
+        }
+        AnalyzedBase::Tuple(elements) => {
+            for element in elements {
+                reject_direct_self_reference(element, field_display_name, struct_name)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn parse_leaf_as_str(
@@ -1007,6 +1047,7 @@ fn process_field(
     field: &syn::Field,
     name_ident: Ident,
     field_index: Option<usize>,
+    struct_name: &Ident,
     generic_params: &[Ident],
 ) -> Result<Option<FieldIR>, syn::Error> {
     let display_name = name_ident.to_string();
@@ -1015,6 +1056,7 @@ fn process_field(
         return Ok(None);
     }
     let analyzed = analyze_type(&field.ty, generic_params)?;
+    reject_direct_self_reference(&analyzed, &display_name, struct_name)?;
     reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let decimal_generic_params =
@@ -1089,7 +1131,9 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
                     .as_ref()
                     .expect("named fields must have ident")
                     .clone();
-                if let Some(field_ir) = process_field(field, name_ident, None, &generic_params)? {
+                if let Some(field_ir) =
+                    process_field(field, name_ident, None, &name, &generic_params)?
+                {
                     fields_ir.push(field_ir);
                 }
             }
@@ -1099,7 +1143,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
             for (index, field) in unnamed.unnamed.iter().enumerate() {
                 let name_ident = format_ident!("field_{}", index);
                 if let Some(field_ir) =
-                    process_field(field, name_ident, Some(index), &generic_params)?
+                    process_field(field, name_ident, Some(index), &name, &generic_params)?
                 {
                     fields_ir.push(field_ir);
                 }

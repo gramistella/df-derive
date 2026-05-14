@@ -67,7 +67,7 @@ fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
 /// Whether a per-field emission produces schema entries (`(name, dtype)`
 /// tuples) or empty-series rows. Both modes iterate the same field set and
 /// share the Primitive-vs-Nested classification; only the leaf expression
-/// (and the runtime accumulator inside [`super::nested`]) varies.
+/// (and the runtime accumulator inside [`super::schema_nested`]) varies.
 #[derive(Clone, Copy)]
 pub(in crate::codegen) enum EmitMode {
     SchemaEntries,
@@ -75,7 +75,7 @@ pub(in crate::codegen) enum EmitMode {
 }
 
 /// Shared per-field emitter for the schema / empty-rows pair. Classifies
-/// the field once, then dispatches to the matching [`super::nested`]
+/// the field once, then dispatches to the matching [`super::schema_nested`]
 /// runtime helper for nested fields, or emits a one-element vec literal
 /// for primitive fields.
 fn build_field_entries(
@@ -87,7 +87,7 @@ fn build_field_entries(
     match (field.leaf_spec.route(), mode) {
         (LeafRoute::Nested(nested), EmitMode::SchemaEntries) => {
             let type_path = nested_type_path(nested);
-            super::nested::generate_schema_entries_for_struct(
+            super::schema_nested::generate_schema_entries_for_struct(
                 &type_path,
                 &config.to_dataframe_trait_path,
                 &name,
@@ -97,7 +97,7 @@ fn build_field_entries(
         }
         (LeafRoute::Nested(nested), EmitMode::EmptyRows) => {
             let type_path = nested_type_path(nested);
-            super::nested::nested_empty_series_row(
+            super::schema_nested::nested_empty_series_row(
                 &type_path,
                 &config.to_dataframe_trait_path,
                 &name,

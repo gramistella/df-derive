@@ -107,14 +107,16 @@ fn element_nested_entries(
     config: &MacroConfig,
 ) -> TokenStream {
     match mode {
-        EmitMode::SchemaEntries => crate::codegen::nested::generate_schema_entries_for_struct(
-            type_path,
-            &config.to_dataframe_trait_path,
-            column_prefix,
-            total_layers,
-            &config.external_paths,
-        ),
-        EmitMode::EmptyRows => crate::codegen::nested::nested_empty_series_row(
+        EmitMode::SchemaEntries => {
+            crate::codegen::schema_nested::generate_schema_entries_for_struct(
+                type_path,
+                &config.to_dataframe_trait_path,
+                column_prefix,
+                total_layers,
+                &config.external_paths,
+            )
+        }
+        EmitMode::EmptyRows => crate::codegen::schema_nested::nested_empty_series_row(
             type_path,
             &config.to_dataframe_trait_path,
             column_prefix,

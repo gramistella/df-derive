@@ -3,7 +3,7 @@ mod columnar_impl;
 mod encoder;
 pub mod external_paths;
 mod helpers;
-mod nested;
+mod schema_nested;
 mod strategy;
 mod support;
 mod trait_impl;

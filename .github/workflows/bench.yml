@@ -20,8 +20,8 @@ concurrency:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  benchmark:
-    name: Run and Compare Benchmarks
+  criterion:
+    name: Criterion Benchmarks (report only)
     runs-on: ubuntu-22.04
 
     env:
@@ -56,7 +56,7 @@ jobs:
 
       # 2. Set up Rust toolchain and cache dependencies
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.89.0
       
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -65,24 +65,18 @@ jobs:
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
 
-      # 4. Run benchmarks and track with Bencher
-      # This command runs benchmarks and sends results to Bencher for tracking
-      - name: Track base branch benchmarks with Bencher
+      # 4. Run Criterion benchmarks and track with Bencher for visibility only.
+      - name: Track Criterion benchmarks with Bencher
+        continue-on-error: true
         run: |
           bencher run \
           --project df-derive \
           --token '${{ secrets.BENCHER_API_TOKEN }}' \
           --branch "${{ github.ref_name }}" \
-          --testbed ubuntu-22.04 \
-          --threshold-measure latency \
-          --threshold-test t_test \
-          --threshold-max-sample-size 64 \
-          --threshold-upper-boundary 0.99 \
-          --thresholds-reset \
-          --err \
+          --testbed ubuntu-22.04-criterion \
           --adapter rust_criterion \
           --github-actions '${{ secrets.GITHUB_TOKEN }}' \
-          "taskset -c 0 cargo bench"
+          "taskset -c 0 cargo bench --locked -p df-derive"
 
       # 5. Upload the HTML report as an artifact (only on `main` branch)
       # This prepares the report for deployment to GitHub Pages.
@@ -98,3 +92,64 @@ jobs:
         if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main'
         id: deployment
         uses: actions/deploy-pages@v4
+
+  instruction-counts:
+    name: Gungraun Instruction Counts
+    runs-on: ubuntu-22.04
+
+    env:
+      CARGO_INCREMENTAL: '0'
+      # Force consistent, optimized builds on CI
+      # Pin to x86-64-v3 (AVX2 + BMI1/BMI2 + LZCNT + MOVBE) instead of `native` so bench
+      # results are stable across heterogeneous GitHub Actions runners.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      # Pin parallelism for determinism
+      RAYON_NUM_THREADS: '1'
+      POLARS_MAX_THREADS: '1'
+      CARGO_TERM_COLOR: always
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.89.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+
+      - name: Install Gungraun runner
+        run: cargo install --version 0.18.2 gungraun-runner --locked
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@main
+
+      - name: Track instruction-count benchmarks with Bencher
+        run: |
+          bencher run \
+          --project df-derive \
+          --token '${{ secrets.BENCHER_API_TOKEN }}' \
+          --branch "${{ github.ref_name }}" \
+          --testbed ubuntu-22.04-gungraun \
+          --threshold-measure instructions \
+          --threshold-test percentage \
+          --threshold-max-sample-size 32 \
+          --threshold-upper-boundary 0.02 \
+          --thresholds-reset \
+          --err \
+          --adapter rust_gungraun \
+          --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+          "cargo bench --locked -p df-derive --features bench-instruction-counts --bench instruction_counts"

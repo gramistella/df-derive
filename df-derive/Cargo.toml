@@ -20,6 +20,7 @@ df-derive-macros.workspace = true
 [features]
 default = ["rust_decimal"]
 rust_decimal = ["df-derive-core/rust_decimal"]
+bench-instruction-counts = []
 
 [dev-dependencies]
 trybuild = "1.0.116"
@@ -28,8 +29,14 @@ polars-arrow.workspace = true
 chrono = { version = "0.4.41", features = ["serde"] }
 rust_decimal = { workspace = true, features = ["serde", "std"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
+gungraun = "0.18.2"
 pretty_assertions = "1.4"
 serde = { version = "1", features = ["derive"] }
+
+[[bench]]
+name = "instruction_counts"
+harness = false
+required-features = ["bench-instruction-counts"]
 
 [[bench]]
 name = "01_top_level_vec"

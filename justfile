@@ -14,6 +14,9 @@ bench:
 	cargo bench -p df-derive
 	@just bench-results
 
+bench-instructions:
+	RUSTFLAGS="${RUSTFLAGS:--C target-cpu=generic}" cargo bench --locked -p df-derive --features bench-instruction-counts --bench instruction_counts
+
 bench-results:
 	@echo "Benchmark Mean per iteration (ms)"
 	@for f in target/criterion/*/new/estimates.json; do \

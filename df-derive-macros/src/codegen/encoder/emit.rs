@@ -22,7 +22,12 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
-use super::nested_columns::{consume_nested_columns, nested_df_decl, nested_take_decl};
+use super::nested_columns::{
+    NestedColumnIdents, consume_nested_columns,
+    inner_col_all_absent as nested_inner_col_all_absent,
+    inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
+    inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
+};
 use super::shape_walk::{
     LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
@@ -463,7 +468,6 @@ fn ctb_materialize(
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
-    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     // Decls reused across match arms.
     let df_decl = nested_df_decl(&df, ty, columnar_trait, &flat);
@@ -472,21 +476,16 @@ fn ctb_materialize(
     // Per-column inner-Series expressions for the four branches (or two,
     // when no inner Option). The list-array wrap is identical across
     // branches; only the seed expression differs.
-    let inner_col_direct = quote! {{
-        let #inner_full = #df.column(#col_name)?.as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
-        #inner_full.clone()
-    }};
-    let inner_col_take = quote! {{
-        let #inner_full = #df
-            .column(#col_name)?
-            .as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
-        #inner_full.take(&#take)?
-    }};
-    let inner_col_empty = quote! {
-        #pp::Series::new_empty("".into(), #dtype)
+    let column_idents = NestedColumnIdents {
+        df: &df,
+        take: &take,
+        col_name: &col_name,
+        dtype: &dtype,
+        inner_full: &inner_full,
     };
+    let inner_col_direct = nested_inner_col_direct(column_idents);
+    let inner_col_take = nested_inner_col_take(column_idents);
+    let inner_col_empty = nested_inner_col_empty(&dtype, pp);
     // Depth 0 has no offsets to constrain the null length, so the all-absent
     // arm there uses `items.len()` (one row per outer position). Depth >= 1
     // sizes the typed-null chunk to `total` (sum of inner-Vec lengths) so
@@ -495,10 +494,7 @@ fn ctb_materialize(
         WrapperShape::Leaf(_) => quote! { items.len() },
         WrapperShape::Vec(_) => quote! { #total },
     };
-    let inner_col_all_absent = quote! {
-        #pp::Series::new_empty("".into(), #dtype)
-            .extend_constant(#pp::AnyValue::Null, #absent_len)?
-    };
+    let inner_col_all_absent = nested_inner_col_all_absent(&dtype, &absent_len, pp);
 
     let series_direct = ctb_layer_wrap(wrapper, layers, kind, &inner_col_direct, pp, pa_root);
     let series_take = ctb_layer_wrap(wrapper, layers, kind, &inner_col_take, pp, pa_root);

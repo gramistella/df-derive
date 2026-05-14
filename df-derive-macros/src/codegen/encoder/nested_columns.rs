@@ -30,7 +30,6 @@ pub(super) fn nested_take_decl(
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(super) struct NestedColumnIdents<'a> {
     pub df: &'a syn::Ident,
@@ -40,7 +39,6 @@ pub(super) struct NestedColumnIdents<'a> {
     pub inner_full: &'a syn::Ident,
 }
 
-#[allow(dead_code)]
 pub(super) fn inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
@@ -57,7 +55,6 @@ pub(super) fn inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
     }}
 }
 
-#[allow(dead_code)]
 pub(super) fn inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
@@ -76,14 +73,12 @@ pub(super) fn inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
     }}
 }
 
-#[allow(dead_code)]
 pub(super) fn inner_col_empty(dtype: &syn::Ident, pp: &TokenStream) -> TokenStream {
     quote! {
         #pp::Series::new_empty("".into(), #dtype)
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn inner_col_all_absent(
     dtype: &syn::Ident,
     len: &TokenStream,

@@ -29,8 +29,8 @@ use super::nested_columns::{
     inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
 };
 use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapeEmitter, ShapePrecount, ShapeScan, freeze_offsets_buf,
-    freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
+    LayerIdents, LayerWrap, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
+    shape_assemble_list_stack,
 };
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
@@ -142,62 +142,6 @@ fn hoisted_freezes(
         quote! { #(#validity_freeze)* },
         quote! { #(#offsets_freeze)* },
     )
-}
-
-/// Build the precount block for a depth-N vec emit. Returns
-/// `(precount_decls, total_counter_ident)` — the caller passes the total
-/// counter as the leaf-storage-capacity for `Vec::with_capacity` calls.
-///
-/// `total` and `layer_counters` are owned by the caller (they're idents
-/// the helper references in the resulting tokens). The walker is shared
-/// with [`super::shape_walk::ShapePrecount`].
-fn build_precount<'a>(
-    access: &TokenStream,
-    shape: &'a VecLayers,
-    layers: &'a [LayerIdents],
-    outer_some_prefix: &'static str,
-    total: &'a syn::Ident,
-    layer_counters: &'a [syn::Ident],
-) -> TokenStream {
-    ShapePrecount {
-        shape,
-        access,
-        layers,
-        outer_some_prefix,
-        total_counter: total,
-        layer_counters,
-        projection: None,
-    }
-    .build()
-}
-
-/// Build the scan loop for a depth-N vec emit. Drives the deepest-layer
-/// for-loop body via `leaf_body`; spliced through [`ShapeScan`].
-///
-/// `leaf_body` receives the inner-Vec binding (already Option-unwrapped
-/// where applicable) and must emit the per-element work (typed-buffer
-/// push for the per-element-push path; flat-ref push + optional position
-/// scatter for the collect-then-bulk path).
-fn build_scan(
-    access: &TokenStream,
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    outer_some_prefix: &'static str,
-    leaf_body: &dyn Fn(&TokenStream) -> TokenStream,
-    leaf_offsets_post_push: &TokenStream,
-    pp: &TokenStream,
-) -> TokenStream {
-    ShapeScan {
-        shape,
-        access,
-        layers,
-        outer_some_prefix,
-        leaf_body,
-        leaf_offsets_post_push,
-        pp,
-        projection: None,
-    }
-    .build()
 }
 
 /// Per-element-push leaf body. Wraps the `per_elem_push` token stream in
@@ -742,35 +686,29 @@ fn ctb_emit(
             )
         }
         WrapperShape::Vec(shape) => {
-            let precount = build_precount(
-                access,
+            let emitter = ShapeEmitter {
                 shape,
+                access,
                 layers,
-                kind.precount_outer_some_prefix(),
-                total,
+                outer_some_prefix: kind.scan_outer_some_prefix(),
+                precount_outer_some_prefix: kind.precount_outer_some_prefix(),
+                total_counter: total,
                 layer_counters,
-            );
+                pp,
+                pa_root,
+                projection: None,
+            };
+            let precount = emitter.precount();
             let leaf_body = ctb_leaf_body(shape, &flat, &positions, pp);
             let leaf_offsets_post_push = if shape.has_inner_option() {
                 quote! { #positions.len() }
             } else {
                 quote! { #flat.len() }
             };
-            let scan = build_scan(
-                access,
-                shape,
-                layers,
-                kind.scan_outer_some_prefix(),
-                &leaf_body,
-                &leaf_offsets_post_push,
-                pp,
-            );
+            let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
             let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
-            let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();
-            let validity_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.validity_mb).collect();
-            let offsets_decls = shape_offsets_decls(&offsets_idents, &counter_for_depth);
-            let validity_decls =
-                shape_validity_decls(shape, &validity_idents, &counter_for_depth, pa_root);
+            let offsets_decls = emitter.offsets_decls(&counter_for_depth);
+            let validity_decls = emitter.validity_decls(&counter_for_depth);
             (
                 precount,
                 scan,

@@ -42,7 +42,10 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features
 
-      - name: Dry run publish workspace
+      - name: Check package contents
+        run: cargo package --workspace --list
+
+      - name: Publish dry run
         run: cargo publish --workspace --dry-run
 
       - name: Publish workspace to crates.io

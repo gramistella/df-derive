@@ -78,6 +78,12 @@ jobs:
           CARGO_BUILD_JOBS: '1'
         run: cargo test --workspace --all-features --all-targets -- --nocapture
 
+      - name: Check package contents
+        run: cargo package --workspace --list
+
+      - name: Publish dry run
+        run: cargo publish --workspace --dry-run
+
   bench:
     name: Benchmarks (after tests)
     needs: build

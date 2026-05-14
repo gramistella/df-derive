@@ -891,6 +891,85 @@ fn main() -> pl::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn explicit_scalar_custom_runtime_works_without_direct_arrow() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "explicit-scalar-custom-runtime-no-arrow"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-macros = {{ path = "{}" }}
+{}
+"#,
+        toml_path(&root.join("df-derive-macros")),
+        polars_deps(),
+    );
+
+    check_fixture(
+        "explicit-scalar-custom-runtime-no-arrow",
+        &manifest,
+        r#"
+use df_derive_macros::ToDataFrame;
+
+mod runtime {
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+    pub trait ToDataFrame {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    }
+
+    pub trait Columnar: Sized {
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+    }
+
+    pub trait Decimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+}
+
+#[derive(ToDataFrame)]
+#[df_derive(
+    trait = "crate::runtime::ToDataFrame",
+    columnar = "crate::runtime::Columnar"
+)]
+struct Row {
+    id: u32,
+    qty: i64,
+    active: bool,
+    price: f64,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = vec![
+        Row { id: 1, qty: 10, active: true, price: 9.5 },
+        Row { id: 2, qty: 20, active: false, price: 19.25 },
+    ];
+
+    let single = runtime::ToDataFrame::to_dataframe(&rows[0])?;
+    assert_eq!(single.shape(), (1, 4));
+
+    let batch = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    assert_eq!(batch.shape(), (2, 4));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn local_fallback_works_without_facade_or_core_dependencies() {
     let root = repo_root();
     let manifest = format!(

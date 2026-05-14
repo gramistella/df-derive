@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - Generated list offsets now use checked `usize` to `i64` conversions and
   return a Polars error on overflow instead of silently wrapping.
+- Scalar-only numeric/bool derives with explicit custom runtime paths no
+  longer require a direct `polars-arrow` dependency.
 - `decimal(...)` field attributes now reject duplicate inner `precision` and
   `scale` keys instead of silently using the last value.
 - Unsupported collection diagnostics now cover `BTreeSet`, `VecDeque`, and

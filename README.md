@@ -320,10 +320,12 @@ struct Row {
 ```
 
 Use a custom runtime by providing compatible traits and overriding paths.
-Custom runtimes selected with `#[df_derive(trait = "...")]` keep the
-historical dependency contract: the deriving crate must name compatible
-`polars` and `polars-arrow` dependencies directly. The minimum trait surface
-is:
+Custom runtimes selected with `#[df_derive(trait = "...")]` must name a
+compatible direct `polars` dependency. They also need a compatible direct
+`polars-arrow` dependency when the derived fields use shapes that require
+generated Arrow array builders, such as list, nullable primitive, string, or
+binary columns. Scalar-only numeric/bool derives do not need `polars-arrow`.
+The minimum trait surface is:
 
 ```rust
 mod runtime {
@@ -401,8 +403,8 @@ struct Tx {
   that first compile on Rust 1.89.
 - **Polars**: 0.53
 - **polars-arrow**: 0.53 through the default runtime facade. Custom runtimes
-  selected with explicit trait overrides still need a compatible direct
-  dependency because generated code uses public Arrow array builders.
+  selected with explicit trait overrides need a compatible direct dependency
+  only for derived field shapes that emit public Arrow array builders.
 - **Polars feature flags**: the default `df-derive` facade and
   `df-derive-core` runtime enable every Polars dtype flag required by the
   support matrix above. If you use `df-derive-macros` with a custom runtime

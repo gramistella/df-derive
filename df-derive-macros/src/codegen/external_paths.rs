@@ -81,11 +81,10 @@ fn prelude() -> TokenStream {
 
 /// Token tree for the user-visible `polars-arrow` crate root.
 ///
-/// `polars-arrow` remains a direct dependency requirement for custom
-/// trait/columnar runtimes: the macro emits `OffsetsBuffer` and
-/// `LargeListArray` paths to construct list arrays directly, which achieves
-/// 7-10× speedups on `Vec<Struct>` columns. The default runtime instead
-/// routes through `dataframe::__private::polars_arrow`.
+/// Custom trait/columnar runtimes need a direct `polars-arrow` dependency
+/// only when the generated code actually emits public Arrow builders such as
+/// `OffsetsBuffer` and `LargeListArray` for list columns. The default runtime
+/// instead routes through `dataframe::__private::polars_arrow`.
 ///
 /// `Itself` and `Err` collapse to `::polars_arrow` for the same reason as
 /// `polars_root()` — the macro never expands inside `polars-arrow`, and a

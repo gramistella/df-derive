@@ -1,30 +1,16 @@
 use super::{MacroConfig, encoder};
-use crate::ir::{LeafSpec, StructIR, TupleElement};
+use crate::ir::{LeafSpec, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
 fn leaf_needs_list_assembly(leaf: &LeafSpec) -> bool {
-    match leaf {
-        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_list_assembly),
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary
-        | LeafSpec::Struct(_)
-        | LeafSpec::Generic(_) => false,
-    }
-}
-
-fn tuple_element_needs_list_assembly(element: &TupleElement) -> bool {
-    element.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&element.leaf_spec)
+    let mut needs = false;
+    leaf.walk_tuple_elements(&mut |element| {
+        if element.wrapper_shape.vec_depth() > 0 {
+            needs = true;
+        }
+    });
+    needs
 }
 
 fn needs_list_assembly(ir: &StructIR) -> bool {
@@ -34,26 +20,7 @@ fn needs_list_assembly(ir: &StructIR) -> bool {
 }
 
 fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
-    match leaf {
-        LeafSpec::Struct(_) | LeafSpec::Generic(_) => true,
-        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_nested_validation),
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => false,
-    }
-}
-
-fn tuple_element_needs_nested_validation(element: &TupleElement) -> bool {
-    leaf_needs_nested_validation(&element.leaf_spec)
+    leaf.any_leaf(|leaf| matches!(leaf, LeafSpec::Struct(_) | LeafSpec::Generic(_)))
 }
 
 fn needs_nested_validation(ir: &StructIR) -> bool {

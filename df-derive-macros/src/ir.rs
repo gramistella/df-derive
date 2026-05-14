@@ -539,7 +539,6 @@ impl LeafSpec {
         matches!(self, Self::Tuple(_))
     }
 
-    #[allow(dead_code)]
     pub fn walk_leaves<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
         f(self);
 
@@ -550,7 +549,6 @@ impl LeafSpec {
         }
     }
 
-    #[allow(dead_code)]
     pub fn any_leaf(&self, mut pred: impl FnMut(&Self) -> bool) -> bool {
         let mut found = false;
         self.walk_leaves(&mut |leaf| {
@@ -561,7 +559,6 @@ impl LeafSpec {
         found
     }
 
-    #[allow(dead_code)]
     pub fn walk_tuple_elements<'a>(&'a self, f: &mut impl FnMut(&'a TupleElement)) {
         if let Self::Tuple(elements) = self {
             for element in elements {

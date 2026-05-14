@@ -3,7 +3,12 @@ use crate::ir::{AccessChain, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::super::nested_columns::{consume_nested_columns, nested_df_decl, nested_take_decl};
+use super::super::nested_columns::{
+    NestedColumnIdents, consume_nested_columns,
+    inner_col_all_absent as nested_inner_col_all_absent,
+    inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
+    inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
+};
 use super::super::shape_walk::{
     LayerIdents, freeze_offsets_buf, freeze_validity_bitmap, shape_assemble_list_stack,
 };
@@ -47,7 +52,6 @@ pub(super) fn emit_vec_parent_nested(
     let inner_chunk = idents::nested_inner_chunk();
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
-    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
     let layers: Vec<LayerIdents> = (0..composed_shape.depth())
         .map(|i| tuple_layer_idents(field_idx, i))
@@ -122,21 +126,18 @@ pub(super) fn emit_vec_parent_nested(
     };
 
     // Per-column inner-Series expressions for the four dispatch branches.
-    let inner_col_direct = quote! {{
-        let #inner_full = #df.column(#col_name)?.as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
-        #inner_full.clone()
-    }};
-    let inner_col_take = quote! {{
-        let #inner_full = #df.column(#col_name)?.as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
-        #inner_full.take(&#take)?
-    }};
-    let inner_col_empty = quote! { #pp::Series::new_empty("".into(), #dtype) };
-    let inner_col_all_absent = quote! {
-        #pp::Series::new_empty("".into(), #dtype)
-            .extend_constant(#pp::AnyValue::Null, #total_leaves)?
+    let column_idents = NestedColumnIdents {
+        df: &df,
+        take: &take,
+        col_name: &col_name,
+        dtype: &dtype,
+        inner_full: &inner_full,
     };
+    let inner_col_direct = nested_inner_col_direct(column_idents);
+    let inner_col_take = nested_inner_col_take(column_idents);
+    let inner_col_empty = nested_inner_col_empty(&dtype, pp);
+    let all_absent_len = quote! { #total_leaves };
+    let inner_col_all_absent = nested_inner_col_all_absent(&dtype, &all_absent_len, pp);
 
     let series_direct = wrap_per_column_layers(
         composed_shape,

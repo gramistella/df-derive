@@ -1,6 +1,5 @@
 error: field `pair` has `as_string` but its type is a tuple; field-level attributes do not apply to multi-column tuple fields. Hoist the tuple into a named struct that derives `ToDataFrame` if you need per-element attributes.
- --> tests/fail/123-fail-as-string-on-tuple.rs:7:5
+ --> tests/fail/123-fail-as-string-on-tuple.rs:7:17
   |
-7 | /     #[df_derive(as_string)]
-8 | |     pair: (String, i32),
-  | |_______________________^
+7 |     #[df_derive(as_string)]
+  |                 ^^^^^^^^^

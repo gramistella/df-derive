@@ -4,20 +4,16 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::super::nested_columns::{
-    NestedColumnIdents, consume_nested_columns,
+    NestedColumnIdents, NestedMaterializeBranches, NestedMaterializeKind, consume_nested_columns,
     inner_col_all_absent as nested_inner_col_all_absent,
     inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
-    inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
+    inner_col_take as nested_inner_col_take, nested_df_decl, nested_materialize_dispatch,
+    nested_take_decl,
 };
-use super::super::shape_walk::{
-    LayerIdents, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
-    shape_assemble_list_stack,
-};
+use super::super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
 use super::super::{idents, idx_size_len_expr};
 use super::projection::TupleProjection;
-use super::vec_parent::{
-    tuple_layer_counters, tuple_layer_idents, tuple_layer_wraps_clone, tuple_scan_leaf_body,
-};
+use super::vec_parent::{tuple_layer_counters, tuple_layer_idents, tuple_scan_leaf_body};
 
 /// Emit a tuple element column for a nested-struct element under a
 /// Vec-bearing parent. Walks the composed shape, collects `&Inner` refs at
@@ -143,48 +139,40 @@ pub(super) fn emit_vec_parent_nested(
     let inner_col_all_absent = nested_inner_col_all_absent(&dtype, &all_absent_len, pp);
 
     let series_direct = wrap_per_column_layers(
-        composed_shape,
-        &layers,
+        &emitter,
         &inner_col_direct,
         pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        pa_root,
     );
     let series_take = wrap_per_column_layers(
-        composed_shape,
-        &layers,
+        &emitter,
         &inner_col_take,
         pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        pa_root,
     );
     let series_empty = wrap_per_column_layers(
-        composed_shape,
-        &layers,
+        &emitter,
         &inner_col_empty,
         pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        pa_root,
     );
     let series_all_absent = wrap_per_column_layers(
-        composed_shape,
-        &layers,
+        &emitter,
         &inner_col_all_absent,
         pp,
         &inner_chunk,
         &inner_col,
         &inner_rech,
         &dtype,
-        pa_root,
     );
 
     let consume_direct =
@@ -206,61 +194,24 @@ pub(super) fn emit_vec_parent_nested(
 
     // Hoist offsets/validity freezes above the dispatch — collect-then-bulk
     // path reuses them per-column.
-    let mut validity_freezes: Vec<TokenStream> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        if !composed_shape.layers[i].has_outer_validity() {
-            continue;
-        }
-        validity_freezes.push(freeze_validity_bitmap(
-            &layer.validity_bm,
-            &layer.validity_mb,
-            pa_root,
-        ));
-    }
-    let mut offsets_freezes: Vec<TokenStream> = Vec::new();
-    for layer in &layers {
-        offsets_freezes.push(freeze_offsets_buf(
-            &layer.offsets_buf,
-            &layer.offsets,
-            pa_root,
-        ));
-    }
-    let validity_freeze = quote! { #(#validity_freezes)* };
-    let offsets_freeze = quote! { #(#offsets_freezes)* };
+    let validity_freeze = emitter.freeze_validity_bitmaps();
+    let offsets_freeze = emitter.freeze_offsets_buffers();
 
-    let dispatch = if has_inner_option {
-        quote! {
-            #validity_freeze
-            if #total_leaves == 0 {
-                #offsets_freeze
-                #consume_empty
-            } else if #flat.is_empty() {
-                #offsets_freeze
-                #consume_all_absent
-            } else if #flat.len() == #total_leaves {
-                #df_decl
-                #offsets_freeze
-                #consume_direct
-            } else {
-                #df_decl
-                #take_decl
-                #offsets_freeze
-                #consume_take
-            }
-        }
-    } else {
-        quote! {
-            #validity_freeze
-            if #flat.is_empty() {
-                #offsets_freeze
-                #consume_empty
-            } else {
-                #df_decl
-                #offsets_freeze
-                #consume_direct
-            }
-        }
-    };
+    let dispatch = nested_materialize_dispatch(
+        NestedMaterializeKind::Vec { has_inner_option },
+        &flat,
+        Some(&total_leaves),
+        NestedMaterializeBranches {
+            validity_freeze,
+            offsets_freeze,
+            df_decl,
+            take_decl,
+            consume_direct,
+            consume_take,
+            consume_empty,
+            consume_all_absent,
+        },
+    );
 
     quote! {
         {
@@ -281,25 +232,24 @@ pub(super) fn emit_vec_parent_nested(
 /// `emit::ctb_layer_wrap` but owns its layer idents.
 #[allow(clippy::too_many_arguments)]
 fn wrap_per_column_layers(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
+    emitter: &ShapeEmitter<'_>,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
     inner_chunk: &syn::Ident,
     inner_col: &syn::Ident,
     inner_rech: &syn::Ident,
     dtype: &syn::Ident,
-    pa_root: &TokenStream,
 ) -> TokenStream {
-    if shape.depth() == 0 {
+    if emitter.shape.depth() == 0 {
         return inner_col_expr.clone();
     }
+    let pa_root = emitter.pa_root;
     let chunk_decl = quote! {
         let #inner_col: #pp::Series = #inner_col_expr;
         let #inner_rech = #inner_col.rechunk();
         let #inner_chunk: #pp::ArrayRef = #inner_rech.chunks()[0].clone();
     };
-    let wrap_layers = tuple_layer_wraps_clone(shape, layers);
+    let wrap_layers = emitter.layer_wraps_clone();
     let stack = shape_assemble_list_stack(
         quote! { #inner_chunk },
         quote! { #inner_chunk.dtype().clone() },

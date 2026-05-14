@@ -23,6 +23,49 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
+#[derive(Clone, Copy)]
+pub(in crate::codegen) enum LayerNamespace {
+    Vec,
+    Nested { field_idx: usize },
+    Tuple { field_idx: usize },
+}
+
+pub(in crate::codegen) struct LayerIds {
+    pub offsets: Ident,
+    pub offsets_buf: Ident,
+    pub validity_mb: Ident,
+    pub validity_bm: Ident,
+    pub bind: Ident,
+}
+
+impl LayerIds {
+    pub(in crate::codegen) fn new(namespace: LayerNamespace, layer: usize) -> Self {
+        match namespace {
+            LayerNamespace::Vec => Self {
+                offsets: vec_layer_offsets(layer),
+                offsets_buf: vec_layer_offsets_buf(layer),
+                validity_mb: vec_layer_validity(layer),
+                validity_bm: vec_layer_validity_bm(layer),
+                bind: vec_layer_bind(layer),
+            },
+            LayerNamespace::Nested { field_idx } => Self {
+                offsets: nested_layer_offsets(field_idx, layer),
+                offsets_buf: nested_layer_offsets_buf(field_idx, layer),
+                validity_mb: nested_layer_validity_mb(field_idx, layer),
+                validity_bm: nested_layer_validity_bm(field_idx, layer),
+                bind: nested_layer_bind(field_idx, layer),
+            },
+            LayerNamespace::Tuple { field_idx } => Self {
+                offsets: tuple_layer_offsets(field_idx, layer),
+                offsets_buf: tuple_layer_offsets_buf(field_idx, layer),
+                validity_mb: tuple_layer_validity_mb(field_idx, layer),
+                validity_bm: tuple_layer_validity_bm(field_idx, layer),
+                bind: tuple_layer_bind(field_idx, layer),
+            },
+        }
+    }
+}
+
 // --- Per-field idents (indexed by field idx) ------------------------------
 
 /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar field.

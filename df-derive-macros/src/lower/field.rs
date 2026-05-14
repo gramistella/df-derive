@@ -13,6 +13,7 @@ use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
     DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
 };
+use proc_macro2::Span;
 use quote::ToTokens;
 use syn::Ident;
 
@@ -33,13 +34,20 @@ fn parse_leaf_spec(
     field: &syn::Field,
     field_display_name: &str,
     override_: Option<&LeafOverride>,
+    override_span: Option<Span>,
     base: AnalyzedBase,
 ) -> Result<LeafSpec, syn::Error> {
-    if let AnalyzedBase::Tuple(_) = &base {
+    if let AnalyzedBase::Tuple(_) = &base
+        && let Some(override_) = override_
+        && let Some(span) = override_span
+    {
         reject_attrs_on_tuple(
             field,
             field_display_name,
-            override_.map(FieldOverrideRef::Leaf),
+            Some(FieldOverrideRef::Leaf {
+                value: override_,
+                span,
+            }),
         )?;
     }
     match override_ {
@@ -331,7 +339,9 @@ pub fn lower_field(
 ) -> Result<Option<FieldIR>, syn::Error> {
     let display_name = name_ident.to_string();
     let override_ = parse_field_override(field, &display_name)?;
-    if matches!(override_, Some(FieldOverride::Skip)) {
+    let override_value = override_.as_ref().map(|override_| &override_.value);
+    let override_span = override_.as_ref().map(|override_| override_.span);
+    if matches!(override_value, Some(FieldOverride::Skip)) {
         return Ok(None);
     }
     let analyzed = analyze_type(&field.ty, generic_params)?;
@@ -339,17 +349,20 @@ pub fn lower_field(
     reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let decimal_generic_params =
-        decimal_generic_params_for_override(override_.as_ref(), &analyzed.base);
-    let decimal_backend_ty = decimal_backend_ty_for_override(override_.as_ref(), &analyzed.base);
-    let (leaf_spec, wrapper_shape) = if matches!(override_, Some(FieldOverride::AsBinary)) {
+        decimal_generic_params_for_override(override_value, &analyzed.base);
+    let decimal_backend_ty = decimal_backend_ty_for_override(override_value, &analyzed.base);
+    let (leaf_spec, wrapper_shape) = if matches!(override_value, Some(FieldOverride::AsBinary)) {
         // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
         // only checks the leaf base, but the tuple itself fails the same
         // multi-column attribute rule as every other field-level attribute.
-        if matches!(analyzed.base, AnalyzedBase::Tuple(_)) {
+        if matches!(analyzed.base, AnalyzedBase::Tuple(_))
+            && let Some(value) = override_value
+            && let Some(span) = override_span
+        {
             reject_attrs_on_tuple(
                 field,
                 &display_name,
-                override_.as_ref().map(FieldOverrideRef::Field),
+                Some(FieldOverrideRef::Field { value, span }),
             )?;
         }
         let (leaf, trimmed) =
@@ -359,7 +372,8 @@ pub fn lower_field(
         let leaf = parse_leaf_spec(
             field,
             &display_name,
-            override_.as_ref().and_then(FieldOverride::leaf),
+            override_value.and_then(FieldOverride::leaf),
+            override_span,
             analyzed.base,
         )?;
         (leaf, normalize_wrappers(&analyzed.wrappers))

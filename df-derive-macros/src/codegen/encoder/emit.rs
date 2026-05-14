@@ -23,14 +23,15 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::nested_columns::{
-    NestedColumnIdents, consume_nested_columns,
+    NestedColumnIdents, NestedMaterializeBranches, NestedMaterializeKind, consume_nested_columns,
     inner_col_all_absent as nested_inner_col_all_absent,
     inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
-    inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
+    inner_col_take as nested_inner_col_take, nested_df_decl, nested_materialize_dispatch,
+    nested_take_decl,
 };
 use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
-    shape_assemble_list_stack,
+    LayerIdents, LayerWrap, ShapeEmitter, shape_assemble_list_stack, shape_freeze_offsets_buffers,
+    shape_freeze_validity_bitmaps, shape_layer_wraps_clone, shape_layer_wraps_move,
 };
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
@@ -42,22 +43,10 @@ use crate::codegen::external_paths::ExternalPaths;
 /// collect-then-bulk path's per-(field, layer) namespaced idents
 /// (`__df_derive_n_*_{idx}_{layer}`).
 fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
-    field_idx.map_or_else(
-        || LayerIdents {
-            offsets: idents::vec_layer_offsets(layer_idx),
-            offsets_buf: idents::vec_layer_offsets_buf(layer_idx),
-            validity_mb: idents::vec_layer_validity(layer_idx),
-            validity_bm: idents::vec_layer_validity_bm(layer_idx),
-            bind: idents::vec_layer_bind(layer_idx),
-        },
-        |idx| LayerIdents {
-            offsets: idents::nested_layer_offsets(idx, layer_idx),
-            offsets_buf: idents::nested_layer_offsets_buf(idx, layer_idx),
-            validity_mb: idents::nested_layer_validity_mb(idx, layer_idx),
-            validity_bm: idents::nested_layer_validity_bm(idx, layer_idx),
-            bind: idents::nested_layer_bind(idx, layer_idx),
-        },
-    )
+    let namespace = field_idx.map_or(idents::LayerNamespace::Vec, |idx| {
+        idents::LayerNamespace::Nested { field_idx: idx }
+    });
+    idents::LayerIds::new(namespace, layer_idx).into()
 }
 
 /// Build the per-layer `LayerWrap` slice the shared list-stack helper
@@ -71,34 +60,11 @@ fn layer_wraps<'a>(
     kind: &LeafKind,
     pa_root: &TokenStream,
 ) -> Vec<LayerWrap<'a>> {
-    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
-    for (cur, layer) in layers.iter().enumerate() {
-        let buf_id = &layer.offsets_buf;
-        let validity_bm = if shape.layers[cur].has_outer_validity() {
-            Some(&layer.validity_bm)
-        } else {
-            None
-        };
-        let freeze_decl = if kind.freeze_hoisted() {
-            TokenStream::new()
-        } else {
-            let mut fd = freeze_offsets_buf(buf_id, &layer.offsets, pa_root);
-            if validity_bm.is_some() {
-                fd.extend(freeze_validity_bitmap(
-                    &layer.validity_bm,
-                    &layer.validity_mb,
-                    pa_root,
-                ));
-            }
-            fd
-        };
-        out.push(LayerWrap {
-            offsets_buf: kind.layer_own_policy(buf_id),
-            validity_bm,
-            freeze_decl,
-        });
+    if kind.freeze_hoisted() {
+        shape_layer_wraps_clone(shape, layers)
+    } else {
+        shape_layer_wraps_move(shape, layers, pa_root)
     }
-    out
 }
 
 /// Build the hoisted-freeze pair for the collect-then-bulk path:
@@ -119,28 +85,9 @@ fn hoisted_freezes(
     if !kind.freeze_hoisted() {
         return (TokenStream::new(), TokenStream::new());
     }
-    let mut validity_freeze: Vec<TokenStream> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
-        if !shape.layers[i].has_outer_validity() {
-            continue;
-        }
-        validity_freeze.push(freeze_validity_bitmap(
-            &layer.validity_bm,
-            &layer.validity_mb,
-            pa_root,
-        ));
-    }
-    let mut offsets_freeze: Vec<TokenStream> = Vec::new();
-    for layer in layers {
-        offsets_freeze.push(freeze_offsets_buf(
-            &layer.offsets_buf,
-            &layer.offsets,
-            pa_root,
-        ));
-    }
     (
-        quote! { #(#validity_freeze)* },
-        quote! { #(#offsets_freeze)* },
+        shape_freeze_validity_bitmaps(shape, layers, pa_root),
+        shape_freeze_offsets_buffers(layers, pa_root),
     )
 }
 
@@ -456,70 +403,24 @@ fn ctb_materialize(
         WrapperShape::Vec(shape) => hoisted_freezes(shape, layers, kind, pa_root),
     };
 
-    match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => {
-            // Bare nested struct: every row contributes one ref. One arm.
-            quote! {
-                #df_decl
-                #consume_direct
-            }
-        }
-        WrapperShape::Leaf(LeafShape::Optional { .. }) => {
-            // Option<...<Option<Nested>>>: 3-arm dispatch. No `total == 0`
-            // arm because depth-0 has no offsets buffer to size — the empty
-            // (zero-rows) and all-absent arms collapse into one
-            // (`flat.is_empty()` covers both, with null length `items.len()`).
-            quote! {
-                if #flat.is_empty() {
-                    #consume_all_absent
-                } else if #flat.len() == items.len() {
-                    #df_decl
-                    #consume_direct
-                } else {
-                    #df_decl
-                    #take_decl
-                    #consume_take
-                }
-            }
-        }
-        WrapperShape::Vec(shape) if shape.has_inner_option() => {
-            // 4-branch dispatch. Offsets are frozen only in the selected arm.
-            quote! {
-                #validity_freeze
-                if #total == 0 {
-                    #offsets_freeze
-                    #consume_empty
-                } else if #flat.is_empty() {
-                    #offsets_freeze
-                    #consume_all_absent
-                } else if #flat.len() == #total {
-                    #df_decl
-                    #offsets_freeze
-                    #consume_direct
-                } else {
-                    #df_decl
-                    #take_decl
-                    #offsets_freeze
-                    #consume_take
-                }
-            }
-        }
-        WrapperShape::Vec(_) => {
-            // No inner-Option: total == flat.len(). Two branches: empty when
-            // flat is empty (no leaves), direct otherwise.
-            quote! {
-                #validity_freeze
-                if #flat.is_empty() {
-                    #offsets_freeze
-                    #consume_empty
-                } else {
-                    #df_decl
-                    #offsets_freeze
-                    #consume_direct
-                }
-            }
-        }
-    }
+    let kind = match wrapper {
+        WrapperShape::Leaf(LeafShape::Bare) => NestedMaterializeKind::LeafBare,
+        WrapperShape::Leaf(LeafShape::Optional { .. }) => NestedMaterializeKind::LeafOptional,
+        WrapperShape::Vec(shape) => NestedMaterializeKind::Vec {
+            has_inner_option: shape.has_inner_option(),
+        },
+    };
+    let branches = NestedMaterializeBranches {
+        validity_freeze,
+        offsets_freeze,
+        df_decl,
+        take_decl,
+        consume_direct,
+        consume_take,
+        consume_empty,
+        consume_all_absent,
+    };
+    nested_materialize_dispatch(kind, &flat, Some(&total), branches)
 }
 
 /// Build the per-element-push storage decls + leaf-body + post-scan

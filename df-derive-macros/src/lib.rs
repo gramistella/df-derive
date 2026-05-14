@@ -28,12 +28,6 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
-fn runtime_trait_path(dataframe_mod: &proc_macro2::TokenStream, trait_name: &str) -> syn::Path {
-    let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::call_site());
-    syn::parse2(quote! { #dataframe_mod::#trait_ident })
-        .expect("default dataframe runtime trait path should parse")
-}
-
 fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
     let default_df_mod = codegen::resolve_default_dataframe_mod();
     let attrs = attrs::container::parse_container_attrs(ast)?;
@@ -44,7 +38,7 @@ fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
         attrs.columnar.as_ref(),
     );
     let to_dataframe = attrs.to_dataframe.as_ref().map_or_else(
-        || runtime_trait_path(&default_df_mod, "ToDataFrame"),
+        || attrs::container::runtime_trait_path(&default_df_mod, "ToDataFrame"),
         |override_| override_.path.clone(),
     );
     let columnar = match (&attrs.columnar, &attrs.to_dataframe) {
@@ -52,14 +46,14 @@ fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
         (None, Some(override_)) => {
             attrs::container::rebase_last_segment(&override_.path, "Columnar")
         }
-        (None, None) => runtime_trait_path(&default_df_mod, "Columnar"),
+        (None, None) => attrs::container::runtime_trait_path(&default_df_mod, "Columnar"),
     };
     let decimal128_encode = match (&attrs.decimal128_encode, &attrs.to_dataframe) {
         (Some(override_), _) => override_.path.clone(),
         (None, Some(override_)) => {
             attrs::container::rebase_last_segment(&override_.path, "Decimal128Encode")
         }
-        (None, None) => runtime_trait_path(&default_df_mod, "Decimal128Encode"),
+        (None, None) => attrs::container::runtime_trait_path(&default_df_mod, "Decimal128Encode"),
     };
     let external_paths = explicit_default_dataframe_mod.as_ref().map_or_else(
         || {

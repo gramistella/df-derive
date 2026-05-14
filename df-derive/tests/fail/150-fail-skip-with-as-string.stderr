@@ -1,0 +1,6 @@
+error: field `value` combines `skip` with another field attribute; `skip` omits the field entirely, so conversion attributes have no effect; drop one
+ --> tests/fail/150-fail-skip-with-as-string.rs:7:5
+  |
+7 | /     #[df_derive(skip, as_string)]
+8 | |     value: String,
+  | |_________________^

@@ -96,4 +96,6 @@ fn tests() {
     t.compile_fail("tests/fail/147-fail-unsized-smart-pointer-leaves.rs");
     t.compile_fail("tests/fail/148-fail-mutable-references.rs");
     t.compile_fail("tests/fail/149-fail-missing-concrete-eager-bounds.rs");
+    t.compile_fail("tests/fail/150-fail-skip-with-as-string.rs");
+    t.compile_fail("tests/fail/151-fail-decimal-with-time-unit.rs");
 }

@@ -3,10 +3,7 @@ use crate::ir::{AccessChain, LeafShape, PrimitiveLeaf, TupleElement, VecLayers, 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::super::shape_walk::{
-    LayerIdents, LayerWrap, OwnPolicy, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
-    shape_assemble_list_stack,
-};
+use super::super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
 use super::super::{BaseCtx, LeafCtx, access_chain_to_ref, idents};
 use super::nested::emit_vec_parent_nested;
 use super::projection::{
@@ -176,13 +173,11 @@ fn emit_vec_parent_primitive(
     let validity_decls = emitter.validity_decls(&counter_for_depth);
 
     let materialize = build_materialize(
-        composed_shape,
-        &layers,
+        &emitter,
         &leaf_arr,
         &pep.leaf_logical_dtype,
         &pep.leaf_arr_expr,
         pp,
-        pa_root,
     );
 
     let extra_imports = pep.extra_imports;
@@ -206,13 +201,7 @@ fn emit_vec_parent_primitive(
 }
 
 pub(super) fn tuple_layer_idents(field_idx: usize, layer: usize) -> LayerIdents {
-    LayerIdents {
-        offsets: idents::tuple_layer_offsets(field_idx, layer),
-        offsets_buf: idents::tuple_layer_offsets_buf(field_idx, layer),
-        validity_mb: idents::tuple_layer_validity_mb(field_idx, layer),
-        validity_bm: idents::tuple_layer_validity_bm(field_idx, layer),
-        bind: idents::tuple_layer_bind(field_idx, layer),
-    }
+    idents::LayerIds::new(idents::LayerNamespace::Tuple { field_idx }, layer).into()
 }
 
 pub(super) fn tuple_layer_counters(field_idx: usize, depth: usize) -> Vec<syn::Ident> {
@@ -261,66 +250,20 @@ pub(super) fn tuple_scan_leaf_body<'a>(
     }
 }
 
-pub(super) fn tuple_layer_wraps_move<'a>(
-    shape: &VecLayers,
-    layers: &'a [LayerIdents],
-    pa_root: &TokenStream,
-) -> Vec<LayerWrap<'a>> {
-    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
-    for (cur, layer) in layers.iter().enumerate() {
-        let mut freeze_decl = freeze_offsets_buf(&layer.offsets_buf, &layer.offsets, pa_root);
-        let validity_bm = if shape.layers[cur].has_outer_validity() {
-            freeze_decl.extend(freeze_validity_bitmap(
-                &layer.validity_bm,
-                &layer.validity_mb,
-                pa_root,
-            ));
-            Some(&layer.validity_bm)
-        } else {
-            None
-        };
-        out.push(LayerWrap {
-            offsets_buf: OwnPolicy::Move(&layer.offsets_buf),
-            validity_bm,
-            freeze_decl,
-        });
-    }
-    out
-}
-
-pub(super) fn tuple_layer_wraps_clone<'a>(
-    shape: &VecLayers,
-    layers: &'a [LayerIdents],
-) -> Vec<LayerWrap<'a>> {
-    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
-    for (cur, layer) in layers.iter().enumerate() {
-        let validity_bm = shape.layers[cur]
-            .has_outer_validity()
-            .then_some(&layer.validity_bm);
-        out.push(LayerWrap {
-            offsets_buf: OwnPolicy::Clone(&layer.offsets_buf),
-            validity_bm,
-            freeze_decl: TokenStream::new(),
-        });
-    }
-    out
-}
-
 fn build_materialize(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
+    emitter: &ShapeEmitter<'_>,
     leaf_arr: &syn::Ident,
     leaf_logical_dtype: &TokenStream,
     leaf_arr_expr: &TokenStream,
     pp: &TokenStream,
-    pa_root: &TokenStream,
 ) -> TokenStream {
+    let pa_root = emitter.pa_root;
     let seed_arrow_dtype_id = idents::seed_arrow_dtype();
     let seed_dtype_decl = quote! {
         let #seed_arrow_dtype_id: #pa_root::datatypes::ArrowDataType =
             #pa_root::array::Array::dtype(&#leaf_arr).clone();
     };
-    let wrap_layers = tuple_layer_wraps_move(shape, layers, pa_root);
+    let wrap_layers = emitter.layer_wraps_move();
     let stack = shape_assemble_list_stack(
         quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef },
         quote! { #seed_arrow_dtype_id },

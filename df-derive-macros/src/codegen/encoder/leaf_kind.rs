@@ -12,7 +12,6 @@
 use proc_macro2::TokenStream;
 
 use super::idents;
-use super::shape_walk::OwnPolicy;
 
 /// Per-element-push leaf payload — describes a primitive leaf's storage,
 /// per-row push, leaf-array materialization, and post-push offsets-counter
@@ -102,18 +101,6 @@ impl LeafKind {
         match self {
             Self::PerElementPush => idents::VEC_OUTER_SOME_PREFIX,
             Self::CollectThenBulk => idents::NESTED_PRE_OUTER_SOME_PREFIX,
-        }
-    }
-
-    /// Per-layer offsets-buffer ownership policy. The per-element-push path
-    /// uses each frozen buffer in exactly one `LargeListArray::new` site
-    /// (`OwnPolicy::Move`); the collect-then-bulk path's four-arm dispatch
-    /// reuses the same buffer per arm and per inner-schema-column, so it
-    /// must clone (`OwnPolicy::Clone`).
-    pub(super) const fn layer_own_policy<'b>(&self, buf_id: &'b syn::Ident) -> OwnPolicy<'b> {
-        match self {
-            Self::PerElementPush => OwnPolicy::Move(buf_id),
-            Self::CollectThenBulk => OwnPolicy::Clone(buf_id),
         }
     }
 }

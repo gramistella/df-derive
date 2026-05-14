@@ -1,13 +1,23 @@
+mod diagnostics;
+mod known_types;
+mod path_match;
+mod wrappers;
+
 use crate::ir::{DateTimeUnit, NumericKind};
-use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
+use syn::{Ident, PathArguments, Type};
+
+use diagnostics::{
+    reject_bare_duration, reject_bare_unsized_leaf, reject_unsupported_collection_type,
+};
+use known_types::classify_known_base;
+use wrappers::{analyze_cow_base, borrowed_reference_base, peel_type_wrappers};
 
 /// Default `Datetime` precision for `chrono::DateTime<Tz>` and
 /// `chrono::NaiveDateTime` fields without an explicit `time_unit` override.
 pub const DEFAULT_DATETIME_UNIT: DateTimeUnit = DateTimeUnit::Milliseconds;
 /// Default `Duration` precision for `std::time::Duration` and
 /// `chrono::Duration` (`chrono::TimeDelta`) fields without an explicit
-/// `time_unit` override. Nanoseconds is the most-information-preserving
-/// choice and matches `polars-arrow`'s default `Duration` representation.
+/// `time_unit` override.
 pub const DEFAULT_DURATION_UNIT: DateTimeUnit = DateTimeUnit::Nanoseconds;
 /// Default `Decimal(precision, scale)` for bare `Decimal` or
 /// `rust_decimal::Decimal` fields without an explicit `decimal(...)` override.
@@ -16,8 +26,7 @@ pub const DEFAULT_DECIMAL_PRECISION: u8 = 38;
 pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 
 /// Raw wrapper position before normalization. The parser collapses these
-/// into a `WrapperShape` (with consecutive `Option`s folded per Polars's
-/// single-validity-bit-per-level representation).
+/// into a `WrapperShape` after type analysis.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RawWrapper {
     Option,
@@ -25,12 +34,7 @@ pub enum RawWrapper {
     SmartPtr,
 }
 
-/// Analyzed base type the parser uses internally before folding through the
-/// `(override, base)` legality matrix into a `LeafSpec`. Distinct from the
-/// IR's `LeafSpec` because this layer doesn't yet carry override-dependent
-/// information (e.g. `Decimal { precision, scale }`, `DateTime(unit)`,
-/// stringy classification) — that fusion happens in the parser when the
-/// override is consulted.
+/// Analyzed base type before parser-time override fusion into a `LeafSpec`.
 #[derive(Clone)]
 pub enum AnalyzedBase {
     Numeric(NumericKind),
@@ -39,58 +43,36 @@ pub enum AnalyzedBase {
     /// unsized `str`, mirroring `Cow<'_, str>`.
     BorrowedStr,
     /// `Cow<'_, str>` — kept as a semantic string leaf instead of peeling to
-    /// unsized `str` so codegen can borrow via `Cow::as_ref`.
+    /// unsized `str`.
     CowStr,
     /// `&[u8]` — supported only with `#[df_derive(as_binary)]`.
     BorrowedBytes,
     /// `Cow<'_, [u8]>` — supported only with `#[df_derive(as_binary)]`.
     CowBytes,
-    /// `&[T]` for non-`u8` element types. Kept as a semantic base so
-    /// the parser can emit a domain-specific error instead of returning a
-    /// generic unsupported-type diagnostic.
+    /// `&[T]` for non-`u8` element types.
     BorrowedSlice,
-    /// `Cow<'_, [T]>` for non-`u8` element types. Kept as a semantic base so
-    /// the parser can emit a domain-specific error instead of routing it as a
-    /// struct or generic fallback.
+    /// `Cow<'_, [T]>` for non-`u8` element types.
     CowSlice,
     Bool,
-    /// `chrono::DateTime<Tz>` — syntax-detected for bare `DateTime<Tz>` or
-    /// canonical `chrono::DateTime<Tz>` paths. The encoder stores the UTC
-    /// instant via chrono's `timestamp_*` methods and materializes
-    /// `Datetime(unit, None)`.
+    /// `chrono::DateTime<Tz>`.
     DateTimeTz,
-    /// `chrono::NaiveDate` — bare `NaiveDate` or canonical
     /// `chrono::NaiveDate`.
     NaiveDate,
-    /// `chrono::NaiveTime` — bare `NaiveTime` or canonical
     /// `chrono::NaiveTime`.
     NaiveTime,
-    /// `chrono::NaiveDateTime` — bare `NaiveDateTime` or canonical
     /// `chrono::NaiveDateTime`.
     NaiveDateTime,
-    /// Exactly `std::time::Duration` or `core::time::Duration`. Detected by
-    /// strict path matching to disambiguate from `chrono::Duration` and the
-    /// external `time::Duration`; bare `Duration` is rejected as ambiguous in
-    /// [`analyze_type`].
+    /// Exactly `std::time::Duration` or `core::time::Duration`.
     StdDuration,
-    /// `chrono::Duration` (alias for `chrono::TimeDelta`). Detected by path
-    /// segment matching. Codegen uses the user's declared field-type tokens
-    /// directly so type inference resolves the alias correctly.
+    /// `chrono::Duration` or `chrono::TimeDelta`.
     ChronoDuration,
-    /// Bare `Decimal` or canonical `rust_decimal::Decimal`. Other decimal
-    /// backend names opt in with `decimal(...)`.
+    /// Bare `Decimal` or canonical `rust_decimal::Decimal`.
     Decimal,
-    /// Concrete user-defined struct type as written at the field's use site
-    /// (for example `Foo`, `models::Foo`, `models::Foo<M>`, or
-    /// `<T as Trait>::Item`).
+    /// Concrete user-defined struct type as written at the field use site.
     Struct(Type),
     /// Generic type parameter declared on the enclosing struct.
     Generic(Ident),
-    /// Tuple-typed base, with each element recursively analyzed. Empty
-    /// tuples (`()`) are rejected at parse time — they contribute zero
-    /// columns. Field-level attributes are rejected on every tuple base
-    /// because per-element attribute selection isn't expressible at the
-    /// field level.
+    /// Tuple-typed base, with each element recursively analyzed.
     Tuple(Vec<AnalyzedType>),
 }
 
@@ -98,18 +80,10 @@ pub enum AnalyzedBase {
 pub struct AnalyzedType {
     pub base: AnalyzedBase,
     pub wrappers: Vec<RawWrapper>,
-    /// Original syntactic type token for this analyzed type. The parser
-    /// preserves it so per-element trait-bound asserts (`as_str` const-fn
-    /// asserts on tuple elements with stringy bases) anchor at the user's
-    /// element-type span. For the top-level field, this is the user's field
-    /// type; for tuple elements, this is the element's own type.
+    /// Original syntactic type token for this analyzed type.
     pub field_ty: syn::Type,
     /// Number of transparent pointer layers (`Box` / `Rc` / `Arc` / `Cow` /
-    /// borrowed references) peeled
-    /// off the field type ABOVE the first wrapper (`Option` / `Vec`). These
-    /// layers are dereffed at the access expression itself — `it.field`
-    /// becomes `(*(*(it.field)))` for two outer Boxes — so the rest of the
-    /// codegen sees a clean wrapper stack over the inner type.
+    /// borrowed references) peeled off above the first semantic wrapper.
     pub outer_smart_ptr_depth: usize,
 }
 
@@ -152,656 +126,55 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
     })
 }
 
-struct PeeledType<'a> {
-    wrappers: Vec<RawWrapper>,
-    current_type: &'a Type,
-    outer_smart_ptr_depth: usize,
-}
-
-fn record_smart_ptr_layer(outer: &mut usize, wrappers: &mut Vec<RawWrapper>) {
-    if wrappers.is_empty() {
-        *outer += 1;
-    } else {
-        wrappers.push(RawWrapper::SmartPtr);
-    }
-}
-
-fn peel_option(ty: &Type) -> Option<&Type> {
-    extract_inner_type(ty, "Option", &["std", "option", "Option"])
-        .or_else(|| extract_inner_type(ty, "Option", &["core", "option", "Option"]))
-}
-
-fn peel_vec(ty: &Type) -> Option<&Type> {
-    extract_inner_type(ty, "Vec", &["std", "vec", "Vec"])
-        .or_else(|| extract_inner_type(ty, "Vec", &["alloc", "vec", "Vec"]))
-}
-
-fn peel_smart_ptr(ty: &Type) -> Option<&Type> {
-    extract_inner_type(ty, "Box", &["std", "boxed", "Box"])
-        .or_else(|| extract_inner_type(ty, "Box", &["alloc", "boxed", "Box"]))
-        .or_else(|| extract_inner_type(ty, "Rc", &["std", "rc", "Rc"]))
-        .or_else(|| extract_inner_type(ty, "Rc", &["alloc", "rc", "Rc"]))
-        .or_else(|| extract_inner_type(ty, "Arc", &["std", "sync", "Arc"]))
-        .or_else(|| extract_inner_type(ty, "Arc", &["alloc", "sync", "Arc"]))
-}
-
-fn peel_reference(ty: &Type) -> Result<Option<&Type>, syn::Error> {
-    let Type::Reference(reference) = ty else {
-        return Ok(None);
-    };
-
-    if reference.mutability.is_some() {
-        return Err(syn::Error::new_spanned(
-            reference,
-            "df-derive does not support `&mut T` fields; use `&T`, an owned value, \
-             or mark the field `#[df_derive(skip)]`",
-        ));
-    }
-    if borrowed_reference_base(reference).is_some() {
-        return Ok(None);
-    }
-
-    Ok(Some(reference.elem.as_ref()))
-}
-
-fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
-    let mut wrappers: Vec<RawWrapper> = Vec::new();
-    let mut outer_smart_ptr_depth: usize = 0;
-    let mut current_type = ty;
-
-    // Loop to peel off wrappers in any order. Option/Vec push onto the
-    // wrapper stack; Box/Rc/Arc/Cow and borrowed references are transparent
-    // when their inner type is sized — they bump the outer depth (codegen
-    // rewrites the access expression) before any wrapper is seen, or become
-    // `RawWrapper::SmartPtr` once a semantic wrapper has been pushed so the
-    // parser can retain the exact boundary where the smart pointer occurred.
-    // Borrowed `str` and slices stay as semantic bases because they are
-    // unsized and need domain-specific parser decisions.
-    loop {
-        if let Some(inner_ty) = peel_option(current_type) {
-            wrappers.push(RawWrapper::Option);
-            current_type = inner_ty;
-            continue;
-        }
-        if let Some(inner_ty) = peel_vec(current_type) {
-            wrappers.push(RawWrapper::Vec);
-            current_type = inner_ty;
-            continue;
-        }
-        if let Some(inner_ty) = peel_smart_ptr(current_type) {
-            record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
-            current_type = inner_ty;
-            continue;
-        }
-        if let Some(action) = peel_cow(current_type) {
-            match action {
-                CowPeel::Rebind(inner) => {
-                    record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
-                    current_type = inner;
-                    continue;
-                }
-                CowPeel::KeepAsSemanticBase => break,
-            }
-        }
-        if let Some(inner_ty) = peel_reference(current_type)? {
-            record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
-            current_type = inner_ty;
-            continue;
-        }
-        // No more wrappers found, break the loop
-        break;
-    }
-
-    Ok(PeeledType {
-        wrappers,
-        current_type,
-        outer_smart_ptr_depth,
-    })
-}
-
-fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Error> {
-    // Before resolving the base type, reject a small allow-list of common
-    // wrapper / collection types with an actionable hint. These all parse
-    // fine as a `Type::Path` and would otherwise either fall through to the
-    // generic "Unsupported field type" error or — worse — be silently
-    // routed through the `Struct` arm and explode at codegen time.
-    if let Type::Path(type_path) = current_type
-        && let Some(collection) = unsupported_collection_kind(type_path)
-    {
-        return Err(collection.diagnostic(current_type));
-    }
-    Ok(())
-}
-
-fn reject_bare_duration(current_type: &Type, generic_params: &[Ident]) -> Result<(), syn::Error> {
-    // Bare `Duration` (no qualifier, no generic args, not a known generic
-    // param) is ambiguous between `std::time::Duration` and
-    // `chrono::Duration` — both crates are commonly in scope. Reject with
-    // the disambiguation hint anchored at the field's type token.
-    if let Type::Path(type_path) = current_type
-        && type_path.qself.is_none()
-        && type_path.path.segments.len() == 1
-        && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "Duration"
-        && matches!(segment.arguments, PathArguments::None)
-        && !generic_params.iter().any(|p| p == &segment.ident)
-    {
-        return Err(syn::Error::new_spanned(
-            current_type,
-            "bare `Duration` is ambiguous; use `std::time::Duration`, \
-             `core::time::Duration`, or `chrono::Duration` to disambiguate",
-        ));
-    }
-    Ok(())
-}
-
-fn reject_bare_unsized_leaf(current_type: &Type) -> Result<(), syn::Error> {
-    if is_bare_str_type(current_type) {
-        return Err(syn::Error::new_spanned(
-            current_type,
-            "df-derive does not support bare or smart-pointer-wrapped `str` leaves; \
-             use `String`, `&str`, `Cow<'_, str>`, or a sized wrapper such as \
-             `Box<String>`",
-        ));
-    }
-    if matches!(current_type, Type::Slice(_)) {
-        return Err(syn::Error::new_spanned(
-            current_type,
-            "df-derive does not support bare or smart-pointer-wrapped `[T]` slice \
-             leaves; use `Vec<T>` for list columns, or use `&[u8]`/`Cow<'_, [u8]>` \
-             with `#[df_derive(as_binary)]` for borrowed binary data",
-        ));
-    }
-    Ok(())
-}
-
 fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase, syn::Error> {
-    // Tuple bases recurse into element analyses. A direct unit-typed field
-    // `field: ()` is rejected here because it would contribute zero columns,
-    // colliding with the parser's invariant that every syntactic field
-    // produces at least one schema entry. Generic payloads that instantiate to
-    // `()` are still supported through the runtime's `ToDataFrame for ()`.
-    if let Type::Tuple(tup) = ty {
-        if tup.elems.is_empty() {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "df-derive does not support direct unit-typed (`()`) fields; \
-                 they would contribute zero columns. Remove the field, replace \
-                 it with a non-unit type, or use a generic payload such as \
-                 `field: M` with `M = ()`.",
-            ));
-        }
-        let mut elements: Vec<AnalyzedType> = Vec::with_capacity(tup.elems.len());
-        for elem in &tup.elems {
-            elements.push(analyze_type(elem, generic_params)?);
-        }
-        return Ok(AnalyzedBase::Tuple(elements));
+    if let Some(tuple) = analyze_tuple_base(ty, generic_params)? {
+        return Ok(tuple);
     }
+
     if let Type::Reference(reference) = ty
         && let Some(base) = borrowed_reference_base(reference)
     {
         return Ok(base);
     }
+
     if let Some(ident) = bare_generic_param_ident(ty, generic_params) {
         return Ok(AnalyzedBase::Generic(ident));
     }
-    // Disambiguate `Duration` first (qualified-path matches) — both bases
-    // share the last segment `Duration`, so naive last-segment matching is
-    // insufficient. Bare `Duration` is rejected upstream in `analyze_type`,
-    // not here, so the only `Duration` paths reaching this function are
-    // qualified (e.g. `std::time::Duration`, `core::time::Duration`, or
-    // `chrono::Duration`).
+
     if let Type::Path(type_path) = ty {
         if let Some(base) = analyze_cow_base(type_path) {
             return Ok(base);
         }
-        if is_std_duration(type_path) {
-            return Ok(AnalyzedBase::StdDuration);
-        }
-        if is_chrono_duration(type_path) {
-            return Ok(AnalyzedBase::ChronoDuration);
-        }
-    }
-    if let Type::Path(type_path) = ty {
-        if is_chrono_datetime(type_path) {
-            return Ok(AnalyzedBase::DateTimeTz);
-        }
-        if let Some(kind) = bare_numeric_kind(type_path).or_else(|| nonzero_numeric_kind(type_path))
-        {
-            return Ok(AnalyzedBase::Numeric(kind));
-        }
-        if path_is_exact_no_args(type_path, &["bool"]) {
-            return Ok(AnalyzedBase::Bool);
-        }
-        if is_string_type(type_path) {
-            return Ok(AnalyzedBase::String);
-        }
-        if is_decimal_type(type_path) {
-            return Ok(AnalyzedBase::Decimal);
-        }
-        if is_chrono_no_args_type(type_path, "NaiveDate") {
-            return Ok(AnalyzedBase::NaiveDate);
-        }
-        if is_chrono_no_args_type(type_path, "NaiveTime") {
-            return Ok(AnalyzedBase::NaiveTime);
-        }
-        if is_chrono_no_args_type(type_path, "NaiveDateTime") {
-            return Ok(AnalyzedBase::NaiveDateTime);
+        if let Some(known) = classify_known_base(type_path) {
+            return Ok(known.into_analyzed_base());
         }
         return Ok(AnalyzedBase::Struct(ty.clone()));
     }
+
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }
 
-struct PathView<'a> {
-    path: &'a syn::Path,
-}
-
-impl<'a> PathView<'a> {
-    fn from_type_path(type_path: &'a TypePath) -> Option<Self> {
-        type_path.qself.is_none().then_some(Self {
-            path: &type_path.path,
-        })
-    }
-
-    fn exact_no_args(&self, segments: &[&str]) -> bool {
-        self.path.segments.len() == segments.len()
-            && self
-                .path
-                .segments
-                .iter()
-                .zip(segments)
-                .all(|(segment, expected)| {
-                    segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
-                })
-    }
-
-    fn exact_with_leaf_args(&self, segments: &[&str]) -> bool {
-        self.path.segments.len() == segments.len()
-            && self.path.segments.iter().zip(segments).enumerate().all(
-                |(idx, (segment, expected))| {
-                    segment.ident == *expected
-                        && (idx + 1 == segments.len()
-                            || matches!(segment.arguments, PathArguments::None))
-                },
-            )
-    }
-
-    fn prefix_no_args(&self, prefix: &[&str]) -> bool {
-        self.path.segments.len() > prefix.len()
-            && self
-                .path
-                .segments
-                .iter()
-                .zip(prefix)
-                .all(|(segment, expected)| {
-                    segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
-                })
-    }
-
-    fn leaf(&self) -> Option<&'a syn::PathSegment> {
-        self.path.segments.last()
-    }
-}
-
-fn path_is_exact_no_args(type_path: &TypePath, segments: &[&str]) -> bool {
-    PathView::from_type_path(type_path).is_some_and(|path| path.exact_no_args(segments))
-}
-
-fn path_is_exact_with_leaf_args(type_path: &TypePath, segments: &[&str]) -> bool {
-    PathView::from_type_path(type_path).is_some_and(|path| path.exact_with_leaf_args(segments))
-}
-
-#[derive(Clone, Copy)]
-enum UnsupportedCollection {
-    HashMap,
-    BTreeMap,
-    HashSet,
-    BTreeSet,
-    VecDeque,
-    LinkedList,
-}
-
-impl UnsupportedCollection {
-    const ALL: [Self; 6] = [
-        Self::HashMap,
-        Self::BTreeMap,
-        Self::HashSet,
-        Self::BTreeSet,
-        Self::VecDeque,
-        Self::LinkedList,
-    ];
-
-    const fn name(self) -> &'static str {
-        match self {
-            Self::HashMap => "HashMap",
-            Self::BTreeMap => "BTreeMap",
-            Self::HashSet => "HashSet",
-            Self::BTreeSet => "BTreeSet",
-            Self::VecDeque => "VecDeque",
-            Self::LinkedList => "LinkedList",
-        }
-    }
-
-    fn diagnostic(self, current_type: &Type) -> syn::Error {
-        let message = match self {
-            Self::HashMap => "df-derive does not support `HashMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
-                .to_owned(),
-            Self::BTreeMap => "df-derive does not support `BTreeMap` fields. Convert to \
-                 `Vec<(K, V)>` or pre-flatten into named columns before assignment."
-                .to_owned(),
-            Self::HashSet => "df-derive does not support `HashSet` fields. Convert to \
-                 `Vec<T>` (order will be set-defined, not insertion-defined)."
-                .to_owned(),
-            Self::BTreeSet => "df-derive does not support `BTreeSet` fields. Convert to \
-                 `Vec<T>` (order will follow the set's sorted iteration order)."
-                .to_owned(),
-            Self::VecDeque | Self::LinkedList => {
-                let collection = self.name();
-                format!(
-                    "df-derive does not support `{collection}` fields. Convert to `Vec<T>` before assignment."
-                )
-            }
-        };
-        syn::Error::new_spanned(current_type, message)
-    }
-}
-
-fn unsupported_collection_kind(type_path: &TypePath) -> Option<UnsupportedCollection> {
-    UnsupportedCollection::ALL
-        .into_iter()
-        .find(|collection| path_is_bare_or_std_collection(type_path, collection.name()))
-}
-
-fn path_is_bare_or_std_collection(type_path: &TypePath, leaf: &str) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-    let Some(segment) = path.leaf() else {
-        return false;
+fn analyze_tuple_base(
+    ty: &Type,
+    generic_params: &[Ident],
+) -> Result<Option<AnalyzedBase>, syn::Error> {
+    let Type::Tuple(tuple) = ty else {
+        return Ok(None);
     };
 
-    segment.ident == leaf
-        && (path.path.segments.len() == 1
-            || (path.path.segments.len() == 3
-                && path_prefix_is_no_args(type_path, &["std", "collections"])))
-}
-
-fn path_prefix_is_no_args(type_path: &TypePath, prefix: &[&str]) -> bool {
-    PathView::from_type_path(type_path).is_some_and(|path| path.prefix_no_args(prefix))
-}
-
-fn bare_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
-    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
-        return None;
-    }
-    let segment = type_path.path.segments.last()?;
-    if !matches!(segment.arguments, PathArguments::None) {
-        return None;
-    }
-    match segment.ident.to_string().as_str() {
-        "f64" => Some(NumericKind::F64),
-        "f32" => Some(NumericKind::F32),
-        "i8" => Some(NumericKind::I8),
-        "u8" => Some(NumericKind::U8),
-        "i16" => Some(NumericKind::I16),
-        "u16" => Some(NumericKind::U16),
-        "i64" => Some(NumericKind::I64),
-        "i128" => Some(NumericKind::I128),
-        "isize" => Some(NumericKind::ISize),
-        "u64" => Some(NumericKind::U64),
-        "u128" => Some(NumericKind::U128),
-        "usize" => Some(NumericKind::USize),
-        "u32" => Some(NumericKind::U32),
-        "i32" => Some(NumericKind::I32),
-        _ => None,
-    }
-}
-
-fn nonzero_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
-    let segment = type_path.path.segments.last()?;
-    if !matches!(segment.arguments, PathArguments::None) {
-        return None;
-    }
-    let kind = match segment.ident.to_string().as_str() {
-        "NonZeroI8" => NumericKind::NonZeroI8,
-        "NonZeroI16" => NumericKind::NonZeroI16,
-        "NonZeroI32" => NumericKind::NonZeroI32,
-        "NonZeroI64" => NumericKind::NonZeroI64,
-        "NonZeroI128" => NumericKind::NonZeroI128,
-        "NonZeroIsize" => NumericKind::NonZeroISize,
-        "NonZeroU8" => NumericKind::NonZeroU8,
-        "NonZeroU16" => NumericKind::NonZeroU16,
-        "NonZeroU32" => NumericKind::NonZeroU32,
-        "NonZeroU64" => NumericKind::NonZeroU64,
-        "NonZeroU128" => NumericKind::NonZeroU128,
-        "NonZeroUsize" => NumericKind::NonZeroUSize,
-        _ => return None,
-    };
-    let leaf = segment.ident.to_string();
-    let leaf = leaf.as_str();
-    if path_is_exact_no_args(type_path, &[leaf])
-        || path_is_exact_no_args(type_path, &["std", "num", leaf])
-        || path_is_exact_no_args(type_path, &["core", "num", leaf])
-    {
-        Some(kind)
-    } else {
-        None
-    }
-}
-
-fn is_string_type(type_path: &TypePath) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-
-    path.exact_no_args(&["String"])
-        || path.exact_no_args(&["std", "string", "String"])
-        || path.exact_no_args(&["alloc", "string", "String"])
-}
-
-fn is_decimal_type(type_path: &TypePath) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-
-    path.exact_no_args(&["Decimal"]) || path.exact_no_args(&["rust_decimal", "Decimal"])
-}
-
-fn is_chrono_no_args_type(type_path: &TypePath, leaf: &str) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-
-    path.exact_no_args(&[leaf]) || path.exact_no_args(&["chrono", leaf])
-}
-
-/// Detect exactly `std::time::Duration` or `core::time::Duration`.
-///
-/// This is intentionally stricter than the `Decimal` heuristic. The Duration
-/// encoder emits inherent std/core methods such as `as_nanos()`, so accepting
-/// any path ending in `time::Duration` would accidentally capture the external
-/// `time` crate's signed duration type.
-fn is_std_duration(type_path: &TypePath) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-
-    path.exact_no_args(&["std", "time", "Duration"])
-        || path.exact_no_args(&["core", "time", "Duration"])
-}
-
-/// Detect `chrono::Duration` or `chrono::TimeDelta`. `chrono::Duration` is
-/// a type alias for `chrono::TimeDelta` since chrono 0.4.30; both names
-/// resolve to the same impl block, so we accept either tail. Codegen reads
-/// the user's declared field-type tokens directly so type inference handles
-/// the alias transparently.
-fn is_chrono_duration(type_path: &TypePath) -> bool {
-    let Some(path) = PathView::from_type_path(type_path) else {
-        return false;
-    };
-    let Some(segment) = path.leaf() else {
-        return false;
-    };
-
-    if !matches!(segment.arguments, PathArguments::None) {
-        return false;
+    if tuple.elems.is_empty() {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "df-derive does not support direct unit-typed (`()`) fields; \
+             they would contribute zero columns. Remove the field, replace \
+             it with a non-unit type, or use a generic payload such as \
+             `field: M` with `M = ()`.",
+        ));
     }
 
-    if segment.ident == "Duration" {
-        path.exact_no_args(&["Duration"]) || path.exact_no_args(&["chrono", "Duration"])
-    } else if segment.ident == "TimeDelta" {
-        path.exact_no_args(&["TimeDelta"]) || path.exact_no_args(&["chrono", "TimeDelta"])
-    } else {
-        false
+    let mut elements: Vec<AnalyzedType> = Vec::with_capacity(tuple.elems.len());
+    for elem in &tuple.elems {
+        elements.push(analyze_type(elem, generic_params)?);
     }
-}
-
-fn wrapper_path_matches(type_path: &TypePath, bare: &str, qualified: &[&str]) -> bool {
-    PathView::from_type_path(type_path).is_some_and(|path| {
-        path.exact_with_leaf_args(&[bare]) || path.exact_with_leaf_args(qualified)
-    })
-}
-
-fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str, qualified: &[&str]) -> Option<&'a Type> {
-    if let Type::Path(type_path) = ty
-        && wrapper_path_matches(type_path, wrapper, qualified)
-        && let Some(segment) = type_path.path.segments.last()
-        && let PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
-    {
-        return Some(inner_ty);
-    }
-    None
-}
-
-/// Outcome of peeling a `Cow<'a, T>` layer. Cow's first generic argument is
-/// the lifetime, not the inner type, so the standard `extract_inner_type`
-/// helper (which keys on `args.first()`) cannot be used. Sized inner types
-/// rebind and continue the transparent smart-pointer peel; unsized `str` and
-/// `[T]` stay as semantic Cow leaves for parser-level domain decisions.
-enum CowPeel<'a> {
-    /// `Cow<'a, OwnedT>` where `OwnedT: Sized` — rebind to `OwnedT`.
-    Rebind(&'a Type),
-    /// `Cow<'a, str>` or `Cow<'a, [T]>` — keep the Cow as the analyzed leaf
-    /// so later parser/codegen stages can apply domain-specific semantics.
-    KeepAsSemanticBase,
-}
-
-/// Peel a `Cow<'a, T>` layer if the type is one. Only bare `Cow` and the
-/// canonical std/alloc paths are recognized; user paths such as
-/// `domain::Cow<T>` remain custom structs.
-fn peel_cow(ty: &Type) -> Option<CowPeel<'_>> {
-    let Type::Path(type_path) = ty else {
-        return None;
-    };
-    if !is_cow_path(type_path) {
-        return None;
-    }
-    let inner_ty = cow_inner_type(type_path)?;
-    if is_bare_str_type(inner_ty) {
-        return Some(CowPeel::KeepAsSemanticBase);
-    }
-    if matches!(inner_ty, Type::Slice(_)) {
-        return Some(CowPeel::KeepAsSemanticBase);
-    }
-    Some(CowPeel::Rebind(inner_ty))
-}
-
-fn is_cow_path(type_path: &TypePath) -> bool {
-    path_is_exact_with_leaf_args(type_path, &["Cow"])
-        || path_is_exact_with_leaf_args(type_path, &["std", "borrow", "Cow"])
-        || path_is_exact_with_leaf_args(type_path, &["alloc", "borrow", "Cow"])
-}
-
-fn cow_inner_type(type_path: &TypePath) -> Option<&Type> {
-    if !is_cow_path(type_path) {
-        return None;
-    }
-    let segment = type_path.path.segments.last()?;
-    let PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    // Cow takes `<'a, T>` — find the first `Type` argument (skipping the
-    // leading lifetime). Defensive against generic-syntax variation: any
-    // GenericArgument::Type wins regardless of position.
-    args.args.iter().find_map(|a| match a {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    })
-}
-
-fn is_bare_str_type(ty: &Type) -> bool {
-    if let Type::Path(inner_path) = ty
-        && inner_path.qself.is_none()
-        && inner_path.path.segments.len() == 1
-        && let Some(seg) = inner_path.path.segments.last()
-    {
-        return seg.ident == "str" && matches!(seg.arguments, PathArguments::None);
-    }
-    false
-}
-
-fn is_u8_type(ty: &Type) -> bool {
-    if let Type::Path(inner_path) = ty
-        && inner_path.qself.is_none()
-        && inner_path.path.segments.len() == 1
-        && let Some(seg) = inner_path.path.segments.last()
-    {
-        return seg.ident == "u8" && matches!(seg.arguments, PathArguments::None);
-    }
-    false
-}
-
-fn borrowed_reference_base(reference: &syn::TypeReference) -> Option<AnalyzedBase> {
-    let inner_ty = reference.elem.as_ref();
-    if is_bare_str_type(inner_ty) {
-        return Some(AnalyzedBase::BorrowedStr);
-    }
-    if let Type::Slice(slice) = inner_ty {
-        if is_u8_type(&slice.elem) {
-            Some(AnalyzedBase::BorrowedBytes)
-        } else {
-            Some(AnalyzedBase::BorrowedSlice)
-        }
-    } else {
-        None
-    }
-}
-
-fn analyze_cow_base(type_path: &TypePath) -> Option<AnalyzedBase> {
-    let inner_ty = cow_inner_type(type_path)?;
-    if is_bare_str_type(inner_ty) {
-        return Some(AnalyzedBase::CowStr);
-    }
-    if let Type::Slice(slice) = inner_ty {
-        if is_u8_type(&slice.elem) {
-            Some(AnalyzedBase::CowBytes)
-        } else {
-            Some(AnalyzedBase::CowSlice)
-        }
-    } else {
-        None
-    }
-}
-
-/// Detect a `chrono::DateTime<Tz>` field as either bare `DateTime<Tz>` or
-/// canonical `chrono::DateTime<Tz>`. Qualified custom paths such as
-/// `domain::DateTime<T>` remain user structs.
-fn is_chrono_datetime(type_path: &TypePath) -> bool {
-    if !path_is_exact_with_leaf_args(type_path, &["DateTime"])
-        && !path_is_exact_with_leaf_args(type_path, &["chrono", "DateTime"])
-    {
-        return false;
-    }
-    let Some(segment) = type_path.path.segments.last() else {
-        return false;
-    };
-    let PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return false;
-    };
-    args.args
-        .iter()
-        .any(|arg| matches!(arg, GenericArgument::Type(_)))
+    Ok(Some(AnalyzedBase::Tuple(elements)))
 }

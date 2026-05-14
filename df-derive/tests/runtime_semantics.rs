@@ -78,3 +78,6 @@ mod manual_nested_validation;
 
 #[path = "runtime/56-as-string-fmt-error.rs"]
 mod as_string_fmt_error;
+
+#[path = "runtime/57-mixed-row-behavior-lock.rs"]
+mod mixed_row_behavior_lock;

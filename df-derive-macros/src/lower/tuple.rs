@@ -4,11 +4,18 @@ use crate::ir::TupleElement;
 use crate::lower::field::default_leaf_for_base;
 use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
+use proc_macro2::Span;
 
 #[derive(Clone, Copy)]
 pub enum FieldOverrideRef<'a> {
-    Field(&'a FieldOverride),
-    Leaf(&'a LeafOverride),
+    Field {
+        value: &'a FieldOverride,
+        span: Span,
+    },
+    Leaf {
+        value: &'a LeafOverride,
+        span: Span,
+    },
 }
 
 /// Reject every field-level override on a tuple-typed field with a
@@ -18,25 +25,38 @@ pub enum FieldOverrideRef<'a> {
 /// always ambiguous. The fix is to hoist the tuple into a named struct
 /// where per-element attributes can be applied at field level.
 pub fn reject_attrs_on_tuple(
-    field: &syn::Field,
+    _field: &syn::Field,
     field_display_name: &str,
     override_: Option<FieldOverrideRef<'_>>,
 ) -> Result<(), syn::Error> {
-    let attr = match override_ {
-        None | Some(FieldOverrideRef::Field(FieldOverride::Skip)) => return Ok(()),
-        Some(FieldOverrideRef::Field(FieldOverride::AsBinary)) => "as_binary",
+    let (attr, span) = match override_ {
+        None
+        | Some(FieldOverrideRef::Field {
+            value: FieldOverride::Skip,
+            ..
+        }) => return Ok(()),
+        Some(FieldOverrideRef::Field {
+            value: FieldOverride::AsBinary,
+            span,
+        }) => ("as_binary", span),
         Some(
-            FieldOverrideRef::Field(FieldOverride::Leaf(override_))
-            | FieldOverrideRef::Leaf(override_),
+            FieldOverrideRef::Field {
+                value: FieldOverride::Leaf(override_),
+                span,
+            }
+            | FieldOverrideRef::Leaf {
+                value: override_,
+                span,
+            },
         ) => match override_ {
-            LeafOverride::AsStr => "as_str",
-            LeafOverride::AsString => "as_string",
-            LeafOverride::Decimal { .. } => "decimal(...)",
-            LeafOverride::TimeUnit(_) => "time_unit = \"...\"",
+            LeafOverride::AsStr => ("as_str", span),
+            LeafOverride::AsString => ("as_string", span),
+            LeafOverride::Decimal { .. } => ("decimal(...)", span),
+            LeafOverride::TimeUnit(_) => ("time_unit = \"...\"", span),
         },
     };
-    Err(diagnostics::unsupported_tuple_attr(
-        field,
+    Err(diagnostics::unsupported_tuple_attr_at(
+        span,
         field_display_name,
         attr,
     ))

@@ -14,6 +14,12 @@ pub struct RuntimeOverridePath {
     pub span: Span,
 }
 
+pub fn runtime_trait_path(dataframe_mod: &proc_macro2::TokenStream, trait_name: &str) -> syn::Path {
+    let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::call_site());
+    syn::parse2(quote::quote! { #dataframe_mod::#trait_ident })
+        .expect("default dataframe runtime trait path should parse")
+}
+
 /// Parse a `key = "path::Trait"` attribute value into a `syn::Path`, with a
 /// uniform error message of the form `"invalid {label} path: {e}"`. Callers
 /// pass the full noun phrase (e.g., `"trait"`, `"columnar trait"`,
@@ -147,7 +153,10 @@ fn trait_module_path(path: &syn::Path, trait_name: &str) -> Option<syn::Path> {
 }
 
 fn path_segments_equal(left: &syn::Path, right: &syn::Path) -> bool {
-    path_segment_names(left) == path_segment_names(right)
+    match (path_segment_names(left), path_segment_names(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn mixed_builtin_runtime_override(

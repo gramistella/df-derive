@@ -3,6 +3,104 @@ use quote::quote;
 
 use super::idents;
 
+#[derive(Clone, Copy)]
+pub(super) enum NestedMaterializeKind {
+    LeafBare,
+    LeafOptional,
+    Vec { has_inner_option: bool },
+}
+
+pub(super) struct NestedMaterializeBranches {
+    pub validity_freeze: TokenStream,
+    pub offsets_freeze: TokenStream,
+    pub df_decl: TokenStream,
+    pub take_decl: TokenStream,
+    pub consume_direct: TokenStream,
+    pub consume_take: TokenStream,
+    pub consume_empty: TokenStream,
+    pub consume_all_absent: TokenStream,
+}
+
+pub(super) fn nested_materialize_dispatch(
+    kind: NestedMaterializeKind,
+    flat: &syn::Ident,
+    total: Option<&syn::Ident>,
+    branches: NestedMaterializeBranches,
+) -> TokenStream {
+    let NestedMaterializeBranches {
+        validity_freeze,
+        offsets_freeze,
+        df_decl,
+        take_decl,
+        consume_direct,
+        consume_take,
+        consume_empty,
+        consume_all_absent,
+    } = branches;
+
+    match kind {
+        NestedMaterializeKind::LeafBare => {
+            quote! {
+                #df_decl
+                #consume_direct
+            }
+        }
+        NestedMaterializeKind::LeafOptional => {
+            quote! {
+                if #flat.is_empty() {
+                    #consume_all_absent
+                } else if #flat.len() == items.len() {
+                    #df_decl
+                    #consume_direct
+                } else {
+                    #df_decl
+                    #take_decl
+                    #consume_take
+                }
+            }
+        }
+        NestedMaterializeKind::Vec {
+            has_inner_option: true,
+        } => {
+            let total = total.expect("Vec nested materialization requires total counter");
+            quote! {
+                #validity_freeze
+                if #total == 0 {
+                    #offsets_freeze
+                    #consume_empty
+                } else if #flat.is_empty() {
+                    #offsets_freeze
+                    #consume_all_absent
+                } else if #flat.len() == #total {
+                    #df_decl
+                    #offsets_freeze
+                    #consume_direct
+                } else {
+                    #df_decl
+                    #take_decl
+                    #offsets_freeze
+                    #consume_take
+                }
+            }
+        }
+        NestedMaterializeKind::Vec {
+            has_inner_option: false,
+        } => {
+            quote! {
+                #validity_freeze
+                if #flat.is_empty() {
+                    #offsets_freeze
+                    #consume_empty
+                } else {
+                    #df_decl
+                    #offsets_freeze
+                    #consume_direct
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn nested_df_decl(
     df: &syn::Ident,
     ty: &TokenStream,

@@ -1,6 +1,6 @@
 use crate::ir::DateTimeUnit;
 use proc_macro2::Span;
-use syn::spanned::Spanned;
+use syn::spanned::Spanned as SynSpanned;
 
 /// Leaf-level conversion override declared via `#[df_derive(...)]`.
 /// `skip` and `as_binary` are field dispositions, so they are deliberately
@@ -18,6 +18,13 @@ pub enum FieldOverride {
     AsBinary,
     Leaf(LeafOverride),
 }
+
+pub struct Spanned<T> {
+    pub value: T,
+    pub span: Span,
+}
+
+pub type ParsedFieldOverride = Option<Spanned<FieldOverride>>;
 
 impl FieldOverride {
     pub const fn leaf(&self) -> Option<&LeafOverride> {
@@ -344,7 +351,7 @@ const fn same_override_key(existing: &FieldOverride, incoming: &FieldOverride) -
 pub fn parse_field_override(
     field: &syn::Field,
     field_display_name: &str,
-) -> Result<Option<FieldOverride>, syn::Error> {
+) -> Result<ParsedFieldOverride, syn::Error> {
     let mut override_: Option<(FieldOverride, Span)> = None;
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
@@ -408,5 +415,5 @@ pub fn parse_field_override(
             })?;
         }
     }
-    Ok(override_.map(|(override_, _)| override_))
+    Ok(override_.map(|(value, span)| Spanned { value, span }))
 }

@@ -137,6 +137,18 @@ pub(super) struct LayerIdents {
     pub bind: syn::Ident,
 }
 
+impl From<idents::LayerIds> for LayerIdents {
+    fn from(ids: idents::LayerIds) -> Self {
+        Self {
+            offsets: ids.offsets,
+            offsets_buf: ids.offsets_buf,
+            validity_mb: ids.validity_mb,
+            validity_bm: ids.validity_bm,
+            bind: ids.bind,
+        }
+    }
+}
+
 /// Inputs to the shared shape-walker for the per-row push/scan body.
 ///
 /// `outer_some_prefix` is the ident-prefix used for the inner-Some bind in
@@ -452,6 +464,22 @@ impl<'a> ShapeEmitter<'a> {
             self.layers.iter().map(|layer| &layer.validity_mb).collect();
         shape_validity_decls(self.shape, &validity, counter_for_depth, self.pa_root)
     }
+
+    pub(super) fn freeze_validity_bitmaps(&self) -> TokenStream {
+        shape_freeze_validity_bitmaps(self.shape, self.layers, self.pa_root)
+    }
+
+    pub(super) fn freeze_offsets_buffers(&self) -> TokenStream {
+        shape_freeze_offsets_buffers(self.layers, self.pa_root)
+    }
+
+    pub(super) fn layer_wraps_move(&self) -> Vec<LayerWrap<'a>> {
+        shape_layer_wraps_move(self.shape, self.layers, self.pa_root)
+    }
+
+    pub(super) fn layer_wraps_clone(&self) -> Vec<LayerWrap<'a>> {
+        shape_layer_wraps_clone(self.shape, self.layers)
+    }
 }
 
 /// Per-layer inputs to the shared layer-wrap stack.
@@ -496,6 +524,79 @@ pub(super) struct LayerWrap<'a> {
     /// layer's `LargeListArray::new` call. The nested-struct path leaves
     /// this empty because its freezes are hoisted.
     pub freeze_decl: TokenStream,
+}
+
+pub(super) fn shape_freeze_validity_bitmaps(
+    shape: &VecLayers,
+    layers: &[LayerIdents],
+    pa_root: &TokenStream,
+) -> TokenStream {
+    let mut freezes: Vec<TokenStream> = Vec::new();
+    for (idx, layer) in layers.iter().enumerate() {
+        if shape.layers[idx].has_outer_validity() {
+            freezes.push(freeze_validity_bitmap(
+                &layer.validity_bm,
+                &layer.validity_mb,
+                pa_root,
+            ));
+        }
+    }
+    quote! { #(#freezes)* }
+}
+
+pub(super) fn shape_freeze_offsets_buffers(
+    layers: &[LayerIdents],
+    pa_root: &TokenStream,
+) -> TokenStream {
+    let freezes = layers
+        .iter()
+        .map(|layer| freeze_offsets_buf(&layer.offsets_buf, &layer.offsets, pa_root));
+    quote! { #(#freezes)* }
+}
+
+pub(super) fn shape_layer_wraps_move<'a>(
+    shape: &VecLayers,
+    layers: &'a [LayerIdents],
+    pa_root: &TokenStream,
+) -> Vec<LayerWrap<'a>> {
+    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
+    for (cur, layer) in layers.iter().enumerate() {
+        let mut freeze_decl = freeze_offsets_buf(&layer.offsets_buf, &layer.offsets, pa_root);
+        let validity_bm = if shape.layers[cur].has_outer_validity() {
+            freeze_decl.extend(freeze_validity_bitmap(
+                &layer.validity_bm,
+                &layer.validity_mb,
+                pa_root,
+            ));
+            Some(&layer.validity_bm)
+        } else {
+            None
+        };
+        out.push(LayerWrap {
+            offsets_buf: OwnPolicy::Move(&layer.offsets_buf),
+            validity_bm,
+            freeze_decl,
+        });
+    }
+    out
+}
+
+pub(super) fn shape_layer_wraps_clone<'a>(
+    shape: &VecLayers,
+    layers: &'a [LayerIdents],
+) -> Vec<LayerWrap<'a>> {
+    let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
+    for (cur, layer) in layers.iter().enumerate() {
+        let validity_bm = shape.layers[cur]
+            .has_outer_validity()
+            .then_some(&layer.validity_bm);
+        out.push(LayerWrap {
+            offsets_buf: OwnPolicy::Clone(&layer.offsets_buf),
+            validity_bm,
+            freeze_decl: TokenStream::new(),
+        });
+    }
+    out
 }
 
 /// Freeze a per-layer `Vec<i64>` into an `OffsetsBuffer<i64>` (single

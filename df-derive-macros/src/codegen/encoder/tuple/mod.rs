@@ -18,6 +18,7 @@
 
 mod entries;
 mod projection;
+mod standard;
 
 use crate::codegen::MacroConfig;
 use crate::codegen::strategy::FieldEmit;
@@ -33,15 +34,13 @@ use super::shape_walk::{
     LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, freeze_offsets_buf,
     freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
-use super::{
-    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder_with_option_receiver,
-    build_nested_encoder, idx_size_len_expr, struct_type_tokens,
-};
+use super::{BaseCtx, LeafCtx, idx_size_len_expr, struct_type_tokens};
 use projection::{
     TupleProjection, compose_option_with_element, concat_access_chains,
     deepest_leaf_projection_access, option_tuple_projection_receiver, prepend_parent_option_access,
     project_parent_option_tuple_element, projected_leaf_body,
 };
+use standard::{emit_via_standard_encoder, emit_via_standard_encoder_with_option_receiver};
 
 pub use entries::build_field_entries;
 
@@ -751,96 +750,6 @@ fn emit_inner_tuple(
     quote! { #(#blocks)* }
 }
 
-// ============================================================================
-// Standard-encoder dispatch (no parent wrapper or Option-only parent)
-// ============================================================================
-
-/// Emit one element column via the standard `build_encoder` /
-/// `build_nested_encoder`, baking the resulting Leaf decls/push/series into
-/// a single self-contained block when needed (the standard encoder's Leaf
-/// shape is decls-before-loop + push-in-loop + series-after-loop; we
-/// orchestrate that ourselves here so the caller's `columns.push(...)`
-/// happens in the right order).
-fn emit_via_standard_encoder(
-    access: &TokenStream,
-    wrapper: &WrapperShape,
-    leaf_route: TupleLeafRoute<'_>,
-    field_idx: usize,
-    column_prefix: &str,
-    config: &MacroConfig,
-) -> TokenStream {
-    emit_via_standard_encoder_with_option_receiver(
-        access,
-        wrapper,
-        leaf_route,
-        field_idx,
-        column_prefix,
-        config,
-        None,
-    )
-}
-
-fn emit_via_standard_encoder_with_option_receiver(
-    access: &TokenStream,
-    wrapper: &WrapperShape,
-    leaf_route: TupleLeafRoute<'_>,
-    field_idx: usize,
-    column_prefix: &str,
-    config: &MacroConfig,
-    option_some_receiver: Option<crate::codegen::type_registry::PrimitiveExprReceiver>,
-) -> TokenStream {
-    let pp = config.external_paths.prelude();
-    if let TupleLeafRoute::Nested(nested) = leaf_route {
-        let nested_ty = tuple_nested_type_path(nested);
-        let nested_ctx = NestedLeafCtx {
-            base: BaseCtx {
-                access,
-                idx: field_idx,
-                name: column_prefix,
-            },
-            ty: &nested_ty,
-            columnar_trait: &config.columnar_trait_path,
-            to_df_trait: &config.to_dataframe_trait_path,
-            paths: &config.external_paths,
-        };
-        return build_nested_encoder(wrapper, &nested_ctx);
-    }
-
-    let TupleLeafRoute::Primitive(leaf) = leaf_route else {
-        return TokenStream::new();
-    };
-    let leaf_ctx = LeafCtx {
-        base: BaseCtx {
-            access,
-            idx: field_idx,
-            name: column_prefix,
-        },
-        decimal128_encode_trait: &config.decimal128_encode_trait_path,
-        paths: &config.external_paths,
-    };
-    let enc = build_encoder_with_option_receiver(leaf, wrapper, &leaf_ctx, option_some_receiver);
-    match enc {
-        Encoder::Leaf {
-            decls,
-            push,
-            series,
-        } => {
-            let it = idents::populator_iter();
-            let named = idents::field_named_series();
-            let series_local = idents::vec_field_series(field_idx);
-            quote! {
-                {
-                    #(#decls)*
-                    for #it in items { #push }
-                    let #series_local: #pp::Series = #series;
-                    let #named = #series_local.with_name(#column_prefix.into());
-                    columns.push(#named.into());
-                }
-            }
-        }
-        Encoder::Multi { columnar } => columnar,
-    }
-}
 // ============================================================================
 // Shared shape-walker adapters (Vec-bearing parent + tuple-element projection)
 // ============================================================================

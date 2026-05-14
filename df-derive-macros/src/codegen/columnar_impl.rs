@@ -38,13 +38,18 @@ fn columnar_method_body(
     let to_df_trait = &config.to_dataframe_trait_path;
     let pp = config.external_paths.prelude();
     let (decls, pushes, builders) = prepare_columnar_parts(ir, config, it_ident);
+    let push_loop = if pushes.is_empty() {
+        TokenStream::new()
+    } else {
+        quote! { for #it_ident in items { #(#pushes)* } }
+    };
 
     quote! {
         if items.is_empty() {
             return <Self as #to_df_trait>::empty_dataframe();
         }
         #(#decls)*
-        for #it_ident in items { #(#pushes)* }
+        #push_loop
         let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
         #(#builders)*
         if columns.is_empty() {

@@ -466,6 +466,32 @@ mod tests {
         assert!(generated.contains(&columnar_impl), "{generated}");
     }
 
+    fn numeric_field(name: &str, wrapper_shape: WrapperShape) -> FieldIR {
+        FieldIR {
+            name: format_ident!("{}", name),
+            field_index: None,
+            leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+            wrapper_shape,
+            decimal_generic_params: Vec::new(),
+            decimal_backend_ty: None,
+            outer_smart_ptr_depth: 0,
+        }
+    }
+
+    fn depth_one_vec_shape() -> WrapperShape {
+        WrapperShape::Vec(VecLayers {
+            layers: NonEmpty::new(
+                VecLayerSpec {
+                    option_layers_above: 0,
+                    access: AccessChain::empty(),
+                },
+                Vec::new(),
+            ),
+            inner_option_layers: 0,
+            inner_access: AccessChain::empty(),
+        })
+    }
+
     #[test]
     fn generated_trait_impls_are_automatically_derived() {
         let empty_ir = StructIR {
@@ -478,15 +504,7 @@ mod tests {
         let non_empty_ir = StructIR {
             name: format_ident!("Row"),
             generics: syn::Generics::default(),
-            fields: vec![FieldIR {
-                name: format_ident!("id"),
-                field_index: None,
-                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
-                wrapper_shape: WrapperShape::Leaf(crate::ir::LeafShape::Bare),
-                decimal_generic_params: Vec::new(),
-                decimal_backend_ty: None,
-                outer_smart_ptr_depth: 0,
-            }],
+            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
         };
         assert_generated_impls_are_automatically_derived(&non_empty_ir);
     }
@@ -496,15 +514,7 @@ mod tests {
         let scalar_ir = StructIR {
             name: format_ident!("ScalarRow"),
             generics: syn::Generics::default(),
-            fields: vec![FieldIR {
-                name: format_ident!("id"),
-                field_index: None,
-                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
-                wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
-                decimal_generic_params: Vec::new(),
-                decimal_backend_ty: None,
-                outer_smart_ptr_depth: 0,
-            }],
+            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
         };
         let scalar = generate_code(&scalar_ir, &test_config()).to_string();
         assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
@@ -517,25 +527,7 @@ mod tests {
         let vec_ir = StructIR {
             name: format_ident!("VecRow"),
             generics: syn::Generics::default(),
-            fields: vec![FieldIR {
-                name: format_ident!("ids"),
-                field_index: None,
-                leaf_spec: LeafSpec::Numeric(NumericKind::U32),
-                wrapper_shape: WrapperShape::Vec(VecLayers {
-                    layers: NonEmpty::new(
-                        VecLayerSpec {
-                            option_layers_above: 0,
-                            access: AccessChain::empty(),
-                        },
-                        Vec::new(),
-                    ),
-                    inner_option_layers: 0,
-                    inner_access: AccessChain::empty(),
-                }),
-                decimal_generic_params: Vec::new(),
-                decimal_backend_ty: None,
-                outer_smart_ptr_depth: 0,
-            }],
+            fields: vec![numeric_field("ids", depth_one_vec_shape())],
         };
         let with_vec = generate_code(&vec_ir, &test_config()).to_string();
         assert!(with_vec.contains("__DfDeriveListAssembly"), "{with_vec}");
@@ -544,5 +536,18 @@ mod tests {
             "{with_vec}"
         );
         assert!(with_vec.contains("unsafe"), "{with_vec}");
+    }
+
+    #[test]
+    fn builder_only_columnar_impl_omits_empty_row_loop() {
+        let vec_ir = StructIR {
+            name: format_ident!("VecOnlyRow"),
+            generics: syn::Generics::default(),
+            fields: vec![numeric_field("ids", depth_one_vec_shape())],
+        };
+        let generated = generate_code(&vec_ir, &test_config()).to_string();
+        let empty_loop = format!("for {} in items {{ }}", encoder::idents::populator_iter());
+
+        assert!(!generated.contains(&empty_loop), "{generated}");
     }
 }

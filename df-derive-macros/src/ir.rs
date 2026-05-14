@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::ops::{Index, IndexMut};
 
 use syn::{Ident, Type};
@@ -235,28 +236,32 @@ pub enum NumericKind {
 
 impl NumericKind {
     /// Return the primitive storage kind a numeric-like Rust type maps to.
-    pub const fn storage_kind(self) -> Self {
+    pub const fn storage_kind(self) -> StorageNumericKind {
         match self {
-            Self::NonZeroI8 => Self::I8,
-            Self::NonZeroI16 => Self::I16,
-            Self::NonZeroI32 => Self::I32,
-            Self::NonZeroI64 => Self::I64,
-            Self::NonZeroI128 => Self::I128,
-            Self::NonZeroISize => Self::ISize,
-            Self::NonZeroU8 => Self::U8,
-            Self::NonZeroU16 => Self::U16,
-            Self::NonZeroU32 => Self::U32,
-            Self::NonZeroU64 => Self::U64,
-            Self::NonZeroU128 => Self::U128,
-            Self::NonZeroUSize => Self::USize,
-            other => other,
+            Self::I8 | Self::NonZeroI8 => StorageNumericKind::I8,
+            Self::I16 | Self::NonZeroI16 => StorageNumericKind::I16,
+            Self::I32 | Self::NonZeroI32 => StorageNumericKind::I32,
+            Self::I64 | Self::NonZeroI64 => StorageNumericKind::I64,
+            Self::I128 | Self::NonZeroI128 => StorageNumericKind::I128,
+            Self::U8 | Self::NonZeroU8 => StorageNumericKind::U8,
+            Self::U16 | Self::NonZeroU16 => StorageNumericKind::U16,
+            Self::U32 | Self::NonZeroU32 => StorageNumericKind::U32,
+            Self::U64 | Self::NonZeroU64 => StorageNumericKind::U64,
+            Self::U128 | Self::NonZeroU128 => StorageNumericKind::U128,
+            Self::F32 => StorageNumericKind::F32,
+            Self::F64 => StorageNumericKind::F64,
+            Self::ISize | Self::NonZeroISize => StorageNumericKind::ISize,
+            Self::USize | Self::NonZeroUSize => StorageNumericKind::USize,
         }
     }
 
     /// True for `ISize`/`USize` (platform-sized integers widened at the
     /// codegen boundary).
     pub const fn is_widened(self) -> bool {
-        matches!(self.storage_kind(), Self::ISize | Self::USize)
+        matches!(
+            self.storage_kind(),
+            StorageNumericKind::ISize | StorageNumericKind::USize
+        )
     }
 
     /// True for the `std::num::NonZero*` integer family.
@@ -277,6 +282,27 @@ impl NumericKind {
                 | Self::NonZeroUSize
         )
     }
+}
+
+/// Primitive numeric storage lane after non-zero wrappers have been erased.
+/// This is intentionally separate from [`NumericKind`] so metadata lookup
+/// cannot receive a `NonZero*` variant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StorageNumericKind {
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    F32,
+    F64,
+    ISize,
+    USize,
 }
 
 /// Bases that can be paired with the `as_str` borrow path: `String`, `&str`,
@@ -419,14 +445,35 @@ pub enum LeafSpec {
     Tuple(Vec<TupleElement>),
 }
 
-impl LeafSpec {
-    /// `Copy` test for the multi-Option per-row materializer. Numeric leaves
-    /// (including `ISize`/`USize`), `Bool`, `NaiveDate`, `NaiveTime`,
-    /// `NaiveDateTime`, and `Duration` are copied from collapsed `Option<&T>`
-    /// into `Option<T>` because their option push bodies consume values in
-    /// pattern position. `String`, `Binary`, `DateTime`, `Decimal`, `AsString`,
-    /// and the `AsStr` borrow path stay reference-oriented.
-    pub const fn is_copy(&self) -> bool {
+/// Borrowed view of a single-column primitive leaf. Codegen entry points that
+/// operate on primitive leaves accept this instead of broad [`LeafSpec`], so
+/// nested structs, generics, and tuples cannot be routed into primitive-only
+/// dispatchers.
+#[derive(Clone, Copy)]
+pub enum PrimitiveLeaf<'a> {
+    Numeric(NumericKind),
+    String,
+    Bool,
+    Binary,
+    DateTime(DateTimeUnit),
+    NaiveDateTime(DateTimeUnit),
+    NaiveDate,
+    NaiveTime,
+    Duration {
+        unit: DateTimeUnit,
+        source: DurationSource,
+    },
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
+    AsString,
+    AsStr(&'a StringyBase),
+}
+
+impl PrimitiveLeaf<'_> {
+    /// Copy test for the multi-Option per-row materializer.
+    pub const fn is_copy(self) -> bool {
         matches!(
             self,
             Self::Numeric(_)
@@ -437,6 +484,50 @@ impl LeafSpec {
                 | Self::Duration { .. }
         )
     }
+}
+
+/// Borrowed view of a multi-column nested leaf.
+#[derive(Clone, Copy)]
+pub enum NestedLeaf<'a> {
+    Struct(&'a Type),
+    Generic(&'a Ident),
+}
+
+/// Lossless borrowed route for a [`LeafSpec`].
+#[derive(Clone, Copy)]
+pub enum LeafRoute<'a> {
+    Primitive(PrimitiveLeaf<'a>),
+    Nested(NestedLeaf<'a>),
+    Tuple(&'a [TupleElement]),
+}
+
+impl LeafSpec {
+    /// Single source of truth for primitive, nested, and tuple routing.
+    pub const fn route(&self) -> LeafRoute<'_> {
+        match self {
+            Self::Numeric(kind) => LeafRoute::Primitive(PrimitiveLeaf::Numeric(*kind)),
+            Self::String => LeafRoute::Primitive(PrimitiveLeaf::String),
+            Self::Bool => LeafRoute::Primitive(PrimitiveLeaf::Bool),
+            Self::DateTime(unit) => LeafRoute::Primitive(PrimitiveLeaf::DateTime(*unit)),
+            Self::NaiveDateTime(unit) => LeafRoute::Primitive(PrimitiveLeaf::NaiveDateTime(*unit)),
+            Self::NaiveDate => LeafRoute::Primitive(PrimitiveLeaf::NaiveDate),
+            Self::NaiveTime => LeafRoute::Primitive(PrimitiveLeaf::NaiveTime),
+            Self::Duration { unit, source } => LeafRoute::Primitive(PrimitiveLeaf::Duration {
+                unit: *unit,
+                source: *source,
+            }),
+            Self::Decimal { precision, scale } => LeafRoute::Primitive(PrimitiveLeaf::Decimal {
+                precision: *precision,
+                scale: *scale,
+            }),
+            Self::AsString(_) => LeafRoute::Primitive(PrimitiveLeaf::AsString),
+            Self::AsStr(stringy) => LeafRoute::Primitive(PrimitiveLeaf::AsStr(stringy)),
+            Self::Binary => LeafRoute::Primitive(PrimitiveLeaf::Binary),
+            Self::Struct(ty) => LeafRoute::Nested(NestedLeaf::Struct(ty)),
+            Self::Generic(ident) => LeafRoute::Nested(NestedLeaf::Generic(ident)),
+            Self::Tuple(elements) => LeafRoute::Tuple(elements.as_slice()),
+        }
+    }
 
     /// True for `LeafSpec::Tuple`. Tuples are routed through a dedicated
     /// multi-column emission path that doesn't share a leaf builder with the
@@ -446,6 +537,34 @@ impl LeafSpec {
     #[allow(dead_code)]
     pub const fn is_tuple(&self) -> bool {
         matches!(self, Self::Tuple(_))
+    }
+}
+
+/// Leaf-only wrapper stack. The bare variant carries no access chain; any
+/// transparent access below an `Option` must use `Optional`, which requires a
+/// non-zero option count.
+#[derive(Clone)]
+pub enum LeafShape {
+    Bare,
+    Optional {
+        option_layers: NonZeroUsize,
+        access: AccessChain,
+    },
+}
+
+impl LeafShape {
+    pub fn from_option_access(option_layers: usize, access: AccessChain) -> Self {
+        NonZeroUsize::new(option_layers).map_or(Self::Bare, |option_layers| Self::Optional {
+            option_layers,
+            access,
+        })
+    }
+
+    pub const fn option_layers(&self) -> usize {
+        match self {
+            Self::Bare => 0,
+            Self::Optional { option_layers, .. } => option_layers.get(),
+        }
     }
 }
 
@@ -515,10 +634,7 @@ pub enum WrapperShape {
     /// the leaf. `0` is a bare leaf; `1` is a single `Option<T>`; `>= 2` is
     /// `Option<...<Option<T>>>` collapsed into a single validity bit per
     /// Polars's representation.
-    Leaf {
-        option_layers: usize,
-        access: AccessChain,
-    },
+    Leaf(LeafShape),
     /// One or more `Vec` wrappers, optionally with `Option`s collapsed into
     /// per-layer outer validity and inner-element validity.
     Vec(VecLayers),
@@ -528,7 +644,7 @@ impl WrapperShape {
     /// Number of `Vec<…>` layers in the wrapper stack.
     pub const fn vec_depth(&self) -> usize {
         match self {
-            Self::Leaf { .. } => 0,
+            Self::Leaf(_) => 0,
             Self::Vec(v) => v.depth(),
         }
     }

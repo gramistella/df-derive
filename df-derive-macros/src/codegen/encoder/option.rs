@@ -5,7 +5,7 @@
 //! reference at the boundary encoded by `AccessChain` (Polars folds every
 //! nested `None` into one validity bit).
 
-use crate::ir::{AccessChain, LeafSpec, StringyBase};
+use crate::ir::{AccessChain, PrimitiveLeaf, StringyBase};
 use quote::quote;
 
 use super::idents;
@@ -29,13 +29,13 @@ use super::{BaseCtx, Encoder, LeafCtx, access_chain_to_ref};
 ///   collapsed `Option<&T>` and feed that to the same option leaf machinery,
 ///   whose push bodies already borrow before formatting/encoding/pushing.
 pub(super) fn wrap_option_access_chain_primitive(
-    leaf: &LeafSpec,
+    leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
     access: &AccessChain,
     layers: usize,
 ) -> Encoder {
     debug_assert!(layers >= 1);
-    if let LeafSpec::AsStr(stringy) = leaf {
+    if let PrimitiveLeaf::AsStr(stringy) = leaf {
         return wrap_option_access_chain_as_str(stringy, ctx, access);
     }
     let orig_access = ctx.base.access.clone();

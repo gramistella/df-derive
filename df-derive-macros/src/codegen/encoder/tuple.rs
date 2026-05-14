@@ -19,7 +19,8 @@
 use crate::codegen::MacroConfig;
 use crate::codegen::strategy::{EmitMode, FieldEmit};
 use crate::ir::{
-    AccessChain, AccessStep, FieldIR, LeafSpec, TupleElement, VecLayers, WrapperShape,
+    AccessChain, AccessStep, FieldIR, LeafRoute, LeafShape, LeafSpec, NestedLeaf, PrimitiveLeaf,
+    TupleElement, VecLayers, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -105,20 +106,16 @@ fn build_element_entries(
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let total_layers = outer_layers + elem.wrapper_shape.vec_depth();
-    match &elem.leaf_spec {
-        LeafSpec::Struct(ty) => {
-            let type_path = struct_type_tokens(ty);
+    match elem.leaf_spec.route() {
+        LeafRoute::Nested(nested) => {
+            let type_path = tuple_nested_type_path(nested);
             element_nested_entries(&type_path, column_prefix, total_layers, mode, config)
         }
-        LeafSpec::Generic(id) => {
-            let type_path = quote! { #id };
-            element_nested_entries(&type_path, column_prefix, total_layers, mode, config)
-        }
-        LeafSpec::Tuple(inner) => {
+        LeafRoute::Tuple(inner) => {
             build_tuple_entries(inner, column_prefix, total_layers, mode, config)
         }
-        _ => {
-            let elem_dtype = elem.leaf_spec.dtype(&config.external_paths);
+        LeafRoute::Primitive(leaf) => {
+            let elem_dtype = leaf.dtype(&config.external_paths);
             let full_dtype = crate::codegen::external_paths::wrap_list_layers_compile_time_pub(
                 pp,
                 elem_dtype,
@@ -135,6 +132,13 @@ fn build_element_entries(
                 },
             }
         }
+    }
+}
+
+fn tuple_nested_type_path(nested: NestedLeaf<'_>) -> TokenStream {
+    match nested {
+        NestedLeaf::Struct(ty) => struct_type_tokens(ty),
+        NestedLeaf::Generic(id) => quote! { #id },
     }
 }
 
@@ -202,6 +206,12 @@ pub fn build_field_emit(
     }
 }
 
+#[derive(Clone, Copy)]
+enum TupleLeafRoute<'a> {
+    Primitive(PrimitiveLeaf<'a>),
+    Nested(NestedLeaf<'a>),
+}
+
 /// `<it>.<field>` rooted at the populator iter, with smart-pointer derefs
 /// applied. Mirrors `strategy::it_access`.
 fn field_access(field: &FieldIR, it_ident: &syn::Ident) -> TokenStream {
@@ -236,27 +246,28 @@ fn emit_element(
     config: &MacroConfig,
 ) -> TokenStream {
     // Recursion: tuple elements may themselves be tuples or nested structs.
-    if let LeafSpec::Tuple(inner) = &elem.leaf_spec {
-        return emit_inner_tuple(
-            parent_access,
-            parent_wrapper,
-            elem,
-            elem_idx,
-            inner,
-            field_idx,
-            column_prefix,
-            config,
-        );
-    }
+    let leaf_route = match elem.leaf_spec.route() {
+        LeafRoute::Tuple(inner) => {
+            return emit_inner_tuple(
+                parent_access,
+                elem,
+                elem_idx,
+                inner,
+                field_idx,
+                column_prefix,
+                config,
+            );
+        }
+        LeafRoute::Primitive(leaf) => TupleLeafRoute::Primitive(leaf),
+        LeafRoute::Nested(nested) => TupleLeafRoute::Nested(nested),
+    };
 
     match parent_wrapper {
         // Bare `(A, B)` (or `Box<(A, B)>` etc., with smart pointers already
         // dereffed in `parent_access`). Project directly via `.<i>` and
         // route through the standard encoder with the element's own
         // wrapper shape and leaf.
-        WrapperShape::Leaf {
-            option_layers: 0, ..
-        } => {
+        WrapperShape::Leaf(LeafShape::Bare) => {
             let elem_li = syn::Index::from(elem_idx);
             let mut access = quote! { #parent_access.#elem_li };
             for _ in 0..elem.outer_smart_ptr_depth {
@@ -265,7 +276,7 @@ fn emit_element(
             emit_via_standard_encoder(
                 &access,
                 &elem.wrapper_shape,
-                &elem.leaf_spec,
+                leaf_route,
                 field_idx,
                 column_prefix,
                 config,
@@ -276,14 +287,14 @@ fn emit_element(
         // reference that has already applied the element's outer smart-pointer
         // depth, then route through the standard encoder with the composed
         // wrapper.
-        WrapperShape::Leaf { access, .. } => {
+        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => {
             let collapsed_parent = super::access_chain_to_option_ref(parent_access, access);
             let projected = project_parent_option_tuple_element(&collapsed_parent, elem, elem_idx);
             let composed_shape = compose_option_with_element(&elem.wrapper_shape);
             emit_via_standard_encoder(
                 &projected,
                 &composed_shape,
-                &elem.leaf_spec,
+                leaf_route,
                 field_idx,
                 column_prefix,
                 config,
@@ -296,6 +307,7 @@ fn emit_element(
             parent_access,
             parent_layers,
             elem,
+            leaf_route,
             elem_idx,
             field_idx,
             column_prefix,
@@ -307,7 +319,8 @@ fn emit_element(
 fn is_copy_element_projection(elem: &TupleElement) -> bool {
     is_copy_leaf_for_projection(&elem.leaf_spec)
         && match &elem.wrapper_shape {
-            WrapperShape::Leaf { access, .. } => access.is_only_options(),
+            WrapperShape::Leaf(LeafShape::Bare) => true,
+            WrapperShape::Leaf(LeafShape::Optional { access, .. }) => access.is_only_options(),
             WrapperShape::Vec(_) => false,
         }
 }
@@ -336,13 +349,17 @@ const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
 /// validity on the element's outermost Vec layer.
 fn compose_option_with_element(elem_shape: &WrapperShape) -> WrapperShape {
     match elem_shape {
-        WrapperShape::Leaf {
+        WrapperShape::Leaf(LeafShape::Bare) => WrapperShape::Leaf(LeafShape::from_option_access(
+            1,
+            prepend_option_access(&AccessChain::empty()),
+        )),
+        WrapperShape::Leaf(LeafShape::Optional {
             option_layers,
             access,
-        } => WrapperShape::Leaf {
-            option_layers: 1 + option_layers,
-            access: prepend_option_access(access),
-        },
+        }) => WrapperShape::Leaf(LeafShape::from_option_access(
+            1 + option_layers.get(),
+            prepend_option_access(access),
+        )),
         WrapperShape::Vec(layers) => {
             let mut new_layers = layers.layers.clone();
             new_layers[0].option_layers_above += 1;
@@ -387,6 +404,7 @@ fn emit_vec_parent(
     parent_access: &TokenStream,
     parent_layers: &VecLayers,
     elem: &TupleElement,
+    leaf_route: TupleLeafRoute<'_>,
     elem_idx: usize,
     field_idx: usize,
     column_prefix: &str,
@@ -412,15 +430,16 @@ fn emit_vec_parent(
             composed_layers.extend(e_layers);
             elem_layers.inner_option_layers
         }
-        WrapperShape::Leaf { option_layers, .. } => {
+        WrapperShape::Leaf(leaf_shape) => {
             // No element Vec layers. Parent's inner-Option and element's
             // option_layers both attach to the leaf — Polars folds them.
-            carried_inner_option + option_layers
+            carried_inner_option + leaf_shape.option_layers()
         }
     };
     let composed_inner_access = match &elem.wrapper_shape {
         WrapperShape::Vec(elem_layers) => elem_layers.inner_access.clone(),
-        WrapperShape::Leaf { access, .. } => {
+        WrapperShape::Leaf(LeafShape::Bare) => parent_layers.inner_access.clone(),
+        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => {
             concat_access_chains(&parent_layers.inner_access, access)
         }
     };
@@ -440,41 +459,27 @@ fn emit_vec_parent(
         smart_ptr_depth: elem.outer_smart_ptr_depth,
     };
 
-    match &elem.leaf_spec {
-        LeafSpec::Struct(ty) => {
-            let type_path = struct_type_tokens(ty);
+    match leaf_route {
+        TupleLeafRoute::Nested(nested) => {
+            let type_path = tuple_nested_type_path(nested);
             let leaf_projection_access =
                 deepest_leaf_projection_access(&composed_shape, projection, elem);
             emit_vec_parent_nested(
                 parent_access,
                 &composed_shape,
                 projection,
-                leaf_projection_access,
+                leaf_projection_access.as_ref(),
                 &type_path,
                 field_idx,
                 column_prefix,
                 config,
             )
         }
-        LeafSpec::Generic(id) => {
-            let type_path = quote! { #id };
-            let leaf_projection_access =
-                deepest_leaf_projection_access(&composed_shape, projection, elem);
-            emit_vec_parent_nested(
-                parent_access,
-                &composed_shape,
-                projection,
-                leaf_projection_access,
-                &type_path,
-                field_idx,
-                column_prefix,
-                config,
-            )
-        }
-        _ => emit_vec_parent_primitive(
+        TupleLeafRoute::Primitive(leaf) => emit_vec_parent_primitive(
             parent_access,
             &composed_shape,
             projection,
+            leaf,
             elem,
             field_idx,
             column_prefix,
@@ -492,6 +497,7 @@ fn emit_vec_parent_primitive(
     parent_access: &TokenStream,
     composed_shape: &VecLayers,
     projection: TupleProjection<'_>,
+    leaf: PrimitiveLeaf<'_>,
     elem: &TupleElement,
     field_idx: usize,
     column_prefix: &str,
@@ -519,7 +525,7 @@ fn emit_vec_parent_primitive(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
         paths: &config.external_paths,
     };
-    let pep = super::vec::pep_for_primitive_leaf(&elem.leaf_spec, &leaf_ctx, composed_shape);
+    let pep = super::vec::pep_for_primitive_leaf(leaf, &leaf_ctx, composed_shape);
     let leaf_projection_access = deepest_leaf_projection_access(composed_shape, projection, elem);
 
     let precount = build_precount(
@@ -536,7 +542,7 @@ fn emit_vec_parent_primitive(
         parent_access,
         projection,
         TupleScanLeaf {
-            projection_access: leaf_projection_access,
+            projection_access: leaf_projection_access.as_ref(),
             per_elem_push: &pep.per_elem_push,
             offsets_post_push: &pep.leaf_offsets_post_push,
             pp,
@@ -913,7 +919,6 @@ fn wrap_per_column_layers(
 #[allow(clippy::too_many_arguments)]
 fn emit_inner_tuple(
     parent_access: &TokenStream,
-    parent_wrapper: &WrapperShape,
     outer_elem: &TupleElement,
     outer_elem_idx: usize,
     inner_elements: &[TupleElement],
@@ -921,52 +926,26 @@ fn emit_inner_tuple(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
-    // Static projection fast path: parent has no wrappers and the outer
-    // tuple element has no wrappers. The projection is a chain of `.<i>`
-    // field accesses that compose statically. Recurse with the projected
-    // access expression as the new parent_access.
-    let parent_static = matches!(
-        parent_wrapper,
-        WrapperShape::Leaf {
-            option_layers: 0,
-            ..
-        }
-    );
-    let outer_static = matches!(
-        &outer_elem.wrapper_shape,
-        WrapperShape::Leaf {
-            option_layers: 0,
-            ..
-        }
-    );
-    if parent_static && outer_static {
-        let outer_li = syn::Index::from(outer_elem_idx);
-        let mut outer_access = quote! { #parent_access.#outer_li };
-        for _ in 0..outer_elem.outer_smart_ptr_depth {
-            outer_access = quote! { (*(#outer_access)) };
-        }
-        let inner_wrapper = WrapperShape::Leaf {
-            option_layers: 0,
-            access: AccessChain::empty(),
-        };
-        let mut blocks: Vec<TokenStream> = Vec::with_capacity(inner_elements.len());
-        for (j, inner) in inner_elements.iter().enumerate() {
-            let inner_prefix = format!("{column_prefix}.field_{j}");
-            blocks.push(emit_element(
-                &outer_access,
-                &inner_wrapper,
-                inner,
-                j,
-                field_idx,
-                &inner_prefix,
-                config,
-            ));
-        }
-        return quote! { #(#blocks)* };
+    let outer_li = syn::Index::from(outer_elem_idx);
+    let mut outer_access = quote! { #parent_access.#outer_li };
+    for _ in 0..outer_elem.outer_smart_ptr_depth {
+        outer_access = quote! { (*(#outer_access)) };
     }
-    unreachable!(
-        "df-derive: parser should reject wrapped nested tuple projection paths before codegen"
-    )
+    let inner_wrapper = WrapperShape::Leaf(LeafShape::Bare);
+    let mut blocks: Vec<TokenStream> = Vec::with_capacity(inner_elements.len());
+    for (j, inner) in inner_elements.iter().enumerate() {
+        let inner_prefix = format!("{column_prefix}.field_{j}");
+        blocks.push(emit_element(
+            &outer_access,
+            &inner_wrapper,
+            inner,
+            j,
+            field_idx,
+            &inner_prefix,
+            config,
+        ));
+    }
+    quote! { #(#blocks)* }
 }
 
 // ============================================================================
@@ -982,43 +961,30 @@ fn emit_inner_tuple(
 fn emit_via_standard_encoder(
     access: &TokenStream,
     wrapper: &WrapperShape,
-    leaf: &LeafSpec,
+    leaf_route: TupleLeafRoute<'_>,
     field_idx: usize,
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
-    let nested_ty: TokenStream;
-    let nested_ctx = match leaf {
-        LeafSpec::Struct(ty) => {
-            nested_ty = struct_type_tokens(ty);
-            Some(NestedLeafCtx {
-                base: BaseCtx {
-                    access,
-                    idx: field_idx,
-                    name: column_prefix,
-                },
-                ty: &nested_ty,
-                columnar_trait: &config.columnar_trait_path,
-                to_df_trait: &config.to_dataframe_trait_path,
-                paths: &config.external_paths,
-            })
-        }
-        LeafSpec::Generic(id) => {
-            nested_ty = quote! { #id };
-            Some(NestedLeafCtx {
-                base: BaseCtx {
-                    access,
-                    idx: field_idx,
-                    name: column_prefix,
-                },
-                ty: &nested_ty,
-                columnar_trait: &config.columnar_trait_path,
-                to_df_trait: &config.to_dataframe_trait_path,
-                paths: &config.external_paths,
-            })
-        }
-        _ => None,
+    if let TupleLeafRoute::Nested(nested) = leaf_route {
+        let nested_ty = tuple_nested_type_path(nested);
+        let nested_ctx = NestedLeafCtx {
+            base: BaseCtx {
+                access,
+                idx: field_idx,
+                name: column_prefix,
+            },
+            ty: &nested_ty,
+            columnar_trait: &config.columnar_trait_path,
+            to_df_trait: &config.to_dataframe_trait_path,
+            paths: &config.external_paths,
+        };
+        return build_nested_encoder(wrapper, &nested_ctx);
+    }
+
+    let TupleLeafRoute::Primitive(leaf) = leaf_route else {
+        return TokenStream::new();
     };
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
@@ -1029,10 +995,7 @@ fn emit_via_standard_encoder(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
         paths: &config.external_paths,
     };
-    let enc = nested_ctx.as_ref().map_or_else(
-        || build_encoder(leaf, wrapper, &leaf_ctx),
-        |nctx| build_nested_encoder(wrapper, nctx),
-    );
+    let enc = build_encoder(leaf, wrapper, &leaf_ctx);
     match enc {
         Encoder::Leaf {
             decls,
@@ -1055,7 +1018,6 @@ fn emit_via_standard_encoder(
         Encoder::Multi { columnar } => columnar,
     }
 }
-
 // ============================================================================
 // Shared shape-walker adapters (Vec-bearing parent + tuple-element projection)
 // ============================================================================
@@ -1095,16 +1057,17 @@ impl<'a> TupleProjection<'a> {
     }
 }
 
-const fn deepest_leaf_projection_access<'a>(
+fn deepest_leaf_projection_access(
     shape: &VecLayers,
     projection: TupleProjection<'_>,
-    elem: &'a TupleElement,
-) -> Option<&'a AccessChain> {
+    elem: &TupleElement,
+) -> Option<AccessChain> {
     if projection.layer != shape.depth() {
         return None;
     }
     match &elem.wrapper_shape {
-        WrapperShape::Leaf { access, .. } => Some(access),
+        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => Some(access.clone()),
+        WrapperShape::Leaf(LeafShape::Bare) => Some(AccessChain::empty()),
         WrapperShape::Vec(_) => None,
     }
 }

@@ -6,7 +6,7 @@
 //! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
 //! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
 
-use crate::ir::{FieldIR, LeafSpec};
+use crate::ir::{FieldIR, LeafRoute, NestedLeaf, PrimitiveLeaf};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
@@ -23,51 +23,10 @@ pub(in crate::codegen) struct FieldEmit {
     pub builders: Vec<TokenStream>,
 }
 
-/// Routing decision for one field. `Primitive` covers every leaf that
-/// resolves to a single Polars column at the encoder boundary (numerics,
-/// strings, decimals, dates, plus stringy-transformed structs/generics).
-/// `Nested` covers concrete structs and generic type parameters that
-/// resolve to one Polars column per inner schema entry — `type_path` is
-/// the splicable `Foo::<M>` / `T` token stream. `Tuple` covers tuple-typed
-/// fields where each element contributes its own column(s); the parent
-/// wrapper stack distributes across every element column at codegen time.
-pub(in crate::codegen) enum FieldRoute {
-    Primitive,
-    Nested { type_path: TokenStream },
-    Tuple,
-}
-
-impl LeafSpec {
-    /// Single source of truth for primitive-vs-nested routing.
-    /// `Struct`/`Generic` without a stringy override (`as_str`/`as_string`)
-    /// goes to the nested encoder; everything else (including `as_str` /
-    /// `as_string` over a struct or generic — which produces a `String`
-    /// column, not a nested struct column) stays primitive. The parser's
-    /// legality matrix folds the stringy overrides into
-    /// `LeafSpec::AsStr`/`LeafSpec::AsString`, so the destructure here is
-    /// structurally exhaustive — no `is_stringy` bridge.
-    fn route(&self) -> FieldRoute {
-        match self {
-            Self::Struct(ty) => FieldRoute::Nested {
-                type_path: struct_type_tokens(ty),
-            },
-            Self::Generic(id) => FieldRoute::Nested {
-                type_path: quote! { #id },
-            },
-            Self::Tuple(_) => FieldRoute::Tuple,
-            Self::Numeric(_)
-            | Self::String
-            | Self::Bool
-            | Self::DateTime(_)
-            | Self::NaiveDateTime(_)
-            | Self::NaiveDate
-            | Self::NaiveTime
-            | Self::Duration { .. }
-            | Self::Decimal { .. }
-            | Self::AsString(_)
-            | Self::AsStr(_)
-            | Self::Binary => FieldRoute::Primitive,
-        }
+fn nested_type_path(nested: NestedLeaf<'_>) -> TokenStream {
+    match nested {
+        NestedLeaf::Struct(ty) => struct_type_tokens(ty),
+        NestedLeaf::Generic(id) => quote! { #id },
     }
 }
 
@@ -120,7 +79,8 @@ fn build_field_entries(
 ) -> TokenStream {
     let name = super::helpers::column_name_for_ident(&field.name);
     match (field.leaf_spec.route(), mode) {
-        (FieldRoute::Nested { type_path }, EmitMode::SchemaEntries) => {
+        (LeafRoute::Nested(nested), EmitMode::SchemaEntries) => {
+            let type_path = nested_type_path(nested);
             super::nested::generate_schema_entries_for_struct(
                 &type_path,
                 &config.to_dataframe_trait_path,
@@ -129,7 +89,8 @@ fn build_field_entries(
                 &config.external_paths,
             )
         }
-        (FieldRoute::Nested { type_path }, EmitMode::EmptyRows) => {
+        (LeafRoute::Nested(nested), EmitMode::EmptyRows) => {
+            let type_path = nested_type_path(nested);
             super::nested::nested_empty_series_row(
                 &type_path,
                 &config.to_dataframe_trait_path,
@@ -138,19 +99,16 @@ fn build_field_entries(
                 &config.external_paths,
             )
         }
-        (FieldRoute::Primitive, EmitMode::SchemaEntries) => {
-            let dtype = field_full_dtype(field, config);
+        (LeafRoute::Primitive(leaf), EmitMode::SchemaEntries) => {
+            let dtype = field_full_dtype(leaf, field, config);
             quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
         }
-        (FieldRoute::Primitive, EmitMode::EmptyRows) => {
-            let dtype = field_full_dtype(field, config);
+        (LeafRoute::Primitive(leaf), EmitMode::EmptyRows) => {
+            let dtype = field_full_dtype(leaf, field, config);
             let pp = config.external_paths.prelude();
             quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
         }
-        (FieldRoute::Tuple, _) => {
-            let LeafSpec::Tuple(elements) = &field.leaf_spec else {
-                unreachable!("FieldRoute::Tuple implies LeafSpec::Tuple")
-            };
+        (LeafRoute::Tuple(elements), _) => {
             super::encoder::build_tuple_field_entries(field, elements, mode, config)
         }
     }
@@ -171,12 +129,12 @@ pub fn build_empty_series(field: &FieldIR, config: &super::MacroConfig) -> Token
     build_field_entries(field, EmitMode::EmptyRows, config)
 }
 
-fn field_full_dtype(field: &FieldIR, config: &super::MacroConfig) -> TokenStream {
-    super::type_registry::full_dtype(
-        &field.leaf_spec,
-        &field.wrapper_shape,
-        &config.external_paths,
-    )
+fn field_full_dtype(
+    leaf: PrimitiveLeaf<'_>,
+    field: &FieldIR,
+    config: &super::MacroConfig,
+) -> TokenStream {
+    super::type_registry::full_dtype(leaf, &field.wrapper_shape, &config.external_paths)
 }
 
 /// Build the columnar emit pieces for one field. Routes every primitive
@@ -189,12 +147,12 @@ pub fn build_field_emit(
     it_ident: &Ident,
 ) -> FieldEmit {
     match field.leaf_spec.route() {
-        FieldRoute::Nested { type_path } => build_nested_emit(field, config, idx, &type_path),
-        FieldRoute::Primitive => build_primitive_emit(field, config, idx, it_ident),
-        FieldRoute::Tuple => {
-            let LeafSpec::Tuple(elements) = &field.leaf_spec else {
-                unreachable!("FieldRoute::Tuple implies LeafSpec::Tuple")
-            };
+        LeafRoute::Nested(nested) => {
+            let type_path = nested_type_path(nested);
+            build_nested_emit(field, config, idx, &type_path)
+        }
+        LeafRoute::Primitive(leaf) => build_primitive_emit(field, config, idx, it_ident, leaf),
+        LeafRoute::Tuple(elements) => {
             super::encoder::build_tuple_field_emit(field, config, idx, elements)
         }
     }
@@ -224,10 +182,7 @@ fn build_nested_emit(
         to_df_trait: &config.to_dataframe_trait_path,
         paths: &config.external_paths,
     };
-    let enc = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
-    let Encoder::Multi { columnar } = enc else {
-        unreachable!("nested encoder must produce a multi-column encoder")
-    };
+    let columnar = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
     FieldEmit {
         decls: Vec::new(),
         push: TokenStream::new(),
@@ -245,6 +200,7 @@ fn build_primitive_emit(
     config: &super::MacroConfig,
     idx: usize,
     it_ident: &Ident,
+    leaf: PrimitiveLeaf<'_>,
 ) -> FieldEmit {
     let name = super::helpers::column_name_for_ident(&field.name);
     let access = it_access(field, it_ident);
@@ -257,7 +213,7 @@ fn build_primitive_emit(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
         paths: &config.external_paths,
     };
-    let enc = encoder::build_encoder(&field.leaf_spec, &field.wrapper_shape, &leaf_ctx);
+    let enc = encoder::build_encoder(leaf, &field.wrapper_shape, &leaf_ctx);
     match enc {
         Encoder::Leaf {
             decls,

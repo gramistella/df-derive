@@ -1,4 +1,6 @@
-use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, WrapperShape};
+use crate::ir::{
+    DateTimeUnit, DurationSource, NumericKind, PrimitiveLeaf, StorageNumericKind, WrapperShape,
+};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -52,34 +54,20 @@ pub(super) fn numeric_info_for(kind: NumericKind, paths: &ExternalPaths) -> Nume
         }
     };
     match kind.storage_kind() {
-        NumericKind::I8 => info(quote! { i8 }, "Int8", None),
-        NumericKind::I16 => info(quote! { i16 }, "Int16", None),
-        NumericKind::I32 => info(quote! { i32 }, "Int32", None),
-        NumericKind::I64 => info(quote! { i64 }, "Int64", None),
-        NumericKind::I128 => info(quote! { i128 }, "Int128", None),
-        NumericKind::U8 => info(quote! { u8 }, "UInt8", None),
-        NumericKind::U16 => info(quote! { u16 }, "UInt16", None),
-        NumericKind::U32 => info(quote! { u32 }, "UInt32", None),
-        NumericKind::U64 => info(quote! { u64 }, "UInt64", None),
-        NumericKind::U128 => info(quote! { u128 }, "UInt128", None),
-        NumericKind::F32 => info(quote! { f32 }, "Float32", None),
-        NumericKind::F64 => info(quote! { f64 }, "Float64", None),
-        NumericKind::ISize => info(quote! { i64 }, "Int64", Some(quote! { isize })),
-        NumericKind::USize => info(quote! { u64 }, "UInt64", Some(quote! { usize })),
-        NumericKind::NonZeroI8
-        | NumericKind::NonZeroI16
-        | NumericKind::NonZeroI32
-        | NumericKind::NonZeroI64
-        | NumericKind::NonZeroI128
-        | NumericKind::NonZeroISize
-        | NumericKind::NonZeroU8
-        | NumericKind::NonZeroU16
-        | NumericKind::NonZeroU32
-        | NumericKind::NonZeroU64
-        | NumericKind::NonZeroU128
-        | NumericKind::NonZeroUSize => {
-            unreachable!("storage_kind() strips NonZero variants before metadata lookup")
-        }
+        StorageNumericKind::I8 => info(quote! { i8 }, "Int8", None),
+        StorageNumericKind::I16 => info(quote! { i16 }, "Int16", None),
+        StorageNumericKind::I32 => info(quote! { i32 }, "Int32", None),
+        StorageNumericKind::I64 => info(quote! { i64 }, "Int64", None),
+        StorageNumericKind::I128 => info(quote! { i128 }, "Int128", None),
+        StorageNumericKind::U8 => info(quote! { u8 }, "UInt8", None),
+        StorageNumericKind::U16 => info(quote! { u16 }, "UInt16", None),
+        StorageNumericKind::U32 => info(quote! { u32 }, "UInt32", None),
+        StorageNumericKind::U64 => info(quote! { u64 }, "UInt64", None),
+        StorageNumericKind::U128 => info(quote! { u128 }, "UInt128", None),
+        StorageNumericKind::F32 => info(quote! { f32 }, "Float32", None),
+        StorageNumericKind::F64 => info(quote! { f64 }, "Float64", None),
+        StorageNumericKind::ISize => info(quote! { i64 }, "Int64", Some(quote! { isize })),
+        StorageNumericKind::USize => info(quote! { u64 }, "UInt64", Some(quote! { usize })),
     }
 }
 
@@ -113,7 +101,7 @@ pub(super) fn time_unit_tokens(unit: DateTimeUnit, paths: &ExternalPaths) -> Tok
     }
 }
 
-impl LeafSpec {
+impl PrimitiveLeaf<'_> {
     /// Compile-time element-level dtype for this leaf, BEFORE the wrapper
     /// stack adds `List<>` envelopes. The encoder also calls this directly
     /// when it needs the leaf's logical dtype for the cast / typed-null path.
@@ -124,43 +112,75 @@ impl LeafSpec {
     ///
     /// `AsStr` shares the `String` arm because attribute stringification
     /// (`as_string`) and borrowing (`as_str`) both materialize as `String`.
-    /// The borrowing path emits `Vec<&str>` buffers directly and bypasses
-    /// this fallback element type, but keeping them aligned means a stray
-    /// code path that doesn't yet handle `AsStr` degrades to allocating,
-    /// not panicking.
+    /// The borrowing path emits `Vec<&str>` buffers directly; dtype selection
+    /// remains a pure schema mapping.
     pub(super) fn dtype(&self, paths: &ExternalPaths) -> TokenStream {
         let pp = paths.prelude();
         let dt = quote! { #pp::DataType };
-        match self {
-            Self::Numeric(kind) => numeric_info_for(*kind, paths).dtype,
-            Self::String | Self::AsString(_) | Self::AsStr(_) => quote! { #dt::String },
+        match *self {
+            Self::Numeric(kind) => numeric_info_for(kind, paths).dtype,
+            Self::String | Self::AsString | Self::AsStr(_) => quote! { #dt::String },
             Self::Bool => quote! { #dt::Boolean },
             Self::Binary => quote! { #dt::Binary },
             Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
-                let unit = time_unit_tokens(*unit, paths);
+                let unit = time_unit_tokens(unit, paths);
                 quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
             }
             Self::NaiveDate => quote! { #dt::Date },
             Self::NaiveTime => quote! { #dt::Time },
             Self::Duration { unit, .. } => {
-                let unit = time_unit_tokens(*unit, paths);
+                let unit = time_unit_tokens(unit, paths);
                 quote! { #dt::Duration(#unit) }
             }
             Self::Decimal { precision, scale } => {
-                let p = *precision as usize;
-                let s = *scale as usize;
+                let p = precision as usize;
+                let s = scale as usize;
                 quote! { #dt::Decimal(#p, #s) }
             }
-            Self::Struct(..) | Self::Generic(_) => quote! { #dt::Null },
-            // Tuples don't have a single leaf dtype — each element produces
-            // its own column with its own dtype. The strategy router routes
-            // tuple fields through the dedicated tuple emitter, which calls
-            // [`crate::ir::LeafSpec::dtype`] only on the per-element leaves.
-            Self::Tuple(_) => unreachable!(
-                "df-derive: LeafSpec::dtype reached with Tuple leaf — tuple fields \
-                 route through the tuple emitter, which never reduces a tuple to a \
-                 single dtype",
-            ),
+        }
+    }
+}
+
+/// Primitive leaves that require a scalar expression transform before they
+/// can be pushed into their physical storage lane. String borrowing and
+/// `Display` formatting have dedicated encoders, so they are not members of
+/// this type and cannot accidentally route through the mapped-scalar path.
+#[derive(Clone, Copy)]
+pub(in crate::codegen) enum MappedPrimitiveLeaf {
+    DateTime(DateTimeUnit),
+    NaiveDateTime(DateTimeUnit),
+    NaiveDate,
+    NaiveTime,
+    Duration {
+        unit: DateTimeUnit,
+        source: DurationSource,
+    },
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
+}
+
+impl MappedPrimitiveLeaf {
+    pub(in crate::codegen) fn dtype(self, paths: &ExternalPaths) -> TokenStream {
+        let pp = paths.prelude();
+        let dt = quote! { #pp::DataType };
+        match self {
+            Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
+                let unit = time_unit_tokens(unit, paths);
+                quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
+            }
+            Self::NaiveDate => quote! { #dt::Date },
+            Self::NaiveTime => quote! { #dt::Time },
+            Self::Duration { unit, .. } => {
+                let unit = time_unit_tokens(unit, paths);
+                quote! { #dt::Duration(#unit) }
+            }
+            Self::Decimal { precision, scale } => {
+                let p = precision as usize;
+                let s = scale as usize;
+                quote! { #dt::Decimal(#p, #s) }
+            }
         }
     }
 }
@@ -169,7 +189,11 @@ impl LeafSpec {
 /// `Vec` layer in the wrapper stack. Consumers that want the leaf-only
 /// dtype (e.g. the encoder's per-leaf logical-dtype payload) call
 /// [`LeafSpec::dtype`] directly.
-pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape, paths: &ExternalPaths) -> TokenStream {
+pub fn full_dtype(
+    leaf: PrimitiveLeaf<'_>,
+    wrapper: &WrapperShape,
+    paths: &ExternalPaths,
+) -> TokenStream {
     let pp = paths.prelude();
     let elem_dtype = leaf.dtype(paths);
     super::external_paths::wrap_list_layers_compile_time(pp, elem_dtype, wrapper.vec_depth())
@@ -199,21 +223,20 @@ impl PrimitiveExprReceiver {
     }
 }
 
-/// Map a per-row primitive value through any leaf-injected transform
-/// (`DateTime` → epoch i64, `Decimal` → i128 mantissa, `AsString` → owned
-/// `String`, `AsStr` → `&str` borrow). The bare `LeafSpec::*` arms
-/// (`Numeric` / `String` / `Bool` / `Struct` / `Generic`) clone the value
-/// directly — no transform applies. Returns the mapped per-row expression.
+/// Map a per-row primitive value through a scalar storage transform
+/// (`DateTime` → epoch i64, `Decimal` → i128 mantissa, etc.). Leaves that do
+/// not need this scalar transform cannot be represented by
+/// [`MappedPrimitiveLeaf`].
 #[allow(clippy::too_many_lines)]
 pub fn map_primitive_expr(
     var: &TokenStream,
     receiver: PrimitiveExprReceiver,
-    leaf: &LeafSpec,
+    leaf: MappedPrimitiveLeaf,
     decimal128_encode_trait: &TokenStream,
     paths: &ExternalPaths,
 ) -> TokenStream {
     match leaf {
-        LeafSpec::DateTime(unit) => match unit {
+        MappedPrimitiveLeaf::DateTime(unit) => match unit {
             DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
@@ -225,7 +248,7 @@ pub fn map_primitive_expr(
                 }
             }
         },
-        LeafSpec::NaiveDateTime(unit) => match unit {
+        MappedPrimitiveLeaf::NaiveDateTime(unit) => match unit {
             DateTimeUnit::Milliseconds => quote! { (#var).and_utc().timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).and_utc().timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
@@ -237,7 +260,7 @@ pub fn map_primitive_expr(
                 }
             }
         },
-        LeafSpec::NaiveDate => {
+        MappedPrimitiveLeaf::NaiveDate => {
             let chrono = super::external_paths::chrono_root();
             quote! {
                 ((#var).signed_duration_since(
@@ -245,7 +268,7 @@ pub fn map_primitive_expr(
                 ).num_days() as i32)
             }
         }
-        LeafSpec::NaiveTime => {
+        MappedPrimitiveLeaf::NaiveTime => {
             let chrono = super::external_paths::chrono_root();
             quote! {
                 {
@@ -255,7 +278,7 @@ pub fn map_primitive_expr(
                 }
             }
         }
-        LeafSpec::Duration { unit, source } => {
+        MappedPrimitiveLeaf::Duration { unit, source } => {
             let pp = paths.prelude();
             match source {
                 DurationSource::Std => match unit {
@@ -292,10 +315,7 @@ pub fn map_primitive_expr(
                 },
             }
         }
-        LeafSpec::AsString(_) => {
-            quote! { (#var).to_string() }
-        }
-        LeafSpec::Decimal { precision, scale } => {
+        MappedPrimitiveLeaf::Decimal { precision, scale } => {
             // Dispatch the rescale through the user-controlled
             // `Decimal128Encode` trait so different decimal backends
             // (`rust_decimal::Decimal`, `bigdecimal::BigDecimal`, …) can
@@ -304,9 +324,9 @@ pub fn map_primitive_expr(
             // bytes match polars's `str_to_dec128`. A `None` return
             // surfaces as a polars `ComputeError`.
             //
-            let target = u32::from(*scale);
-            let precision = u32::from(*precision);
-            let scale = u32::from(*scale);
+            let target = u32::from(scale);
+            let precision = u32::from(precision);
+            let scale = u32::from(scale);
             let pp = paths.prelude();
             let decimal_receiver = receiver.decimal_receiver(var);
             quote! {{
@@ -334,30 +354,5 @@ pub fn map_primitive_expr(
                 }
             }}
         }
-        LeafSpec::AsStr(_) => {
-            // Allocating fallback for codegen sites that can't use a
-            // `Vec<&str>` columnar buffer. The encoder IR routes every
-            // `as_str` shape through borrowing buffers built directly by
-            // the leaf encoders, so this arm is currently unreachable on
-            // parser-validated input. Emitting valid Rust here keeps the
-            // per-field `AsRef<str>` const-fn assert as the canonical
-            // user-visible error rather than a proc-macro internal
-            // panic, should a future caller route through this path.
-            quote! { <_ as ::core::convert::AsRef<str>>::as_ref(&(#var)).to_string() }
-        }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::Binary
-        | LeafSpec::Struct(..)
-        | LeafSpec::Generic(_) => quote! { (#var).clone() },
-        // Tuples never reach `map_primitive_expr`: the tuple emitter routes
-        // each element's leaf through this helper independently, never the
-        // tuple's `LeafSpec::Tuple` itself.
-        LeafSpec::Tuple(_) => unreachable!(
-            "df-derive: map_primitive_expr reached with Tuple leaf — tuple fields \
-             route through the tuple emitter, which calls map_primitive_expr only \
-             on per-element leaves",
-        ),
     }
 }

@@ -18,7 +18,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::{AccessChain, VecLayers, WrapperShape};
+use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
@@ -62,7 +62,7 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
 fn layer_wraps<'a>(
     shape: &VecLayers,
     layers: &'a [LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     pa_root: &TokenStream,
 ) -> Vec<LayerWrap<'a>> {
     let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
@@ -107,7 +107,7 @@ fn layer_wraps<'a>(
 fn hoisted_freezes(
     shape: &VecLayers,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream) {
     if !kind.freeze_hoisted() {
@@ -380,7 +380,7 @@ fn nested_consume_columns(
 fn ctb_layer_wrap(
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     inner_col_expr: &TokenStream,
     pp: &TokenStream,
     pa_root: &TokenStream,
@@ -422,7 +422,7 @@ fn pep_materialize(
     pep: &super::leaf_kind::PerElementPush,
     shape: &VecLayers,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -479,7 +479,7 @@ fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -537,7 +537,7 @@ fn ctb_materialize(
     // sizes the typed-null chunk to `total` (sum of inner-Vec lengths) so
     // the offsets buffer's max value doesn't exceed the chunk's length.
     let absent_len: TokenStream = match wrapper {
-        WrapperShape::Leaf { .. } => quote! { items.len() },
+        WrapperShape::Leaf(_) => quote! { items.len() },
         WrapperShape::Vec(_) => quote! { #total },
     };
     let inner_col_all_absent = quote! {
@@ -557,21 +557,19 @@ fn ctb_materialize(
     let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent, pp);
 
     let (validity_freeze, offsets_freeze) = match wrapper {
-        WrapperShape::Leaf { .. } => (TokenStream::new(), TokenStream::new()),
+        WrapperShape::Leaf(_) => (TokenStream::new(), TokenStream::new()),
         WrapperShape::Vec(shape) => hoisted_freezes(shape, layers, kind, pa_root),
     };
 
     match wrapper {
-        WrapperShape::Leaf {
-            option_layers: 0, ..
-        } => {
+        WrapperShape::Leaf(LeafShape::Bare) => {
             // Bare nested struct: every row contributes one ref. One arm.
             quote! {
                 #df_decl
                 #consume_direct
             }
         }
-        WrapperShape::Leaf { .. } => {
+        WrapperShape::Leaf(LeafShape::Optional { .. }) => {
             // Option<...<Option<Nested>>>: 3-arm dispatch. No `total == 0`
             // arm because depth-0 has no offsets buffer to size — the empty
             // (zero-rows) and all-absent arms collapse into one
@@ -640,7 +638,7 @@ fn pep_emit(
     series_local: &syn::Ident,
     shape: &VecLayers,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
     pa_root: &TokenStream,
@@ -752,7 +750,7 @@ fn ctb_emit(
     access: &TokenStream,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    kind: &LeafKind<'_>,
+    kind: &LeafKind,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
     pa_root: &TokenStream,
@@ -766,12 +764,29 @@ fn ctb_emit(
     // offsets/validity decls are vacuous, so the scan is the entire driver;
     // depth >= 1 routes through the shared shape walkers.
     let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
-        WrapperShape::Leaf {
+        WrapperShape::Leaf(LeafShape::Bare) => {
+            let empty_access = AccessChain::empty();
+            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp);
+            (
+                TokenStream::new(),
+                scan,
+                TokenStream::new(),
+                TokenStream::new(),
+                quote! { items.len() },
+            )
+        }
+        WrapperShape::Leaf(LeafShape::Optional {
             option_layers,
             access: access_chain,
-        } => {
-            let scan =
-                ctb_leaf_scan_depth0(access, &flat, &positions, *option_layers, access_chain, pp);
+        }) => {
+            let scan = ctb_leaf_scan_depth0(
+                access,
+                &flat,
+                &positions,
+                option_layers.get(),
+                access_chain,
+                pp,
+            );
             (
                 TokenStream::new(),
                 scan,
@@ -823,7 +838,8 @@ fn ctb_emit(
     // `positions` is needed whenever any row can be absent: at depth 0 with
     // any outer Option, or at depth >= 1 with an inner Option above the leaf.
     let needs_positions = match wrapper {
-        WrapperShape::Leaf { option_layers, .. } => *option_layers > 0,
+        WrapperShape::Leaf(LeafShape::Bare) => false,
+        WrapperShape::Leaf(LeafShape::Optional { .. }) => true,
         WrapperShape::Vec(shape) => shape.has_inner_option(),
     };
     let positions_decl = if needs_positions {
@@ -848,21 +864,45 @@ fn ctb_emit(
     }}
 }
 
-/// Unified shape-aware emitter. Produces:
-///
-/// - For [`LeafKind::PerElementPush`] over [`WrapperShape::Vec`]: a
-///   `let __df_derive_field_series_<idx>: Series = { ... };` declaration
-///   plus the `with_name(...)` rename and `columns.push(...)`, wrapped in
-///   a `{ ... }` block scoping the per-field intermediates. The PEP path
-///   never reaches this with a `Leaf` wrapper — `build_encoder` routes
-///   `Leaf` shapes through the per-leaf builders directly.
-/// - For [`LeafKind::CollectThenBulk`]: a `{ ... }` block that scans the
-///   field and per inner schema column pushes a (depth >= 1: list-wrapped;
-///   depth 0: direct) Series onto `columns`. Handles every nested-struct /
-///   generic wrapper shape — the bare `Nested`, `Option<...<Nested>>`, and
-///   any `Vec`-bearing stack.
-pub(super) fn vec_emit_general(
-    kind: &LeafKind<'_>,
+/// Shape-aware emitter for primitive `Vec` leaves. The signature requires a
+/// [`VecLayers`] shape, so a per-element-push leaf cannot be paired with a
+/// leaf-only wrapper.
+pub(super) fn vec_emit_pep(
+    pep: &super::leaf_kind::PerElementPush,
+    access: &TokenStream,
+    idx: usize,
+    shape: &VecLayers,
+    paths: &ExternalPaths,
+) -> TokenStream {
+    let pa_root = paths.polars_arrow_root();
+    let pp = paths.prelude();
+    let kind = LeafKind::PerElementPush;
+    let depth = shape.depth();
+    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(None, i)).collect();
+    let total = idents::total_leaves();
+    let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
+        .map(idents::vec_layer_total)
+        .collect();
+    let series_local = idents::vec_field_series(idx);
+    pep_emit(
+        pep,
+        access,
+        &series_local,
+        shape,
+        &layers,
+        &kind,
+        &layer_counters,
+        &total,
+        pa_root,
+        pp,
+    )
+}
+
+/// Shape-aware emitter for nested struct / generic leaves. Accepts the full
+/// wrapper because collect-then-bulk supports both depth-0 leaf shapes and
+/// every Vec-bearing shape.
+pub(super) fn vec_emit_ctb(
+    ctb: &CollectThenBulk<'_>,
     access: &TokenStream,
     idx: usize,
     wrapper: &WrapperShape,
@@ -870,60 +910,22 @@ pub(super) fn vec_emit_general(
 ) -> TokenStream {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
+    let kind = LeafKind::CollectThenBulk;
     let depth = wrapper.vec_depth();
-
-    // Per-leaf-kind layer-ident factory: per-element-push uses flat-vec
-    // idents (no field namespacing); collect-then-bulk uses per-(field,
-    // layer) namespacing.
-    let field_idx = match kind {
-        LeafKind::PerElementPush(_) => None,
-        LeafKind::CollectThenBulk(_) => Some(idx),
-    };
-    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(field_idx, i)).collect();
-
-    let total = match kind {
-        LeafKind::PerElementPush(_) => idents::total_leaves(),
-        LeafKind::CollectThenBulk(_) => idents::nested_total(idx),
-    };
-    let layer_counters: Vec<syn::Ident> = match kind {
-        LeafKind::PerElementPush(_) => (0..depth.saturating_sub(1))
-            .map(idents::vec_layer_total)
-            .collect(),
-        LeafKind::CollectThenBulk(_) => (0..depth.saturating_sub(1))
-            .map(idents::nested_layer_total)
-            .collect(),
-    };
-
-    match (kind, wrapper) {
-        (LeafKind::PerElementPush(pep), WrapperShape::Vec(shape)) => {
-            let series_local = idents::vec_field_series(idx);
-            pep_emit(
-                pep,
-                access,
-                &series_local,
-                shape,
-                &layers,
-                kind,
-                &layer_counters,
-                &total,
-                pa_root,
-                pp,
-            )
-        }
-        (LeafKind::CollectThenBulk(ctb), _) => ctb_emit(
-            ctb,
-            access,
-            wrapper,
-            &layers,
-            kind,
-            &layer_counters,
-            &total,
-            pa_root,
-            pp,
-        ),
-        (LeafKind::PerElementPush(_), WrapperShape::Leaf { .. }) => unreachable!(
-            "df-derive: PerElementPush leaves with WrapperShape::Leaf route through \
-             vec::build_leaf, not vec_emit_general — see build_encoder",
-        ),
-    }
+    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(Some(idx), i)).collect();
+    let total = idents::nested_total(idx);
+    let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
+        .map(idents::nested_layer_total)
+        .collect();
+    ctb_emit(
+        ctb,
+        access,
+        wrapper,
+        &layers,
+        &kind,
+        &layer_counters,
+        &total,
+        pa_root,
+        pp,
+    )
 }

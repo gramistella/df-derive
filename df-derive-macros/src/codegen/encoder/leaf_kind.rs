@@ -18,6 +18,7 @@ use super::shape_walk::OwnPolicy;
 /// per-row push, leaf-array materialization, and post-push offsets-counter
 /// expression. The unified emitter splices these into the shared depth-N
 /// scaffolding.
+#[derive(Clone)]
 pub(super) struct PerElementPush {
     /// Per-row push token stream. References `__df_derive_v` (bound by the
     /// for-loop) and pushes one element into the typed buffer.
@@ -42,6 +43,7 @@ pub(super) struct PerElementPush {
 /// storage (flat ref vec, optional positions vec), the dispatch arm count
 /// (2 or 4), and the trait/type plumbing the post-scan materialization
 /// needs to call `<T as Columnar>::columnar_from_refs(...)`.
+#[derive(Clone, Copy)]
 pub(super) struct CollectThenBulk<'a> {
     /// `<#ty>::columnar_from_refs(&flat)` target type.
     pub ty: &'a TokenStream,
@@ -66,17 +68,17 @@ pub(super) struct CollectThenBulk<'a> {
 /// gathers `&T` refs (and optional `Option<IdxSize>` positions), dispatches
 /// on `(total, flat.len())` to 2 or 4 branches, and per branch iterates the
 /// inner schema and emits per-column list-array stacking.
-pub(super) enum LeafKind<'a> {
-    PerElementPush(PerElementPush),
-    CollectThenBulk(CollectThenBulk<'a>),
+pub(super) enum LeafKind {
+    PerElementPush,
+    CollectThenBulk,
 }
 
-impl LeafKind<'_> {
+impl LeafKind {
     /// Whether this leaf kind hoists offsets/validity freezes above branch
     /// dispatch (collect-then-bulk) or interleaves them per-layer with each
     /// `LargeListArray::new` (per-element-push).
     pub(super) const fn freeze_hoisted(&self) -> bool {
-        matches!(self, Self::CollectThenBulk(_))
+        matches!(self, Self::CollectThenBulk)
     }
 
     /// Outer-some-prefix used by the scan walker for this leaf kind.
@@ -84,8 +86,8 @@ impl LeafKind<'_> {
     /// collect-then-bulk.
     pub(super) const fn scan_outer_some_prefix(&self) -> &'static str {
         match self {
-            Self::PerElementPush(_) => idents::VEC_OUTER_SOME_PREFIX,
-            Self::CollectThenBulk(_) => idents::NESTED_OUTER_SOME_PREFIX,
+            Self::PerElementPush => idents::VEC_OUTER_SOME_PREFIX,
+            Self::CollectThenBulk => idents::NESTED_OUTER_SOME_PREFIX,
         }
     }
 
@@ -98,8 +100,8 @@ impl LeafKind<'_> {
     /// `__df_derive_n_some_` for scan).
     pub(super) const fn precount_outer_some_prefix(&self) -> &'static str {
         match self {
-            Self::PerElementPush(_) => idents::VEC_OUTER_SOME_PREFIX,
-            Self::CollectThenBulk(_) => idents::NESTED_PRE_OUTER_SOME_PREFIX,
+            Self::PerElementPush => idents::VEC_OUTER_SOME_PREFIX,
+            Self::CollectThenBulk => idents::NESTED_PRE_OUTER_SOME_PREFIX,
         }
     }
 
@@ -110,8 +112,8 @@ impl LeafKind<'_> {
     /// must clone (`OwnPolicy::Clone`).
     pub(super) const fn layer_own_policy<'b>(&self, buf_id: &'b syn::Ident) -> OwnPolicy<'b> {
         match self {
-            Self::PerElementPush(_) => OwnPolicy::Move(buf_id),
-            Self::CollectThenBulk(_) => OwnPolicy::Clone(buf_id),
+            Self::PerElementPush => OwnPolicy::Move(buf_id),
+            Self::CollectThenBulk => OwnPolicy::Clone(buf_id),
         }
     }
 }

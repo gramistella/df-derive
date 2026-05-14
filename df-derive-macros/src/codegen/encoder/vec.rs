@@ -10,14 +10,15 @@
 //! to a primitive leaf encoder — because it sits at the leaf/vec boundary
 //! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::ir::{LeafSpec, VecLayers, WrapperShape};
+use crate::codegen::type_registry::MappedPrimitiveLeaf;
+use crate::ir::{PrimitiveLeaf, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::emit::vec_emit_general;
+use super::emit::vec_emit_pep;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, mb_decl_filled, validity_into_option};
-use super::leaf_kind::{LeafKind, PerElementPush};
+use super::leaf_kind::PerElementPush;
 use super::{Encoder, LeafCtx, leaf, list_offset_i64_expr};
 
 // --- Vec combinator ---
@@ -468,9 +469,7 @@ fn vec_encoder(
 ) -> Encoder {
     let series_local = vec_encoder_series_local(ctx.base.idx);
     let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
-    let kind = LeafKind::PerElementPush(pep);
-    let wrapper = WrapperShape::Vec(shape.clone());
-    let decl = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, &wrapper, ctx.paths);
+    let decl = vec_emit_pep(&pep, ctx.base.access, ctx.base.idx, shape, ctx.paths);
     let name = ctx.base.name;
     let named = idents::field_named_series();
     let columnar = quote! {
@@ -514,7 +513,7 @@ fn lower_to_pep(
 /// rebound `__df_derive_v` to the actual leaf, keeping all string-like,
 /// numeric, bool, binary, and mapped-numeric leaf behavior in one place.
 pub(super) fn pep_for_primitive_leaf(
-    leaf: &LeafSpec,
+    leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
     shape: &VecLayers,
 ) -> PerElementPush {
@@ -537,7 +536,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         let pa_root = ctx.paths.polars_arrow_root();
         let pp = ctx.paths.prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
-        let leaf_dtype = LeafSpec::Bool.dtype(ctx.paths);
+        let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
         let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp);
         let name = ctx.base.name;
         let named = idents::field_named_series();
@@ -551,7 +550,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         };
         return Encoder::Multi { columnar };
     }
-    let leaf_dtype = LeafSpec::Bool.dtype(ctx.paths);
+    let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
 
@@ -607,7 +606,11 @@ fn bool_bare_depth1_body(
     }
 }
 
-fn mapped_numeric_plan(ctx: &LeafCtx<'_>, leaf: &LeafSpec, native: TokenStream) -> VecLeafPlan {
+fn mapped_numeric_plan(
+    ctx: &LeafCtx<'_>,
+    leaf: MappedPrimitiveLeaf,
+    native: TokenStream,
+) -> VecLeafPlan {
     let v = idents::leaf_value();
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
         &quote! { #v },
@@ -625,13 +628,13 @@ fn mapped_numeric_plan(ctx: &LeafCtx<'_>, leaf: &LeafSpec, native: TokenStream) 
     }
 }
 
-fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
+fn vec_leaf_plan(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>) -> VecLeafPlan {
     let v = idents::leaf_value();
     match leaf {
-        LeafSpec::Numeric(kind) => {
-            let info = crate::codegen::type_registry::numeric_info_for(*kind, ctx.paths);
+        PrimitiveLeaf::Numeric(kind) => {
+            let info = crate::codegen::type_registry::numeric_info_for(kind, ctx.paths);
             let value_expr = crate::codegen::type_registry::numeric_stored_value(
-                *kind,
+                kind,
                 quote! { *#v },
                 &info.native,
             );
@@ -643,30 +646,48 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
-        LeafSpec::String => VecLeafPlan {
+        PrimitiveLeaf::String => VecLeafPlan {
             spec: VecLeafSpec::StringLike {
                 value_expr: quote! { #v.as_str() },
                 extra_decls: Vec::new(),
             },
             leaf_dtype: leaf.dtype(ctx.paths),
         },
-        LeafSpec::Binary => VecLeafPlan {
+        PrimitiveLeaf::Binary => VecLeafPlan {
             spec: VecLeafSpec::BinaryLike {
                 value_expr: quote! { ::core::convert::AsRef::<[u8]>::as_ref(#v) },
             },
             leaf_dtype: leaf.dtype(ctx.paths),
         },
-        LeafSpec::Bool => VecLeafPlan {
+        PrimitiveLeaf::Bool => VecLeafPlan {
             spec: VecLeafSpec::Bool,
             leaf_dtype: leaf.dtype(ctx.paths),
         },
-        LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }),
-        LeafSpec::NaiveDate => mapped_numeric_plan(ctx, leaf, quote! { i32 }),
-        LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }),
-        LeafSpec::AsString(_) => {
+        PrimitiveLeaf::DateTime(unit) => {
+            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::DateTime(unit), quote! { i64 })
+        }
+        PrimitiveLeaf::NaiveDateTime(unit) => mapped_numeric_plan(
+            ctx,
+            MappedPrimitiveLeaf::NaiveDateTime(unit),
+            quote! { i64 },
+        ),
+        PrimitiveLeaf::NaiveTime => {
+            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::NaiveTime, quote! { i64 })
+        }
+        PrimitiveLeaf::Duration { unit, source } => mapped_numeric_plan(
+            ctx,
+            MappedPrimitiveLeaf::Duration { unit, source },
+            quote! { i64 },
+        ),
+        PrimitiveLeaf::NaiveDate => {
+            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::NaiveDate, quote! { i32 })
+        }
+        PrimitiveLeaf::Decimal { precision, scale } => mapped_numeric_plan(
+            ctx,
+            MappedPrimitiveLeaf::Decimal { precision, scale },
+            quote! { i128 },
+        ),
+        PrimitiveLeaf::AsString => {
             let scratch = idents::primitive_str_scratch(ctx.base.idx);
             let pp = ctx.paths.prelude();
             let value_expr = quote! {{
@@ -692,7 +713,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
-        LeafSpec::AsStr(stringy) => {
+        PrimitiveLeaf::AsStr(stringy) => {
             let value_expr = super::stringy_value_expr(
                 stringy,
                 &quote! { #v },
@@ -706,28 +727,7 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 leaf_dtype: leaf.dtype(ctx.paths),
             }
         }
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
-            unreachable_struct_in_primitive_dispatcher("vec_leaf_plan")
-        }
-        LeafSpec::Tuple(_) => unreachable!(
-            "df-derive: vec_leaf_plan reached with Tuple leaf — tuple fields route \
-             through the tuple emitter, not the primitive vec dispatcher",
-        ),
     }
-}
-
-// --- Top-level dispatcher pieces ---
-
-/// Shared `unreachable!` body for primitive-only leaf dispatchers
-/// (`build_leaf`, `try_build_vec_encoder`). `Struct` / `Generic` leaves
-/// never reach these dispatchers because `super::strategy::LeafSpec::route`
-/// routes them through `build_nested_encoder` instead.
-fn unreachable_struct_in_primitive_dispatcher(fn_name: &str) -> ! {
-    unreachable!(
-        "df-derive: {fn_name} reached with Struct/Generic leaf — those \
-         route through build_nested_encoder via the FieldRoute split in \
-         `super::strategy::LeafSpec::route`",
-    )
 }
 
 /// Build the depth-N `vec(inner)` encoder for every leaf shape. The
@@ -739,12 +739,12 @@ fn unreachable_struct_in_primitive_dispatcher(fn_name: &str) -> ! {
 /// push site), `String`, `Bool`, `Decimal`, `DateTime`, `as_str` borrow,
 /// and `to_string`.
 pub(super) fn try_build_vec_encoder(
-    leaf: &LeafSpec,
+    leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
     vec_shape: &VecLayers,
 ) -> Encoder {
     match leaf {
-        LeafSpec::Bool => {
+        PrimitiveLeaf::Bool => {
             if vec_shape.has_inner_option() {
                 let plan = vec_leaf_plan(leaf, ctx);
                 vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype)
@@ -752,28 +752,20 @@ pub(super) fn try_build_vec_encoder(
                 vec_encoder_bool_bare(ctx, vec_shape)
             }
         }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Binary
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_) => {
+        PrimitiveLeaf::Numeric(_)
+        | PrimitiveLeaf::String
+        | PrimitiveLeaf::Binary
+        | PrimitiveLeaf::DateTime(_)
+        | PrimitiveLeaf::NaiveDateTime(_)
+        | PrimitiveLeaf::NaiveDate
+        | PrimitiveLeaf::NaiveTime
+        | PrimitiveLeaf::Duration { .. }
+        | PrimitiveLeaf::Decimal { .. }
+        | PrimitiveLeaf::AsString
+        | PrimitiveLeaf::AsStr(_) => {
             let plan = vec_leaf_plan(leaf, ctx);
             vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype)
         }
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
-            unreachable_struct_in_primitive_dispatcher("try_build_vec_encoder")
-        }
-        LeafSpec::Tuple(_) => unreachable!(
-            "df-derive: try_build_vec_encoder reached with Tuple leaf — tuple \
-             fields route through the tuple emitter, not the primitive vec \
-             dispatcher",
-        ),
     }
 }
 
@@ -786,26 +778,21 @@ pub(super) fn try_build_vec_encoder(
 /// numeric variants both route to `numeric_leaf`; the widening info is
 /// carried inline on `NumericKind`, so the two provenances yield distinct
 /// push tokens without needing distinct dispatcher arms.
-pub(super) fn build_leaf(leaf: &LeafSpec, ctx: &LeafCtx<'_>, kind: LeafArmKind) -> LeafArm {
+pub(super) fn build_leaf(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>, kind: LeafArmKind) -> LeafArm {
     match leaf {
-        LeafSpec::Numeric(num_kind) => leaf::numeric_leaf(ctx, *num_kind, kind),
-        LeafSpec::String => leaf::string_leaf(ctx, kind),
-        LeafSpec::Bool => leaf::bool_leaf(ctx, kind),
-        LeafSpec::Binary => leaf::binary_leaf(ctx, kind),
-        LeafSpec::DateTime(unit) => leaf::datetime_leaf(ctx, *unit, kind),
-        LeafSpec::NaiveDateTime(unit) => leaf::naive_datetime_leaf(ctx, *unit, kind),
-        LeafSpec::NaiveDate => leaf::naive_date_leaf(ctx, kind),
-        LeafSpec::NaiveTime => leaf::naive_time_leaf(ctx, kind),
-        LeafSpec::Duration { unit, source } => leaf::duration_leaf(ctx, *unit, *source, kind),
-        LeafSpec::Decimal { precision, scale } => leaf::decimal_leaf(ctx, *precision, *scale, kind),
-        LeafSpec::AsString(_) => leaf::as_string_leaf(ctx, kind),
-        LeafSpec::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),
-        LeafSpec::Struct(..) | LeafSpec::Generic(_) => {
-            unreachable_struct_in_primitive_dispatcher("build_leaf")
+        PrimitiveLeaf::Numeric(num_kind) => leaf::numeric_leaf(ctx, num_kind, kind),
+        PrimitiveLeaf::String => leaf::string_leaf(ctx, kind),
+        PrimitiveLeaf::Bool => leaf::bool_leaf(ctx, kind),
+        PrimitiveLeaf::Binary => leaf::binary_leaf(ctx, kind),
+        PrimitiveLeaf::DateTime(unit) => leaf::datetime_leaf(ctx, unit, kind),
+        PrimitiveLeaf::NaiveDateTime(unit) => leaf::naive_datetime_leaf(ctx, unit, kind),
+        PrimitiveLeaf::NaiveDate => leaf::naive_date_leaf(ctx, kind),
+        PrimitiveLeaf::NaiveTime => leaf::naive_time_leaf(ctx, kind),
+        PrimitiveLeaf::Duration { unit, source } => leaf::duration_leaf(ctx, unit, source, kind),
+        PrimitiveLeaf::Decimal { precision, scale } => {
+            leaf::decimal_leaf(ctx, precision, scale, kind)
         }
-        LeafSpec::Tuple(_) => unreachable!(
-            "df-derive: build_leaf reached with Tuple leaf — tuple fields route \
-             through the tuple emitter, not the primitive leaf dispatcher",
-        ),
+        PrimitiveLeaf::AsString => leaf::as_string_leaf(ctx, kind),
+        PrimitiveLeaf::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),
     }
 }

@@ -24,9 +24,9 @@
 use crate::ir::WrapperShape;
 use proc_macro2::TokenStream;
 
-use super::emit::vec_emit_general;
-use super::leaf_kind::{CollectThenBulk, LeafKind};
-use super::{BaseCtx, Encoder};
+use super::BaseCtx;
+use super::emit::vec_emit_ctb;
+use super::leaf_kind::CollectThenBulk;
 use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
@@ -57,9 +57,7 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
 /// wrapper shape the parser accepts — bare `Nested`, `Option<...<Nested>>`,
 /// or any `Vec`-bearing stack — routes through the unified emitter via a
 /// single [`CollectThenBulk`] leaf.
-pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> Encoder {
+pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> TokenStream {
     let ctb = CollectThenBulk::from(ctx);
-    let kind = LeafKind::CollectThenBulk(ctb);
-    let columnar = vec_emit_general(&kind, ctx.base.access, ctx.base.idx, wrapper, ctx.paths);
-    Encoder::Multi { columnar }
+    vec_emit_ctb(&ctb, ctx.base.access, ctx.base.idx, wrapper, ctx.paths)
 }

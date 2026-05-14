@@ -398,7 +398,7 @@ pub fn impl_parts_with_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{AccessChain, FieldIR, LeafSpec, NumericKind, StructIR, WrapperShape};
+    use crate::ir::{FieldIR, LeafSpec, NumericKind, StructIR, WrapperShape};
     use quote::{format_ident, quote};
 
     fn test_config() -> MacroConfig {
@@ -441,10 +441,7 @@ mod tests {
                 name: format_ident!("id"),
                 field_index: None,
                 leaf_spec: LeafSpec::Numeric(NumericKind::U32),
-                wrapper_shape: WrapperShape::Leaf {
-                    option_layers: 0,
-                    access: AccessChain::empty(),
-                },
+                wrapper_shape: WrapperShape::Leaf(crate::ir::LeafShape::Bare),
                 decimal_generic_params: Vec::new(),
                 decimal_backend_ty: None,
                 outer_smart_ptr_depth: 0,

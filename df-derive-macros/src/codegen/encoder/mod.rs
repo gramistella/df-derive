@@ -38,7 +38,7 @@ mod shape_walk;
 mod tuple;
 mod vec;
 
-use crate::ir::{AccessChain, AccessStep, LeafSpec, WrapperShape};
+use crate::ir::{AccessChain, AccessStep, LeafShape, PrimitiveLeaf, WrapperShape};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::PathArguments;
@@ -382,12 +382,13 @@ pub struct LeafCtx<'a> {
 /// collapses the access expression to a single `Option<&T>` before invoking
 /// the option-leaf push) and every primitive vec-bearing shape. The
 /// function is total on parser-validated IR.
-pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>) -> Encoder {
+pub fn build_encoder(
+    leaf: PrimitiveLeaf<'_>,
+    wrapper: &WrapperShape,
+    ctx: &LeafCtx<'_>,
+) -> Encoder {
     match wrapper {
-        WrapperShape::Leaf {
-            option_layers: 0,
-            access,
-        } if access.is_empty() => {
+        WrapperShape::Leaf(LeafShape::Bare) => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -399,16 +400,10 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
                 series,
             }
         }
-        WrapperShape::Leaf {
-            option_layers: 0, ..
-        } => unreachable!(
-            "df-derive: bare leaf reached with a non-empty access chain; leading smart pointers \
-             should be peeled into the field access before encoder dispatch"
-        ),
-        WrapperShape::Leaf {
-            option_layers: 1,
+        WrapperShape::Leaf(LeafShape::Optional {
+            option_layers,
             access,
-        } if access.is_single_plain_option() => {
+        }) if option_layers.get() == 1 && access.is_single_plain_option() => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -432,10 +427,10 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
         // and feed it through the single-Option leaf machinery via a
         // synthesized per-row local. Nested multi-Option (`Option<Option<T>>`
         // over a struct/generic) is handled separately in `build_nested_encoder`.
-        WrapperShape::Leaf {
-            option_layers: layers,
+        WrapperShape::Leaf(LeafShape::Optional {
+            option_layers,
             access,
-        } => option::wrap_option_access_chain_primitive(leaf, ctx, access, *layers),
+        }) => option::wrap_option_access_chain_primitive(leaf, ctx, access, option_layers.get()),
         WrapperShape::Vec(vec_layers) => vec::try_build_vec_encoder(leaf, ctx, vec_layers),
     }
 }

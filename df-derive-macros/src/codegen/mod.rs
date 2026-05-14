@@ -5,10 +5,11 @@ pub mod external_paths;
 mod helpers;
 mod nested;
 mod strategy;
+mod support;
 mod trait_impl;
 mod type_registry;
 
-use crate::ir::{LeafSpec, StructIR, TupleElement};
+use crate::ir::StructIR;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -69,67 +70,8 @@ pub fn resolve_default_dataframe_mod() -> TokenStream {
         .unwrap_or_else(|| quote! { crate::core::dataframe })
 }
 
-fn leaf_needs_list_assembly(leaf: &LeafSpec) -> bool {
-    match leaf {
-        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_list_assembly),
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary
-        | LeafSpec::Struct(_)
-        | LeafSpec::Generic(_) => false,
-    }
-}
-
-fn tuple_element_needs_list_assembly(element: &TupleElement) -> bool {
-    element.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&element.leaf_spec)
-}
-
-fn needs_list_assembly(ir: &StructIR) -> bool {
-    ir.fields.iter().any(|field| {
-        field.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&field.leaf_spec)
-    })
-}
-
-fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
-    match leaf {
-        LeafSpec::Struct(_) | LeafSpec::Generic(_) => true,
-        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_nested_validation),
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => false,
-    }
-}
-
-fn tuple_element_needs_nested_validation(element: &TupleElement) -> bool {
-    leaf_needs_nested_validation(&element.leaf_spec)
-}
-
-fn needs_nested_validation(ir: &StructIR) -> bool {
-    ir.fields
-        .iter()
-        .any(|field| leaf_needs_nested_validation(&field.leaf_spec))
-}
-
-#[allow(clippy::too_many_lines)]
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
+    let support = support::generate_support(ir, config);
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let eager_asserts = helpers::generate_eager_asserts(
@@ -138,139 +80,6 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         &config.columnar_trait_path,
         &config.decimal128_encode_trait_path,
     );
-    let pp = config.external_paths.prelude();
-    let pa_root = config.external_paths.polars_arrow_root();
-    let assemble_helper = encoder::idents::assemble_helper();
-    let list_assembly = encoder::idents::list_assembly();
-
-    let list_assembly_helpers = if needs_list_assembly(ir) {
-        quote! {
-            struct #list_assembly {
-                list_arr: #pp::LargeListArray,
-                logical_dtype: #pp::DataType,
-            }
-
-            impl #list_assembly {
-                #[inline(always)]
-                #[allow(clippy::inline_always)]
-                fn new(
-                    list_arr: #pp::LargeListArray,
-                    inner_logical_dtype: #pp::DataType,
-                ) -> Self {
-                    Self {
-                        list_arr,
-                        logical_dtype: #pp::DataType::List(
-                            ::std::boxed::Box::new(inner_logical_dtype),
-                        ),
-                    }
-                }
-
-                #[inline(always)]
-                #[allow(clippy::inline_always)]
-                fn into_series(self) -> #pp::PolarsResult<#pp::Series> {
-                    let expected_arrow_dtype: #pa_root::datatypes::ArrowDataType =
-                        self.logical_dtype
-                            .to_physical()
-                            .to_arrow(#pp::CompatLevel::newest());
-                    let actual_arrow_dtype = #pa_root::array::Array::dtype(&self.list_arr);
-                    if actual_arrow_dtype != &expected_arrow_dtype {
-                        return ::std::result::Result::Err(#pp::polars_err!(
-                            ComputeError:
-                            "df-derive: list assembly dtype mismatch: actual Arrow dtype {:?}, logical dtype {:?}",
-                            actual_arrow_dtype,
-                            self.logical_dtype,
-                        ));
-                    }
-                    let Self {
-                        list_arr,
-                        logical_dtype,
-                    } = self;
-                    // SAFETY: `Self::new` is the generated list assembly
-                    // boundary. Every caller reaches it through
-                    // `encoder::shape_walk::shape_assemble_list_stack`,
-                    // which builds `list_arr` from the leaf/nested physical
-                    // Arrow dtype and the same logical dtype that schema
-                    // generation emits. The release-mode check above
-                    // compares the final Arrow list dtype against
-                    // `logical_dtype.to_physical()`, covering logical
-                    // wrappers such as Date, Datetime, Duration, Time,
-                    // Decimal, and nested List envelopes. This matters for
-                    // safe manual `ToDataFrame` / `Columnar` implementations:
-                    // a bad schema can no longer violate the unchecked
-                    // constructor's dtype invariant.
-                    unsafe {
-                        ::std::result::Result::Ok(#pp::Series::from_chunks_and_dtype_unchecked(
-                            "".into(),
-                            ::std::vec![
-                                ::std::boxed::Box::new(list_arr) as #pp::ArrayRef,
-                            ],
-                            &logical_dtype,
-                        ))
-                    }
-                }
-            }
-
-            #[inline(always)]
-            #[allow(non_snake_case, clippy::inline_always)]
-            fn #assemble_helper(
-                list_arr: #pp::LargeListArray,
-                inner_logical_dtype: #pp::DataType,
-            ) -> #pp::PolarsResult<#pp::Series> {
-                #list_assembly::new(list_arr, inner_logical_dtype).into_series()
-            }
-        }
-    } else {
-        TokenStream::new()
-    };
-
-    let nested_validation_helpers = if needs_nested_validation(ir) {
-        let validate_nested_frame = encoder::idents::validate_nested_frame();
-        let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
-
-        quote! {
-            #[inline(always)]
-            #[allow(non_snake_case, clippy::inline_always)]
-            fn #validate_nested_frame(
-                df: &#pp::DataFrame,
-                expected_height: usize,
-                type_name: &str,
-            ) -> #pp::PolarsResult<()> {
-                let actual_height = df.height();
-                if actual_height != expected_height {
-                    return ::std::result::Result::Err(#pp::polars_err!(
-                        ComputeError:
-                        "df-derive: nested Columnar::columnar_from_refs for {} returned height {}, expected {}",
-                        type_name,
-                        actual_height,
-                        expected_height,
-                    ));
-                }
-                ::std::result::Result::Ok(())
-            }
-
-            #[inline(always)]
-            #[allow(non_snake_case, clippy::inline_always)]
-            fn #validate_nested_column_dtype(
-                series: &#pp::Series,
-                column_name: &str,
-                declared_dtype: &#pp::DataType,
-            ) -> #pp::PolarsResult<()> {
-                let actual_dtype = series.dtype();
-                if actual_dtype != declared_dtype {
-                    return ::std::result::Result::Err(#pp::polars_err!(
-                        ComputeError:
-                        "df-derive: nested column `{}` dtype mismatch: actual dtype {:?}, declared schema dtype {:?}",
-                        column_name,
-                        actual_dtype,
-                        declared_dtype,
-                    ));
-                }
-                ::std::result::Result::Ok(())
-            }
-        }
-    } else {
-        TokenStream::new()
-    };
 
     // Keep helper names private while still emitting inherent impls for the
     // target type. The list assembly wrapper is emitted only for derives that
@@ -281,9 +90,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         const _: () = {
             #eager_asserts
 
-            #list_assembly_helpers
-
-            #nested_validation_helpers
+            #support
 
             #trait_impl
             #columnar_impl
@@ -295,8 +102,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 mod tests {
     use super::*;
     use crate::ir::{
-        AccessChain, FieldIR, LeafShape, LeafSpec, NonEmpty, NumericKind, StructIR, VecLayerSpec,
-        VecLayers, WrapperShape,
+        AccessChain, FieldIR, LeafShape, LeafSpec, NonEmpty, NumericKind, StructIR, TupleElement,
+        VecLayerSpec, VecLayers, WrapperShape,
     };
     use quote::{format_ident, quote};
 

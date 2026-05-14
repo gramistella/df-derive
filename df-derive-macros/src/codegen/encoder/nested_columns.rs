@@ -30,6 +30,71 @@ pub(super) fn nested_take_decl(
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(super) struct NestedColumnIdents<'a> {
+    pub df: &'a syn::Ident,
+    pub take: &'a syn::Ident,
+    pub col_name: &'a syn::Ident,
+    pub dtype: &'a syn::Ident,
+    pub inner_full: &'a syn::Ident,
+}
+
+#[allow(dead_code)]
+pub(super) fn inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
+    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
+    let NestedColumnIdents {
+        df,
+        col_name,
+        dtype,
+        inner_full,
+        ..
+    } = ids;
+    quote! {{
+        let #inner_full = #df.column(#col_name)?.as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
+        #inner_full.clone()
+    }}
+}
+
+#[allow(dead_code)]
+pub(super) fn inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
+    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
+    let NestedColumnIdents {
+        df,
+        take,
+        col_name,
+        dtype,
+        inner_full,
+    } = ids;
+    quote! {{
+        let #inner_full = #df
+            .column(#col_name)?
+            .as_materialized_series();
+        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
+        #inner_full.take(&#take)?
+    }}
+}
+
+#[allow(dead_code)]
+pub(super) fn inner_col_empty(dtype: &syn::Ident, pp: &TokenStream) -> TokenStream {
+    quote! {
+        #pp::Series::new_empty("".into(), #dtype)
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn inner_col_all_absent(
+    dtype: &syn::Ident,
+    len: &TokenStream,
+    pp: &TokenStream,
+) -> TokenStream {
+    quote! {
+        #pp::Series::new_empty("".into(), #dtype)
+            .extend_constant(#pp::AnyValue::Null, #len)?
+    }
+}
+
 /// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
 /// and pushes each inner-Series-yielding expression onto `columns` with the
 /// parent name prefixed. Shared by every nested dispatch arm, with each arm

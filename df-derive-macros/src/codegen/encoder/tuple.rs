@@ -199,11 +199,7 @@ pub fn build_field_emit(
         ));
     }
 
-    FieldEmit {
-        decls: Vec::new(),
-        push: TokenStream::new(),
-        builders,
-    }
+    FieldEmit::WholeColumn { builders }
 }
 
 #[derive(Clone, Copy)]

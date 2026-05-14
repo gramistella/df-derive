@@ -13,14 +13,20 @@ use syn::Ident;
 
 use super::encoder::{self, BaseCtx, Encoder, LeafCtx, NestedLeafCtx, idents, struct_type_tokens};
 
-/// Per-field columnar emit pieces. The columnar pipeline concatenates
-/// every field's `decls` ahead of the per-row push loop, splices every
-/// field's `push` inside the loop, and concatenates every field's
-/// `builders` after the loop to assemble the final `columns: Vec<Column>`.
-pub(in crate::codegen) struct FieldEmit {
-    pub decls: Vec<TokenStream>,
-    pub push: TokenStream,
-    pub builders: Vec<TokenStream>,
+/// Per-field columnar emission mode.
+///
+/// Row-wise fields split setup, per-row push, and final builder materialization
+/// across the surrounding columnar pipeline. Whole-column fields build their
+/// columns in self-contained post-loop blocks.
+pub(in crate::codegen) enum FieldEmit {
+    RowWise {
+        decls: Vec<TokenStream>,
+        push: TokenStream,
+        builders: Vec<TokenStream>,
+    },
+    WholeColumn {
+        builders: Vec<TokenStream>,
+    },
 }
 
 fn nested_type_path(nested: NestedLeaf<'_>) -> TokenStream {
@@ -183,9 +189,7 @@ fn build_nested_emit(
         paths: &config.external_paths,
     };
     let columnar = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
-    FieldEmit {
-        decls: Vec::new(),
-        push: TokenStream::new(),
+    FieldEmit::WholeColumn {
         builders: vec![columnar],
     }
 }
@@ -224,15 +228,13 @@ fn build_primitive_emit(
                 let s = #series;
                 columns.push(s.into());
             }};
-            FieldEmit {
+            FieldEmit::RowWise {
                 decls,
                 push,
                 builders: vec![builder],
             }
         }
-        Encoder::Multi { columnar } => FieldEmit {
-            decls: Vec::new(),
-            push: TokenStream::new(),
+        Encoder::Multi { columnar } => FieldEmit::WholeColumn {
             builders: vec![columnar],
         },
     }

@@ -7,10 +7,8 @@ use super::encoder::idents;
 /// Walk every field, build its [`FieldEmit`](super::strategy::FieldEmit),
 /// and concatenate decls/pushes/builders into the three buckets the
 /// columnar pipeline splices into the generated impl. Each `FieldEmit`
-/// already places its work in the right slot — vec-bearing primitive
-/// fields and every nested-struct field route their entire emit through
-/// `builders` (post-loop), while leaf primitive fields contribute to all
-/// three slots. Concatenation is order-preserving.
+/// explicitly declares whether it contributes row-wise work or builds whole
+/// columns after the loop. Concatenation is order-preserving.
 fn prepare_columnar_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
@@ -21,11 +19,22 @@ fn prepare_columnar_parts(
     let mut builders: Vec<TokenStream> = Vec::new();
     for (idx, f) in ir.fields.iter().enumerate() {
         let emit = super::strategy::build_field_emit(f, config, idx, it_ident);
-        decls.extend(emit.decls);
-        if !emit.push.is_empty() {
-            pushes.push(emit.push);
+        match emit {
+            super::strategy::FieldEmit::RowWise {
+                decls: emit_decls,
+                push,
+                builders: emit_builders,
+            } => {
+                decls.extend(emit_decls);
+                pushes.push(push);
+                builders.extend(emit_builders);
+            }
+            super::strategy::FieldEmit::WholeColumn {
+                builders: emit_builders,
+            } => {
+                builders.extend(emit_builders);
+            }
         }
-        builders.extend(emit.builders);
     }
     (decls, pushes, builders)
 }

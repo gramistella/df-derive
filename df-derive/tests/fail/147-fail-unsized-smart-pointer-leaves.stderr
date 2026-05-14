@@ -1,0 +1,23 @@
+error: df-derive does not support bare or smart-pointer-wrapped `str` leaves; use `String`, `&str`, `Cow<'_, str>`, or a sized wrapper such as `Box<String>`
+  --> tests/fail/147-fail-unsized-smart-pointer-leaves.rs:10:16
+   |
+10 |     label: Box<str>,
+   |                ^^^
+
+error: df-derive does not support bare or smart-pointer-wrapped `str` leaves; use `String`, `&str`, `Cow<'_, str>`, or a sized wrapper such as `Box<String>`
+  --> tests/fail/147-fail-unsized-smart-pointer-leaves.rs:15:16
+   |
+15 |     label: Arc<str>,
+   |                ^^^
+
+error: df-derive does not support bare or smart-pointer-wrapped `[T]` slice leaves; use `Vec<T>` for list columns, or use `&[u8]`/`Cow<'_, [u8]>` with `#[df_derive(as_binary)]` for borrowed binary data
+  --> tests/fail/147-fail-unsized-smart-pointer-leaves.rs:20:16
+   |
+20 |     values: Rc<[i32]>,
+   |                ^^^^^
+
+error: df-derive does not support bare or smart-pointer-wrapped `[T]` slice leaves; use `Vec<T>` for list columns, or use `&[u8]`/`Cow<'_, [u8]>` with `#[df_derive(as_binary)]` for borrowed binary data
+  --> tests/fail/147-fail-unsized-smart-pointer-leaves.rs:26:22
+   |
+26 |     blob: Option<Box<[u8]>>,
+   |                      ^^^^

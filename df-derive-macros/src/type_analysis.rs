@@ -139,6 +139,7 @@ pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType,
     if bare_generic_param_ident(peeled.current_type, generic_params).is_none() {
         reject_unsupported_collection_type(peeled.current_type)?;
         reject_bare_duration(peeled.current_type, generic_params)?;
+        reject_bare_unsized_leaf(peeled.current_type)?;
     }
 
     let base = analyze_base_type(peeled.current_type, generic_params)?;
@@ -294,6 +295,26 @@ fn reject_bare_duration(current_type: &Type, generic_params: &[Ident]) -> Result
             current_type,
             "bare `Duration` is ambiguous; use `std::time::Duration`, \
              `core::time::Duration`, or `chrono::Duration` to disambiguate",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_bare_unsized_leaf(current_type: &Type) -> Result<(), syn::Error> {
+    if is_bare_str_type(current_type) {
+        return Err(syn::Error::new_spanned(
+            current_type,
+            "df-derive does not support bare or smart-pointer-wrapped `str` leaves; \
+             use `String`, `&str`, `Cow<'_, str>`, or a sized wrapper such as \
+             `Box<String>`",
+        ));
+    }
+    if matches!(current_type, Type::Slice(_)) {
+        return Err(syn::Error::new_spanned(
+            current_type,
+            "df-derive does not support bare or smart-pointer-wrapped `[T]` slice \
+             leaves; use `Vec<T>` for list columns, or use `&[u8]`/`Cow<'_, [u8]>` \
+             with `#[df_derive(as_binary)]` for borrowed binary data",
         ));
     }
     Ok(())

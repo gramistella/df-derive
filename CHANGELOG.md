@@ -18,6 +18,9 @@ All notable changes to this project will be documented in this file.
 - Obvious direct self-recursive nested fields such as `Option<Box<Node>>` are
   now rejected before codegen instead of producing recursive schemas or
   unusable impls.
+- Unsized smart-pointer leaves such as `Box<str>` and `Box<[u8]>` are now
+  rejected with targeted diagnostics instead of being misclassified as nested
+  custom structs.
 
 ## [0.3.0] - 2026-05-11
 

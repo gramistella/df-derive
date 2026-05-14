@@ -166,6 +166,42 @@ struct OptTupleWithBoxedString {
     pair: Option<(Box<String>,)>,
 }
 
+// 26. Parent Option tuple whose projected elements are independently optional.
+#[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
+struct OptTupleWithOptionalElements {
+    pair: Option<(Option<String>, Option<Box<i32>>)>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct Nested {
+    id: i32,
+    name: String,
+}
+
+// 27. Parent Vec<Option<tuple>> plus nested element Vec<Option<Box<Nested>>>
+// and sibling Option<Vec<String>>.
+#[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
+struct VecOptTupleWithNestedVecAndOptVec {
+    items: Vec<Option<(Vec<Option<Box<Nested>>>, Option<Vec<String>>)>>,
+}
+
+// 28. Parent Vec<Box<Option<tuple>>> plus nested Vec<Nested> and boxed
+// optional scalar element.
+#[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
+struct VecBoxOptTupleWithNestedVecAndBoxedOpt {
+    items: Vec<Box<Option<(Vec<Nested>, Box<Option<i64>>)>>>,
+}
+
+// 29. Box<((i32, String), Arc<bool>)>: boxed parent tuple, unwrapped nested
+// tuple, and smart pointer projected from the second element.
+#[derive(ToDataFrame, Clone)]
+struct BoxNestedTupleWithArc {
+    nested: Box<((i32, String), Arc<bool>)>,
+}
+
 fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
     match value {
         AnyValue::List(series) => series
@@ -185,6 +221,13 @@ fn list_i32s(value: AnyValue<'_>) -> Vec<Option<i32>> {
     }
 }
 
+fn list_i64s(value: AnyValue<'_>) -> Vec<Option<i64>> {
+    match value {
+        AnyValue::List(series) => series.i64().unwrap().into_iter().collect(),
+        other => panic!("expected i64 List, got {other:?}"),
+    }
+}
+
 fn nested_i32_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<i32>>>> {
     let AnyValue::List(outer) = value else {
         panic!("expected outer List, got {value:?}");
@@ -194,6 +237,26 @@ fn nested_i32_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<i32>>>> {
             AnyValue::List(inner) => Some(inner.i32().unwrap().into_iter().collect()),
             AnyValue::Null => None,
             other => panic!("expected inner i32 List or Null, got {other:?}"),
+        })
+        .collect()
+}
+
+fn nested_string_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<String>>>> {
+    let AnyValue::List(outer) = value else {
+        panic!("expected outer List, got {value:?}");
+    };
+    (0..outer.len())
+        .map(|idx| match outer.get(idx).unwrap() {
+            AnyValue::List(inner) => Some(
+                inner
+                    .str()
+                    .unwrap()
+                    .into_iter()
+                    .map(|value| value.map(str::to_owned))
+                    .collect(),
+            ),
+            AnyValue::Null => None,
+            other => panic!("expected inner string List or Null, got {other:?}"),
         })
         .collect()
 }
@@ -790,6 +853,218 @@ fn runtime_semantics() {
             .get(1)
             .unwrap(),
         AnyValue::Null,
+    );
+
+    // 26. Option<(Option<String>, Option<Box<i32>>)>
+    let optional_elements = vec![
+        OptTupleWithOptionalElements {
+            pair: Some((Some("present".to_string()), Some(Box::new(5)))),
+        },
+        OptTupleWithOptionalElements {
+            pair: Some((None, None)),
+        },
+        OptTupleWithOptionalElements { pair: None },
+    ];
+    let optional_elements_df = optional_elements.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        optional_elements_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::String("present"),
+    );
+    assert_eq!(
+        optional_elements_df
+            .column("pair.field_1")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Int32(5),
+    );
+    assert_eq!(
+        optional_elements_df
+            .column("pair.field_0")
+            .unwrap()
+            .get(1)
+            .unwrap(),
+        AnyValue::Null,
+    );
+    assert_eq!(
+        optional_elements_df
+            .column("pair.field_1")
+            .unwrap()
+            .get(2)
+            .unwrap(),
+        AnyValue::Null,
+    );
+
+    // 27. Vec<Option<(Vec<Option<Box<Nested>>>, Option<Vec<String>>)>>
+    let nested_opt_vec = VecOptTupleWithNestedVecAndOptVec {
+        items: vec![
+            Some((
+                vec![
+                    Some(Box::new(Nested {
+                        id: 1,
+                        name: "one".to_string(),
+                    })),
+                    None,
+                    Some(Box::new(Nested {
+                        id: 2,
+                        name: "two".to_string(),
+                    })),
+                ],
+                Some(vec!["left".to_string(), "right".to_string()]),
+            )),
+            None,
+            Some((Vec::new(), None)),
+        ],
+    };
+    let nested_opt_vec_df = nested_opt_vec.to_dataframe().unwrap();
+    assert_eq!(
+        nested_i32_lists(
+            nested_opt_vec_df
+                .column("items.field_0.id")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![Some(vec![Some(1), None, Some(2)]), None, Some(Vec::new())],
+    );
+    assert_eq!(
+        nested_string_lists(
+            nested_opt_vec_df
+                .column("items.field_0.name")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![
+            Some(vec![Some("one".to_string()), None, Some("two".to_string())]),
+            None,
+            Some(Vec::new()),
+        ],
+    );
+    assert_eq!(
+        nested_string_lists(
+            nested_opt_vec_df
+                .column("items.field_1")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![
+            Some(vec![Some("left".to_string()), Some("right".to_string())]),
+            None,
+            None,
+        ],
+    );
+
+    // 28. Vec<Box<Option<(Vec<Nested>, Box<Option<i64>>)>>>
+    let boxed_opt_nested = VecBoxOptTupleWithNestedVecAndBoxedOpt {
+        items: vec![
+            Box::new(Some((
+                vec![
+                    Nested {
+                        id: 10,
+                        name: "ten".to_string(),
+                    },
+                    Nested {
+                        id: 11,
+                        name: "eleven".to_string(),
+                    },
+                ],
+                Box::new(Some(100)),
+            ))),
+            Box::new(None),
+            Box::new(Some((Vec::new(), Box::new(None)))),
+            Box::new(Some((
+                vec![Nested {
+                    id: 12,
+                    name: "twelve".to_string(),
+                }],
+                Box::new(Some(120)),
+            ))),
+        ],
+    };
+    let boxed_opt_nested_df = boxed_opt_nested.to_dataframe().unwrap();
+    assert_eq!(
+        nested_i32_lists(
+            boxed_opt_nested_df
+                .column("items.field_0.id")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![
+            Some(vec![Some(10), Some(11)]),
+            None,
+            Some(Vec::new()),
+            Some(vec![Some(12)]),
+        ],
+    );
+    assert_eq!(
+        nested_string_lists(
+            boxed_opt_nested_df
+                .column("items.field_0.name")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![
+            Some(vec![Some("ten".to_string()), Some("eleven".to_string())]),
+            None,
+            Some(Vec::new()),
+            Some(vec![Some("twelve".to_string())]),
+        ],
+    );
+    assert_eq!(
+        list_i64s(
+            boxed_opt_nested_df
+                .column("items.field_1")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
+        vec![Some(100), None, None, Some(120)],
+    );
+
+    // 29. Box<((i32, String), Arc<bool>)>
+    let boxed_nested_tuple = BoxNestedTupleWithArc {
+        nested: Box::new(((8, "boxed nested".to_string()), Arc::new(true))),
+    };
+    let boxed_nested_tuple_df = boxed_nested_tuple.to_dataframe().unwrap();
+    assert_eq!(
+        boxed_nested_tuple_df.get_column_names(),
+        [
+            "nested.field_0.field_0",
+            "nested.field_0.field_1",
+            "nested.field_1"
+        ],
+    );
+    assert_eq!(
+        boxed_nested_tuple_df
+            .column("nested.field_0.field_0")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Int32(8),
+    );
+    assert_eq!(
+        boxed_nested_tuple_df
+            .column("nested.field_0.field_1")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::String("boxed nested"),
+    );
+    assert_eq!(
+        boxed_nested_tuple_df
+            .column("nested.field_1")
+            .unwrap()
+            .get(0)
+            .unwrap(),
+        AnyValue::Boolean(true),
     );
 
     // Batch round-trip

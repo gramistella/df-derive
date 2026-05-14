@@ -204,26 +204,19 @@ pub(in crate::codegen) enum MappedPrimitiveLeaf {
 }
 
 impl MappedPrimitiveLeaf {
-    pub(in crate::codegen) fn dtype(self, paths: &ExternalPaths) -> TokenStream {
-        let pp = paths.prelude();
-        let dt = quote! { #pp::DataType };
+    const fn logical(self) -> LogicalPrimitive {
         match self {
-            Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
-                let unit = time_unit_tokens(unit, paths);
-                quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
-            }
-            Self::NaiveDate => quote! { #dt::Date },
-            Self::NaiveTime => quote! { #dt::Time },
-            Self::Duration { unit, .. } => {
-                let unit = time_unit_tokens(unit, paths);
-                quote! { #dt::Duration(#unit) }
-            }
-            Self::Decimal { precision, scale } => {
-                let p = precision as usize;
-                let s = scale as usize;
-                quote! { #dt::Decimal(#p, #s) }
-            }
+            Self::DateTime(unit) => LogicalPrimitive::DateTime(unit),
+            Self::NaiveDateTime(unit) => LogicalPrimitive::NaiveDateTime(unit),
+            Self::NaiveDate => LogicalPrimitive::NaiveDate,
+            Self::NaiveTime => LogicalPrimitive::NaiveTime,
+            Self::Duration { unit, source } => LogicalPrimitive::Duration { unit, source },
+            Self::Decimal { precision, scale } => LogicalPrimitive::Decimal { precision, scale },
         }
+    }
+
+    pub(in crate::codegen) fn dtype(self, paths: &ExternalPaths) -> TokenStream {
+        self.logical().dtype(paths)
     }
 }
 

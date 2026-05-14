@@ -101,6 +101,56 @@ pub(super) fn time_unit_tokens(unit: DateTimeUnit, paths: &ExternalPaths) -> Tok
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(in crate::codegen) enum LogicalPrimitive {
+    Numeric(NumericKind),
+    String,
+    Bool,
+    Binary,
+    DateTime(DateTimeUnit),
+    NaiveDateTime(DateTimeUnit),
+    NaiveDate,
+    NaiveTime,
+    Duration {
+        unit: DateTimeUnit,
+        source: DurationSource,
+    },
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
+}
+
+#[allow(dead_code)]
+impl LogicalPrimitive {
+    pub(in crate::codegen) fn dtype(self, paths: &ExternalPaths) -> TokenStream {
+        let pp = paths.prelude();
+        let dt = quote! { #pp::DataType };
+        match self {
+            Self::Numeric(kind) => numeric_info_for(kind, paths).dtype,
+            Self::String => quote! { #dt::String },
+            Self::Bool => quote! { #dt::Boolean },
+            Self::Binary => quote! { #dt::Binary },
+            Self::DateTime(unit) | Self::NaiveDateTime(unit) => {
+                let unit = time_unit_tokens(unit, paths);
+                quote! { #dt::Datetime(#unit, ::std::option::Option::None) }
+            }
+            Self::NaiveDate => quote! { #dt::Date },
+            Self::NaiveTime => quote! { #dt::Time },
+            Self::Duration { unit, .. } => {
+                let unit = time_unit_tokens(unit, paths);
+                quote! { #dt::Duration(#unit) }
+            }
+            Self::Decimal { precision, scale } => {
+                let p = precision as usize;
+                let s = scale as usize;
+                quote! { #dt::Decimal(#p, #s) }
+            }
+        }
+    }
+}
+
 impl PrimitiveLeaf<'_> {
     /// Compile-time element-level dtype for this leaf, BEFORE the wrapper
     /// stack adds `List<>` envelopes. The encoder also calls this directly

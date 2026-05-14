@@ -8,11 +8,12 @@ use super::super::shape_walk::{
     freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
 use super::super::{BaseCtx, LeafCtx, access_chain_to_ref, idents};
+use super::nested::emit_vec_parent_nested;
 use super::projection::{
     TupleProjection, concat_access_chains, deepest_leaf_projection_access,
     prepend_parent_option_access, projected_leaf_body,
 };
-use super::{TupleLeafRoute, emit_vec_parent_nested, tuple_nested_type_path};
+use super::{TupleLeafRoute, tuple_nested_type_path};
 
 /// Emit a tuple element column with a Vec-bearing parent. Composes parent +
 /// element wrappers, with the projection injected at the parent/element

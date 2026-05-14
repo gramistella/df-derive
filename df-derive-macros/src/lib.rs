@@ -6,6 +6,9 @@
 //! `df-derive-core`, or a custom runtime without the facade.
 //!
 //! Explicit `#[df_derive(trait = "...")]` selects a custom runtime path.
+//! Explicit paths to the built-in `df_derive::dataframe::ToDataFrame` or
+//! `df_derive_core::dataframe::ToDataFrame` runtimes are treated as the
+//! default runtime and still use the runtime's hidden dependency re-exports.
 //! `columnar = "..."` may be provided alongside `trait = "..."`, and
 //! `decimal128_encode = "..."` may override decimal dispatch. Without runtime
 //! overrides, discovery tries `df-derive`, `df-derive-core`, `paft-utils`,
@@ -18,10 +21,11 @@ mod ir;
 mod parser;
 mod type_analysis;
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{DeriveInput, parse_macro_input};
+use syn::{DeriveInput, PathArguments, parse_macro_input};
 
 struct RuntimeOverridePath {
     path: syn::Path,
@@ -86,6 +90,86 @@ fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
     )
 }
 
+fn path_segment_names(path: &syn::Path) -> Option<Vec<String>> {
+    path.segments
+        .iter()
+        .map(|segment| {
+            if matches!(segment.arguments, PathArguments::None) {
+                Some(segment.ident.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn dataframe_mod_segments_for_crate(
+    package_name: &str,
+    lib_crate_name: &str,
+) -> Option<[String; 2]> {
+    let root = match crate_name(package_name) {
+        Ok(FoundCrate::Name(resolved)) => resolved,
+        Ok(FoundCrate::Itself)
+            if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok(lib_crate_name) =>
+        {
+            "crate".to_owned()
+        }
+        Ok(FoundCrate::Itself) => lib_crate_name.to_owned(),
+        Err(_) => return None,
+    };
+
+    Some([root, "dataframe".to_owned()])
+}
+
+fn is_builtin_default_dataframe_mod(path: &syn::Path) -> bool {
+    let Some(segments) = path_segment_names(path) else {
+        return false;
+    };
+
+    [
+        dataframe_mod_segments_for_crate("df-derive", "df_derive"),
+        dataframe_mod_segments_for_crate("df-derive-core", "df_derive_core"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|expected| segments.as_slice() == expected.as_slice())
+}
+
+fn trait_module_path(path: &syn::Path, trait_name: &str) -> Option<syn::Path> {
+    let last = path.segments.last()?;
+    if !matches!(last.arguments, PathArguments::None) || last.ident != trait_name {
+        return None;
+    }
+
+    let mut module_path = path.clone();
+    let _ = module_path.segments.pop();
+    let _ = module_path.segments.pop_punct();
+    (!module_path.segments.is_empty()).then_some(module_path)
+}
+
+fn path_segments_equal(left: &syn::Path, right: &syn::Path) -> bool {
+    path_segment_names(left) == path_segment_names(right)
+}
+
+fn explicit_builtin_default_dataframe_mod(
+    to_df_trait_path: Option<&RuntimeOverridePath>,
+    columnar_trait_path: Option<&RuntimeOverridePath>,
+) -> Option<syn::Path> {
+    let to_df_module = trait_module_path(&to_df_trait_path?.path, "ToDataFrame")?;
+    if !is_builtin_default_dataframe_mod(&to_df_module) {
+        return None;
+    }
+
+    if let Some(columnar) = columnar_trait_path {
+        let columnar_module = trait_module_path(&columnar.path, "Columnar")?;
+        if !path_segments_equal(&to_df_module, &columnar_module) {
+            return None;
+        }
+    }
+
+    Some(to_df_module)
+}
+
 /// Derive `ToDataFrame` for structs and tuple structs to generate fast conversions to Polars.
 ///
 /// What this macro generates (paths configurable via `#[df_derive(...)]`):
@@ -132,7 +216,10 @@ fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
 ///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. A `columnar` override
 ///   must be paired with `trait` to avoid mixed-runtime impls. `decimal128_encode` is the
 ///   dispatch point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal
-///   backends — see "Custom decimal backends" in the README for the trait contract.
+///   backends — see "Custom decimal backends" in the README for the trait contract. Explicit
+///   paths to `df_derive::dataframe::ToDataFrame` or
+///   `df_derive_core::dataframe::ToDataFrame` keep using the default runtime's hidden
+///   dependency re-exports; other explicit trait paths are treated as custom runtimes.
 /// - Field-level: `#[df_derive(skip)]` to omit a field from generated schema
 ///   and `DataFrame` output. Skipped fields are not type-analyzed, so this can
 ///   be used for caches, handles, source metadata, or other helper values that
@@ -234,6 +321,10 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
 
     let uses_default_dataframe_runtime =
         to_df_trait_path.is_none() && columnar_trait_path.is_none();
+    let explicit_default_dataframe_mod = explicit_builtin_default_dataframe_mod(
+        to_df_trait_path.as_ref(),
+        columnar_trait_path.as_ref(),
+    );
     let to_df_trait_path_ts = to_df_trait_path.as_ref().map_or_else(
         || quote! { #default_df_mod::ToDataFrame },
         |override_| {
@@ -263,11 +354,19 @@ pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
         }
         (None, None) => quote! { #default_df_mod::Decimal128Encode },
     };
-    let external_paths = if uses_default_dataframe_runtime {
-        codegen::external_paths::default_runtime_paths(&default_df_mod)
-    } else {
-        codegen::external_paths::direct_dependency_paths()
-    };
+    let external_paths = explicit_default_dataframe_mod.as_ref().map_or_else(
+        || {
+            if uses_default_dataframe_runtime {
+                codegen::external_paths::default_runtime_paths(&default_df_mod)
+            } else {
+                codegen::external_paths::direct_dependency_paths()
+            }
+        },
+        |dataframe_mod| {
+            let dataframe_mod = quote! { #dataframe_mod };
+            codegen::external_paths::default_runtime_paths(&dataframe_mod)
+        },
+    );
 
     let config = codegen::MacroConfig {
         to_dataframe_trait_path: to_df_trait_path_ts,

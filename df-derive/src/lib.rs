@@ -29,6 +29,9 @@
 //! directly or use `#[df_derive(trait = "...")]`,
 //! `#[df_derive(columnar = "...")]`, and
 //! `#[df_derive(decimal128_encode = "...")]` to target a custom runtime.
+//! Explicit paths back to `df_derive::dataframe::ToDataFrame` or
+//! `df_derive_core::dataframe::ToDataFrame` still use the default runtime's
+//! hidden dependency re-exports.
 
 // `polars` pulls a wide transitive dependency tree where multiple resolved
 // versions are unavoidable. `clippy::multiple_crate_versions` is part of the

@@ -269,6 +269,13 @@ If only `trait = "x::ToDataFrame"` is provided, the macro infers
 `x::Columnar` and `x::Decimal128Encode` unless those paths are explicitly
 overridden.
 
+Explicit paths to the built-in facade/core runtimes,
+`df_derive::dataframe::ToDataFrame` or
+`df_derive_core::dataframe::ToDataFrame` (including dependency renames), still
+use the default-runtime dependency roots from that same `dataframe` module's
+hidden `__private` re-exports. They do not require a direct `polars-arrow`
+dependency just because the trait path was written explicitly.
+
 `columnar = "..."` must be paired with `trait = "..."`; a standalone
 `Columnar` override would create mixed runtime impls that are incompatible
 with both runtimes' `ToDataFrameVec` extension traits.
@@ -325,12 +332,13 @@ struct Row {
 ```
 
 Use a custom runtime by providing compatible traits and overriding paths.
-Custom runtimes selected with `#[df_derive(trait = "...")]` must name a
-compatible direct `polars` dependency. They also need a compatible direct
-`polars-arrow` dependency when the derived fields use shapes that require
-generated Arrow array builders, such as list, nullable primitive, string, or
-binary columns. Scalar-only numeric/bool derives do not need `polars-arrow`.
-The minimum trait surface is:
+Outside the built-in facade/core paths described above, custom runtimes
+selected with `#[df_derive(trait = "...")]` must name a compatible direct
+`polars` dependency. They also need a compatible direct `polars-arrow`
+dependency when the derived fields use shapes that require generated Arrow
+array builders, such as list, nullable primitive, string, or binary columns.
+Scalar-only numeric/bool derives do not need `polars-arrow`. The minimum trait
+surface is:
 
 ```rust
 mod runtime {
@@ -409,7 +417,8 @@ struct Tx {
 - **Polars**: 0.53
 - **polars-arrow**: 0.53 through the default runtime facade. Custom runtimes
   selected with explicit trait overrides need a compatible direct dependency
-  only for derived field shapes that emit public Arrow array builders.
+  only for derived field shapes that emit public Arrow array builders; explicit
+  facade/core runtime paths keep using the hidden default-runtime re-export.
 - **Polars feature flags**: the default `df-derive` facade and
   `df-derive-core` runtime enable every Polars dtype flag required by the
   support matrix above. If you use `df-derive-macros` with a custom runtime

@@ -770,6 +770,54 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn explicit_core_runtime_path_uses_hidden_dependency_reexports() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "explicit-core-runtime-hidden-deps"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-core = {{ path = "{}" }}
+df-derive-macros = {{ path = "{}" }}
+{}
+"#,
+        toml_path(&root.join("df-derive-core")),
+        toml_path(&root.join("df-derive-macros")),
+        polars_deps(),
+    );
+
+    check_fixture(
+        "explicit-core-runtime-hidden-deps",
+        &manifest,
+        r#"
+use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+use df_derive_macros::ToDataFrame;
+
+#[derive(ToDataFrame)]
+#[df_derive(trait = "df_derive_core::dataframe::ToDataFrame")]
+struct Row {
+    labels: Vec<String>,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = vec![Row {
+        labels: vec!["bid".to_owned(), "ask".to_owned()],
+    }];
+    let df = rows.as_slice().to_dataframe()?;
+    assert_eq!(df.shape(), (1, 1));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn core_runtime_enables_supported_numeric_dtype_features_without_downstream_polars_flags() {
     let root = repo_root();
     let manifest = format!(
@@ -875,6 +923,12 @@ struct Row {
     at: NaiveTime,
 }
 
+#[derive(ToDataFrame)]
+#[df_derive(trait = "dfd::dataframe::ToDataFrame")]
+struct ExplicitRuntimeRow {
+    labels: Vec<String>,
+}
+
 fn main() -> pl::prelude::PolarsResult<()> {
     let rows = vec![Row {
         id: 1,
@@ -884,6 +938,12 @@ fn main() -> pl::prelude::PolarsResult<()> {
     }];
     let df = rows.as_slice().to_dataframe()?;
     assert_eq!(df.shape(), (1, 4));
+
+    let explicit_rows = vec![ExplicitRuntimeRow {
+        labels: vec!["bid".to_owned(), "ask".to_owned()],
+    }];
+    let explicit_df = explicit_rows.as_slice().to_dataframe()?;
+    assert_eq!(explicit_df.shape(), (1, 1));
     Ok(())
 }
 "#,

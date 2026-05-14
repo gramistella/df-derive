@@ -91,6 +91,9 @@ All notable changes to this project will be documented in this file.
   implementation dependency paths through hidden runtime re-exports, so
   downstream crates no longer need a direct `polars-arrow` dependency unless
   they use explicit custom trait-path overrides.
+- Explicit `df_derive::dataframe::ToDataFrame` and
+  `df_derive_core::dataframe::ToDataFrame` trait-path overrides are treated as
+  the default runtime and keep using hidden runtime re-exports.
 - Custom runtimes selected with explicit `#[df_derive(trait = "...")]`
   overrides still need compatible direct `polars` and `polars-arrow`
   dependencies, because generated code builds typed list arrays directly.

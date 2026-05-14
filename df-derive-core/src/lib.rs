@@ -64,7 +64,7 @@
 pub mod dataframe {
     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
 
-    #[allow(dead_code)]
+    #[cfg(feature = "rust_decimal")]
     const DECIMAL128_MAX_SCALE: u32 = 38;
 
     /// Hidden dependency re-exports used by generated code for the default

@@ -4,8 +4,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::super::shape_walk::{
-    LayerIdents, LayerWrap, OwnPolicy, ShapeEmitter, ShapePrecount, ShapeScan, freeze_offsets_buf,
-    freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
+    LayerIdents, LayerWrap, OwnPolicy, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
+    shape_assemble_list_stack,
 };
 use super::super::{BaseCtx, LeafCtx, access_chain_to_ref, idents};
 use super::nested::emit_vec_parent_nested;
@@ -259,86 +259,6 @@ pub(super) fn tuple_scan_leaf_body<'a>(
             }
         }
     }
-}
-
-pub(super) fn build_precount(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    layer_counters: &[syn::Ident],
-    total: &syn::Ident,
-    access: &TokenStream,
-    projection: TupleProjection<'_>,
-) -> TokenStream {
-    ShapePrecount {
-        shape,
-        access,
-        layers,
-        outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
-        total_counter: total,
-        layer_counters,
-        projection: projection.as_layer_projection(shape),
-    }
-    .build()
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct TupleScanLeaf<'a> {
-    pub(super) projection_access: Option<&'a AccessChain>,
-    pub(super) per_elem_push: &'a TokenStream,
-    pub(super) offsets_post_push: &'a TokenStream,
-    pub(super) pp: &'a TokenStream,
-}
-
-pub(super) fn build_scan(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    access: &TokenStream,
-    projection: TupleProjection<'_>,
-    leaf: TupleScanLeaf<'_>,
-) -> TokenStream {
-    let leaf_body = tuple_scan_leaf_body(
-        shape,
-        projection,
-        leaf.projection_access,
-        leaf.per_elem_push,
-    );
-    ShapeScan {
-        shape,
-        access,
-        layers,
-        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
-        leaf_body: &leaf_body,
-        leaf_offsets_post_push: leaf.offsets_post_push,
-        pp: leaf.pp,
-        projection: projection.as_layer_projection(shape),
-    }
-    .build()
-}
-
-pub(super) fn build_offsets_decls(
-    layers: &[LayerIdents],
-    layer_counters: &[syn::Ident],
-) -> TokenStream {
-    let offsets: Vec<&syn::Ident> = layers.iter().map(|layer| &layer.offsets).collect();
-    let counter_for_depth = |layer: usize| -> TokenStream {
-        let counter = &layer_counters[layer];
-        quote! { #counter }
-    };
-    shape_offsets_decls(&offsets, &counter_for_depth)
-}
-
-pub(super) fn build_validity_decls(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    layer_counters: &[syn::Ident],
-    pa_root: &TokenStream,
-) -> TokenStream {
-    let validity: Vec<&syn::Ident> = layers.iter().map(|layer| &layer.validity_mb).collect();
-    let counter_for_depth = |layer: usize| -> TokenStream {
-        let counter = &layer_counters[layer];
-        quote! { #counter }
-    };
-    shape_validity_decls(shape, &validity, &counter_for_depth, pa_root)
 }
 
 pub(super) fn tuple_layer_wraps_move<'a>(

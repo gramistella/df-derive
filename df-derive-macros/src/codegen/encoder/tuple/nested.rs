@@ -10,13 +10,13 @@ use super::super::nested_columns::{
     inner_col_take as nested_inner_col_take, nested_df_decl, nested_take_decl,
 };
 use super::super::shape_walk::{
-    LayerIdents, freeze_offsets_buf, freeze_validity_bitmap, shape_assemble_list_stack,
+    LayerIdents, ShapeEmitter, freeze_offsets_buf, freeze_validity_bitmap,
+    shape_assemble_list_stack,
 };
 use super::super::{idents, idx_size_len_expr};
 use super::projection::TupleProjection;
 use super::vec_parent::{
-    TupleScanLeaf, build_offsets_decls, build_precount, build_scan, build_validity_decls,
-    tuple_layer_counters, tuple_layer_idents, tuple_layer_wraps_clone,
+    tuple_layer_counters, tuple_layer_idents, tuple_layer_wraps_clone, tuple_scan_leaf_body,
 };
 
 /// Emit a tuple element column for a nested-struct element under a
@@ -57,15 +57,19 @@ pub(super) fn emit_vec_parent_nested(
         .map(|i| tuple_layer_idents(field_idx, i))
         .collect();
     let layer_counters = tuple_layer_counters(field_idx, composed_shape.depth());
-
-    let precount = build_precount(
-        composed_shape,
-        &layers,
-        &layer_counters,
-        &total_leaves,
-        parent_access,
-        projection,
-    );
+    let emitter = ShapeEmitter {
+        shape: composed_shape,
+        access: parent_access,
+        layers: &layers,
+        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
+        precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
+        total_counter: &total_leaves,
+        layer_counters: &layer_counters,
+        pp,
+        pa_root,
+        projection: projection.as_layer_projection(composed_shape),
+    };
+    let precount = emitter.precount();
 
     let has_inner_option = composed_shape.has_inner_option();
 
@@ -101,20 +105,19 @@ pub(super) fn emit_vec_parent_nested(
         quote! { #flat.len() }
     };
 
-    let scan = build_scan(
+    let leaf_body = tuple_scan_leaf_body(
         composed_shape,
-        &layers,
-        parent_access,
         projection,
-        TupleScanLeaf {
-            projection_access: leaf_projection_access,
-            per_elem_push: &per_elem_push,
-            offsets_post_push: &leaf_offsets_post_push,
-            pp,
-        },
+        leaf_projection_access,
+        &per_elem_push,
     );
-    let offsets_decls = build_offsets_decls(&layers, &layer_counters);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
+    let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
+    let counter_for_depth = |layer: usize| -> TokenStream {
+        let counter = &layer_counters[layer];
+        quote! { #counter }
+    };
+    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
+    let validity_decls = emitter.validity_decls(&counter_for_depth);
 
     let positions_decl = if has_inner_option {
         quote! {

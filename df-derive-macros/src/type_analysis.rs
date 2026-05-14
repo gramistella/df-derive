@@ -166,6 +166,44 @@ fn record_smart_ptr_layer(outer: &mut usize, wrappers: &mut Vec<RawWrapper>) {
     }
 }
 
+fn peel_option(ty: &Type) -> Option<&Type> {
+    extract_inner_type(ty, "Option", &["std", "option", "Option"])
+        .or_else(|| extract_inner_type(ty, "Option", &["core", "option", "Option"]))
+}
+
+fn peel_vec(ty: &Type) -> Option<&Type> {
+    extract_inner_type(ty, "Vec", &["std", "vec", "Vec"])
+        .or_else(|| extract_inner_type(ty, "Vec", &["alloc", "vec", "Vec"]))
+}
+
+fn peel_smart_ptr(ty: &Type) -> Option<&Type> {
+    extract_inner_type(ty, "Box", &["std", "boxed", "Box"])
+        .or_else(|| extract_inner_type(ty, "Box", &["alloc", "boxed", "Box"]))
+        .or_else(|| extract_inner_type(ty, "Rc", &["std", "rc", "Rc"]))
+        .or_else(|| extract_inner_type(ty, "Rc", &["alloc", "rc", "Rc"]))
+        .or_else(|| extract_inner_type(ty, "Arc", &["std", "sync", "Arc"]))
+        .or_else(|| extract_inner_type(ty, "Arc", &["alloc", "sync", "Arc"]))
+}
+
+fn peel_reference(ty: &Type) -> Result<Option<&Type>, syn::Error> {
+    let Type::Reference(reference) = ty else {
+        return Ok(None);
+    };
+
+    if reference.mutability.is_some() {
+        return Err(syn::Error::new_spanned(
+            reference,
+            "df-derive does not support `&mut T` fields; use `&T`, an owned value, \
+             or mark the field `#[df_derive(skip)]`",
+        ));
+    }
+    if borrowed_reference_base(reference).is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some(reference.elem.as_ref()))
+}
+
 fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut outer_smart_ptr_depth: usize = 0;
@@ -180,29 +218,17 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
     // Borrowed `str` and slices stay as semantic bases because they are
     // unsized and need domain-specific parser decisions.
     loop {
-        if let Some(inner_ty) =
-            extract_inner_type(current_type, "Option", &["std", "option", "Option"]).or_else(|| {
-                extract_inner_type(current_type, "Option", &["core", "option", "Option"])
-            })
-        {
+        if let Some(inner_ty) = peel_option(current_type) {
             wrappers.push(RawWrapper::Option);
             current_type = inner_ty;
             continue;
         }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Vec", &["std", "vec", "Vec"])
-            .or_else(|| extract_inner_type(current_type, "Vec", &["alloc", "vec", "Vec"]))
-        {
+        if let Some(inner_ty) = peel_vec(current_type) {
             wrappers.push(RawWrapper::Vec);
             current_type = inner_ty;
             continue;
         }
-        if let Some(inner_ty) = extract_inner_type(current_type, "Box", &["std", "boxed", "Box"])
-            .or_else(|| extract_inner_type(current_type, "Box", &["alloc", "boxed", "Box"]))
-            .or_else(|| extract_inner_type(current_type, "Rc", &["std", "rc", "Rc"]))
-            .or_else(|| extract_inner_type(current_type, "Rc", &["alloc", "rc", "Rc"]))
-            .or_else(|| extract_inner_type(current_type, "Arc", &["std", "sync", "Arc"]))
-            .or_else(|| extract_inner_type(current_type, "Arc", &["alloc", "sync", "Arc"]))
-        {
+        if let Some(inner_ty) = peel_smart_ptr(current_type) {
             record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
             current_type = inner_ty;
             continue;
@@ -217,19 +243,9 @@ fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
                 CowPeel::KeepAsSemanticBase => break,
             }
         }
-        if let Type::Reference(reference) = current_type {
-            if reference.mutability.is_some() {
-                return Err(syn::Error::new_spanned(
-                    reference,
-                    "df-derive does not support `&mut T` fields; use `&T`, an owned value, \
-                     or mark the field `#[df_derive(skip)]`",
-                ));
-            }
-            if borrowed_reference_base(reference).is_some() {
-                break;
-            }
+        if let Some(inner_ty) = peel_reference(current_type)? {
             record_smart_ptr_layer(&mut outer_smart_ptr_depth, &mut wrappers);
-            current_type = reference.elem.as_ref();
+            current_type = inner_ty;
             continue;
         }
         // No more wrappers found, break the loop

@@ -212,6 +212,20 @@ pub(super) fn idx_size_len_expr(flat: &syn::Ident, pp: &TokenStream) -> TokenStr
     }
 }
 
+/// Build a fallible generated expression for list offsets. Polars large-list
+/// offsets are `i64`, so impossible `usize` lengths should surface as a
+/// Polars error instead of silently wrapping through `as`.
+pub(super) fn list_offset_i64_expr(offset: &TokenStream, pp: &TokenStream) -> TokenStream {
+    quote! {
+        <i64 as ::core::convert::TryFrom<usize>>::try_from(#offset)
+            .map_err(|_| #pp::polars_err!(
+                ComputeError:
+                "df-derive: list offset {} exceeds i64 range",
+                #offset,
+            ))?
+    }
+}
+
 /// Build an expression that collapses `n` `Option` layers above a base
 /// expression into a single `Option<&Inner>`. `base` must already be a
 /// reference (or place expression that auto-derefs to a reference). For

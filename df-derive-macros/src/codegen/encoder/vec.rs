@@ -18,7 +18,7 @@ use super::emit::vec_emit_general;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, mb_decl_filled, validity_into_option};
 use super::leaf_kind::{LeafKind, PerElementPush};
-use super::{Encoder, LeafCtx, leaf};
+use super::{Encoder, LeafCtx, leaf, list_offset_i64_expr};
 
 // --- Vec combinator ---
 
@@ -116,7 +116,7 @@ fn bool_leaf_array_tokens(
     }
 }
 
-/// The expression that becomes `<offsets>.push(<expr> as i64)` at the
+/// The `usize` expression that becomes a checked `i64` list offset at the
 /// inner-vec-loop tail. Numeric / decimal / datetime use the flat-vec
 /// length; the string-view path uses the MBVA `len()` (which is the count
 /// of pushed views); the bool bit-packed-bitmap layout tracks a per-leaf
@@ -593,6 +593,8 @@ fn bool_bare_depth1_body(
     let offsets_buf = idents::bool_bare_offsets_buf();
     let list_arr = idents::bool_bare_list_arr();
     let assemble_helper = idents::assemble_helper();
+    let offset_ident = idents::list_offset();
+    let offset = list_offset_i64_expr(&quote! { #flat.len() }, pp);
     quote! {
         let mut #total_leaves: usize = 0;
         for #it in items {
@@ -605,7 +607,8 @@ fn bool_bare_depth1_body(
         #inner_offsets.push(0);
         for #it in items {
             #flat.extend((&(#access)).iter().copied());
-            #inner_offsets.push(#flat.len() as i64);
+            let #offset_ident: i64 = #offset;
+            #inner_offsets.push(#offset_ident);
         }
         let #leaf_arr: #pa_root::array::BooleanArray =
             #pa_root::array::BooleanArray::from_slice(&#flat);

@@ -61,7 +61,7 @@ use quote::{format_ident, quote};
 use crate::ir::{AccessChain, VecLayers};
 
 use super::idents;
-use super::{access_chain_to_option_ref, access_chain_to_ref};
+use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_expr};
 
 /// Optional projection injected at an inter-layer transition. Tuple fields
 /// use this for shapes like `Vec<(Vec<A>, B)>`: the parent tuple's `Vec`
@@ -150,11 +150,11 @@ pub(super) struct LayerIdents {
 /// caller emits whatever per-element work the leaf needs (typed-buffer push,
 /// flat-ref push + optional position scatter, etc).
 ///
-/// `leaf_offsets_post_push` is the token-stream-valued expression cast to
-/// `i64` and pushed onto the innermost-layer offsets vec after each outer
-/// row's leaf iteration. The flat-vec path passes its typed buffer's `len()`;
-/// the nested path passes `flat.len()` (or `positions.len()` under
-/// `has_inner_option`).
+/// `leaf_offsets_post_push` is the token-stream-valued `usize` expression
+/// checked, converted to `i64`, and pushed onto the innermost-layer offsets
+/// vec after each outer row's leaf iteration. The flat-vec path passes its
+/// typed buffer's `len()`; the nested path passes `flat.len()` (or
+/// `positions.len()` under `has_inner_option`).
 pub(super) struct ShapeScan<'a> {
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
@@ -162,6 +162,7 @@ pub(super) struct ShapeScan<'a> {
     pub outer_some_prefix: &'a str,
     pub leaf_body: &'a dyn Fn(&TokenStream) -> TokenStream,
     pub leaf_offsets_post_push: &'a TokenStream,
+    pub pp: &'a TokenStream,
     pub projection: Option<LayerProjection<'a>>,
 }
 
@@ -259,9 +260,12 @@ impl ShapeScan<'_> {
         } else {
             self.build_iter(cur, &layer_access.expr)
         };
+        let offset_ident = idents::list_offset();
+        let offset = list_offset_i64_expr(&offsets_post_push, self.pp);
         quote! {
             #inner_iter
-            #offsets.push(#offsets_post_push as i64);
+            let #offset_ident: i64 = #offset;
+            #offsets.push(#offset_ident);
         }
     }
 }

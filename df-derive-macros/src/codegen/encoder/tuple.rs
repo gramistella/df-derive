@@ -535,9 +535,12 @@ fn emit_vec_parent_primitive(
         &layers,
         parent_access,
         projection,
-        leaf_projection_access,
-        &pep.per_elem_push,
-        &pep.leaf_offsets_post_push,
+        TupleScanLeaf {
+            projection_access: leaf_projection_access,
+            per_elem_push: &pep.per_elem_push,
+            offsets_post_push: &pep.leaf_offsets_post_push,
+            pp,
+        },
     );
     let offsets_decls = build_offsets_decls(&layers, &layer_counters);
     let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
@@ -664,9 +667,12 @@ fn emit_vec_parent_nested(
         &layers,
         parent_access,
         projection,
-        leaf_projection_access,
-        &per_elem_push,
-        &leaf_offsets_post_push,
+        TupleScanLeaf {
+            projection_access: leaf_projection_access,
+            per_elem_push: &per_elem_push,
+            offsets_post_push: &leaf_offsets_post_push,
+            pp,
+        },
     );
     let offsets_decls = build_offsets_decls(&layers, &layer_counters);
     let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
@@ -1123,18 +1129,25 @@ fn build_precount(
     .build()
 }
 
+#[derive(Clone, Copy)]
+struct TupleScanLeaf<'a> {
+    projection_access: Option<&'a AccessChain>,
+    per_elem_push: &'a TokenStream,
+    offsets_post_push: &'a TokenStream,
+    pp: &'a TokenStream,
+}
+
 fn build_scan(
     shape: &VecLayers,
     layers: &[LayerIdents],
     access: &TokenStream,
     projection: TupleProjection<'_>,
-    leaf_projection_access: Option<&AccessChain>,
-    per_elem_push: &TokenStream,
-    leaf_offsets_post_push: &TokenStream,
+    leaf: TupleScanLeaf<'_>,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
+    let per_elem_push = leaf.per_elem_push;
     let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
-        if let Some(element_access) = leaf_projection_access {
+        if let Some(element_access) = leaf.projection_access {
             return projected_leaf_body(vec_bind, projection, element_access, per_elem_push);
         }
         if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
@@ -1170,7 +1183,8 @@ fn build_scan(
         layers,
         outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
         leaf_body: &leaf_body,
-        leaf_offsets_post_push,
+        leaf_offsets_post_push: leaf.offsets_post_push,
+        pp: leaf.pp,
         projection: projection.as_layer_projection(shape),
     }
     .build()

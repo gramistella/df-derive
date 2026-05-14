@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Generated list offsets now use checked `usize` to `i64` conversions and
+  return a Polars error on overflow instead of silently wrapping.
 - Unsupported collection diagnostics now cover `BTreeSet`, `VecDeque`, and
   `LinkedList` with tailored migration hints.
 

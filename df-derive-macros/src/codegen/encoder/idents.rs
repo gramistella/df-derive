@@ -268,6 +268,11 @@ pub(in crate::codegen) fn bool_inner_offsets() -> Ident {
     format_ident!("__df_derive_inner_offsets")
 }
 
+/// Checked `i64` list offset local used before pushing into offsets vecs.
+pub(in crate::codegen) fn list_offset() -> Ident {
+    format_ident!("__df_derive_offset")
+}
+
 /// Flat values buffer ident for the bulk-vec leaf paths: `Vec<#native>` for
 /// numeric / decimal / datetime spec variants, and `Vec<bool>` for the
 /// depth-1 bool-bare fast path. Same name across variants — they never

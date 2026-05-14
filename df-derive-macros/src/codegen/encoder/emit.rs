@@ -179,6 +179,7 @@ fn build_scan(
     outer_some_prefix: &'static str,
     leaf_body: &dyn Fn(&TokenStream) -> TokenStream,
     leaf_offsets_post_push: &TokenStream,
+    pp: &TokenStream,
 ) -> TokenStream {
     ShapeScan {
         shape,
@@ -187,6 +188,7 @@ fn build_scan(
         outer_some_prefix,
         leaf_body,
         leaf_offsets_post_push,
+        pp,
         projection: None,
     }
     .build()
@@ -661,6 +663,7 @@ fn pep_emit(
         kind.scan_outer_some_prefix(),
         &leaf_body,
         &pep.leaf_offsets_post_push,
+        pp,
     );
 
     let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
@@ -799,6 +802,7 @@ fn ctb_emit(
                 kind.scan_outer_some_prefix(),
                 &leaf_body,
                 &leaf_offsets_post_push,
+                pp,
             );
             let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
             let offsets_idents: Vec<&syn::Ident> = layers.iter().map(|l| &l.offsets).collect();

@@ -61,10 +61,10 @@
 // lint surface stays focused on this crate's own code.
 #![allow(clippy::multiple_crate_versions)]
 
-#[allow(dead_code)]
 pub mod dataframe {
     use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
 
+    #[allow(dead_code)]
     const DECIMAL128_MAX_SCALE: u32 = 38;
 
     /// Hidden dependency re-exports used by generated code for the default
@@ -165,9 +165,9 @@ pub mod dataframe {
     /// `str_to_dec128` path. A `None` return surfaces as a polars
     /// `ComputeError` from the generated code.
     ///
-    /// The codegen invokes the method via dot syntax (after an anonymous
-    /// `use … as _;` import), so method resolution selects the impl from
-    /// the value reference's type. Custom backends (`bigdecimal::BigDecimal`,
+    /// The codegen invokes this method through UFCS on the selected trait
+    /// path, so inherent methods with the same name cannot bypass this
+    /// contract. Custom backends (`bigdecimal::BigDecimal`,
     /// arbitrary-precision types, …) provide their own impls; this crate
     /// ships a `rust_decimal::Decimal` impl below.
     pub trait Decimal128Encode {

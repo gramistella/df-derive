@@ -1,6 +1,6 @@
 use quote::ToTokens;
 
-pub(crate) fn unsupported_tuple_attr<S: ToTokens + ?Sized>(
+pub fn unsupported_tuple_attr<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
     attr: &str,
@@ -16,7 +16,7 @@ pub(crate) fn unsupported_tuple_attr<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn unannotated_cow_bytes<S: ToTokens + ?Sized>(
+pub fn unannotated_cow_bytes<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
     can_add_as_binary: bool,
@@ -38,7 +38,7 @@ pub(crate) fn unannotated_cow_bytes<S: ToTokens + ?Sized>(
     syn::Error::new_spanned(span, message)
 }
 
-pub(crate) fn unannotated_borrowed_bytes<S: ToTokens + ?Sized>(
+pub fn unannotated_borrowed_bytes<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
     can_add_as_binary: bool,
@@ -60,10 +60,7 @@ pub(crate) fn unannotated_borrowed_bytes<S: ToTokens + ?Sized>(
     syn::Error::new_spanned(span, message)
 }
 
-pub(crate) fn borrowed_slice<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn borrowed_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -74,7 +71,7 @@ pub(crate) fn borrowed_slice<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn cow_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
+pub fn cow_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -85,7 +82,7 @@ pub(crate) fn cow_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str
     )
 }
 
-pub(crate) fn unsupported_wrapped_nested_tuple<S: ToTokens + ?Sized>(
+pub fn unsupported_wrapped_nested_tuple<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {
@@ -100,7 +97,7 @@ pub(crate) fn unsupported_wrapped_nested_tuple<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn direct_self_reference<S: ToTokens + ?Sized>(
+pub fn direct_self_reference<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
     struct_name: &syn::Ident,
@@ -116,10 +113,7 @@ pub(crate) fn direct_self_reference<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn as_str_wrong_base<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn as_str_wrong_base<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -131,7 +125,7 @@ pub(crate) fn as_str_wrong_base<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn as_string_std_duration<S: ToTokens + ?Sized>(
+pub fn as_string_std_duration<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {
@@ -146,10 +140,7 @@ pub(crate) fn as_string_std_duration<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn as_string_bytes<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn as_string_bytes<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -162,10 +153,7 @@ pub(crate) fn as_string_bytes<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn as_string_slice<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn as_string_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -177,10 +165,7 @@ pub(crate) fn as_string_slice<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn as_string_tuple<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn as_string_tuple<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -192,10 +177,7 @@ pub(crate) fn as_string_tuple<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn decimal_wrong_base<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn decimal_wrong_base<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -207,7 +189,7 @@ pub(crate) fn decimal_wrong_base<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn time_unit_naive_date<S: ToTokens + ?Sized>(
+pub fn time_unit_naive_date<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {
@@ -221,7 +203,7 @@ pub(crate) fn time_unit_naive_date<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn time_unit_naive_time<S: ToTokens + ?Sized>(
+pub fn time_unit_naive_time<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {
@@ -235,7 +217,7 @@ pub(crate) fn time_unit_naive_time<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn time_unit_wrong_base<S: ToTokens + ?Sized>(
+pub fn time_unit_wrong_base<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {
@@ -250,10 +232,7 @@ pub(crate) fn time_unit_wrong_base<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn bare_binary_u8<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn bare_binary_u8<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -264,10 +243,7 @@ pub(crate) fn bare_binary_u8<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn binary_inner_option<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn binary_inner_option<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -278,10 +254,7 @@ pub(crate) fn binary_inner_option<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn binary_wrong_base<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn binary_wrong_base<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -292,10 +265,7 @@ pub(crate) fn binary_wrong_base<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn binary_cow_slice<S: ToTokens + ?Sized>(
-    span: &S,
-    field_display_name: &str,
-) -> syn::Error {
+pub fn binary_cow_slice<S: ToTokens + ?Sized>(span: &S, field_display_name: &str) -> syn::Error {
     syn::Error::new_spanned(
         span,
         format!(
@@ -305,7 +275,7 @@ pub(crate) fn binary_cow_slice<S: ToTokens + ?Sized>(
     )
 }
 
-pub(crate) fn binary_borrowed_slice<S: ToTokens + ?Sized>(
+pub fn binary_borrowed_slice<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
 ) -> syn::Error {

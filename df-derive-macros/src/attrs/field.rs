@@ -5,7 +5,7 @@ use syn::spanned::Spanned;
 /// Leaf-level conversion override declared via `#[df_derive(...)]`.
 /// `skip` and `as_binary` are field dispositions, so they are deliberately
 /// not representable here and cannot reach leaf parsing.
-pub(crate) enum LeafOverride {
+pub enum LeafOverride {
     AsStr,
     AsString,
     Decimal { precision: u8, scale: u8 },
@@ -13,14 +13,14 @@ pub(crate) enum LeafOverride {
 }
 
 /// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
-pub(crate) enum FieldOverride {
+pub enum FieldOverride {
     Skip,
     AsBinary,
     Leaf(LeafOverride),
 }
 
 impl FieldOverride {
-    pub(crate) const fn leaf(&self) -> Option<&LeafOverride> {
+    pub const fn leaf(&self) -> Option<&LeafOverride> {
         match self {
             Self::Leaf(override_) => Some(override_),
             Self::Skip | Self::AsBinary => None,
@@ -341,7 +341,7 @@ const fn same_override_key(existing: &FieldOverride, incoming: &FieldOverride) -
     )
 }
 
-pub(crate) fn parse_field_override(
+pub fn parse_field_override(
     field: &syn::Field,
     field_display_name: &str,
 ) -> Result<Option<FieldOverride>, syn::Error> {

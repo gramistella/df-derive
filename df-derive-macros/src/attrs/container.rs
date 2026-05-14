@@ -3,13 +3,13 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{DeriveInput, PathArguments};
 
-pub(crate) struct ContainerAttrs {
-    pub to_df_trait_path: Option<RuntimeOverridePath>,
-    pub columnar_trait_path: Option<RuntimeOverridePath>,
-    pub decimal128_encode_trait_path: Option<RuntimeOverridePath>,
+pub struct ContainerAttrs {
+    pub to_dataframe: Option<RuntimeOverridePath>,
+    pub columnar: Option<RuntimeOverridePath>,
+    pub decimal128_encode: Option<RuntimeOverridePath>,
 }
 
-pub(crate) struct RuntimeOverridePath {
+pub struct RuntimeOverridePath {
     pub path: syn::Path,
     pub span: Span,
 }
@@ -30,7 +30,7 @@ fn parse_trait_path_attr(
 /// Clone `path` and replace the last segment's identifier with `name`,
 /// preserving the original span. Used to derive sibling trait paths
 /// (`Columnar`, `Decimal128Encode`) from a user-supplied `ToDataFrame` path.
-pub(crate) fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
+pub fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
     let mut new_path = path.clone();
     if let Some(last_segment) = new_path.segments.last_mut() {
         last_segment.ident = syn::Ident::new(name, last_segment.ident.span());
@@ -165,7 +165,7 @@ fn mixed_builtin_runtime_override(
         .then(|| mixed_builtin_runtime_error(to_df_trait_path, columnar_trait_path))
 }
 
-pub(crate) fn explicit_builtin_default_dataframe_mod(
+pub fn explicit_builtin_default_dataframe_mod(
     to_df_trait_path: Option<&RuntimeOverridePath>,
     columnar_trait_path: Option<&RuntimeOverridePath>,
 ) -> Option<syn::Path> {
@@ -184,10 +184,10 @@ pub(crate) fn explicit_builtin_default_dataframe_mod(
     Some(to_df_module)
 }
 
-pub(crate) fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
-    let mut to_df_trait_path: Option<RuntimeOverridePath> = None;
-    let mut columnar_trait_path: Option<RuntimeOverridePath> = None;
-    let mut decimal128_encode_trait_path: Option<RuntimeOverridePath> = None;
+pub fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
+    let mut to_dataframe: Option<RuntimeOverridePath> = None;
+    let mut columnar: Option<RuntimeOverridePath> = None;
+    let mut decimal128_encode: Option<RuntimeOverridePath> = None;
 
     for attr in &input.attrs {
         if attr.path().is_ident("df_derive") {
@@ -195,14 +195,14 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> syn::Result<Containe
                 let key_span = meta.path.span();
                 if meta.path.is_ident("trait") {
                     let path = parse_trait_path_attr(&meta, "trait")?;
-                    set_runtime_override(&mut to_df_trait_path, "trait", path, key_span)
+                    set_runtime_override(&mut to_dataframe, "trait", path, key_span)
                 } else if meta.path.is_ident("columnar") {
                     let path = parse_trait_path_attr(&meta, "columnar trait")?;
-                    set_runtime_override(&mut columnar_trait_path, "columnar", path, key_span)
+                    set_runtime_override(&mut columnar, "columnar", path, key_span)
                 } else if meta.path.is_ident("decimal128_encode") {
                     let path = parse_trait_path_attr(&meta, "decimal128_encode trait")?;
                     set_runtime_override(
-                        &mut decimal128_encode_trait_path,
+                        &mut decimal128_encode,
                         "decimal128_encode",
                         path,
                         key_span,
@@ -214,18 +214,16 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> syn::Result<Containe
         }
     }
 
-    if let (Some(columnar), None) = (&columnar_trait_path, &to_df_trait_path) {
+    if let (Some(columnar), None) = (&columnar, &to_dataframe) {
         return Err(reject_columnar_without_trait(columnar.span));
     }
-    if let Some(err) =
-        mixed_builtin_runtime_override(to_df_trait_path.as_ref(), columnar_trait_path.as_ref())
-    {
+    if let Some(err) = mixed_builtin_runtime_override(to_dataframe.as_ref(), columnar.as_ref()) {
         return Err(err);
     }
 
     Ok(ContainerAttrs {
-        to_df_trait_path,
-        columnar_trait_path,
-        decimal128_encode_trait_path,
+        to_dataframe,
+        columnar,
+        decimal128_encode,
     })
 }

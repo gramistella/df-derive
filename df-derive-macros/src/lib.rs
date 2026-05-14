@@ -270,9 +270,10 @@ fn explicit_builtin_default_dataframe_mod(
 ///   valid generic payload (zero columns); direct `field: ()` fields are
 ///   rejected.
 /// - All nested custom structs must also derive `ToDataFrame`.
-/// - Obvious direct self-recursive nested fields using `Self` or the bare
-///   deriving struct name are rejected after transparent wrapper peeling,
-///   including `Box<T>`/`Option<Box<T>>` forms and tuple fields containing the same.
+/// - Obvious direct self-recursive nested fields using `Self`, the bare
+///   deriving struct name, `self::Type`, or `crate::Type` are rejected after
+///   transparent wrapper peeling, including `Box<T>`/`Option<Box<T>>` forms
+///   and tuple fields containing the same.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
 ///   yields a zero-column `DataFrame` with `items.len()` rows.
 #[proc_macro_derive(ToDataFrame, attributes(df_derive))]

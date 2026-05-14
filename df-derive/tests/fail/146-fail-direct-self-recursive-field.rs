@@ -15,6 +15,18 @@ struct SelfNamed {
 }
 
 #[derive(ToDataFrame)]
+struct CrateQualified {
+    id: u64,
+    child: Option<Box<crate::CrateQualified>>,
+}
+
+#[derive(ToDataFrame)]
+struct SelfQualified {
+    id: u64,
+    child: Option<Box<self::SelfQualified>>,
+}
+
+#[derive(ToDataFrame)]
 struct TupleField {
     nested: (u64, Option<Box<TupleField>>),
 }

@@ -10,14 +10,26 @@ error: field `child` recursively references `SelfNamed` after transparent wrappe
 14 |     child: Option<Box<Self>>,
    |                       ^^^^
 
-error: field `nested` recursively references `TupleField` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:19:30
+error: field `child` recursively references `CrateQualified` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:20:23
    |
-19 |     nested: (u64, Option<Box<TupleField>>),
+20 |     child: Option<Box<crate::CrateQualified>>,
+   |                       ^^^^^^^^^^^^^^^^^^^^^
+
+error: field `child` recursively references `SelfQualified` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:26:23
+   |
+26 |     child: Option<Box<self::SelfQualified>>,
+   |                       ^^^^^^^^^^^^^^^^^^^
+
+error: field `nested` recursively references `TupleField` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:31:30
+   |
+31 |     nested: (u64, Option<Box<TupleField>>),
    |                              ^^^^^^^^^^
 
 error: field `field_1` recursively references `TupleStruct` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:23:36
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:35:36
    |
-23 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
+35 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
    |                                    ^^^^^^^^^^^

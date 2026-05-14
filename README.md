@@ -238,11 +238,11 @@ struct when you need an attributed field. Nested tuples inside an outer
 - Sequence collections such as `VecDeque<T>` and `LinkedList<T>` are not
   supported; use `Vec<T>` instead.
 - All nested custom structs must also derive `ToDataFrame`.
-- Obvious direct self-recursive nested fields using `Self` or the bare
-  deriving type name are rejected after transparent wrapper peeling, including
-  shapes such as `Node`, `Box<Node>`, `Option<Box<Node>>`, and tuple fields
-  containing the same. Use identifier fields or a separate flat representation
-  for recursive data structures.
+- Obvious direct self-recursive nested fields using `Self`, the bare deriving
+  type name, `self::Type`, or `crate::Type` are rejected after transparent
+  wrapper peeling, including shapes such as `Node`, `Box<Node>`,
+  `Option<Box<Node>>`, and tuple fields containing the same. Use identifier
+  fields or a separate flat representation for recursive data structures.
 - Consecutive `Option` layers above a `Vec` collapse to one list-level
   validity bit, so `None` and `Some(None)` are indistinguishable in the
   resulting list column.

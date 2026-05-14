@@ -673,13 +673,30 @@ fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {
     let syn::Type::Path(type_path) = ty else {
         return false;
     };
-    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+    if type_path.qself.is_some() {
         return false;
     }
-    let Some(segment) = type_path.path.segments.last() else {
+    let segments = &type_path.path.segments;
+    let Some(segment) = segments.last() else {
         return false;
     };
-    segment.ident == "Self" || &segment.ident == struct_name
+    if segments.len() == 1 {
+        return segment.ident == "Self" || &segment.ident == struct_name;
+    }
+    if segments.len() != 2
+        || !segments
+            .iter()
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
+    {
+        return false;
+    }
+    let Some(first_segment) = segments.first() else {
+        return false;
+    };
+    // Keep this intentionally narrow: broader qualified paths can name
+    // distinct same-named types outside the deriving type's module.
+    (first_segment.ident == "crate" || first_segment.ident == "self")
+        && &segment.ident == struct_name
 }
 
 fn reject_direct_self_reference(

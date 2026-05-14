@@ -263,9 +263,10 @@ pub fn map_primitive_expr(
         MappedPrimitiveLeaf::NaiveDate => {
             let chrono = super::external_paths::chrono_root();
             quote! {
-                ((#var).signed_duration_since(
-                    #chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
-                ).num_days() as i32)
+                {
+                    use #chrono::Datelike as _;
+                    (#var).num_days_from_ce() - 719_163
+                }
             }
         }
         MappedPrimitiveLeaf::NaiveTime => {

@@ -186,7 +186,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
                     native,
                 )
             } else {
-                quote! { (#access).clone() }
+                quote! { #access }
             };
             let bare_push = quote! { #buf.push({ #bare_value }); };
             let bare_series = quote! {
@@ -375,7 +375,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
 
     match arm {
         LeafArmKind::Bare => {
-            let bare_push = quote! { #buf.push({ (#access).clone() }); };
+            let bare_push = quote! { #buf.push({ #access }); };
             let bare_series = named_from_buf(name, &buf, pp);
             LeafArm {
                 decls: vec![vec_decl(&buf, &quote! { bool })],

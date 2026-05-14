@@ -1,0 +1,6 @@
+error: field `bytes` has `as_string`, but byte slices (`&[u8]`/`Cow<'_, [u8]>`) do not implement `Display`; use `#[df_derive(as_binary)]` for a Binary column, use `Vec<u8>` for a `List(UInt8)` column, or wrap the value in a custom type that implements `Display`
+ --> tests/fail/142-fail-as-string-on-borrowed-bytes.rs:7:5
+  |
+7 | /     #[df_derive(as_string)]
+8 | |     bytes: &'a [u8],
+  | |___________________^

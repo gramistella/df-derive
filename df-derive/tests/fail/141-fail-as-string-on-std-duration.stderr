@@ -1,0 +1,6 @@
+error: field `duration` has `as_string`, but `std::time::Duration` and `core::time::Duration` do not implement `Display`; drop `as_string` to encode a Duration column, or wrap the value in a custom type that implements `Display`
+ --> tests/fail/141-fail-as-string-on-std-duration.rs:7:5
+  |
+7 | /     #[df_derive(as_string)]
+8 | |     duration: std::time::Duration,
+  | |_________________________________^

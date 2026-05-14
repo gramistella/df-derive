@@ -352,7 +352,7 @@ fn parse_leaf_spec(
     match override_ {
         FieldOverride::None => default_leaf_for_base(field, field_display_name, base, true),
         FieldOverride::Skip => unreachable!("skip fields are filtered before leaf parsing"),
-        FieldOverride::AsString => Ok(LeafSpec::AsString(display_base_for_as_string(&base))),
+        FieldOverride::AsString => parse_leaf_as_string(field, field_display_name, &base),
         FieldOverride::AsStr => parse_leaf_as_str(field, field_display_name, base),
         FieldOverride::AsBinary => {
             unreachable!("AsBinary handled by process_field before parse_leaf_spec runs")
@@ -604,11 +604,73 @@ fn parse_leaf_as_str(
     }
 }
 
-fn display_base_for_as_string(base: &AnalyzedBase) -> DisplayBase {
+fn parse_leaf_as_string(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: &AnalyzedBase,
+) -> Result<LeafSpec, syn::Error> {
+    display_base_for_as_string(field, field_display_name, base).map(LeafSpec::AsString)
+}
+
+fn display_base_for_as_string(
+    field: &syn::Field,
+    field_display_name: &str,
+    base: &AnalyzedBase,
+) -> Result<DisplayBase, syn::Error> {
     match base {
-        AnalyzedBase::Struct(ty) => DisplayBase::Struct(ty.clone()),
-        AnalyzedBase::Generic(ident) => DisplayBase::Generic(ident.clone()),
-        _ => DisplayBase::Inherent,
+        AnalyzedBase::Numeric(_)
+        | AnalyzedBase::String
+        | AnalyzedBase::BorrowedStr
+        | AnalyzedBase::CowStr
+        | AnalyzedBase::Bool
+        | AnalyzedBase::DateTimeTz
+        | AnalyzedBase::NaiveDate
+        | AnalyzedBase::NaiveTime
+        | AnalyzedBase::NaiveDateTime
+        | AnalyzedBase::ChronoDuration
+        | AnalyzedBase::Decimal => Ok(DisplayBase::Inherent),
+        AnalyzedBase::Struct(ty) => Ok(DisplayBase::Struct(ty.clone())),
+        AnalyzedBase::Generic(ident) => Ok(DisplayBase::Generic(ident.clone())),
+        AnalyzedBase::StdDuration => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_string`, but \
+                 `std::time::Duration` and `core::time::Duration` do not implement \
+                 `Display`; drop `as_string` to encode a Duration column, or wrap \
+                 the value in a custom type that implements `Display`"
+            ),
+        )),
+        AnalyzedBase::BorrowedBytes | AnalyzedBase::CowBytes => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_string`, but byte slices \
+                 (`&[u8]`/`Cow<'_, [u8]>`) do not implement `Display`; use \
+                 `#[df_derive(as_binary)]` for a Binary column, use `Vec<u8>` \
+                 for a `List(UInt8)` column, or wrap the value in a custom type \
+                 that implements `Display`"
+            ),
+        )),
+        AnalyzedBase::BorrowedSlice | AnalyzedBase::CowSlice => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_string`, but borrowed slices \
+                 (`&[T]`/`Cow<'_, [T]>`) do not implement `Display`; use `Vec<T>` \
+                 for list columns, or wrap the value in a custom type that \
+                 implements `Display`"
+            ),
+        )),
+        // Tuple bases are rejected by `reject_attrs_on_tuple` before this
+        // function runs. Keep this branch explicit so any bypass still emits
+        // the same public diagnostic family instead of silently accepting it.
+        AnalyzedBase::Tuple(_) => Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "field `{field_display_name}` has `as_string` but its type is a tuple; \
+                 field-level attributes do not apply to multi-column tuple fields. \
+                 Hoist the tuple into a named struct that derives `ToDataFrame` if \
+                 you need per-element attributes."
+            ),
+        )),
     }
 }
 

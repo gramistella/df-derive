@@ -308,13 +308,14 @@ impl StringyBase {
 }
 
 /// Bases that need an explicit `Display` requirement for
-/// `#[df_derive(as_string)]`. Built-in leaves such as numbers, booleans,
-/// strings, and chrono values rely on their inherent `Display` impls; custom
-/// struct types and generic type parameters get exact generated bounds.
+/// `#[df_derive(as_string)]`. Parser-known display leaves such as numbers,
+/// booleans, strings, chrono date/time values, `chrono::Duration`, and
+/// decimals rely on their inherent `Display` impls; custom struct types and
+/// generic type parameters get exact generated bounds.
 #[derive(Clone)]
 pub enum DisplayBase {
-    /// Built-in or otherwise parser-known displayable base that does not need
-    /// a generated type parameter or where-clause role.
+    /// Parser-known displayable base that does not need a generated type
+    /// parameter or where-clause role.
     Inherent,
     /// Concrete user-defined struct type as written at the field's use site.
     Struct(Type),

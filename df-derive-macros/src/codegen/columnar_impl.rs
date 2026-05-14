@@ -75,7 +75,8 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     let columnar_trait = &config.columnar_trait_path;
     let pp = config.external_paths.prelude();
     let it_ident = idents::populator_iter();
-    let (impl_generics, ty_generics, where_clause) = super::impl_parts_with_bounds(ir, config);
+    let (impl_generics, ty_generics, where_clause) =
+        super::bounds::impl_parts_with_bounds(ir, config);
 
     // The method body is intentionally token-identical for `&[Self]` and
     // `&[&Self]`; field access in the borrowed path relies on Rust's

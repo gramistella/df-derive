@@ -1030,6 +1030,110 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn explicit_custom_runtime_decimal_tuple_uses_reference_encode_impl() {
+    let root = repo_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "explicit-custom-runtime-decimal-tuple"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive-macros = {{ path = "{}" }}
+{}
+polars-arrow = {{ version = "0.53.0", default-features = false }}
+rust_decimal = "1.41"
+"#,
+        toml_path(&root.join("df-derive-macros")),
+        polars_deps(),
+    );
+
+    check_fixture(
+        "explicit-custom-runtime-decimal-tuple",
+        &manifest,
+        r#"
+use df_derive_macros::ToDataFrame;
+use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
+use rust_decimal::Decimal;
+
+mod runtime {
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
+
+    pub trait ToDataFrame {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame>;
+        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    }
+
+    pub trait Columnar: Sized {
+        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
+            let refs: Vec<&Self> = items.iter().collect();
+            Self::columnar_from_refs(&refs)
+        }
+
+        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+    }
+
+    pub trait Decimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+
+    impl<T> Decimal128Encode for &T
+    where
+        T: Decimal128Encode + ?Sized,
+    {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+            <T as Decimal128Encode>::try_to_i128_mantissa(*self, target_scale)
+        }
+    }
+}
+
+impl runtime::Decimal128Encode for Decimal {
+    fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
+        let source_scale = self.scale();
+        if source_scale > target_scale {
+            return None;
+        }
+        self.mantissa().checked_mul(10i128.pow(target_scale - source_scale))
+    }
+}
+
+#[derive(ToDataFrame, Clone)]
+#[df_derive(
+    trait = "crate::runtime::ToDataFrame",
+    columnar = "crate::runtime::Columnar",
+    decimal128_encode = "crate::runtime::Decimal128Encode",
+)]
+struct Row {
+    maybe: Option<(Decimal,)>,
+}
+
+fn main() -> PolarsResult<()> {
+    let rows = vec![
+        Row {
+            maybe: Some((Decimal::new(123, 2),)),
+        },
+        Row { maybe: None },
+    ];
+    let df = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    assert_eq!(df.shape(), (2, 1));
+    assert_eq!(df.column("maybe.field_0")?.dtype(), &DataType::Decimal(38, 10));
+    assert_eq!(
+        df.column("maybe.field_0")?.get(0)?,
+        AnyValue::Decimal(12_300_000_000, 38, 10),
+    );
+    assert_eq!(df.column("maybe.field_0")?.get(1)?, AnyValue::Null);
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn local_fallback_works_without_facade_or_core_dependencies() {
     let root = repo_root();
     let manifest = format!(

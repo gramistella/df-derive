@@ -1,5 +1,5 @@
 use super::{MacroConfig, helpers};
-use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR, TupleElement};
+use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -25,12 +25,8 @@ fn contains_ident(items: &[syn::Ident], ident: &syn::Ident) -> bool {
     items.iter().any(|item| item == ident)
 }
 
-fn collect_tuple_element_requirements(elem: &TupleElement, reqs: &mut GenericRequirements) {
-    collect_leaf_requirements(&elem.leaf_spec, reqs);
-}
-
 fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
-    match leaf {
+    leaf.walk_leaves(&mut |leaf| match leaf {
         LeafSpec::Generic(ident) => {
             push_unique(&mut reqs.nested_params, ident);
         }
@@ -49,11 +45,6 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
         LeafSpec::AsString(DisplayBase::Struct(ty)) => {
             helpers::push_unique_type(&mut reqs.display_types, ty);
         }
-        LeafSpec::Tuple(elements) => {
-            for elem in elements {
-                collect_tuple_element_requirements(elem, reqs);
-            }
-        }
         LeafSpec::Numeric(_)
         | LeafSpec::String
         | LeafSpec::Bool
@@ -65,8 +56,9 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
         | LeafSpec::Decimal { .. }
         | LeafSpec::AsString(_)
         | LeafSpec::AsStr(_)
-        | LeafSpec::Binary => {}
-    }
+        | LeafSpec::Binary
+        | LeafSpec::Tuple(_) => {}
+    });
 }
 
 fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {

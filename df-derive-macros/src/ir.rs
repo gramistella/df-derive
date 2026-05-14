@@ -569,13 +569,6 @@ impl LeafSpec {
     }
 }
 
-impl TupleElement {
-    #[allow(dead_code)]
-    pub fn walk_leaves<'a>(&'a self, f: &mut impl FnMut(&'a LeafSpec)) {
-        self.leaf_spec.walk_leaves(f);
-    }
-}
-
 /// Leaf-only wrapper stack. The bare variant carries no access chain; any
 /// transparent access below an `Option` must use `Optional`, which requires a
 /// non-zero option count.

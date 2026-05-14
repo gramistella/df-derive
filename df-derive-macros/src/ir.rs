@@ -538,6 +538,45 @@ impl LeafSpec {
     pub const fn is_tuple(&self) -> bool {
         matches!(self, Self::Tuple(_))
     }
+
+    #[allow(dead_code)]
+    pub fn walk_leaves<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
+        f(self);
+
+        if let Self::Tuple(elements) = self {
+            for element in elements {
+                element.leaf_spec.walk_leaves(f);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn any_leaf(&self, mut pred: impl FnMut(&Self) -> bool) -> bool {
+        let mut found = false;
+        self.walk_leaves(&mut |leaf| {
+            if pred(leaf) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    #[allow(dead_code)]
+    pub fn walk_tuple_elements<'a>(&'a self, f: &mut impl FnMut(&'a TupleElement)) {
+        if let Self::Tuple(elements) = self {
+            for element in elements {
+                f(element);
+                element.leaf_spec.walk_tuple_elements(f);
+            }
+        }
+    }
+}
+
+impl TupleElement {
+    #[allow(dead_code)]
+    pub fn walk_leaves<'a>(&'a self, f: &mut impl FnMut(&'a LeafSpec)) {
+        self.leaf_spec.walk_leaves(f);
+    }
 }
 
 /// Leaf-only wrapper stack. The bare variant carries no access chain; any

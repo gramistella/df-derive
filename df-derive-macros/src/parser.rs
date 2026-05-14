@@ -549,28 +549,28 @@ fn process_field(
 ///
 /// Returns a `syn::Error` for non-struct inputs (enums, unions). Tuple structs
 /// and unit structs are supported.
+fn validate_struct_input(input: &DeriveInput) -> Result<&syn::DataStruct, syn::Error> {
+    match &input.data {
+        Data::Struct(data_struct) => Ok(data_struct),
+        Data::Enum(data_enum) => Err(syn::Error::new(
+            data_enum.enum_token.span,
+            "df-derive cannot be derived on enums; derive `ToDataFrame` on a struct \
+             and use `#[df_derive(as_string)]` on enum fields",
+        )),
+        Data::Union(data_union) => Err(syn::Error::new(
+            data_union.union_token.span,
+            "df-derive cannot be derived on unions; derive `ToDataFrame` on a struct",
+        )),
+    }
+}
+
 pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     let name = input.ident.clone();
     let generics = input.generics.clone();
     let generic_params: Vec<Ident> = generics.type_params().map(|tp| tp.ident.clone()).collect();
     let mut fields_ir: Vec<FieldIR> = Vec::new();
 
-    let data_struct = match &input.data {
-        Data::Struct(data_struct) => data_struct,
-        Data::Enum(data_enum) => {
-            return Err(syn::Error::new(
-                data_enum.enum_token.span,
-                "df-derive cannot be derived on enums; derive `ToDataFrame` on a struct \
-                 and use `#[df_derive(as_string)]` on enum fields",
-            ));
-        }
-        Data::Union(data_union) => {
-            return Err(syn::Error::new(
-                data_union.union_token.span,
-                "df-derive cannot be derived on unions; derive `ToDataFrame` on a struct",
-            ));
-        }
-    };
+    let data_struct = validate_struct_input(input)?;
 
     match &data_struct.fields {
         Fields::Named(named) => {

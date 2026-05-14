@@ -4,6 +4,13 @@ use quote::quote;
 
 use super::encoder::idents;
 
+#[derive(Default)]
+struct ColumnarParts {
+    decls: Vec<TokenStream>,
+    pushes: Vec<TokenStream>,
+    builders: Vec<TokenStream>,
+}
+
 /// Walk every field, build its [`FieldEmit`](super::strategy::FieldEmit),
 /// and concatenate decls/pushes/builders into the three buckets the
 /// columnar pipeline splices into the generated impl. Each `FieldEmit`
@@ -13,10 +20,8 @@ fn prepare_columnar_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
-) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-    let mut decls: Vec<TokenStream> = Vec::new();
-    let mut pushes: Vec<TokenStream> = Vec::new();
-    let mut builders: Vec<TokenStream> = Vec::new();
+) -> ColumnarParts {
+    let mut parts = ColumnarParts::default();
     for (idx, f) in ir.fields.iter().enumerate() {
         let emit = super::strategy::build_field_emit(f, config, idx, it_ident);
         match emit {
@@ -25,18 +30,18 @@ fn prepare_columnar_parts(
                 push,
                 builders: emit_builders,
             } => {
-                decls.extend(emit_decls);
-                pushes.push(push);
-                builders.extend(emit_builders);
+                parts.decls.extend(emit_decls);
+                parts.pushes.push(push);
+                parts.builders.extend(emit_builders);
             }
             super::strategy::FieldEmit::WholeColumn {
                 builders: emit_builders,
             } => {
-                builders.extend(emit_builders);
+                parts.builders.extend(emit_builders);
             }
         }
     }
-    (decls, pushes, builders)
+    parts
 }
 
 fn columnar_method_body(
@@ -46,7 +51,11 @@ fn columnar_method_body(
 ) -> TokenStream {
     let to_df_trait = &config.to_dataframe_trait_path;
     let pp = config.external_paths.prelude();
-    let (decls, pushes, builders) = prepare_columnar_parts(ir, config, it_ident);
+    let ColumnarParts {
+        decls,
+        pushes,
+        builders,
+    } = prepare_columnar_parts(ir, config, it_ident);
     let push_loop = if pushes.is_empty() {
         TokenStream::new()
     } else {

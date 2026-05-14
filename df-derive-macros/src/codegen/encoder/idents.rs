@@ -26,7 +26,7 @@ use syn::Ident;
 // --- Per-field idents (indexed by field idx) ------------------------------
 
 /// Owning `Vec<T>` / `Vec<Option<T>>` buffer for a primitive scalar field.
-/// Holds `Vec<&str>` / `Vec<Option<&str>>` on the borrowing fast path.
+/// String-like leaves use this ident for their `MutableBinaryViewArray<str>`.
 pub(in crate::codegen) fn primitive_buf(idx: usize) -> Ident {
     format_ident!("__df_derive_buf_{}", idx)
 }

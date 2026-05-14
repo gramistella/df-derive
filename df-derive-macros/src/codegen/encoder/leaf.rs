@@ -684,34 +684,61 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     }
 }
 
-/// `as_str` (borrowed) leaf. `Vec<&str>` (or `Vec<Option<&str>>` in option
-/// context) borrows from `items`. `StringyBase` carries the type-path
-/// information (`String`, the field's struct ident, or a generic-parameter
-/// ident) and lets the bare-`String` deref-coercion path stay distinct from
-/// the UFCS path — both are produced by [`super::stringy_value_expr`].
+/// `as_str` (borrowed) leaf. Borrows `&str` values from `items` long enough
+/// to copy them into a `MutableBinaryViewArray<str>` accumulator. `StringyBase`
+/// carries the type-path information (`String`, the field's struct ident, or
+/// a generic-parameter ident) and lets the bare-`String` deref-coercion path
+/// stay distinct from the UFCS path — both are produced by
+/// [`super::stringy_value_expr`].
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
+    let validity = idents::primitive_validity(ctx.base.idx);
+    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
-    let series_finish = named_from_buf(name, &buf, ctx.paths.prelude());
+    let pp = ctx.paths.prelude();
+    let pa_root = ctx.paths.polars_arrow_root();
     match arm {
         LeafArmKind::Bare => {
             let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
-            let bare_push = quote! { #buf.push(#bare_value); };
+            let bare_push = quote! { #buf.push_value_ignore_validity(#bare_value); };
+            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
             LeafArm {
-                decls: vec![vec_decl(&buf, &quote! { &str })],
+                decls: vec![mbva_decl(&buf, pa_root)],
                 push: bare_push,
-                series: series_finish,
+                series: bare_series,
             }
         }
         LeafArmKind::Option { .. } => {
+            let v = idents::leaf_value();
             let option_value =
                 super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
-            let option_push = quote! { #buf.push(#option_value); };
+            let option_push = quote! {
+                match #option_value {
+                    ::std::option::Option::Some(#v) => {
+                        #buf.push_value_ignore_validity(#v);
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push_value_ignore_validity("");
+                        #validity.set(#row_idx, false);
+                    }
+                }
+                #row_idx += 1;
+            };
+            let valid_opt = validity_into_option(&validity, pa_root);
+            let option_series = string_chunked_series(
+                name,
+                &quote! { #buf.freeze().with_validity(#valid_opt) },
+                pp,
+            );
             LeafArm {
-                decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
+                decls: vec![
+                    mbva_decl(&buf, pa_root),
+                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    row_idx_decl(&row_idx),
+                ],
                 push: option_push,
-                series: series_finish,
+                series: option_series,
             }
         }
     }

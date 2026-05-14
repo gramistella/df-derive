@@ -405,12 +405,10 @@ fn analyze_base_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedBase
     Err(syn::Error::new_spanned(ty, "Unsupported field type"))
 }
 
-#[allow(dead_code)]
 struct PathView<'a> {
     path: &'a syn::Path,
 }
 
-#[allow(dead_code)]
 impl<'a> PathView<'a> {
     fn from_type_path(type_path: &'a TypePath) -> Option<Self> {
         type_path.qself.is_none().then_some(Self {
@@ -459,32 +457,11 @@ impl<'a> PathView<'a> {
 }
 
 fn path_is_exact_no_args(type_path: &TypePath, segments: &[&str]) -> bool {
-    type_path.qself.is_none()
-        && type_path.path.segments.len() == segments.len()
-        && type_path
-            .path
-            .segments
-            .iter()
-            .zip(segments)
-            .all(|(segment, expected)| {
-                segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
-            })
+    PathView::from_type_path(type_path).is_some_and(|path| path.exact_no_args(segments))
 }
 
 fn path_is_exact_with_leaf_args(type_path: &TypePath, segments: &[&str]) -> bool {
-    type_path.qself.is_none()
-        && type_path.path.segments.len() == segments.len()
-        && type_path
-            .path
-            .segments
-            .iter()
-            .zip(segments)
-            .enumerate()
-            .all(|(idx, (segment, expected))| {
-                segment.ident == *expected
-                    && (idx + 1 == segments.len()
-                        || matches!(segment.arguments, PathArguments::None))
-            })
+    PathView::from_type_path(type_path).is_some_and(|path| path.exact_with_leaf_args(segments))
 }
 
 #[derive(Clone, Copy)]
@@ -526,32 +503,21 @@ fn unsupported_collection_kind(type_path: &TypePath) -> Option<UnsupportedCollec
 }
 
 fn path_is_bare_or_std_collection(type_path: &TypePath, leaf: &str) -> bool {
-    type_path.qself.is_none()
-        && ((type_path.path.segments.len() == 1
-            && type_path
-                .path
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == leaf))
-            || (type_path.path.segments.len() == 3
-                && path_prefix_is_no_args(type_path, &["std", "collections"])
-                && type_path
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.ident == leaf)))
+    let Some(path) = PathView::from_type_path(type_path) else {
+        return false;
+    };
+    let Some(segment) = path.leaf() else {
+        return false;
+    };
+
+    segment.ident == leaf
+        && (path.path.segments.len() == 1
+            || (path.path.segments.len() == 3
+                && path_prefix_is_no_args(type_path, &["std", "collections"])))
 }
 
 fn path_prefix_is_no_args(type_path: &TypePath, prefix: &[&str]) -> bool {
-    type_path.path.segments.len() > prefix.len()
-        && type_path
-            .path
-            .segments
-            .iter()
-            .zip(prefix)
-            .all(|(segment, expected)| {
-                segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
-            })
+    PathView::from_type_path(type_path).is_some_and(|path| path.prefix_no_args(prefix))
 }
 
 fn bare_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
@@ -614,18 +580,29 @@ fn nonzero_numeric_kind(type_path: &TypePath) -> Option<NumericKind> {
 }
 
 fn is_string_type(type_path: &TypePath) -> bool {
-    path_is_exact_no_args(type_path, &["String"])
-        || path_is_exact_no_args(type_path, &["std", "string", "String"])
-        || path_is_exact_no_args(type_path, &["alloc", "string", "String"])
+    let Some(path) = PathView::from_type_path(type_path) else {
+        return false;
+    };
+
+    path.exact_no_args(&["String"])
+        || path.exact_no_args(&["std", "string", "String"])
+        || path.exact_no_args(&["alloc", "string", "String"])
 }
 
 fn is_decimal_type(type_path: &TypePath) -> bool {
-    path_is_exact_no_args(type_path, &["Decimal"])
-        || path_is_exact_no_args(type_path, &["rust_decimal", "Decimal"])
+    let Some(path) = PathView::from_type_path(type_path) else {
+        return false;
+    };
+
+    path.exact_no_args(&["Decimal"]) || path.exact_no_args(&["rust_decimal", "Decimal"])
 }
 
 fn is_chrono_no_args_type(type_path: &TypePath, leaf: &str) -> bool {
-    path_is_exact_no_args(type_path, &[leaf]) || path_is_exact_no_args(type_path, &["chrono", leaf])
+    let Some(path) = PathView::from_type_path(type_path) else {
+        return false;
+    };
+
+    path.exact_no_args(&[leaf]) || path.exact_no_args(&["chrono", leaf])
 }
 
 /// Detect exactly `std::time::Duration` or `core::time::Duration`.
@@ -635,25 +612,12 @@ fn is_chrono_no_args_type(type_path: &TypePath, leaf: &str) -> bool {
 /// any path ending in `time::Duration` would accidentally capture the external
 /// `time` crate's signed duration type.
 fn is_std_duration(type_path: &TypePath) -> bool {
-    if type_path.qself.is_some() || type_path.path.segments.len() != 3 {
-        return false;
-    }
-    let mut segments = type_path.path.segments.iter();
-    let Some(root) = segments.next() else {
+    let Some(path) = PathView::from_type_path(type_path) else {
         return false;
     };
-    let Some(module) = segments.next() else {
-        return false;
-    };
-    let Some(leaf) = segments.next() else {
-        return false;
-    };
-    matches!(root.ident.to_string().as_str(), "std" | "core")
-        && root.arguments.is_empty()
-        && module.ident == "time"
-        && module.arguments.is_empty()
-        && leaf.ident == "Duration"
-        && leaf.arguments.is_empty()
+
+    path.exact_no_args(&["std", "time", "Duration"])
+        || path.exact_no_args(&["core", "time", "Duration"])
 }
 
 /// Detect `chrono::Duration` or `chrono::TimeDelta`. `chrono::Duration` is
@@ -662,22 +626,30 @@ fn is_std_duration(type_path: &TypePath) -> bool {
 /// the user's declared field-type tokens directly so type inference handles
 /// the alias transparently.
 fn is_chrono_duration(type_path: &TypePath) -> bool {
-    let leaf = match type_path.path.segments.last() {
-        Some(segment)
-            if matches!(segment.arguments, PathArguments::None)
-                && (segment.ident == "Duration" || segment.ident == "TimeDelta") =>
-        {
-            segment.ident.to_string()
-        }
-        _ => return false,
+    let Some(path) = PathView::from_type_path(type_path) else {
+        return false;
     };
-    let leaf = leaf.as_str();
-    path_is_exact_no_args(type_path, &[leaf]) || path_is_exact_no_args(type_path, &["chrono", leaf])
+    let Some(segment) = path.leaf() else {
+        return false;
+    };
+
+    if !matches!(segment.arguments, PathArguments::None) {
+        return false;
+    }
+
+    if segment.ident == "Duration" {
+        path.exact_no_args(&["Duration"]) || path.exact_no_args(&["chrono", "Duration"])
+    } else if segment.ident == "TimeDelta" {
+        path.exact_no_args(&["TimeDelta"]) || path.exact_no_args(&["chrono", "TimeDelta"])
+    } else {
+        false
+    }
 }
 
 fn wrapper_path_matches(type_path: &TypePath, bare: &str, qualified: &[&str]) -> bool {
-    path_is_exact_with_leaf_args(type_path, &[bare])
-        || path_is_exact_with_leaf_args(type_path, qualified)
+    PathView::from_type_path(type_path).is_some_and(|path| {
+        path.exact_with_leaf_args(&[bare]) || path.exact_with_leaf_args(qualified)
+    })
 }
 
 fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str, qualified: &[&str]) -> Option<&'a Type> {

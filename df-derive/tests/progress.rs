@@ -95,4 +95,5 @@ fn tests() {
     t.compile_fail("tests/fail/146-fail-direct-self-recursive-field.rs");
     t.compile_fail("tests/fail/147-fail-unsized-smart-pointer-leaves.rs");
     t.compile_fail("tests/fail/148-fail-mutable-references.rs");
+    t.compile_fail("tests/fail/149-fail-missing-concrete-eager-bounds.rs");
 }

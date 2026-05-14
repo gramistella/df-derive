@@ -57,37 +57,127 @@ impl GenericContext {
     }
 }
 
-pub fn generate_eager_asserts(ir: &StructIR) -> TokenStream {
+pub fn generate_eager_asserts(
+    ir: &StructIR,
+    to_dataframe_trait: &TokenStream,
+    columnar_trait: &TokenStream,
+    decimal128_encode_trait: &TokenStream,
+) -> TokenStream {
     let generic_ctx = GenericContext::new(ir);
+    let mut nested_types = Vec::new();
+    let mut decimal_backend_types = Vec::new();
     let mut as_ref_str_types = Vec::new();
     let mut display_types = Vec::new();
 
     for field in &ir.fields {
+        collect_nested_asserts(&field.leaf_spec, &generic_ctx, &mut nested_types);
+        if let Some(ty) = &field.decimal_backend_ty
+            && !type_depends_on_generics(ty, &generic_ctx)
+        {
+            push_unique_type(&mut decimal_backend_types, ty);
+        }
         collect_as_ref_str_asserts(&field.leaf_spec, &generic_ctx, &mut as_ref_str_types);
         collect_display_asserts(&field.leaf_spec, &generic_ctx, &mut display_types);
     }
 
-    if as_ref_str_types.is_empty() && display_types.is_empty() {
+    if nested_types.is_empty()
+        && decimal_backend_types.is_empty()
+        && as_ref_str_types.is_empty()
+        && display_types.is_empty()
+    {
         return TokenStream::new();
     }
 
-    let assert_as_ref_str = idents::as_ref_str_assert_helper();
-    let assert_display = idents::display_assert_helper();
+    let nested_asserts = if nested_types.is_empty() {
+        TokenStream::new()
+    } else {
+        let assert_nested_traits = idents::nested_traits_assert_helper();
+        quote! {
+            const fn #assert_nested_traits<
+                __DfDeriveT: #to_dataframe_trait + #columnar_trait
+            >() {}
+
+            #(
+                #assert_nested_traits::<#nested_types>();
+            )*
+        }
+    };
+    let decimal_backend_asserts = if decimal_backend_types.is_empty() {
+        TokenStream::new()
+    } else {
+        let assert_decimal_backend = idents::decimal_backend_assert_helper();
+        quote! {
+            const fn #assert_decimal_backend<
+                __DfDeriveT: #decimal128_encode_trait
+            >() {}
+
+            #(
+                #assert_decimal_backend::<#decimal_backend_types>();
+            )*
+        }
+    };
+    let as_ref_str_asserts = if as_ref_str_types.is_empty() {
+        TokenStream::new()
+    } else {
+        let assert_as_ref_str = idents::as_ref_str_assert_helper();
+        quote! {
+            const fn #assert_as_ref_str<
+                __DfDeriveT: ?::core::marker::Sized + ::core::convert::AsRef<str>
+            >() {}
+
+            #(
+                #assert_as_ref_str::<#as_ref_str_types>();
+            )*
+        }
+    };
+    let display_asserts = if display_types.is_empty() {
+        TokenStream::new()
+    } else {
+        let assert_display = idents::display_assert_helper();
+        quote! {
+            const fn #assert_display<
+                __DfDeriveT: ?::core::marker::Sized + ::core::fmt::Display
+            >() {}
+
+            #(
+                #assert_display::<#display_types>();
+            )*
+        }
+    };
 
     quote! {
-        const fn #assert_as_ref_str<
-            __DfDeriveT: ?::core::marker::Sized + ::core::convert::AsRef<str>
-        >() {}
-        const fn #assert_display<
-            __DfDeriveT: ?::core::marker::Sized + ::core::fmt::Display
-        >() {}
+        #nested_asserts
+        #decimal_backend_asserts
+        #as_ref_str_asserts
+        #display_asserts
+    }
+}
 
-        #(
-            #assert_as_ref_str::<#as_ref_str_types>();
-        )*
-        #(
-            #assert_display::<#display_types>();
-        )*
+fn collect_nested_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
+    match leaf {
+        LeafSpec::Struct(ty) => {
+            if !type_depends_on_generics(ty, generic_ctx) {
+                push_unique_type(out, ty);
+            }
+        }
+        LeafSpec::Tuple(elements) => {
+            for element in elements {
+                collect_nested_asserts(&element.leaf_spec, generic_ctx, out);
+            }
+        }
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::Generic(_)
+        | LeafSpec::AsString(_)
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Binary => {}
     }
 }
 

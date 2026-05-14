@@ -419,6 +419,18 @@ pub(in crate::codegen) fn display_assert_helper() -> Ident {
     format_ident!("__df_derive_assert_display")
 }
 
+/// Per-derive helper used to eagerly assert that concrete nested field types
+/// implement the configured `ToDataFrame` and `Columnar` traits.
+pub(in crate::codegen) fn nested_traits_assert_helper() -> Ident {
+    format_ident!("__df_derive_assert_nested_traits")
+}
+
+/// Per-derive helper used to eagerly assert that concrete custom decimal
+/// backend types implement the configured `Decimal128Encode` trait.
+pub(in crate::codegen) fn decimal_backend_assert_helper() -> Ident {
+    format_ident!("__df_derive_assert_decimal_backend")
+}
+
 /// Per-row inner-Option binding inside the nested-struct deepest leaf body.
 pub(in crate::codegen) fn nested_maybe() -> Ident {
     format_ident!("__df_derive_maybe")

@@ -131,7 +131,12 @@ fn needs_nested_validation(ir: &StructIR) -> bool {
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
-    let eager_asserts = helpers::generate_eager_asserts(ir);
+    let eager_asserts = helpers::generate_eager_asserts(
+        ir,
+        &config.to_dataframe_trait_path,
+        &config.columnar_trait_path,
+        &config.decimal128_encode_trait_path,
+    );
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
     let assemble_helper = encoder::idents::assemble_helper();

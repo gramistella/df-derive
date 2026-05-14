@@ -80,7 +80,7 @@ fn build_element_entries(
         }
         LeafRoute::Primitive(leaf) => {
             let elem_dtype = leaf.dtype(&config.external_paths);
-            let full_dtype = crate::codegen::external_paths::wrap_list_layers_compile_time_pub(
+            let full_dtype = crate::codegen::external_paths::wrap_list_layers_compile_time(
                 pp,
                 elem_dtype,
                 total_layers,

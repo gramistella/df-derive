@@ -130,7 +130,7 @@ pub fn chrono_root() -> TokenStream {
 /// `Vec<…<Vec<leaf>>>` form, where the wrap count is statically known from
 /// the wrapper stack: the type-registry full-dtype computation and the
 /// encoder's final-assemble per-leaf logical dtype.
-pub(super) fn wrap_list_layers_compile_time(
+pub(in crate::codegen) fn wrap_list_layers_compile_time(
     pp: &TokenStream,
     inner: TokenStream,
     layers: usize,
@@ -140,18 +140,6 @@ pub(super) fn wrap_list_layers_compile_time(
         dt = quote! { #pp::DataType::List(::std::boxed::Box::new(#dt)) };
     }
     dt
-}
-
-/// Same as [`wrap_list_layers_compile_time`] but visible to the encoder
-/// submodule. Sub-encoders (the tuple emitter under `encoder/tuple.rs`)
-/// need the same wrap behavior; bumping visibility avoids re-exporting the
-/// helper across the codegen boundary.
-pub(in crate::codegen) fn wrap_list_layers_compile_time_pub(
-    pp: &TokenStream,
-    inner: TokenStream,
-    layers: usize,
-) -> TokenStream {
-    wrap_list_layers_compile_time(pp, inner, layers)
 }
 
 /// Emit a runtime `for _ in 0..layers` loop that wraps a runtime `DataType`

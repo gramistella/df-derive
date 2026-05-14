@@ -2,7 +2,10 @@ use crate::attrs::field::{FieldOverride, LeafOverride, parse_field_override};
 use crate::diagnostics;
 use crate::ir::{
     DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase,
-    TupleElement,
+};
+use crate::lower::tuple::{
+    FieldOverrideRef, analyzed_to_tuple_element, reject_attrs_on_tuple,
+    reject_unsupported_wrapped_nested_tuples,
 };
 use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{
@@ -51,43 +54,6 @@ fn parse_leaf_spec(
     }
 }
 
-#[derive(Clone, Copy)]
-enum FieldOverrideRef<'a> {
-    Field(&'a FieldOverride),
-    Leaf(&'a LeafOverride),
-}
-
-/// Reject every field-level override on a tuple-typed field with a
-/// per-attribute message. Attributes apply to a single column's leaf
-/// classification and have no per-element selector, so `as_str` / `as_string`
-/// / `as_binary` / `decimal(...)` / `time_unit = "..."` over a tuple is
-/// always ambiguous. The fix is to hoist the tuple into a named struct
-/// where per-element attributes can be applied at field level.
-fn reject_attrs_on_tuple(
-    field: &syn::Field,
-    field_display_name: &str,
-    override_: Option<FieldOverrideRef<'_>>,
-) -> Result<(), syn::Error> {
-    let attr = match override_ {
-        None | Some(FieldOverrideRef::Field(FieldOverride::Skip)) => return Ok(()),
-        Some(FieldOverrideRef::Field(FieldOverride::AsBinary)) => "as_binary",
-        Some(
-            FieldOverrideRef::Field(FieldOverride::Leaf(override_))
-            | FieldOverrideRef::Leaf(override_),
-        ) => match override_ {
-            LeafOverride::AsStr => "as_str",
-            LeafOverride::AsString => "as_string",
-            LeafOverride::Decimal { .. } => "decimal(...)",
-            LeafOverride::TimeUnit(_) => "time_unit = \"...\"",
-        },
-    };
-    Err(diagnostics::unsupported_tuple_attr(
-        field,
-        field_display_name,
-        attr,
-    ))
-}
-
 /// Map an analyzed base to its default `LeafSpec` (no override declared).
 /// Each base picks the parser-injected default semantics — `Milliseconds`
 /// for `DateTime<Tz>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
@@ -97,7 +63,7 @@ fn reject_attrs_on_tuple(
 /// Tuple bases recurse: each element runs through the same default pipeline
 /// (no field-level overrides apply at element level — the parser rejects
 /// them on the parent field).
-fn default_leaf_for_base<S: ToTokens + ?Sized>(
+pub(super) fn default_leaf_for_base<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
     base: AnalyzedBase,
@@ -147,54 +113,6 @@ fn default_leaf_for_base<S: ToTokens + ?Sized>(
             Ok(LeafSpec::Tuple(lowered?))
         }
     }
-}
-
-/// Lower one analyzed tuple element to its IR form. Recurses into nested
-/// tuples (`((i32, String), bool)`), preserves outer smart-pointer counts on
-/// the element, and normalizes the element's wrapper stack independently of
-/// the parent's. Field-level attributes are not applied here — they are
-/// rejected on the parent field by [`reject_attrs_on_tuple`] before this runs.
-fn analyzed_to_tuple_element(
-    analyzed: AnalyzedType,
-    field_display_name: &str,
-) -> Result<TupleElement, syn::Error> {
-    let leaf_spec =
-        default_leaf_for_base(&analyzed.field_ty, field_display_name, analyzed.base, false)?;
-    let wrapper_shape = normalize_wrappers(&analyzed.wrappers);
-    Ok(TupleElement {
-        leaf_spec,
-        wrapper_shape,
-        outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
-    })
-}
-
-const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
-    !wrappers.is_empty()
-}
-
-fn reject_unsupported_wrapped_nested_tuples(
-    analyzed: &AnalyzedType,
-    field_display_name: &str,
-) -> Result<(), syn::Error> {
-    let AnalyzedBase::Tuple(elements) = &analyzed.base else {
-        return Ok(());
-    };
-    let parent_wrapped = has_semantic_wrappers(&analyzed.wrappers);
-
-    for element in elements {
-        if matches!(element.base, AnalyzedBase::Tuple(_))
-            && (parent_wrapped || has_semantic_wrappers(&element.wrappers))
-        {
-            return Err(diagnostics::unsupported_wrapped_nested_tuple(
-                &element.field_ty,
-                field_display_name,
-            ));
-        }
-
-        reject_unsupported_wrapped_nested_tuples(element, field_display_name)?;
-    }
-
-    Ok(())
 }
 
 fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {

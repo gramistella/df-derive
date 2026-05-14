@@ -3,3 +3,15 @@ error: `columnar = "..."` requires `trait = "..."`; overriding only `Columnar` w
   |
 6 | #[df_derive(columnar = "core::dataframe::Columnar")]
   |             ^^^^^^^^
+
+error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; use the matching built-in `Columnar` path or provide a fully custom `trait` + `columnar` pair
+  --> tests/fail/138-fail-columnar-without-trait.rs:14:5
+   |
+14 |     columnar = "core::dataframe::Columnar"
+   |     ^^^^^^^^
+
+error: `trait` override involved in the mixed runtime pair
+  --> tests/fail/138-fail-columnar-without-trait.rs:13:5
+   |
+13 |     trait = "df_derive::dataframe::ToDataFrame",
+   |     ^^^^^

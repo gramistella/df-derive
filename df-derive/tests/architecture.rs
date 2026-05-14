@@ -844,7 +844,10 @@ use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
 use df_derive_macros::ToDataFrame;
 
 #[derive(ToDataFrame)]
-#[df_derive(trait = "df_derive_core::dataframe::ToDataFrame")]
+#[df_derive(
+    trait = "df_derive_core::dataframe::ToDataFrame",
+    columnar = "df_derive_core::dataframe::Columnar"
+)]
 struct Row {
     labels: Vec<String>,
 }
@@ -1088,12 +1091,11 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-{}
+polars = {{ version = "0.53.0", default-features = false, features = ["dtype-decimal"] }}
 polars-arrow = {{ version = "0.53.0", default-features = false }}
 rust_decimal = "1.41"
 "#,
         toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
     );
 
     check_fixture(

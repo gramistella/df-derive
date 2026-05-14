@@ -179,6 +179,11 @@ enable the matching features on that runtime's direct `polars` dependency.
 `Option<T>`, `Vec<T>`, tuples, and nested structs preserve the leaf dtype;
 each `Vec` layer wraps the leaf in `List(...)`.
 
+For Polars 0.53, `dtype-decimal` enables the decimal column machinery and its
+internal `Int128` backing path. You only need an explicit `dtype-i128` feature
+when your derived structs expose `i128` / `NonZeroI128` fields as `Int128`
+columns.
+
 Useful field attributes:
 
 - `#[df_derive(skip)]`: omit a field from generated schema and DataFrame output.
@@ -279,6 +284,10 @@ dependency just because the trait path was written explicitly.
 `columnar = "..."` must be paired with `trait = "..."`; a standalone
 `Columnar` override would create mixed runtime impls that are incompatible
 with both runtimes' `ToDataFrameVec` extension traits.
+Explicit `trait` + `columnar` pairs also cannot mix the built-in
+`df_derive`/`df_derive_core` dataframe runtime with a custom runtime. Use the
+matching built-in `Columnar` path, omit `columnar` so it is inferred from the
+built-in `trait`, or provide a fully custom pair.
 
 Without overrides, the macro discovers a `dataframe` module in this order:
 
@@ -392,6 +401,13 @@ tokens, not rustc's resolved type information, so bare `Decimal` and canonical
 `rust_decimal::Decimal` are treated as decimals automatically. Qualified paths
 such as `domain::Decimal` are treated as nested custom structs unless you opt
 them into decimal encoding with `decimal(...)`.
+
+Temporal detection is syntax-based for the same reason. Bare or canonical
+`chrono::NaiveDate`, `chrono::NaiveTime`, `chrono::NaiveDateTime`,
+`chrono::DateTime<Tz>`, `chrono::Duration`, and `chrono::TimeDelta` are treated
+as temporal types, along with `std::time::Duration` and
+`core::time::Duration`. Qualified domain paths such as `domain::NaiveDate`
+remain custom structs.
 
 If your decimal trait lives somewhere other than the discovered runtime module,
 point at it explicitly:

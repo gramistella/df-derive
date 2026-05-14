@@ -1030,7 +1030,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
-fn explicit_custom_runtime_decimal_tuple_uses_reference_encode_impl() {
+fn explicit_custom_runtime_decimal_tuple_does_not_need_reference_encode_impl() {
     let root = repo_root();
     let manifest = format!(
         r#"
@@ -1080,15 +1080,6 @@ mod runtime {
 
     pub trait Decimal128Encode {
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-
-    impl<T> Decimal128Encode for &T
-    where
-        T: Decimal128Encode + ?Sized,
-    {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
-            <T as Decimal128Encode>::try_to_i128_mantissa(*self, target_scale)
-        }
     }
 }
 

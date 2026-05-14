@@ -387,6 +387,15 @@ pub fn build_encoder(
     wrapper: &WrapperShape,
     ctx: &LeafCtx<'_>,
 ) -> Encoder {
+    build_encoder_with_option_receiver(leaf, wrapper, ctx, None)
+}
+
+pub(super) fn build_encoder_with_option_receiver(
+    leaf: PrimitiveLeaf<'_>,
+    wrapper: &WrapperShape,
+    ctx: &LeafCtx<'_>,
+    option_some_receiver: Option<crate::codegen::type_registry::PrimitiveExprReceiver>,
+) -> Encoder {
     match wrapper {
         WrapperShape::Leaf(LeafShape::Bare) => {
             let leaf::LeafArm {
@@ -412,7 +421,8 @@ pub fn build_encoder(
                 leaf,
                 ctx,
                 leaf::LeafArmKind::Option {
-                    some_receiver: crate::codegen::type_registry::PrimitiveExprReceiver::Ref,
+                    some_receiver: option_some_receiver
+                        .unwrap_or(crate::codegen::type_registry::PrimitiveExprReceiver::Ref),
                 },
             );
             Encoder::Leaf {

@@ -32,8 +32,8 @@ use super::shape_walk::{
     shape_validity_decls,
 };
 use super::{
-    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder, build_nested_encoder,
-    idx_size_len_expr, struct_type_tokens,
+    BaseCtx, Encoder, LeafCtx, NestedLeafCtx, build_encoder_with_option_receiver,
+    build_nested_encoder, idx_size_len_expr, struct_type_tokens,
 };
 
 // ============================================================================
@@ -291,13 +291,14 @@ fn emit_element(
             let collapsed_parent = super::access_chain_to_option_ref(parent_access, access);
             let projected = project_parent_option_tuple_element(&collapsed_parent, elem, elem_idx);
             let composed_shape = compose_option_with_element(&elem.wrapper_shape);
-            emit_via_standard_encoder(
+            emit_via_standard_encoder_with_option_receiver(
                 &projected,
                 &composed_shape,
                 leaf_route,
                 field_idx,
                 column_prefix,
                 config,
+                option_tuple_projection_receiver(elem),
             )
         }
         // Parent has at least one Vec layer. Construct a composed emission
@@ -341,6 +342,22 @@ const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
             | LeafSpec::NaiveTime
             | LeafSpec::Duration { .. }
     )
+}
+
+fn option_tuple_projection_receiver(
+    elem: &TupleElement,
+) -> Option<crate::codegen::type_registry::PrimitiveExprReceiver> {
+    // Non-Copy tuple elements under a parent Option are projected as
+    // `Option<&T>` to avoid a hidden `Clone` bound. The standard single-option
+    // push matches through `&Option<_>`, so mapped leaves see `&&T` and must
+    // dereference once before UFCS trait dispatch.
+    if matches!(elem.wrapper_shape, WrapperShape::Leaf(LeafShape::Bare))
+        && !is_copy_element_projection(elem)
+    {
+        Some(crate::codegen::type_registry::PrimitiveExprReceiver::RefRef)
+    } else {
+        None
+    }
 }
 
 /// Compose the parent's collapsed Option (1 outer Option) with the element's
@@ -966,6 +983,26 @@ fn emit_via_standard_encoder(
     column_prefix: &str,
     config: &MacroConfig,
 ) -> TokenStream {
+    emit_via_standard_encoder_with_option_receiver(
+        access,
+        wrapper,
+        leaf_route,
+        field_idx,
+        column_prefix,
+        config,
+        None,
+    )
+}
+
+fn emit_via_standard_encoder_with_option_receiver(
+    access: &TokenStream,
+    wrapper: &WrapperShape,
+    leaf_route: TupleLeafRoute<'_>,
+    field_idx: usize,
+    column_prefix: &str,
+    config: &MacroConfig,
+    option_some_receiver: Option<crate::codegen::type_registry::PrimitiveExprReceiver>,
+) -> TokenStream {
     let pp = config.external_paths.prelude();
     if let TupleLeafRoute::Nested(nested) = leaf_route {
         let nested_ty = tuple_nested_type_path(nested);
@@ -995,7 +1032,7 @@ fn emit_via_standard_encoder(
         decimal128_encode_trait: &config.decimal128_encode_trait_path,
         paths: &config.external_paths,
     };
-    let enc = build_encoder(leaf, wrapper, &leaf_ctx);
+    let enc = build_encoder_with_option_receiver(leaf, wrapper, &leaf_ctx, option_some_receiver);
     match enc {
         Encoder::Leaf {
             decls,

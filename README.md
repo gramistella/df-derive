@@ -363,15 +363,6 @@ mod runtime {
         pub trait Decimal128Encode {
             fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
         }
-
-        impl<T> Decimal128Encode for &T
-        where
-            T: Decimal128Encode + ?Sized,
-        {
-            fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
-                <T as Decimal128Encode>::try_to_i128_mantissa(*self, target_scale)
-            }
-        }
     }
 }
 ```
@@ -395,11 +386,6 @@ mantissa rescaled to the requested scale, using round-half-to-even when
 scaling down. Returning `None` surfaces as a Polars compute error. The
 generated code verifies that the returned mantissa fits the declared precision
 before constructing the Polars decimal column.
-
-Custom runtimes should also provide the blanket `Decimal128Encode for &T`
-implementation shown above. Generated code may pass decimal values through
-borrowed projections, for example when encoding tuple elements under a parent
-`Option<(Decimal, ...)>`.
 
 Unannotated decimal detection is syntax-based. A procedural macro receives
 tokens, not rustc's resolved type information, so bare `Decimal` and canonical

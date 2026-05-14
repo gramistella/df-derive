@@ -1,10 +1,10 @@
 use crate::attrs::field::{FieldOverride, LeafOverride, parse_field_override};
 use crate::diagnostics;
 use crate::ir::{
-    AccessChain, AccessStep, DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafShape,
-    LeafSpec, NonEmpty, NumericKind, StringyBase, StructIR, TupleElement, VecLayerSpec, VecLayers,
-    WrapperShape,
+    DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase,
+    StructIR, TupleElement,
 };
+use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{
     AnalyzedBase, AnalyzedType, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION,
     DEFAULT_DECIMAL_SCALE, DEFAULT_DURATION_UNIT, RawWrapper, analyze_type,
@@ -392,46 +392,6 @@ fn parse_leaf_time_unit(
         }
         _ => Err(diagnostics::time_unit_wrong_base(field, field_display_name)),
     }
-}
-
-/// Normalize the raw outer-to-inner `RawWrapper` sequence into a
-/// `WrapperShape` the encoder consumes directly. `Option` and smart-pointer
-/// steps are retained as an `AccessChain` at each wrapper boundary: above
-/// each `Vec`, immediately surrounding the leaf, or for the leaf-only path.
-/// Polars folds consecutive `Option`s into a single validity bit per
-/// position, so the count is also cached to choose the direct single-Option
-/// path versus the collapsed multi-Option path.
-fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
-    let mut layers: Vec<VecLayerSpec> = Vec::new();
-    let mut pending_access = AccessChain::empty();
-    for w in wrappers {
-        match w {
-            RawWrapper::Option => {
-                pending_access.steps.push(AccessStep::Option);
-            }
-            RawWrapper::SmartPtr => {
-                pending_access.steps.push(AccessStep::SmartPtr);
-            }
-            RawWrapper::Vec => {
-                let option_layers_above = pending_access.option_layers();
-                layers.push(VecLayerSpec {
-                    option_layers_above,
-                    access: std::mem::take(&mut pending_access),
-                });
-            }
-        }
-    }
-    let Some(layers) = NonEmpty::from_vec(layers) else {
-        return WrapperShape::Leaf(LeafShape::from_option_access(
-            pending_access.option_layers(),
-            pending_access,
-        ));
-    };
-    WrapperShape::Vec(VecLayers {
-        layers,
-        inner_option_layers: pending_access.option_layers(),
-        inner_access: pending_access,
-    })
 }
 
 /// Validate an `as_binary` field's analyzed `(base, wrappers)` pair and,

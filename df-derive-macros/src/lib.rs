@@ -21,6 +21,7 @@ mod attrs;
 mod codegen;
 mod diagnostics;
 mod ir;
+mod lower;
 mod parser;
 mod type_analysis;
 use proc_macro::TokenStream;

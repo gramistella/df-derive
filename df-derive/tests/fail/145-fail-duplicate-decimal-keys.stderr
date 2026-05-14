@@ -1,0 +1,23 @@
+error: `decimal(...)` declares duplicate `precision` keys with different values; first is `10`, second is `12`; pick one
+ --> tests/fail/145-fail-duplicate-decimal-keys.rs:9:41
+  |
+9 |     #[df_derive(decimal(precision = 10, precision = 12, scale = 2))]
+  |                                         ^^^^^^^^^
+
+error: first `precision` key declared here
+ --> tests/fail/145-fail-duplicate-decimal-keys.rs:9:25
+  |
+9 |     #[df_derive(decimal(precision = 10, precision = 12, scale = 2))]
+  |                         ^^^^^^^^^
+
+error: `decimal(...)` declares duplicate `scale` key; remove one
+  --> tests/fail/145-fail-duplicate-decimal-keys.rs:15:52
+   |
+15 |     #[df_derive(decimal(precision = 10, scale = 2, scale = 2))]
+   |                                                    ^^^^^
+
+error: first `scale` key declared here
+  --> tests/fail/145-fail-duplicate-decimal-keys.rs:15:41
+   |
+15 |     #[df_derive(decimal(precision = 10, scale = 2, scale = 2))]
+   |                                         ^^^^^

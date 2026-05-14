@@ -91,4 +91,5 @@ fn tests() {
     t.compile_fail("tests/fail/142-fail-as-string-on-borrowed-bytes.rs");
     t.compile_fail("tests/fail/143-fail-as-string-on-borrowed-slice.rs");
     t.compile_fail("tests/fail/144-fail-vec-wrapped-nested-tuple.rs");
+    t.compile_fail("tests/fail/145-fail-duplicate-decimal-keys.rs");
 }

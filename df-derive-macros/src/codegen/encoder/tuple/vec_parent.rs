@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::super::shape_walk::{
-    LayerIdents, LayerWrap, OwnPolicy, ShapePrecount, ShapeScan, freeze_offsets_buf,
+    LayerIdents, LayerWrap, OwnPolicy, ShapeEmitter, ShapePrecount, ShapeScan, freeze_offsets_buf,
     freeze_validity_bitmap, shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
 };
 use super::super::{BaseCtx, LeafCtx, access_chain_to_ref, idents};
@@ -148,28 +148,32 @@ fn emit_vec_parent_primitive(
     let pep = super::super::vec::pep_for_primitive_leaf(leaf, &leaf_ctx, composed_shape);
     let leaf_projection_access = deepest_leaf_projection_access(composed_shape, projection, elem);
 
-    let precount = build_precount(
+    let emitter = ShapeEmitter {
+        shape: composed_shape,
+        access: parent_access,
+        layers: &layers,
+        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
+        precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
+        total_counter: &total_leaves,
+        layer_counters: &layer_counters,
+        pp,
+        pa_root,
+        projection: projection.as_layer_projection(composed_shape),
+    };
+    let precount = emitter.precount();
+    let leaf_body = tuple_scan_leaf_body(
         composed_shape,
-        &layers,
-        &layer_counters,
-        &total_leaves,
-        parent_access,
         projection,
+        leaf_projection_access.as_ref(),
+        &pep.per_elem_push,
     );
-    let scan = build_scan(
-        composed_shape,
-        &layers,
-        parent_access,
-        projection,
-        TupleScanLeaf {
-            projection_access: leaf_projection_access.as_ref(),
-            per_elem_push: &pep.per_elem_push,
-            offsets_post_push: &pep.leaf_offsets_post_push,
-            pp,
-        },
-    );
-    let offsets_decls = build_offsets_decls(&layers, &layer_counters);
-    let validity_decls = build_validity_decls(composed_shape, &layers, &layer_counters, pa_root);
+    let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
+    let counter_for_depth = |layer: usize| -> TokenStream {
+        let counter = &layer_counters[layer];
+        quote! { #counter }
+    };
+    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
+    let validity_decls = emitter.validity_decls(&counter_for_depth);
 
     let materialize = build_materialize(
         composed_shape,
@@ -217,6 +221,46 @@ pub(super) fn tuple_layer_counters(field_idx: usize, depth: usize) -> Vec<syn::I
         .collect()
 }
 
+pub(super) fn tuple_scan_leaf_body<'a>(
+    shape: &'a VecLayers,
+    projection: TupleProjection<'a>,
+    projection_access: Option<&'a AccessChain>,
+    per_elem_push: &'a TokenStream,
+) -> impl Fn(&TokenStream) -> TokenStream + 'a {
+    let leaf_bind = idents::leaf_value();
+    move |vec_bind: &TokenStream| -> TokenStream {
+        if let Some(element_access) = projection_access {
+            return projected_leaf_body(vec_bind, projection, element_access, per_elem_push);
+        }
+        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
+            quote! {
+                for #leaf_bind in #vec_bind.iter() {
+                    #per_elem_push
+                }
+            }
+        } else {
+            let raw_bind = idents::leaf_value_raw();
+            let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
+            let resolved = chain_ref.expr;
+            if chain_ref.has_option {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind: ::std::option::Option<_> = #resolved;
+                        #per_elem_push
+                    }
+                }
+            } else {
+                quote! {
+                    for #raw_bind in #vec_bind.iter() {
+                        let #leaf_bind = #resolved;
+                        #per_elem_push
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn build_precount(
     shape: &VecLayers,
     layers: &[LayerIdents],
@@ -252,39 +296,12 @@ pub(super) fn build_scan(
     projection: TupleProjection<'_>,
     leaf: TupleScanLeaf<'_>,
 ) -> TokenStream {
-    let leaf_bind = idents::leaf_value();
-    let per_elem_push = leaf.per_elem_push;
-    let leaf_body = |vec_bind: &TokenStream| -> TokenStream {
-        if let Some(element_access) = leaf.projection_access {
-            return projected_leaf_body(vec_bind, projection, element_access, per_elem_push);
-        }
-        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
-            quote! {
-                for #leaf_bind in #vec_bind.iter() {
-                    #per_elem_push
-                }
-            }
-        } else {
-            let raw_bind = idents::leaf_value_raw();
-            let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
-            let resolved = chain_ref.expr;
-            if chain_ref.has_option {
-                quote! {
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind: ::std::option::Option<_> = #resolved;
-                        #per_elem_push
-                    }
-                }
-            } else {
-                quote! {
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind = #resolved;
-                        #per_elem_push
-                    }
-                }
-            }
-        }
-    };
+    let leaf_body = tuple_scan_leaf_body(
+        shape,
+        projection,
+        leaf.projection_access,
+        leaf.per_elem_push,
+    );
     ShapeScan {
         shape,
         access,

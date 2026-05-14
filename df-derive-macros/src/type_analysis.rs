@@ -134,7 +134,7 @@ fn bare_generic_param_ident(ty: &Type, generic_params: &[Ident]) -> Option<Ident
 }
 
 pub fn analyze_type(ty: &Type, generic_params: &[Ident]) -> Result<AnalyzedType, syn::Error> {
-    let peeled = peel_type_wrappers(ty);
+    let peeled = peel_type_wrappers(ty)?;
 
     if bare_generic_param_ident(peeled.current_type, generic_params).is_none() {
         reject_unsupported_collection_type(peeled.current_type)?;
@@ -166,7 +166,7 @@ fn record_smart_ptr_layer(outer: &mut usize, wrappers: &mut Vec<RawWrapper>) {
     }
 }
 
-fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
+fn peel_type_wrappers(ty: &Type) -> Result<PeeledType<'_>, syn::Error> {
     let mut wrappers: Vec<RawWrapper> = Vec::new();
     let mut outer_smart_ptr_depth: usize = 0;
     let mut current_type = ty;
@@ -218,6 +218,13 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
             }
         }
         if let Type::Reference(reference) = current_type {
+            if reference.mutability.is_some() {
+                return Err(syn::Error::new_spanned(
+                    reference,
+                    "df-derive does not support `&mut T` fields; use `&T`, an owned value, \
+                     or mark the field `#[df_derive(skip)]`",
+                ));
+            }
             if borrowed_reference_base(reference).is_some() {
                 break;
             }
@@ -229,11 +236,11 @@ fn peel_type_wrappers(ty: &Type) -> PeeledType<'_> {
         break;
     }
 
-    PeeledType {
+    Ok(PeeledType {
         wrappers,
         current_type,
         outer_smart_ptr_depth,
-    }
+    })
 }
 
 fn reject_unsupported_collection_type(current_type: &Type) -> Result<(), syn::Error> {

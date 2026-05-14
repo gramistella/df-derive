@@ -1,0 +1,29 @@
+error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+ --> tests/fail/148-fail-mutable-references.rs:8:12
+  |
+8 |     field: &'a mut i32,
+  |            ^^^^^^^^^^^
+
+error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+  --> tests/fail/148-fail-mutable-references.rs:13:19
+   |
+13 |     field: Option<&'a mut String>,
+   |                   ^^^^^^^^^^^^^^
+
+error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+  --> tests/fail/148-fail-mutable-references.rs:18:16
+   |
+18 |     field: Vec<&'a mut u32>,
+   |                ^^^^^^^^^^^
+
+error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+  --> tests/fail/148-fail-mutable-references.rs:23:12
+   |
+23 |     field: &'a mut str,
+   |            ^^^^^^^^^^^
+
+error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+  --> tests/fail/148-fail-mutable-references.rs:29:12
+   |
+29 |     field: &'a mut [u8],
+   |            ^^^^^^^^^^^^

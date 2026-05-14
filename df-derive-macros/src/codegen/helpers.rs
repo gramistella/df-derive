@@ -59,9 +59,9 @@ impl GenericContext {
 
 pub fn generate_eager_asserts(
     ir: &StructIR,
-    to_dataframe_trait: &TokenStream,
-    columnar_trait: &TokenStream,
-    decimal128_encode_trait: &TokenStream,
+    to_dataframe_trait: &syn::Path,
+    columnar_trait: &syn::Path,
+    decimal128_encode_trait: &syn::Path,
 ) -> TokenStream {
     let generic_ctx = GenericContext::new(ir);
     let mut nested_types = Vec::new();

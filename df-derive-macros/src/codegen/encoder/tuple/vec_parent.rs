@@ -142,7 +142,7 @@ fn emit_vec_parent_primitive(
             idx: field_idx,
             name: column_prefix,
         },
-        decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        decimal128_encode_trait: &config.traits.decimal128_encode,
         paths: &config.external_paths,
     };
     let pep = super::super::vec::pep_for_primitive_leaf(leaf, &leaf_ctx, composed_shape);

@@ -14,19 +14,22 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
+/// Runtime trait paths used by generated impls and helper calls.
+pub struct RuntimeTraitPaths {
+    /// Fully-qualified path to the `ToDataFrame` trait.
+    pub to_dataframe: syn::Path,
+    /// Fully-qualified path to the `Columnar` trait.
+    pub columnar: syn::Path,
+    /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
+    /// fields.
+    pub decimal128_encode: syn::Path,
+}
+
 /// Macro-wide configuration for generated code
 #[allow(clippy::struct_field_names)]
 pub struct MacroConfig {
-    /// Fully-qualified path to the `ToDataFrame` trait (e.g., `df_derive::dataframe::ToDataFrame`)
-    pub to_dataframe_trait_path: TokenStream,
-    /// Fully-qualified path to the Columnar trait (e.g., `df_derive::dataframe::Columnar`)
-    pub columnar_trait_path: TokenStream,
-    /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
-    /// fields to dispatch the value-to-i128-mantissa rescale through
-    /// user-controlled code. Defaults to a sibling of the `ToDataFrame` trait
-    /// (`<default-or-user-mod>::Decimal128Encode`); custom decimal backends
-    /// override this with `#[df_derive(decimal128_encode = "...")]`.
-    pub decimal128_encode_trait_path: TokenStream,
+    /// Runtime trait paths used by generated code.
+    pub traits: RuntimeTraitPaths,
     /// External runtime dependency roots (`polars::prelude`,
     /// `polars_arrow`) used by generated code.
     pub external_paths: external_paths::ExternalPaths,
@@ -76,9 +79,9 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
     let eager_asserts = helpers::generate_eager_asserts(
         ir,
-        &config.to_dataframe_trait_path,
-        &config.columnar_trait_path,
-        &config.decimal128_encode_trait_path,
+        &config.traits.to_dataframe,
+        &config.traits.columnar,
+        &config.traits.decimal128_encode,
     );
 
     // Keep helper names private while still emitting inherent impls for the
@@ -110,9 +113,11 @@ mod tests {
     fn test_config() -> MacroConfig {
         let dataframe_mod = quote! { crate::dataframe };
         MacroConfig {
-            to_dataframe_trait_path: quote! { crate::dataframe::ToDataFrame },
-            columnar_trait_path: quote! { crate::dataframe::Columnar },
-            decimal128_encode_trait_path: quote! { crate::dataframe::Decimal128Encode },
+            traits: RuntimeTraitPaths {
+                to_dataframe: syn::parse_quote!(crate::dataframe::ToDataFrame),
+                columnar: syn::parse_quote!(crate::dataframe::Columnar),
+                decimal128_encode: syn::parse_quote!(crate::dataframe::Decimal128Encode),
+            },
             external_paths: external_paths::default_runtime_paths(&dataframe_mod),
         }
     }

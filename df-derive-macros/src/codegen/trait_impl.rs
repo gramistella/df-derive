@@ -4,8 +4,8 @@ use quote::quote;
 
 pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
-    let to_df_trait = &config.to_dataframe_trait_path;
-    let columnar_trait = &config.columnar_trait_path;
+    let to_df_trait = &config.traits.to_dataframe;
+    let columnar_trait = &config.traits.columnar;
     let pp = config.external_paths.prelude();
     let (impl_generics, ty_generics, where_clause) =
         super::bounds::impl_parts_with_bounds(ir, config);

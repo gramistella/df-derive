@@ -368,7 +368,7 @@ pub struct BaseCtx<'a> {
 /// Per-leaf metadata threaded into the leaf builders.
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
-    pub decimal128_encode_trait: &'a TokenStream,
+    pub decimal128_encode_trait: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }
 

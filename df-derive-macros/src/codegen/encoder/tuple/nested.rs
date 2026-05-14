@@ -39,8 +39,8 @@ pub(super) fn emit_vec_parent_nested(
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
-    let columnar_trait = &config.columnar_trait_path;
-    let to_df_trait = &config.to_dataframe_trait_path;
+    let columnar_trait = &config.traits.columnar;
+    let to_df_trait = &config.traits.to_dataframe;
     let total_leaves = idents::nested_total(field_idx);
     let flat = idents::nested_flat(field_idx);
     let positions = idents::nested_positions(field_idx);

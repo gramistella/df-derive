@@ -49,7 +49,7 @@ fn columnar_method_body(
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
 ) -> TokenStream {
-    let to_df_trait = &config.to_dataframe_trait_path;
+    let to_df_trait = &config.traits.to_dataframe;
     let pp = config.external_paths.prelude();
     let ColumnarParts {
         decls,
@@ -90,7 +90,7 @@ fn columnar_method_body(
 /// `columnar_from_refs` for borrowed nested/generic composition.
 pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
-    let columnar_trait = &config.columnar_trait_path;
+    let columnar_trait = &config.traits.columnar;
     let pp = config.external_paths.prelude();
     let it_ident = idents::populator_iter();
     let (impl_generics, ty_generics, where_clause) =

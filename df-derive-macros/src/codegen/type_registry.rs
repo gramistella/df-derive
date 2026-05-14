@@ -267,7 +267,7 @@ pub fn map_primitive_expr(
     var: &TokenStream,
     receiver: PrimitiveExprReceiver,
     leaf: MappedPrimitiveLeaf,
-    decimal128_encode_trait: &TokenStream,
+    decimal128_encode_trait: &syn::Path,
     paths: &ExternalPaths,
 ) -> TokenStream {
     match leaf {

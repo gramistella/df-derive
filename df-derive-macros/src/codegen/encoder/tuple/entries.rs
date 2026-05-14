@@ -110,7 +110,7 @@ fn element_nested_entries(
         EmitMode::SchemaEntries => {
             crate::codegen::schema_nested::generate_schema_entries_for_struct(
                 type_path,
-                &config.to_dataframe_trait_path,
+                &config.traits.to_dataframe,
                 column_prefix,
                 total_layers,
                 &config.external_paths,
@@ -118,7 +118,7 @@ fn element_nested_entries(
         }
         EmitMode::EmptyRows => crate::codegen::schema_nested::nested_empty_series_row(
             type_path,
-            &config.to_dataframe_trait_path,
+            &config.traits.to_dataframe,
             column_prefix,
             total_layers,
             &config.external_paths,

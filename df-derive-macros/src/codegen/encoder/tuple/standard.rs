@@ -53,8 +53,8 @@ pub(super) fn emit_via_standard_encoder_with_option_receiver(
                 name: column_prefix,
             },
             ty: &nested_ty,
-            columnar_trait: &config.columnar_trait_path,
-            to_df_trait: &config.to_dataframe_trait_path,
+            columnar_trait: &config.traits.columnar,
+            to_df_trait: &config.traits.to_dataframe,
             paths: &config.external_paths,
         };
         return build_nested_encoder(wrapper, &nested_ctx);
@@ -69,7 +69,7 @@ pub(super) fn emit_via_standard_encoder_with_option_receiver(
             idx: field_idx,
             name: column_prefix,
         },
-        decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        decimal128_encode_trait: &config.traits.decimal128_encode,
         paths: &config.external_paths,
     };
     let enc = build_encoder_with_option_receiver(leaf, wrapper, &leaf_ctx, option_some_receiver);

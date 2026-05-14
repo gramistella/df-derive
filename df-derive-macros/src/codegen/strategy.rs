@@ -89,7 +89,7 @@ fn build_field_entries(
             let type_path = nested_type_path(nested);
             super::schema_nested::generate_schema_entries_for_struct(
                 &type_path,
-                &config.to_dataframe_trait_path,
+                &config.traits.to_dataframe,
                 &name,
                 field.wrapper_shape.vec_depth(),
                 &config.external_paths,
@@ -99,7 +99,7 @@ fn build_field_entries(
             let type_path = nested_type_path(nested);
             super::schema_nested::nested_empty_series_row(
                 &type_path,
-                &config.to_dataframe_trait_path,
+                &config.traits.to_dataframe,
                 &name,
                 field.wrapper_shape.vec_depth(),
                 &config.external_paths,
@@ -184,8 +184,8 @@ fn build_nested_emit(
             name: &name,
         },
         ty: type_path,
-        columnar_trait: &config.columnar_trait_path,
-        to_df_trait: &config.to_dataframe_trait_path,
+        columnar_trait: &config.traits.columnar,
+        to_df_trait: &config.traits.to_dataframe,
         paths: &config.external_paths,
     };
     let columnar = encoder::build_nested_encoder(&field.wrapper_shape, &ctx);
@@ -214,7 +214,7 @@ fn build_primitive_emit(
             idx,
             name: &name,
         },
-        decimal128_encode_trait: &config.decimal128_encode_trait_path,
+        decimal128_encode_trait: &config.traits.decimal128_encode,
         paths: &config.external_paths,
     };
     let enc = encoder::build_encoder(leaf, &field.wrapper_shape, &leaf_ctx);

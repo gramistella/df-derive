@@ -6,7 +6,7 @@ use super::idents;
 pub(super) fn nested_df_decl(
     df: &syn::Ident,
     ty: &TokenStream,
-    columnar_trait: &TokenStream,
+    columnar_trait: &syn::Path,
     flat: &syn::Ident,
 ) -> TokenStream {
     let validate_nested_frame = idents::validate_nested_frame();
@@ -96,7 +96,7 @@ pub(super) fn inner_col_all_absent(
 /// supplying a different per-column inner-Series expression.
 pub(super) fn consume_nested_columns(
     parent_name: &str,
-    to_df_trait: &TokenStream,
+    to_df_trait: &syn::Path,
     ty: &TokenStream,
     series_expr: &TokenStream,
     pp: &TokenStream,

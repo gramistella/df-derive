@@ -22,7 +22,7 @@ fn gen_wrap_dtype_layers(layers: usize, paths: &ExternalPaths) -> TokenStream {
 
 pub fn nested_empty_series_row(
     type_path: &TokenStream,
-    to_df_trait: &TokenStream,
+    to_df_trait: &syn::Path,
     name: &str,
     list_layers: usize,
     paths: &ExternalPaths,
@@ -41,7 +41,7 @@ pub fn nested_empty_series_row(
 
 pub fn generate_schema_entries_for_struct(
     type_path: &TokenStream,
-    to_df_trait: &TokenStream,
+    to_df_trait: &syn::Path,
     column_name: &str,
     list_layers: usize,
     paths: &ExternalPaths,
@@ -64,7 +64,7 @@ pub fn generate_schema_entries_for_struct(
 /// expression vary, captured by [`EmitMode`].
 fn generate_for_struct(
     type_path: &TokenStream,
-    to_df_trait: &TokenStream,
+    to_df_trait: &syn::Path,
     column_name: &str,
     list_layers: usize,
     mode: EmitMode,

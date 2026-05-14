@@ -92,9 +92,9 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let mut generics = ir.generics.clone();
     let reqs = collect_generic_requirements(ir);
 
-    let to_df_trait = &config.to_dataframe_trait_path;
-    let columnar_trait = &config.columnar_trait_path;
-    let decimal_trait = &config.decimal128_encode_trait_path;
+    let to_df_trait = &config.traits.to_dataframe;
+    let columnar_trait = &config.traits.columnar;
+    let decimal_trait = &config.traits.decimal128_encode;
     let to_df_bound: syn::TypeParamBound =
         syn::parse2(quote! { #to_df_trait }).expect("trait path should parse as bound");
     let columnar_bound: syn::TypeParamBound =

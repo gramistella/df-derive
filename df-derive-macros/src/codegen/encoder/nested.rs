@@ -36,8 +36,8 @@ use crate::codegen::external_paths::ExternalPaths;
 pub struct NestedLeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub ty: &'a TokenStream,
-    pub columnar_trait: &'a TokenStream,
-    pub to_df_trait: &'a TokenStream,
+    pub columnar_trait: &'a syn::Path,
+    pub to_df_trait: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }
 

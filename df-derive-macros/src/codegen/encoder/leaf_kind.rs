@@ -48,9 +48,9 @@ pub(super) struct CollectThenBulk<'a> {
     /// `<#ty>::columnar_from_refs(&flat)` target type.
     pub ty: &'a TokenStream,
     /// `<#ty as #columnar_trait>::columnar_from_refs` trait path.
-    pub columnar_trait: &'a TokenStream,
+    pub columnar_trait: &'a syn::Path,
     /// `<#ty as #to_df_trait>::schema()` trait path.
-    pub to_df_trait: &'a TokenStream,
+    pub to_df_trait: &'a syn::Path,
     /// Parent-field name; prefixed onto each inner schema column name.
     pub name: &'a str,
     /// Field index — namespaces the per-field idents

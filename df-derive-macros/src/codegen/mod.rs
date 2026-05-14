@@ -98,6 +98,35 @@ fn needs_list_assembly(ir: &StructIR) -> bool {
     })
 }
 
+fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
+    match leaf {
+        LeafSpec::Struct(_) | LeafSpec::Generic(_) => true,
+        LeafSpec::Tuple(elements) => elements.iter().any(tuple_element_needs_nested_validation),
+        LeafSpec::Numeric(_)
+        | LeafSpec::String
+        | LeafSpec::Bool
+        | LeafSpec::DateTime(_)
+        | LeafSpec::NaiveDateTime(_)
+        | LeafSpec::NaiveDate
+        | LeafSpec::NaiveTime
+        | LeafSpec::Duration { .. }
+        | LeafSpec::Decimal { .. }
+        | LeafSpec::AsString(_)
+        | LeafSpec::AsStr(_)
+        | LeafSpec::Binary => false,
+    }
+}
+
+fn tuple_element_needs_nested_validation(element: &TupleElement) -> bool {
+    leaf_needs_nested_validation(&element.leaf_spec)
+}
+
+fn needs_nested_validation(ir: &StructIR) -> bool {
+    ir.fields
+        .iter()
+        .any(|field| leaf_needs_nested_validation(&field.leaf_spec))
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
@@ -107,8 +136,6 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let pa_root = config.external_paths.polars_arrow_root();
     let assemble_helper = encoder::idents::assemble_helper();
     let list_assembly = encoder::idents::list_assembly();
-    let validate_nested_frame = encoder::idents::validate_nested_frame();
-    let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
 
     let list_assembly_helpers = if needs_list_assembly(ir) {
         quote! {
@@ -190,15 +217,11 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         TokenStream::new()
     };
 
-    // Keep helper names private while still emitting inherent impls for the
-    // target type. The list assembly wrapper is emitted only for derives that
-    // actually need `LargeListArray` stacking.
-    quote! {
-        const _: () = {
-            #eager_asserts
+    let nested_validation_helpers = if needs_nested_validation(ir) {
+        let validate_nested_frame = encoder::idents::validate_nested_frame();
+        let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
 
-            #list_assembly_helpers
-
+        quote! {
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
             fn #validate_nested_frame(
@@ -238,6 +261,23 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
                 }
                 ::std::result::Result::Ok(())
             }
+        }
+    } else {
+        TokenStream::new()
+    };
+
+    // Keep helper names private while still emitting inherent impls for the
+    // target type. The list assembly wrapper is emitted only for derives that
+    // actually need `LargeListArray` stacking, and the nested validation
+    // helpers are emitted only for derives whose columnar path calls nested
+    // `Columnar::columnar_from_refs`.
+    quote! {
+        const _: () = {
+            #eager_asserts
+
+            #list_assembly_helpers
+
+            #nested_validation_helpers
 
             #trait_impl
             #columnar_impl
@@ -478,6 +518,18 @@ mod tests {
         }
     }
 
+    fn nested_field(name: &str, wrapper_shape: WrapperShape) -> FieldIR {
+        FieldIR {
+            name: format_ident!("{}", name),
+            field_index: None,
+            leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
+            wrapper_shape,
+            decimal_generic_params: Vec::new(),
+            decimal_backend_ty: None,
+            outer_smart_ptr_depth: 0,
+        }
+    }
+
     fn depth_one_vec_shape() -> WrapperShape {
         WrapperShape::Vec(VecLayers {
             layers: NonEmpty::new(
@@ -536,6 +588,73 @@ mod tests {
             "{with_vec}"
         );
         assert!(with_vec.contains("unsafe"), "{with_vec}");
+    }
+
+    #[test]
+    fn nested_validation_helpers_are_emitted_only_for_nested_shapes() {
+        let validate_nested_frame = encoder::idents::validate_nested_frame().to_string();
+        let validate_nested_column_dtype =
+            encoder::idents::validate_nested_column_dtype().to_string();
+
+        let scalar_ir = StructIR {
+            name: format_ident!("ScalarRow"),
+            generics: syn::Generics::default(),
+            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
+        };
+        let scalar = generate_code(&scalar_ir, &test_config()).to_string();
+        assert!(!scalar.contains(&validate_nested_frame), "{scalar}");
+        assert!(!scalar.contains(&validate_nested_column_dtype), "{scalar}");
+
+        let primitive_vec_ir = StructIR {
+            name: format_ident!("PrimitiveVecRow"),
+            generics: syn::Generics::default(),
+            fields: vec![numeric_field("ids", depth_one_vec_shape())],
+        };
+        let primitive_vec = generate_code(&primitive_vec_ir, &test_config()).to_string();
+        assert!(
+            !primitive_vec.contains(&validate_nested_frame),
+            "{primitive_vec}"
+        );
+        assert!(
+            !primitive_vec.contains(&validate_nested_column_dtype),
+            "{primitive_vec}"
+        );
+
+        let nested_ir = StructIR {
+            name: format_ident!("NestedRow"),
+            generics: syn::Generics::default(),
+            fields: vec![nested_field("inner", WrapperShape::Leaf(LeafShape::Bare))],
+        };
+        let nested = generate_code(&nested_ir, &test_config()).to_string();
+        assert!(nested.contains(&validate_nested_frame), "{nested}");
+        assert!(nested.contains(&validate_nested_column_dtype), "{nested}");
+
+        let tuple_nested_ir = StructIR {
+            name: format_ident!("TupleNestedRow"),
+            generics: syn::Generics::default(),
+            fields: vec![FieldIR {
+                name: format_ident!("pair"),
+                field_index: None,
+                leaf_spec: LeafSpec::Tuple(vec![TupleElement {
+                    leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
+                    wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
+                    outer_smart_ptr_depth: 0,
+                }]),
+                wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
+                decimal_generic_params: Vec::new(),
+                decimal_backend_ty: None,
+                outer_smart_ptr_depth: 0,
+            }],
+        };
+        let tuple_nested = generate_code(&tuple_nested_ir, &test_config()).to_string();
+        assert!(
+            tuple_nested.contains(&validate_nested_frame),
+            "{tuple_nested}"
+        );
+        assert!(
+            tuple_nested.contains(&validate_nested_column_dtype),
+            "{tuple_nested}"
+        );
     }
 
     #[test]

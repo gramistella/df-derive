@@ -279,6 +279,50 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 
 #[test]
+fn scalar_derive_compiles_with_downstream_deny_warnings() {
+    let root = package_root();
+    let manifest = format!(
+        r#"
+[package]
+name = "scalar-deny-warnings"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+df-derive = {{ path = "{}" }}
+{}
+"#,
+        toml_path(root),
+        polars_deps(),
+    );
+
+    check_fixture(
+        "scalar-deny-warnings",
+        &manifest,
+        r#"
+#![deny(warnings)]
+
+use df_derive::prelude::*;
+
+#[derive(ToDataFrame)]
+struct Row {
+    value: i32,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = [Row { value: 7 }];
+    let df = rows.as_slice().to_dataframe()?;
+    assert_eq!(df.shape(), (1, 1));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
 fn facade_default_features_false_does_not_enable_core_rust_decimal() {
     let root = package_root();
     let manifest = format!(

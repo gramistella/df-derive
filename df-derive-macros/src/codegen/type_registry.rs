@@ -175,6 +175,30 @@ pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape, paths: &ExternalPaths
     super::external_paths::wrap_list_layers_compile_time(pp, elem_dtype, wrapper.vec_depth())
 }
 
+/// Whether the expression passed to [`map_primitive_expr`] is a value place
+/// or an existing reference.
+#[derive(Clone, Copy)]
+pub(in crate::codegen) enum PrimitiveExprReceiver {
+    /// `var` is a field/place expression that must be borrowed before
+    /// calling reference-taking trait methods.
+    Place,
+    /// `var` already evaluates to `&T`.
+    Ref,
+    /// `var` evaluates to `&&T`; this occurs when a collapsed option access
+    /// stores `Option<&T>` and the option leaf matches through `&(option)`.
+    RefRef,
+}
+
+impl PrimitiveExprReceiver {
+    fn decimal_receiver(self, var: &TokenStream) -> TokenStream {
+        match self {
+            Self::Place => quote! { &(#var) },
+            Self::Ref => quote! { #var },
+            Self::RefRef => quote! { *(#var) },
+        }
+    }
+}
+
 /// Map a per-row primitive value through any leaf-injected transform
 /// (`DateTime` → epoch i64, `Decimal` → i128 mantissa, `AsString` → owned
 /// `String`, `AsStr` → `&str` borrow). The bare `LeafSpec::*` arms
@@ -183,6 +207,7 @@ pub fn full_dtype(leaf: &LeafSpec, wrapper: &WrapperShape, paths: &ExternalPaths
 #[allow(clippy::too_many_lines)]
 pub fn map_primitive_expr(
     var: &TokenStream,
+    receiver: PrimitiveExprReceiver,
     leaf: &LeafSpec,
     decimal128_encode_trait: &TokenStream,
     paths: &ExternalPaths,
@@ -279,16 +304,13 @@ pub fn map_primitive_expr(
             // bytes match polars's `str_to_dec128`. A `None` return
             // surfaces as a polars `ComputeError`.
             //
-            // Import anonymously so dot syntax can auto-deref both direct
-            // fields and iterator references without introducing a user-
-            // visible name.
             let target = u32::from(*scale);
             let precision = u32::from(*precision);
             let scale = u32::from(*scale);
             let pp = paths.prelude();
+            let decimal_receiver = receiver.decimal_receiver(var);
             quote! {{
-                use #decimal128_encode_trait as _;
-                match (#var).try_to_i128_mantissa(#target) {
+                match #decimal128_encode_trait::try_to_i128_mantissa(#decimal_receiver, #target) {
                     ::std::option::Option::Some(__df_m) => {
                         if __df_m.unsigned_abs() >= 10u128.pow(#precision) {
                             return ::std::result::Result::Err(

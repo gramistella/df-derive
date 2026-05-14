@@ -10,6 +10,7 @@
 //! first because their push bodies consume the value in pattern position.
 //! Polars folds every nested None into one validity bit.
 
+use crate::codegen::type_registry::PrimitiveExprReceiver;
 use crate::ir::{DateTimeUnit, DurationSource, LeafSpec, NumericKind, StringyBase};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -28,7 +29,10 @@ pub(super) enum LeafArmKind {
     Bare,
     /// `[Option]` shape — `WrapperShape::Leaf { option_layers: 1 }`, plus
     /// the multi-Option leaf wrapper after access collapse.
-    Option,
+    Option {
+        /// Receiver shape produced by the option `Some` binding.
+        some_receiver: PrimitiveExprReceiver,
+    },
 }
 
 /// One arm (bare or `[Option]`) emitted by a `*_leaf` builder. `decls` is
@@ -194,7 +198,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             // `Some` arm pushes the value (validity pre-filled to `true` is wrong —
             // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
             // `<#native>::default()` and `validity.push(false)`. Splitting value vs
@@ -259,7 +263,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
             let option_push = quote! {
                 match &(#access) {
@@ -318,7 +322,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
             let empty = quote! { &[][..] };
             let bytes = bytes_ref_expr(&quote! { #v });
@@ -379,7 +383,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             // Non-trivial option/smart-pointer access chains are collapsed
             // before this leaf arm is invoked.
             let option_push = quote! {
@@ -427,17 +431,19 @@ fn mapped_push(ctx: &LeafCtx<'_>, leaf: &LeafSpec, arm: LeafArmKind) -> TokenStr
         LeafArmKind::Bare => {
             let mapped_bare = crate::codegen::type_registry::map_primitive_expr(
                 access,
+                crate::codegen::type_registry::PrimitiveExprReceiver::Place,
                 leaf,
                 decimal_trait,
                 ctx.paths,
             );
             quote! { #buf.push({ #mapped_bare }); }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { some_receiver } => {
             let v = idents::leaf_value();
             let some_var = quote! { #v };
             let mapped_some = crate::codegen::type_registry::map_primitive_expr(
                 &some_var,
+                some_receiver,
                 leaf,
                 decimal_trait,
                 ctx.paths,
@@ -485,7 +491,7 @@ pub(super) fn decimal_leaf(
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             let option_series = quote! {{
                 let ca = <#int128 as #pp::NewChunkedArray<_, _>>::from_iter_options(
                     #name.into(),
@@ -578,7 +584,7 @@ fn mapped_cast_leaf(
             push,
             series: series_finish,
         },
-        LeafArmKind::Option => LeafArm {
+        LeafArmKind::Option { .. } => LeafArm {
             decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<#native> })],
             push,
             series: series_finish,
@@ -625,7 +631,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 series: bare_series,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
             let option_push = quote! {
                 match &(#access) {
@@ -688,7 +694,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
                 series: series_finish,
             }
         }
-        LeafArmKind::Option => {
+        LeafArmKind::Option { .. } => {
             let option_value =
                 super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
             let option_push = quote! { #buf.push(#option_value); };

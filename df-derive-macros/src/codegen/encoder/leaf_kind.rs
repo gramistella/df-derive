@@ -31,9 +31,7 @@ pub(super) struct PerElementPush {
     /// i64). Differs by storage layout: `Vec`-len, MBVA-len, or a leaf-index
     /// counter for the bit-packed layouts.
     pub leaf_offsets_post_push: TokenStream,
-    /// Optional `use Trait as _;` import to splice at the top of the emit
-    /// scope. Used by the `Decimal` leaf so its `try_to_i128_mantissa`
-    /// resolves on `&Decimal`.
+    /// Optional imports to splice at the top of the emit scope.
     pub extra_imports: TokenStream,
     /// Per-leaf logical Polars dtype (e.g. `DataType::String`,
     /// `DataType::Decimal(p, s)`) for the outer-list assemble helper.

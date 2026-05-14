@@ -54,9 +54,6 @@ enum VecLeafSpec {
     Numeric {
         native: TokenStream,
         value_expr: TokenStream,
-        /// Adds an anonymous `use #decimal128_encode_trait as _;` so the
-        /// dot-syntax `try_to_i128_mantissa` resolves on `&Decimal`.
-        needs_decimal_import: bool,
     },
     /// `String` / `to_string` / `as_str` over `MutableBinaryViewArray<str>`.
     /// `value_expr` materializes a `&str` from the `__df_derive_v` binding
@@ -149,11 +146,7 @@ fn build_vec_leaf_pieces(
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
     match spec {
-        VecLeafSpec::Numeric {
-            native,
-            value_expr,
-            needs_decimal_import: _,
-        } => numeric_leaf_pieces(
+        VecLeafSpec::Numeric { native, value_expr } => numeric_leaf_pieces(
             native,
             value_expr,
             has_inner_option,
@@ -465,10 +458,8 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 /// this file) into [`LeafKind::PerElementPush`] and routes through the
 /// unified [`vec_emit_general`]. The lowering is mechanical: the storage
 /// decls / per-elem push / leaf-array build / offsets-push expression are
-/// already shaped by `build_vec_leaf_pieces`; the leaf logical dtype and
-/// optional decimal-trait import live in this file's encoder gateways
-/// (`vec_encoder_decimal` etc) and ride into the unified emitter via the
-/// `PerElementPush` payload.
+/// already shaped by `build_vec_leaf_pieces`; the leaf logical dtype rides
+/// into the unified emitter via the `PerElementPush` payload.
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -495,10 +486,7 @@ fn vec_encoder(
 /// Lower a `VecLeafSpec` into a [`PerElementPush`] payload the unified
 /// emitter consumes. The leaf-capacity expression is `__df_derive_total_leaves`
 /// (the precount loop's leaf-element accumulator); `build_vec_leaf_pieces`
-/// returns storage decls keyed off it. The decimal-trait import is the
-/// only `extra_imports` payload used today (the `Decimal` leaf needs the
-/// `Decimal128Encode` trait in scope so `try_to_i128_mantissa` resolves
-/// via dot syntax).
+/// returns storage decls keyed off it.
 fn lower_to_pep(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -510,23 +498,13 @@ fn lower_to_pep(
     let leaf_capacity_expr = quote! { #total_leaves };
     let (leaf_storage_decls, per_elem_push, leaf_arr_expr) =
         build_vec_leaf_pieces(spec, shape.has_inner_option(), &leaf_capacity_expr, pa_root);
-    let extra_imports = if let VecLeafSpec::Numeric {
-        needs_decimal_import: true,
-        ..
-    } = spec
-    {
-        let trait_path = ctx.decimal128_encode_trait;
-        quote! { use #trait_path as _; }
-    } else {
-        TokenStream::new()
-    };
     let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
     PerElementPush {
         per_elem_push,
         storage_decls: leaf_storage_decls,
         leaf_arr_expr,
         leaf_offsets_post_push,
-        extra_imports,
+        extra_imports: TokenStream::new(),
         leaf_logical_dtype: leaf_dtype.clone(),
     }
 }
@@ -629,15 +607,11 @@ fn bool_bare_depth1_body(
     }
 }
 
-fn mapped_numeric_plan(
-    ctx: &LeafCtx<'_>,
-    leaf: &LeafSpec,
-    native: TokenStream,
-    needs_decimal_import: bool,
-) -> VecLeafPlan {
+fn mapped_numeric_plan(ctx: &LeafCtx<'_>, leaf: &LeafSpec, native: TokenStream) -> VecLeafPlan {
     let v = idents::leaf_value();
     let mapped_v = crate::codegen::type_registry::map_primitive_expr(
         &quote! { #v },
+        crate::codegen::type_registry::PrimitiveExprReceiver::Ref,
         leaf,
         ctx.decimal128_encode_trait,
         ctx.paths,
@@ -646,7 +620,6 @@ fn mapped_numeric_plan(
         spec: VecLeafSpec::Numeric {
             native,
             value_expr: mapped_v,
-            needs_decimal_import,
         },
         leaf_dtype: leaf.dtype(ctx.paths),
     }
@@ -666,7 +639,6 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 spec: VecLeafSpec::Numeric {
                     native: info.native,
                     value_expr,
-                    needs_decimal_import: false,
                 },
                 leaf_dtype: leaf.dtype(ctx.paths),
             }
@@ -691,9 +663,9 @@ fn vec_leaf_plan(leaf: &LeafSpec, ctx: &LeafCtx<'_>) -> VecLeafPlan {
         LeafSpec::DateTime(_)
         | LeafSpec::NaiveDateTime(_)
         | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }, false),
-        LeafSpec::NaiveDate => mapped_numeric_plan(ctx, leaf, quote! { i32 }, false),
-        LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }, true),
+        | LeafSpec::Duration { .. } => mapped_numeric_plan(ctx, leaf, quote! { i64 }),
+        LeafSpec::NaiveDate => mapped_numeric_plan(ctx, leaf, quote! { i32 }),
+        LeafSpec::Decimal { .. } => mapped_numeric_plan(ctx, leaf, quote! { i128 }),
         LeafSpec::AsString(_) => {
             let scratch = idents::primitive_str_scratch(ctx.base.idx);
             let pp = ctx.paths.prelude();

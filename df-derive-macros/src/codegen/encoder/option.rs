@@ -68,7 +68,13 @@ pub(super) fn wrap_option_access_chain_primitive(
         decls,
         push,
         series,
-    } = super::vec::build_leaf(leaf, &new_ctx, LeafArmKind::Option);
+    } = super::vec::build_leaf(
+        leaf,
+        &new_ctx,
+        LeafArmKind::Option {
+            some_receiver: crate::codegen::type_registry::PrimitiveExprReceiver::RefRef,
+        },
+    );
     Encoder::Leaf {
         decls,
         push: quote! {

@@ -13,6 +13,8 @@
 //     `trait` / `columnar` keys do.
 //  3. A `None` return from `try_to_i128_mantissa` surfaces as a polars
 //     `ComputeError`, matching the historical scale-up overflow path.
+//  4. Trait dispatch is unambiguous UFCS dispatch. An inherent method with
+//     the same name must not hijack decimal encoding.
 //
 // We verify (2) and (3) with a stub `MyDecimal128Encode` trait whose impl
 // for `rust_decimal::Decimal` always returns `None`. The codegen, with the
@@ -23,7 +25,7 @@
 use df_derive::ToDataFrame;
 #[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 
 use polars::prelude::*;
 use rust_decimal::Decimal;
@@ -65,6 +67,65 @@ struct AlwaysFailingOption {
 struct AlwaysFailingVec {
     #[df_derive(decimal(precision = 18, scale = 6))]
     values: Vec<Decimal>,
+}
+
+#[derive(Clone)]
+struct HijackDecimal(i128);
+
+impl HijackDecimal {
+    #[allow(dead_code)]
+    fn try_to_i128_mantissa(&self, _target_scale: u32) -> Option<i128> {
+        None
+    }
+}
+
+impl Decimal128Encode for HijackDecimal {
+    fn try_to_i128_mantissa(&self, _target_scale: u32) -> Option<i128> {
+        Some(self.0)
+    }
+}
+
+#[derive(ToDataFrame, Clone)]
+struct UfcsDispatchRow<'a> {
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    bare: HijackDecimal,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    by_ref: &'a HijackDecimal,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    boxed: Box<HijackDecimal>,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    maybe: Option<HijackDecimal>,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    maybe_boxed: Option<Box<HijackDecimal>>,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    values: Vec<HijackDecimal>,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    maybe_values: Vec<Option<HijackDecimal>>,
+}
+
+mod alias_decimal {
+    use super::*;
+
+    type Decimal = HijackDecimal;
+
+    #[derive(ToDataFrame, Clone)]
+    struct AliasRow {
+        value: Decimal,
+        maybe: Option<Decimal>,
+        values: Vec<Decimal>,
+    }
+
+    pub fn assert_bare_decimal_alias_uses_encode_trait() {
+        let row = AliasRow {
+            value: HijackDecimal(70),
+            maybe: Some(HijackDecimal(71)),
+            values: vec![HijackDecimal(72)],
+        };
+        let df = row
+            .to_dataframe()
+            .expect("bare Decimal alias should route through Decimal128Encode");
+        assert_eq!(df.height(), 1);
+    }
 }
 
 fn assert_compute_err(err: PolarsError, ctx: &str) {
@@ -122,6 +183,25 @@ fn main() {
         .to_dataframe()
         .expect("empty Vec<Decimal> should not call the encode trait");
     assert_eq!(df.height(), 1);
+
+    // (4) UFCS dispatch: every shape below would call the inherent method
+    // and fail if the generated code used decimal dot syntax.
+    let referenced = HijackDecimal(20);
+    let hijack = UfcsDispatchRow {
+        bare: HijackDecimal(10),
+        by_ref: &referenced,
+        boxed: Box::new(HijackDecimal(30)),
+        maybe: Some(HijackDecimal(40)),
+        maybe_boxed: Some(Box::new(HijackDecimal(50))),
+        values: vec![HijackDecimal(60)],
+        maybe_values: vec![Some(HijackDecimal(61))],
+    };
+    let df = hijack
+        .to_dataframe()
+        .expect("inherent method must not hijack Decimal128Encode");
+    assert_eq!(df.height(), 1);
+
+    alias_decimal::assert_bare_decimal_alias_uses_encode_trait();
 
     println!("Decimal128Encode None-return path: OK across single, columnar, option, vec shapes");
 }

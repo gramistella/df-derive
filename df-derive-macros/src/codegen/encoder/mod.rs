@@ -413,7 +413,13 @@ pub fn build_encoder(leaf: &LeafSpec, wrapper: &WrapperShape, ctx: &LeafCtx<'_>)
                 decls,
                 push,
                 series,
-            } = vec::build_leaf(leaf, ctx, leaf::LeafArmKind::Option);
+            } = vec::build_leaf(
+                leaf,
+                ctx,
+                leaf::LeafArmKind::Option {
+                    some_receiver: crate::codegen::type_registry::PrimitiveExprReceiver::Ref,
+                },
+            );
             Encoder::Leaf {
                 decls,
                 push,

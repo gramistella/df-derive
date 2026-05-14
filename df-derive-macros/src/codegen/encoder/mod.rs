@@ -33,6 +33,7 @@ pub(in crate::codegen) mod idents;
 mod leaf;
 mod leaf_kind;
 mod nested;
+mod nested_columns;
 mod option;
 mod shape_walk;
 mod tuple;

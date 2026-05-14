@@ -3,6 +3,7 @@ use crate::ir::{AccessChain, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::super::nested_columns::consume_nested_columns;
 use super::super::shape_walk::{
     LayerIdents, freeze_offsets_buf, freeze_validity_bitmap, shape_assemble_list_stack,
 };
@@ -42,13 +43,10 @@ pub(super) fn emit_vec_parent_nested(
     let take = idents::nested_take(field_idx);
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
-    let prefixed = idents::nested_prefixed_name();
-    let inner_series = idents::nested_inner_series();
     let inner_full = idents::nested_inner_full();
     let inner_chunk = idents::nested_inner_chunk();
     let inner_col = idents::nested_inner_col();
     let inner_rech = idents::nested_inner_rech();
-    let named = idents::field_named_series();
     let validate_nested_frame = idents::validate_nested_frame();
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
 
@@ -186,25 +184,19 @@ pub(super) fn emit_vec_parent_nested(
         pa_root,
     );
 
-    let consume = |series_expr: &TokenStream| -> TokenStream {
-        quote! {
-            for (#col_name, #dtype) in <#type_path as #to_df_trait>::schema()? {
-                let #col_name: &str = #col_name.as_str();
-                let #dtype: &#pp::DataType = &#dtype;
-                {
-                    let #prefixed = ::std::format!("{}.{}", #column_prefix, #col_name);
-                    let #inner_series: #pp::Series = #series_expr;
-                    let #named = #inner_series.with_name(#prefixed.as_str().into());
-                    columns.push(#named.into());
-                }
-            }
-        }
-    };
-
-    let consume_direct = consume(&series_direct);
-    let consume_take = consume(&series_take);
-    let consume_empty = consume(&series_empty);
-    let consume_all_absent = consume(&series_all_absent);
+    let consume_direct =
+        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_direct, pp);
+    let consume_take =
+        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_take, pp);
+    let consume_empty =
+        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_empty, pp);
+    let consume_all_absent = consume_nested_columns(
+        column_prefix,
+        to_df_trait,
+        type_path,
+        &series_all_absent,
+        pp,
+    );
 
     let df_decl = quote! {
         let #df = <#type_path as #columnar_trait>::columnar_from_refs(&#flat)?;

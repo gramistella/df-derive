@@ -22,6 +22,7 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
+use super::nested_columns::consume_nested_columns;
 use super::shape_walk::{
     LayerIdents, LayerWrap, ShapePrecount, ShapeScan, freeze_offsets_buf, freeze_validity_bitmap,
     shape_assemble_list_stack, shape_offsets_decls, shape_validity_decls,
@@ -329,42 +330,6 @@ fn ctb_leaf_body<'a>(
     }
 }
 
-/// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
-/// and pushes each inner-Series-yielding expression onto `columns` with the
-/// parent name prefixed. Shared by every dispatch arm of [`ctb_materialize`]
-/// (depth-0 direct/take/null and depth-N empty/direct/take/all-absent), with
-/// each arm supplying a different per-column inner-Series expression.
-fn nested_consume_columns(
-    parent_name: &str,
-    to_df_trait: &TokenStream,
-    ty: &TokenStream,
-    series_expr: &TokenStream,
-    pp: &TokenStream,
-) -> TokenStream {
-    let col_name = idents::nested_col_name();
-    let dtype = idents::nested_col_dtype();
-    let prefixed = idents::nested_prefixed_name();
-    let inner = idents::nested_inner_series();
-    let named = idents::field_named_series();
-    quote! {
-        for (#col_name, #dtype) in
-            <#ty as #to_df_trait>::schema()?
-        {
-            let #col_name: &str = #col_name.as_str();
-            let #dtype: &#pp::DataType = &#dtype;
-            {
-                let #prefixed = ::std::format!(
-                    "{}.{}", #parent_name, #col_name,
-                );
-                let #inner: #pp::Series = #series_expr;
-                let #named = #inner
-                    .with_name(#prefixed.as_str().into());
-                columns.push(#named.into());
-            }
-        }
-    }
-}
-
 /// Wrap a per-column inner-Series expression in `depth` `LargeListArray::new`
 /// layers (innermost-first, outermost-last) and route the outermost through
 /// `__df_derive_assemble_list_series_unchecked` via the shared
@@ -551,10 +516,10 @@ fn ctb_materialize(
     let series_all_absent =
         ctb_layer_wrap(wrapper, layers, kind, &inner_col_all_absent, pp, pa_root);
 
-    let consume_direct = nested_consume_columns(name, to_df_trait, ty, &series_direct, pp);
-    let consume_take = nested_consume_columns(name, to_df_trait, ty, &series_take, pp);
-    let consume_empty = nested_consume_columns(name, to_df_trait, ty, &series_empty, pp);
-    let consume_all_absent = nested_consume_columns(name, to_df_trait, ty, &series_all_absent, pp);
+    let consume_direct = consume_nested_columns(name, to_df_trait, ty, &series_direct, pp);
+    let consume_take = consume_nested_columns(name, to_df_trait, ty, &series_take, pp);
+    let consume_empty = consume_nested_columns(name, to_df_trait, ty, &series_empty, pp);
+    let consume_all_absent = consume_nested_columns(name, to_df_trait, ty, &series_all_absent, pp);
 
     let (validity_freeze, offsets_freeze) = match wrapper {
         WrapperShape::Leaf(_) => (TokenStream::new(), TokenStream::new()),

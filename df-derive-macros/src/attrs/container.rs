@@ -72,8 +72,8 @@ fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
     syn::Error::new(
         columnar_span,
         "`columnar = \"...\"` requires `trait = \"...\"`; overriding only \
-         `Columnar` would generate mixed runtime impls that do not satisfy \
-         either runtime's `ToDataFrameVec`",
+         `Columnar` would generate mixed `ToDataFrame`/`Columnar` impls \
+         that do not satisfy either runtime's trait pair",
     )
 }
 

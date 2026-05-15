@@ -1,4 +1,4 @@
-use super::{MacroConfig, helpers};
+use super::{MacroConfig, type_deps};
 use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -30,15 +30,15 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
         if let LeafSpec::Generic(ident) = leaf {
             push_unique(&mut reqs.nested_params, ident);
         } else if let LeafSpec::Struct(ty) = leaf {
-            helpers::push_unique_type(&mut reqs.nested_types, ty);
+            type_deps::push_unique_type(&mut reqs.nested_types, ty);
         } else if let LeafSpec::AsStr(StringyBase::Generic(ident)) = leaf {
             push_unique(&mut reqs.as_ref_str, ident);
         } else if let LeafSpec::AsStr(StringyBase::Struct(ty)) = leaf {
-            helpers::push_unique_type(&mut reqs.as_ref_str_types, ty);
+            type_deps::push_unique_type(&mut reqs.as_ref_str_types, ty);
         } else if let LeafSpec::AsString(DisplayBase::Generic(ident)) = leaf {
             push_unique(&mut reqs.display_params, ident);
         } else if let LeafSpec::AsString(DisplayBase::Struct(ty)) = leaf {
-            helpers::push_unique_type(&mut reqs.display_types, ty);
+            type_deps::push_unique_type(&mut reqs.display_types, ty);
         }
     });
 }
@@ -54,7 +54,7 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
         }
 
         if let Some(ty) = &field.decimal_backend_ty {
-            helpers::push_unique_type(&mut reqs.decimal_types, ty);
+            type_deps::push_unique_type(&mut reqs.decimal_types, ty);
         }
     }
 

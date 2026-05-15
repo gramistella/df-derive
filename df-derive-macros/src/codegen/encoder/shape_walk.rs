@@ -1,60 +1,8 @@
-//! Shared shape-walker for the `[Vec, ...]` push/scan body.
+//! Shared shape walkers for `Vec`-layer precount, scan, and list assembly.
 //!
-//! The shape-aware emitters (`emit::vec_emit_pep` and `emit::vec_emit_ctb`)
-//! drive both per-element-push and collect-then-bulk paths through these
-//! primitives, parameterized by `LeafKind`. The two paths walk the same
-//! `VecLayers` recursively and differ only at the deepest layer (push to a
-//! typed buffer vs. push a ref into a `Vec<&T>` plus optional position
-//! scatter) and in a few naming choices (outer-Some bind name prefix,
-//! leaf-binding ident, the per-layer offsets-push value at the innermost
-//! layer).
-//!
-//! [`ShapeScan`] captures all of those decision points behind one struct so
-//! the recursion logic lives in exactly one place. The two callers share a
-//! unified [`LayerIdents`] bundle (5 fields: offsets / `offsets_buf` /
-//! `validity_mb` / `validity_bm` / bind); the walker reads `offsets`,
-//! `validity_mb`, and `bind` directly off it. Each caller chooses the
-//! `outer_some_prefix` and supplies the deepest-layer body via `leaf_body`.
-//!
-//! [`ShapePrecount`] is the parallel walker for the precount loop both paths
-//! run before the scan to size the offsets/validity/leaf-storage buffers up
-//! front. The two paths differ only in: (a) the leaf-counter increment (the
-//! flat-vec path tallies `__df_derive_total_leaves`; the nested path tallies
-//! the per-field `__df_derive_gen_total_<idx>`), (b) the outer-Some bind name
-//! prefix, and (c) the per-layer counter idents. The precount walker emits
-//! the full `let mut #total: usize = 0;` decl, the per-layer counter decls,
-//! and the `for #it in items { ... }` ring; callers splice the result
-//! verbatim. Critically, when `option_layers >= 2` on an outer-Vec layer the
-//! walker calls [`collapse_options_to_ref`] so multi-Option-over-Vec shapes
-//! don't try to `if let Some(...) = &Option<Option<Vec<...>>>` (which doesn't
-//! type-check).
-//!
-//! Two related decl helpers ([`shape_offsets_decls`] and
-//! [`shape_validity_decls`]) generalize the per-layer offsets-vec and
-//! validity-bitmap allocations: layer 0 is sized by `items.len()` (or
-//! `items.len() + 1` for offsets to account for the leading `0`); deeper
-//! layers use a per-depth counter ident the caller supplies via a closure.
-//! The flat-vec path passes `__df_derive_total_layer_{i-1}`; the nested path
-//! passes `__df_derive_n_total_layer_{i-1}`.
-//!
-//! [`shape_assemble_list_stack`] is the shared per-layer wrap stack that
-//! both paths emit after the scan completes. Each caller supplies a
-//! `[LayerWrap]` slice describing every layer's offsets-buf ownership via
-//! [`OwnPolicy`]: `OwnPolicy::Move` for single-use sites (the flat-vec path,
-//! where each frozen offsets buffer feeds exactly one `LargeListArray::new`)
-//! and `OwnPolicy::Clone` when the buffer rides across multiple downstream
-//! arms (the nested encoder's four-arm dispatch reuses the same offsets
-//! buffer per arm). The helper emits the reversed `LargeListArray::new`
-//! chain plus the routed `__df_derive_assemble_list_series_unchecked` call.
-//!
-//! Dtype/array compatibility ownership lives in this module. Leaf-specific
-//! encoders may create physical Arrow leaf arrays and provide logical Polars
-//! leaf dtypes, but the only codegen boundary allowed to pair those pieces
-//! for list Series construction is [`shape_assemble_list_stack`]. It builds
-//! the physical `LargeListArray` stack, wraps the logical `DataType` by the
-//! same list depth, and routes the pair to the generated
-//! `__DfDeriveListAssembly` abstraction, whose release-mode check compares
-//! the final Arrow dtype with `logical_dtype.to_physical().to_arrow(...)`.
+//! Dtype/array compatibility is owned here: leaf encoders may create Arrow
+//! arrays and logical Polars dtypes, but `shape_assemble_list_stack` is the
+//! only boundary that pairs them into list Series construction.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -64,21 +12,14 @@ use crate::ir::{AccessChain, VecLayers};
 use super::idents;
 use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_expr};
 
-/// Optional projection injected at an inter-layer transition. Tuple fields
-/// use this for shapes like `Vec<(Vec<A>, B)>`: the parent tuple's `Vec`
-/// layer is walked first, then the next layer receives `&tuple.0`.
-/// When the tuple element has no own `Vec` layer, projection happens at the
-/// leaf instead and this stays `None`.
+/// Optional tuple projection injected at an inter-layer transition.
 #[derive(Clone, Copy)]
 pub(super) struct LayerProjection<'a> {
     pub layer: usize,
     pub path: &'a TokenStream,
-    /// Transparent wrappers between the parent Vec item and the tuple
-    /// itself. Projection resolves this once, then the target layer receives
-    /// either `&Element` or `Option<&Element>`.
+    /// Transparent wrappers between the parent Vec item and the tuple itself.
     pub parent_access: &'a AccessChain,
-    /// Smart pointers wrapped around the projected element before its own
-    /// Vec/Option layers.
+    /// Smart pointers wrapped around the projected element before its own layers.
     pub smart_ptr_depth: usize,
 }
 
@@ -216,11 +157,7 @@ impl ShapeScan<'_, '_> {
             let validity = &layer.validity_mb;
             let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
             let inner_iter = self.build_iter(cur, &quote! { #inner_vec_bind });
-            // The bind here holds `&Option<...<Option<Vec<...>>>>` with
-            // `opt_layers` of nesting. Collapse to `Option<&Vec<...>>` and
-            // match: Some(v) pushes validity=true and iterates v; None
-            // pushes validity=false and skips. Polars folds every nested
-            // None into the same null.
+            // Polars folds every nested None at this Vec boundary into one null bit.
             let collapsed = layer_access.expr;
             quote! {
                 match #collapsed {
@@ -246,33 +183,6 @@ impl ShapeScan<'_, '_> {
     }
 }
 
-/// Inputs to the shared precount walker. Builds the precount loop both the
-/// flat-vec and nested-struct paths run before the scan to size the
-/// offsets/validity/leaf-storage buffers up front.
-///
-/// `total_counter` is the leaf-element accumulator ident (the flat-vec path
-/// passes `__df_derive_total_leaves`; the nested path passes
-/// `__df_derive_gen_total_<idx>`). `layer_counters` are the per-depth
-/// counter idents (`depth - 1` of them; layer `i` counts the child-lists
-/// produced by layer `i+1`). `layers` reuses the unified [`LayerIdents`]
-/// shape from the scan walker; only the `bind` field is consumed (for the
-/// inter-layer `for #inner_bind in ...` loops).
-///
-/// `outer_some_prefix` is the ident-prefix for the `if let Some(<bind>)`
-/// arm at layers with `option_layers > 0`. The flat-vec path uses
-/// `__df_derive_some_` (matching its scan walker); the nested path uses
-/// `__df_derive_n_pre_some_` (distinct from its scan walker's
-/// `__df_derive_n_some_` so the two loops can coexist without name shadowing
-/// inside the same generated block).
-///
-/// The walker calls [`collapse_options_to_ref`] when `option_layers >= 2`
-/// so multi-Option-over-Vec shapes type-check (default binding modes can't
-/// match `&Option<Option<Vec<...>>>` against `Some(v)` directly without
-/// stripping the outer `&` first).
-///
-/// `build` emits the entire precount block: the `let mut <total>: usize = 0;`
-/// decl, the per-layer counter decls, and the `for <it> in items { ... }`
-/// ring with the recursion body. Callers splice the result verbatim.
 pub(super) struct ShapePrecount<'a> {
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
@@ -284,8 +194,6 @@ pub(super) struct ShapePrecount<'a> {
 }
 
 impl ShapePrecount<'_> {
-    /// Build the full precount block (total + per-layer counter decls plus
-    /// the `for <it> in items { ... }` ring).
     pub(super) fn build(&self) -> TokenStream {
         let layer0_iter_src = {
             let access = self.access;

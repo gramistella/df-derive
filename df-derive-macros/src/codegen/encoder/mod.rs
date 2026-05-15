@@ -1,32 +1,9 @@
-//! Encoder IR: a compositional encoder model for per-field `DataFrame` columnization.
+//! Per-field encoder construction.
 //!
-//! Each leaf encoder knows how to emit (decls, push, finish) for one base type.
-//! The `option(inner)` combinator wraps a leaf to add `Option<...>` semantics.
-//! `vec(inner)` adds an arbitrary-depth `LargeListArray` stack over the leaf.
-//! Per-field codegen folds the wrapper stack right-to-left over the leaf to
-//! assemble the final emission.
-//!
-//! Each leaf builder emits a single `LeafArm` selected by an explicit
-//! [`leaf::LeafArmKind`] — `Bare` for the unwrapped shape, `Option` for the
-//! `[Option]` shape. The split lets the `bool` leaf override the option case
-//! with a 3-arm match (so `Some(false)` is a true no-op against a values
-//! bitmap pre-filled with `false`) and lets each leaf pick the right
-//! buffer/finish layout for its option semantics without leaking a runtime
-//! "is-this-supplied?" check into the dispatcher.
-//!
-//! `Vec`-bearing wrappers are normalized into a [`crate::ir::VecLayers`]
-//! (one entry per `Vec` layer; each entry tracks whether an outer `Option`
-//! adjoins it as list-level validity) **at the parser**. The encoder
-//! destructures the IR's `WrapperShape` directly without re-normalizing.
-//! After normalization the encoder emits an N-deep precount, an N-deep push
-//! loop, an N-deep stack of `LargeListArray::new` calls — one flat values
-//! buffer at the deepest layer, one optional inner validity bitmap at the
-//! deepest layer, one optional outer-list validity bitmap per `Vec` layer.
-//! Polars folds consecutive `Option` layers into a single validity bit, so
-//! `[Option, Option]` collapses to a single bit and `[Option, Option, Vec]`
-//! collapses the leading two `Option`s into one bit on the `Vec` layer —
-//! the runtime semantics match because the only observable null is whichever
-//! bit is the outermost Polars validity.
+//! `Vec` wrappers are already normalized into [`crate::ir::VecLayers`] before
+//! this phase. Polars folds consecutive `Option` layers into a single validity
+//! bit, so the encoder collapses multi-Option access chains before emitting
+//! the option leaf arm.
 
 mod emit;
 pub(in crate::codegen) mod idents;
@@ -51,10 +28,7 @@ pub use tuple::{
     build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
 };
 
-/// Build the type token stream for a concrete struct field. Plain path types
-/// add a final-segment turbofish so the same token stream is valid for
-/// associated calls and type positions, while fuller `syn::Type` forms such
-/// as `<T as Trait>::Item` are emitted verbatim.
+/// Build type tokens that are valid in both type and associated-call positions.
 pub fn struct_type_tokens(ty: &syn::Type) -> TokenStream {
     if let syn::Type::Path(type_path) = ty
         && type_path.qself.is_none()
@@ -70,9 +44,6 @@ pub fn struct_type_tokens(ty: &syn::Type) -> TokenStream {
     quote! { #ty }
 }
 
-/// Token stream for the type-as-path expression used in UFCS calls
-/// (`<#ty as AsRef<str>>::as_ref(...)`). The `String` base maps to
-/// `::std::string::String`; concrete structs preserve their full source path.
 pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream {
     match base {
         crate::ir::StringyBase::String => quote! { ::std::string::String },
@@ -83,42 +54,15 @@ pub(super) fn stringy_base_ty_path(base: &crate::ir::StringyBase) -> TokenStream
     }
 }
 
-/// Which `StringyBase` value-expression shape the caller needs. The `as_str`
-/// leaf path produces `&str` / `Option<&str>` from a field access in three
-/// distinct contexts (bare leaf push, single-Option leaf push, multi-Option
-/// collapsed push) and the vec(`as_str`) path produces a `&str` from a
-/// per-row binding inside the leaf push body. Each shape branches on
-/// `StringyBase::is_string()` the same way — `String` deref-coerces or uses
-/// `String::as_str`, non-`String` bases UFCS through `<T as AsRef<str>>`.
 #[derive(Clone, Copy)]
 pub(super) enum StringyExprKind {
-    /// Leaf push for `WrapperShape::Leaf { option_layers: 0 }`. Materializes
-    /// `&str`-coerceable from a field access. `String`: `&(#binding)` (relies
-    /// on `&String -> &str` deref-coercion). Non-`String`: UFCS
-    /// `<TyPath as AsRef<str>>::as_ref(&(#binding))`.
     Bare,
-    /// Leaf push for `WrapperShape::Leaf { option_layers: 1 }`. Materializes
-    /// `Option<&str>` from a `&Option<T>` field access. Both branches use
-    /// closures so deref coercions fire for transparent smart pointers
-    /// below the `Option` layer (`Option<Box<String>>`,
-    /// `Option<Arc<MyStringy>>`, etc.).
+    /// Uses closures so smart-pointer deref coercions fire below `Option`.
     OptionDeref,
-    /// Multi-Option leaf push (`option_layers >= 2`) — operates on a
-    /// pre-collapsed `Option<&T>` binding. Uses closures for the same
-    /// deref-coercion reason as [`Self::OptionDeref`].
     CollapsedOption,
-    /// Vec(`as_str`) per-row leaf push body. The binding is `&T` (loop
-    /// variable). `String`: `#binding.as_str()`. Non-`String`:
-    /// `<TyPath as AsRef<str>>::as_ref(#binding)`.
     MbvaValue,
 }
 
-/// Build the value expression for an `as_str`-style leaf at a given call
-/// site. Centralizes the `is_string()` branch shared by the leaf builder
-/// (`leaf::as_str_leaf`), the multi-Option wrapper
-/// (`option::wrap_multi_option_as_str`), and the vec combinator
-/// (`vec::vec_encoder_as_str`). See [`StringyExprKind`] for the four
-/// shapes the helper produces.
 pub(super) fn stringy_value_expr(
     base: &crate::ir::StringyBase,
     binding: &TokenStream,
@@ -227,10 +171,7 @@ pub(super) fn list_offset_i64_expr(offset: &TokenStream, pp: &TokenStream) -> To
     }
 }
 
-/// Build an expression that collapses `n` `Option` layers above a base
-/// expression into a single `Option<&Inner>`. `base` must already be a
-/// reference (or place expression that auto-derefs to a reference). For
-/// `n == 0` this is a no-op (returns the base unchanged).
+/// Collapse `n` `Option` layers into one `Option<&Inner>`.
 pub(super) fn collapse_options_to_ref(base: &TokenStream, n: usize) -> TokenStream {
     if n == 0 {
         return base.clone();
@@ -272,11 +213,7 @@ fn apply_pending_smart_ptrs(expr: TokenStream, has_option: bool, smart_ptrs: usi
     }
 }
 
-/// Resolve the transparent access chain at one wrapper boundary.
-///
-/// The input expression must be a reference to the syntactic value at that
-/// boundary. The result is either a reference to the target layer/leaf, or an
-/// `Option<&Target>` when the chain crosses one or more `Option` layers.
+/// Resolve a transparent access chain at one wrapper boundary.
 pub(super) fn access_chain_to_ref(base: &TokenStream, chain: &AccessChain) -> ChainRef {
     if chain.is_empty() {
         return ChainRef {
@@ -323,10 +260,7 @@ pub(super) fn access_chain_to_ref(base: &TokenStream, chain: &AccessChain) -> Ch
     ChainRef { expr, has_option }
 }
 
-/// Resolve an access chain containing one or more `Option` steps into a
-/// collapsed `Option<&T>`. Unlike [`access_chain_to_ref`], the single plain
-/// `Option` case always emits `.as_ref()` because callers need a mappable
-/// optional reference.
+/// Resolve an optional access chain into a mappable `Option<&T>`.
 pub(super) fn access_chain_to_option_ref(base: &TokenStream, chain: &AccessChain) -> TokenStream {
     debug_assert!(chain.option_layers() > 0);
     if chain.is_only_options() {
@@ -336,53 +270,29 @@ pub(super) fn access_chain_to_option_ref(base: &TokenStream, chain: &AccessChain
     }
 }
 
-/// Per-field encoder state. Variant determines whether the encoder serves
-/// the single-column primitive path (`Leaf`) or the multi-column nested
-/// path (`Multi`); the field set is type-enforced per variant.
 pub enum Encoder {
-    /// Single-column primitive leaf path. `decls` is emitted once before the
-    /// per-row loop; `push` is spliced inside the loop; `series` is an
-    /// expression that evaluates to a `polars::prelude::Series` after the
-    /// loop, which the caller wraps as `columns.push(series.into())`.
     Leaf {
         decls: Vec<TokenStream>,
         push: TokenStream,
         series: TokenStream,
     },
-    /// Multi-column nested path. The `columnar` block executes once after
-    /// the call site's per-row loop and pushes one Series per inner schema
-    /// column of the nested type onto the outer `columns` vec directly.
-    Multi { columnar: TokenStream },
+    Multi {
+        columnar: TokenStream,
+    },
 }
 
-/// Per-leaf identity shared across both the primitive ([`LeafCtx`]) and
-/// nested ([`NestedLeafCtx`]) encoder paths: the per-row access expression,
-/// the field's stable index (used to namespace generated idents), and the
-/// field's column name.
 pub struct BaseCtx<'a> {
     pub access: &'a TokenStream,
     pub idx: usize,
     pub name: &'a str,
 }
 
-/// Per-leaf metadata threaded into the leaf builders.
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub decimal128_encode_trait: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }
 
-// --- Top-level dispatcher ---
-
-/// Build the encoder for a primitive-routed field. Covers every wrapper
-/// stack the parser accepts for every primitive leaf — bare numerics,
-/// `ISize`/`USize` (widened to `i64`/`u64` at the codegen boundary),
-/// `String`, `Bool`, `Decimal`, `DateTime`, `as_str`, `to_string`, plus
-/// `Option<…<Option<T>>>` stacks of arbitrary depth (Polars folds
-/// consecutive `Option`s into a single validity bit, so the encoder
-/// collapses the access expression to a single `Option<&T>` before invoking
-/// the option-leaf push) and every primitive vec-bearing shape. The
-/// function is total on parser-validated IR.
 pub fn build_encoder(
     leaf: PrimitiveLeaf<'_>,
     wrapper: &WrapperShape,
@@ -432,12 +342,7 @@ pub(super) fn build_encoder_with_option_receiver(
                 series,
             }
         }
-        // Primitive multi-Option leaf shapes (`Option<Option<T>>`,
-        // `Option<Option<Option<T>>>`, …): pre-collapse the access to
-        // `Option<&T>` (Polars folds every nested None to one validity bit)
-        // and feed it through the single-Option leaf machinery via a
-        // synthesized per-row local. Nested multi-Option (`Option<Option<T>>`
-        // over a struct/generic) is handled separately in `build_nested_encoder`.
+        // Polars folds every nested None to one validity bit.
         WrapperShape::Leaf(LeafShape::Optional {
             option_layers,
             access,

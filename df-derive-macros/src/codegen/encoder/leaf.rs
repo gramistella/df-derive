@@ -1,14 +1,7 @@
-//! Primitive leaf builders + shared decl helpers.
+//! Primitive leaf builders and shared decl helpers.
 //!
-//! Each `*_leaf` here returns a single [`LeafArm`] selected by an explicit
-//! [`LeafArmKind`]: `Bare` for the unwrapped shape, `Option` for the
-//! `[Option]` shape. The dispatcher in [`super::mod`] selects `Bare` for
-//! `WrapperShape::Leaf { option_layers: 0 }` and `Option` for
-//! `option_layers == 1`. Deeper or smart-pointer-interleaved Option stacks
-//! reuse the `Option` arm after collapsing the access into a single
-//! `Option<&T>`; Copy leaves materialize that as `Option<T>` with `.copied()`
-//! first because their push bodies consume the value in pattern position.
-//! Polars folds every nested None into one validity bit.
+//! Polars folds every nested None into one validity bit; deeper Option stacks
+//! reach these builders through a collapsed single-Option access.
 
 use crate::codegen::type_registry::{PrimitiveExprReceiver, ScalarTransform};
 use crate::ir::{DateTimeUnit, DurationSource, NumericKind, StringyBase};
@@ -18,40 +11,20 @@ use quote::quote;
 use super::LeafCtx;
 use super::idents;
 
-/// Selects which arm a leaf builder emits. The split lets each leaf
-/// override the option-shape per-row work (e.g. the bool 3-arm match
-/// against a pre-filled values bitmap, the string-like MBVA + bitmap pair,
-/// the bool inner-Option bit-packed values bitmap) without leaking a
-/// runtime "is-this-supplied?" check into the dispatcher.
 #[derive(Clone, Copy)]
 pub(super) enum LeafArmKind {
-    /// Unwrapped shape — `WrapperShape::Leaf { option_layers: 0 }`.
     Bare,
-    /// `[Option]` shape — `WrapperShape::Leaf { option_layers: 1 }`, plus
-    /// the multi-Option leaf wrapper after access collapse.
     Option {
-        /// Receiver shape produced by the option `Some` binding.
         some_receiver: PrimitiveExprReceiver,
     },
 }
 
-/// One arm (bare or `[Option]`) emitted by a `*_leaf` builder. `decls` is
-/// emitted once before the per-row loop; `push` is spliced inside the loop;
-/// `series` is an expression that evaluates to a `polars::prelude::Series`
-/// after the loop.
-///
-/// Distinct from [`crate::ir::LeafSpec`] (which classifies the unwrapped
-/// element type at parse time). This is the encoder-internal product of the
-/// dispatch over a `LeafSpec` plus a `LeafCtx` plus a [`LeafArmKind`].
 pub(super) struct LeafArm {
     pub decls: Vec<TokenStream>,
     pub push: TokenStream,
     pub series: TokenStream,
 }
 
-// --- Common decl helpers ---
-
-/// `let mut #buf: Vec<#elem> = Vec::with_capacity(items.len());`
 pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream) -> TokenStream {
     quote! {
         let mut #buf: ::std::vec::Vec<#elem> =
@@ -59,8 +32,6 @@ pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream) -> TokenStream {
     }
 }
 
-/// `let mut #ident: MutableBitmap = MutableBitmap::with_capacity(items.len());`
-/// (no pre-fill — push-based use only).
 pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap =
@@ -68,7 +39,6 @@ pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream) -> TokenStream 
     }
 }
 
-/// `let mut #ident: MutableBitmap = MutableBitmap pre-filled with #value over #capacity;`
 pub(super) fn mb_decl_filled(
     ident: &syn::Ident,
     capacity: &TokenStream,
@@ -85,12 +55,10 @@ pub(super) fn mb_decl_filled(
     }
 }
 
-/// `let mut #ident: usize = 0;` — row counter for the pre-filled-bitmap leaves.
 pub(super) fn row_idx_decl(ident: &syn::Ident) -> TokenStream {
     quote! { let mut #ident: usize = 0; }
 }
 
-/// `let mut #buf: MutableBinaryViewArray<str> = MutableBinaryViewArray::<str>::with_capacity(items.len());`
 pub(super) fn mbva_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<str> =
@@ -98,10 +66,6 @@ pub(super) fn mbva_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenStream 
     }
 }
 
-/// `let mut #buf: MutableBinaryViewArray<[u8]> = MutableBinaryViewArray::<[u8]>::with_capacity(items.len());`
-/// — the byte-blob analogue of [`mbva_decl`]. Used by the `Binary` leaf
-/// (`#[df_derive(as_binary)]` over `Vec<u8>`) to build a `BinaryView` column
-/// without round-tripping through a `Vec<&[u8]>` intermediate.
 pub(super) fn mbva_bytes_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
@@ -109,9 +73,7 @@ pub(super) fn mbva_bytes_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenS
     }
 }
 
-/// Convert a `MutableBitmap` validity buffer into the `Option<Bitmap>`
-/// `with_chunk` / `with_validity` arms expect. `MutableBitmap -> Option<Bitmap>`
-/// collapses to `None` when no bits are unset, preserving the no-null fast path.
+/// `MutableBitmap -> Option<Bitmap>` preserves the no-null fast path.
 pub(super) fn validity_into_option(validity: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
     quote! {
         ::std::convert::Into::<::std::option::Option<#pa_root::bitmap::Bitmap>>::into(
@@ -120,7 +82,6 @@ pub(super) fn validity_into_option(validity: &syn::Ident, pa_root: &TokenStream)
     }
 }
 
-/// Build a Series via `into_series(StringChunked::with_chunk(name, arr))`.
 pub(super) fn string_chunked_series(
     name: &str,
     arr_expr: &TokenStream,
@@ -133,8 +94,6 @@ pub(super) fn string_chunked_series(
     }
 }
 
-/// Build a Series via `into_series(BinaryChunked::with_chunk(name, arr))`.
-/// Byte-blob analogue of [`string_chunked_series`].
 pub(super) fn binary_chunked_series(
     name: &str,
     arr_expr: &TokenStream,
@@ -147,22 +106,10 @@ pub(super) fn binary_chunked_series(
     }
 }
 
-/// Build a Series via `<Series as NamedFrom<_, _>>::new(name.into(), &buf)`.
-/// The `.into()` and the `&` borrow are part of the emitted shape and are
-/// preserved by callers that splice this into a larger expression.
 pub(super) fn named_from_buf(name: &str, buf: &syn::Ident, pp: &TokenStream) -> TokenStream {
     quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) }
 }
 
-// --- Leaf builders ---
-
-/// Numeric primitive leaf — covers fixed-width (`i8/.../f64`) and the
-/// platform-sized widened variants (`ISize`/`USize` widened to `i64`/`u64`
-/// at the leaf push site). Bare arm: `Vec<#native>` storage + `<Chunked>::from_vec`,
-/// which consumes the Vec without copying. Option arm: `Vec<#native>` + parallel
-/// `MutableBitmap` + `PrimitiveArray::new`. When `info.widen_from` is `Some`,
-/// the bare push reads the field as `(#access) as #target` and the
-/// validity-arm `Some` push extracts via `(*v) as #target`.
 pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKind) -> LeafArm {
     let info = crate::codegen::type_registry::numeric_info_for(kind, ctx.paths);
     let buf = idents::primitive_buf(ctx.base.idx);
@@ -176,9 +123,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
 
     match arm {
         LeafArmKind::Bare => {
-            // Widening (`isize`/`usize` → `i64`/`u64`) casts the field expression to
-            // `info.native` (the storage type), not to `info.widen_from` (the
-            // source type) — `widen_from.is_some()` is just the gating signal.
             let bare_value = if kind.is_nonzero() || info.widen_from.is_some() {
                 crate::codegen::type_registry::numeric_stored_value(
                     kind,
@@ -199,12 +143,6 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
             }
         }
         LeafArmKind::Option { .. } => {
-            // `Some` arm pushes the value (validity pre-filled to `true` is wrong —
-            // we use push-based MutableBitmap here, no pre-fill); `None` arm pushes
-            // `<#native>::default()` and `validity.push(false)`. Splitting value vs
-            // validity into independent pushes lets the compiler vectorize cleanly.
-            // Non-trivial option/smart-pointer access chains are collapsed
-            // before this leaf arm is invoked.
             let v = idents::leaf_value();
             let some_push_value =
                 crate::codegen::type_registry::numeric_stored_value(kind, quote! { #v }, native);
@@ -238,12 +176,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
     }
 }
 
-/// `String` leaf. Bare arm: `MutableBinaryViewArray<str>` accumulator —
-/// bypasses the `Vec<&str>` round-trip and the second walk
-/// `Series::new(&Vec<&str>)` would do via `from_slice_values`. Option arm:
-/// MBVA + parallel `MutableBitmap` (pre-filled `true`) + row counter; `Some`
-/// pushes the borrowed `&str` (no validity work), `None` pushes "" and flips
-/// a single bit via the safe `MutableBitmap::set`.
+/// `String` leaf uses `MutableBinaryViewArray<str>` to avoid a `Vec<&str>` pass.
 pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -296,12 +229,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     }
 }
 
-/// `Binary` leaf — `#[df_derive(as_binary)]` over a `Vec<u8>` shape. Bare
-/// arm: `MutableBinaryViewArray<[u8]>` accumulator, mirrors the `String`
-/// path's MBVA bypass (no `Vec<&[u8]>` round-trip). Option arm: MBVA +
-/// parallel `MutableBitmap` (pre-filled `true`) + row counter; `Some`
-/// pushes the borrowed `&[u8]` (no validity work), `None` pushes an empty
-/// slice and flips a single bit via `MutableBitmap::set`.
+/// `Binary` leaf for `#[df_derive(as_binary)]` over a `Vec<u8>` shape.
 pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -361,9 +289,7 @@ fn bytes_ref_expr(binding: &proc_macro2::TokenStream) -> proc_macro2::TokenStrea
     quote! { ::core::convert::AsRef::<[u8]>::as_ref(#binding) }
 }
 
-/// `bool` leaf. Bare arm: `Vec<bool>` + `Series::new`. Option arm uses a
-/// bitmap-pair layout: values pre-filled `false`, validity pre-filled `true`,
-/// and one row counter.
+/// `bool` option arms use a values bitmap plus a validity bitmap.
 pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
@@ -384,8 +310,6 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }
         }
         LeafArmKind::Option { .. } => {
-            // Non-trivial option/smart-pointer access chains are collapsed
-            // before this leaf arm is invoked.
             let option_push = quote! {
                 match (#access) {
                     ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
@@ -418,11 +342,6 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     }
 }
 
-/// Build push tokens for a `Vec<...>` (or `Vec<Option<...>>`) buffer that
-/// holds the result of a per-row mapped expression — used by `Decimal` and
-/// `DateTime` leaves which share the same shape (`buf.push({ mapped })` for
-/// bare, `match Some/None => Some(mapped)/None` for option). Returns the
-/// arm-specific push expression.
 fn mapped_push(ctx: &LeafCtx<'_>, leaf: ScalarTransform, arm: LeafArmKind) -> TokenStream {
     let buf = idents::primitive_buf(ctx.base.idx);
     let access = ctx.base.access;
@@ -462,9 +381,6 @@ fn mapped_push(ctx: &LeafCtx<'_>, leaf: ScalarTransform, arm: LeafArmKind) -> To
     }
 }
 
-/// `Decimal` leaf with a `DecimalToInt128` transform. Bare: `Vec<i128>` +
-/// `Int128Chunked::from_vec` + `into_decimal_unchecked`. Option: switches to
-/// `Vec<Option<i128>>` + `from_iter_options` + `into_decimal_unchecked`.
 pub(super) fn decimal_leaf(
     ctx: &LeafCtx<'_>,
     precision: u8,
@@ -508,17 +424,10 @@ pub(super) fn decimal_leaf(
     }
 }
 
-/// `DateTime<Tz>` leaf with a `DateTimeToInt(unit)` transform. Bare:
-/// `Vec<i64>` + `Series::new` + cast to `Datetime(unit, None)`. Option:
-/// switches to `Vec<Option<i64>>` with the same finish path (`Series::new`
-/// + cast); only the element type changes.
 pub(super) fn datetime_leaf(ctx: &LeafCtx<'_>, unit: DateTimeUnit, arm: LeafArmKind) -> LeafArm {
     mapped_cast_leaf(ctx, ScalarTransform::DateTime(unit), &quote! { i64 }, arm)
 }
 
-/// `NaiveDateTime` leaf with a `NaiveDateTimeToInt(unit)` transform. Same
-/// storage and dtype as `datetime_leaf`, but maps through `and_utc()` so the
-/// naive value is interpreted against the Unix epoch without a timezone.
 pub(super) fn naive_datetime_leaf(
     ctx: &LeafCtx<'_>,
     unit: DateTimeUnit,
@@ -532,21 +441,14 @@ pub(super) fn naive_datetime_leaf(
     )
 }
 
-/// `NaiveDate` leaf — i32 days since 1970-01-01. Bare: `Vec<i32>` +
-/// `Series::new` + cast to `Date`. Option: `Vec<Option<i32>>`. Shape
-/// matches `datetime_leaf` modulo native type / cast dtype.
 pub(super) fn naive_date_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     mapped_cast_leaf(ctx, ScalarTransform::NaiveDate, &quote! { i32 }, arm)
 }
 
-/// `NaiveTime` leaf — i64 nanoseconds since midnight. Bare: `Vec<i64>` +
-/// `Series::new` + cast to `Time`.
 pub(super) fn naive_time_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     mapped_cast_leaf(ctx, ScalarTransform::NaiveTime, &quote! { i64 }, arm)
 }
 
-/// `Duration` leaf (std or chrono) — i64 ticks, unit decided at parse time.
-/// Bare: `Vec<i64>` + `Series::new` + cast to `Duration(unit)`.
 pub(super) fn duration_leaf(
     ctx: &LeafCtx<'_>,
     unit: DateTimeUnit,
@@ -561,12 +463,7 @@ pub(super) fn duration_leaf(
     )
 }
 
-/// Shared body of every `Vec<#native>` + `Series::new` + `.cast(&dtype)?`
-/// leaf — `DateTime`, `NaiveDateTime`, `NaiveDate`, `NaiveTime`, both
-/// Duration variants.
-/// Each caller passes the leaf spec (drives `mapped_push` and the cast
-/// dtype) and the native storage type; arm selection swaps between
-/// `Vec<#native>` and `Vec<Option<#native>>`.
+/// Shared mapped-scalar finish path for temporal and duration leaves.
 fn mapped_cast_leaf(
     ctx: &LeafCtx<'_>,
     leaf: ScalarTransform,
@@ -597,10 +494,7 @@ fn mapped_cast_leaf(
     }
 }
 
-/// `as_string` (Display) leaf. Reused `String` scratch + MBVA accumulator —
-/// each row clears the scratch, runs `Display::fmt` into it, then pushes the
-/// resulting `&str` to the view array (which copies the bytes). Option arm
-/// adds the validity bitmap pair on top of the same MBVA + scratch layout.
+/// `as_string` uses one reusable scratch buffer plus the string-view array.
 pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
@@ -679,12 +573,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     }
 }
 
-/// `as_str` (borrowed) leaf. Borrows `&str` values from `items` long enough
-/// to copy them into a `MutableBinaryViewArray<str>` accumulator. `StringyBase`
-/// carries the type-path information (`String`, the field's struct ident, or
-/// a generic-parameter ident) and lets the bare-`String` deref-coercion path
-/// stay distinct from the UFCS path — both are produced by
-/// [`super::stringy_value_expr`].
+/// `as_str` borrows long enough to copy into `MutableBinaryViewArray<str>`.
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);

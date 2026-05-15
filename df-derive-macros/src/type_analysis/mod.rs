@@ -280,6 +280,14 @@ mod tests {
     }
 
     #[test]
+    fn does_not_treat_malformed_cow_as_semantic_base() {
+        let analyzed = analyze(&syn::parse_quote!(std::borrow::Cow<'a, str, Extra>));
+
+        assert!(analyzed.wrappers.is_empty());
+        assert!(matches!(analyzed.base, AnalyzedBase::Struct(_)));
+    }
+
+    #[test]
     fn recursively_analyzes_tuple_elements() {
         let analyzed = analyze(&syn::parse_quote!((i32, String)));
         let AnalyzedBase::Tuple(elements) = analyzed.base else {

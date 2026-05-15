@@ -79,14 +79,8 @@ pub(in crate::codegen) enum LogicalPrimitive {
     NaiveDateTime(DateTimeUnit),
     NaiveDate,
     NaiveTime,
-    Duration {
-        unit: DateTimeUnit,
-        source: DurationSource,
-    },
-    Decimal {
-        precision: u8,
-        scale: u8,
-    },
+    Duration(DateTimeUnit),
+    Decimal { precision: u8, scale: u8 },
 }
 
 impl LogicalPrimitive {
@@ -104,8 +98,7 @@ impl LogicalPrimitive {
             }
             Self::NaiveDate => quote! { #dt::Date },
             Self::NaiveTime => quote! { #dt::Time },
-            Self::Duration { unit, source } => {
-                let _ = source;
+            Self::Duration(unit) => {
                 let unit = time_unit_tokens(unit, paths);
                 quote! { #dt::Duration(#unit) }
             }
@@ -129,7 +122,7 @@ impl PrimitiveLeaf<'_> {
             Self::NaiveDateTime(unit) => LogicalPrimitive::NaiveDateTime(unit),
             Self::NaiveDate => LogicalPrimitive::NaiveDate,
             Self::NaiveTime => LogicalPrimitive::NaiveTime,
-            Self::Duration { unit, source } => LogicalPrimitive::Duration { unit, source },
+            Self::Duration { unit, source: _ } => LogicalPrimitive::Duration(unit),
             Self::Decimal { precision, scale } => LogicalPrimitive::Decimal { precision, scale },
         }
     }
@@ -162,7 +155,7 @@ impl ScalarTransform {
             Self::NaiveDateTime(unit) => LogicalPrimitive::NaiveDateTime(unit),
             Self::NaiveDate => LogicalPrimitive::NaiveDate,
             Self::NaiveTime => LogicalPrimitive::NaiveTime,
-            Self::Duration { unit, source } => LogicalPrimitive::Duration { unit, source },
+            Self::Duration { unit, source: _ } => LogicalPrimitive::Duration(unit),
             Self::Decimal { precision, scale } => LogicalPrimitive::Decimal { precision, scale },
         }
     }

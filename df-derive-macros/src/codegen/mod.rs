@@ -1,12 +1,14 @@
+mod asserts;
 mod bounds;
 mod columnar_impl;
 mod encoder;
 pub mod external_paths;
-mod helpers;
+mod names;
 mod schema_nested;
 mod strategy;
 mod support;
 mod trait_impl;
+mod type_deps;
 mod type_registry;
 
 use crate::ir::StructIR;
@@ -77,7 +79,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let support = support::generate_support(ir, config);
     let trait_impl = trait_impl::generate_trait_impl(ir, config);
     let columnar_impl = columnar_impl::generate_columnar_impl(ir, config);
-    let eager_asserts = helpers::generate_eager_asserts(
+    let eager_asserts = asserts::generate_eager_asserts(
         ir,
         &config.traits.to_dataframe,
         &config.traits.columnar,

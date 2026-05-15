@@ -64,7 +64,7 @@ pub fn build_field_emit(
 ) -> FieldEmit {
     let inner_it = idents::populator_iter();
     let parent_access = field_access(field, &inner_it);
-    let parent_name = crate::codegen::helpers::column_name_for_ident(&field.name);
+    let parent_name = crate::codegen::names::column_name_for_ident(&field.name);
 
     let mut builders: Vec<TokenStream> = Vec::with_capacity(elements.len());
     for (elem_idx, elem) in elements.iter().enumerate() {

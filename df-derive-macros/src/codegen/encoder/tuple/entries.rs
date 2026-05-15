@@ -14,7 +14,7 @@ pub fn build_field_entries(
     mode: EmitMode,
     config: &MacroConfig,
 ) -> TokenStream {
-    let parent_name = crate::codegen::helpers::column_name_for_ident(&field.name);
+    let parent_name = crate::codegen::names::column_name_for_ident(&field.name);
     let outer_layers = field.wrapper_shape.vec_depth();
     build_tuple_entries(elements, &parent_name, outer_layers, mode, config)
 }

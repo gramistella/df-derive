@@ -1,14 +1,6 @@
-//! Vec combinator + primitive vec dispatch + `build_leaf`.
+//! Vec combinator and primitive leaf dispatch.
 //!
-//! Implements the `vec(inner)` combinator that fuses N consecutive `Vec`
-//! layers into a single bulk emission (one flat values buffer at the
-//! deepest layer, one optional inner validity bitmap, one pair of offsets
-//! per layer, one optional outer-list validity bitmap per layer that has
-//! an adjoining `Option`). The bulk-fusion invariant lives here.
-//!
-//! Also hosts `build_leaf` — the dispatcher from a [`crate::ir::LeafSpec`]
-//! to a primitive leaf encoder — because it sits at the leaf/vec boundary
-//! and `try_build_vec_encoder` shares the leaf coverage matrix.
+//! `vec(inner)` fuses N consecutive `Vec` layers into one bulk emission.
 
 use crate::codegen::type_registry::ScalarTransform;
 use crate::ir::{PrimitiveLeaf, VecLayers};
@@ -21,63 +13,18 @@ use super::leaf::{LeafArm, LeafArmKind, mb_decl_filled, validity_into_option};
 use super::leaf_kind::PerElementPush;
 use super::{Encoder, LeafCtx, leaf, list_offset_i64_expr};
 
-// --- Vec combinator ---
-
-/// Per-leaf-kind plumbing the `vec_for_*` combinator needs to assemble a
-/// flat `Vec<Native>` / `MutableBinaryViewArray<str>` / `MutableBitmap`
-/// over all elements across all outer rows, then wrap it in one or two
-/// `LargeListArray::new` layers. Each variant pairs a per-element store
-/// expression (used by both bare and option-Some arms) with the dtype
-/// tokens needed to build the leaf array and route through the in-scope
-/// `__df_derive_assemble_list_series_unchecked` helper.
-///
-/// Per-leaf-kind classification used by the `vec(inner)` combinator. The
-/// per-element push and the leaf-array build differ across these variants;
-/// every other piece of the bulk emit (precount loops, offsets vecs, list
-/// stacking, `__df_derive_assemble_list_series_unchecked` routing) is shared.
-///
-/// `Bool` carries no extra fields because the bit-packed values bitmap and
-/// the no-validity / pre-filled-validity arrays are constructed the same way
-/// regardless of context — the only knob is `has_inner_option`, which is
-/// already passed alongside the spec. The depth-1 bare-bool fast path
-/// (flat `Vec<bool>` + `BooleanArray::from_slice`) is served by a
-/// dedicated builder ahead of this enum, not by an extra variant.
 enum VecLeafSpec {
-    /// Numeric (i8/i16/.../f64) and the single-`i128`/`i64` transform leaves
-    /// (`Decimal` -> `i128`, `DateTime` -> `i64`). All share
-    /// `PrimitiveArray::new` over `Vec<Native>` plus an optional
-    /// inner-validity bitmap.
-    ///
-    /// `value_expr` materializes the leaf value from the binding
-    /// `__df_derive_v` — the loop binding is `&T` for bare shapes and the
-    /// `Some(v)` arm of the inner option-match for nullable shapes (same
-    /// binding name in both, so a single expression suffices).
     Numeric {
         native: TokenStream,
         value_expr: TokenStream,
     },
-    /// `String` / `to_string` / `as_str` over `MutableBinaryViewArray<str>`.
-    /// `value_expr` materializes a `&str` from the `__df_derive_v` binding
-    /// (same convention as `Numeric`). `extra_decls` covers the per-row
-    /// `String` scratch used by `to_string` (placed before the MBVA so
-    /// cleanup ordering matches prior emission).
     StringLike {
         value_expr: TokenStream,
         extra_decls: Vec<TokenStream>,
     },
-    /// `Binary` (`#[df_derive(as_binary)]` over `Vec<Vec<u8>>` /
-    /// `Vec<Option<Vec<u8>>>`) over `MutableBinaryViewArray<[u8]>`.
-    /// `value_expr` materializes an `AsRef<[u8]>` from the `__df_derive_v`
-    /// binding (the loop binds `&Vec<u8>` so the expression is just
-    /// `&#v[..]`). Parallel to `StringLike` but freezes a `BinaryViewArray`
-    /// instead of a `Utf8ViewArray`.
-    BinaryLike { value_expr: TokenStream },
-    /// Bool over a bit-packed `MutableBitmap` values buffer. The
-    /// `has_inner_option` flag selects the inner-Option layout (parallel
-    /// validity bitmap pre-filled `true`) versus the bare layout
-    /// (no validity bitmap). Depth-1 bare-bool with no outer-Option layer
-    /// uses a flat `Vec<bool>` fast path and is served by
-    /// `vec_encoder_bool_bare` directly, not this enum.
+    BinaryLike {
+        value_expr: TokenStream,
+    },
     Bool,
 }
 
@@ -86,8 +33,6 @@ struct VecLeafPlan {
     leaf_dtype: TokenStream,
 }
 
-/// Bool-specific helper: returns the leaf-array construction tokens given
-/// whether the parent shape carries an inner validity bitmap.
 fn bool_leaf_array_tokens(
     pa_root: &TokenStream,
     has_inner_option: bool,
@@ -114,11 +59,7 @@ fn bool_leaf_array_tokens(
     }
 }
 
-/// The `usize` expression that becomes a checked `i64` list offset at the
-/// inner-vec-loop tail. Numeric / decimal / datetime use the flat-vec
-/// length; the string-view path uses the MBVA `len()` (which is the count
-/// of pushed views); the bool bit-packed-bitmap layout tracks a per-leaf
-/// index so it can stay in sync with both the values and validity bitmaps.
+/// The element-count expression that becomes the checked list offset.
 fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
     let flat = idents::vec_flat();
     let view_buf = idents::vec_view_buf();
@@ -132,14 +73,6 @@ fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
     }
 }
 
-/// Per-leaf storage decls + per-element push + leaf-array build.
-///
-/// Returns `(leaf_storage_decls, per_elem_push, leaf_arr_expr)`.
-/// `leaf_storage_decls` covers the values buffer + (when `has_inner_option`)
-/// the parallel `MutableBitmap` validity. `per_elem_push` is one per-element
-/// `match` (option) or push (bare) referencing the binding `__df_derive_v`.
-/// `leaf_arr_expr` produces the typed `PrimitiveArray<...>` /
-/// `Utf8ViewArray` / `BooleanArray` value bound to `__df_derive_leaf_arr`.
 fn build_vec_leaf_pieces(
     spec: &VecLeafSpec,
     has_inner_option: bool,
@@ -177,11 +110,6 @@ fn build_vec_leaf_pieces(
     }
 }
 
-/// Bit-packed values bitmap pre-filled `false`, with a per-leaf index
-/// counter for `set(idx, true)`. Used by deeper-than-1 / outer-Option-bearing
-/// `Vec<bool>` shapes that don't qualify for the depth-1 `from_slice`
-/// fast path. The leaf-array build skips the validity argument.
-///
 fn bool_bare_leaf_pieces(
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
@@ -220,8 +148,6 @@ fn numeric_leaf_pieces(
     let validity = idents::bool_validity();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
-    // Numeric / Decimal / DateTime: `Vec<#native>` flat values.
-    // Inner-Option carries a parallel `MutableBitmap` pre-filled `true`.
     let storage = if has_inner_option {
         let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
         quote! {
@@ -235,11 +161,6 @@ fn numeric_leaf_pieces(
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
         }
     };
-    // The bare and inner-Option arms both reference `__df_derive_v` — the
-    // bare arm gets it from the loop binding directly (the for-loop in
-    // `emit::pep_leaf_body` binds the leaf as `__df_derive_v`), the option
-    // arm gets it from the `Some(v)` pattern. Sharing one `value_expr`
-    // avoids two near-duplicate per-spec expressions.
     let push = if has_inner_option {
         quote! {
             match #v {
@@ -288,10 +209,6 @@ fn string_like_leaf_pieces(
     let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
-    // String / to_string / as_str: `MutableBinaryViewArray<str>` flat values.
-    // Inner-Option uses a separate validity bitmap pre-filled `true`, plus
-    // a row index that advances per element so `validity.set(i, false)`
-    // hits the right bit on `None`.
     let mut storage_parts: Vec<TokenStream> = Vec::new();
     for d in extra_decls {
         storage_parts.push(d.clone());
@@ -341,10 +258,6 @@ fn string_like_leaf_pieces(
     (storage, push, leaf_arr_expr)
 }
 
-/// Byte-blob analogue of [`string_like_leaf_pieces`]. Accumulates into
-/// `MutableBinaryViewArray<[u8]>` and freezes into `BinaryViewArray`. The
-/// `None` arm pushes an empty slice (`&[][..]`) so the bitmap-pair layout
-/// matches `string_like_leaf_pieces` byte-for-byte modulo the leaf type.
 fn binary_like_leaf_pieces(
     value_expr: &TokenStream,
     has_inner_option: bool,
@@ -411,10 +324,6 @@ fn bool_inner_option_leaf_pieces(
     let validity_ident = idents::bool_validity();
     let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
-    // Bool with inner-Option only — bare bool is served by
-    // `vec_encoder_bool_bare`. Bit-packed values bitmap (pre-filled `false`)
-    // + parallel validity bitmap (pre-filled `true`) + leaf index counter so
-    // `set(i, ...)` lands on the right bit.
     let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false, pa_root);
     let validity_decl = mb_decl_filled(&validity_ident, leaf_capacity_expr, true, pa_root);
     let storage = quote! {
@@ -442,25 +351,10 @@ fn bool_inner_option_leaf_pieces(
     (storage, push, leaf_arr_expr)
 }
 
-/// Per-field local for the assembled Series — one per (field, depth)
-/// combination, namespaced by `idx` so two adjacent fields don't collide.
 fn vec_encoder_series_local(idx: usize) -> syn::Ident {
     idents::vec_field_series(idx)
 }
 
-/// Build the encoder for a `[Vec, ...]` shape: a self-contained columnar
-/// block that allocates the per-field series local, renames it to the
-/// field's column name, and pushes it onto the call site's `columns` vec.
-/// The block is scoped so the per-field intermediate buffers (offsets vecs,
-/// validity bitmaps, the field Series itself) are confined to the field's
-/// scope.
-///
-/// Lowers `VecLeafSpec` (the per-element-push leaf description local to
-/// this file) into [`LeafKind::PerElementPush`] and routes through the
-/// shape-aware [`vec_emit_pep`]. The lowering is mechanical: the storage
-/// decls / per-elem push / leaf-array build / offsets-push expression are
-/// already shaped by `build_vec_leaf_pieces`; the leaf logical dtype rides
-/// into the shape-aware emitter via the `PerElementPush` payload.
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -483,10 +377,6 @@ fn vec_encoder(
     Encoder::Multi { columnar }
 }
 
-/// Lower a `VecLeafSpec` into a [`PerElementPush`] payload the unified
-/// emitter consumes. The leaf-capacity expression is `__df_derive_total_leaves`
-/// (the precount loop's leaf-element accumulator); `build_vec_leaf_pieces`
-/// returns storage decls keyed off it.
 fn lower_to_pep(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
@@ -509,10 +399,6 @@ fn lower_to_pep(
     }
 }
 
-/// Build the per-element-push payload for a primitive Vec leaf. Tuple Vec
-/// emission reuses this after its scan has projected the tuple element and
-/// rebound `__df_derive_v` to the actual leaf, keeping all string-like,
-/// numeric, bool, binary, and mapped-numeric leaf behavior in one place.
 pub(super) fn pep_for_primitive_leaf(
     leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
@@ -522,12 +408,7 @@ pub(super) fn pep_for_primitive_leaf(
     lower_to_pep(ctx, &plan.spec, shape, &plan.leaf_dtype)
 }
 
-/// Bare-bool variant of the vec encoder. At depth 1 with no inner-Option and
-/// no outer-Option layers, uses `BooleanArray::from_slice` (bulk, no
-/// bit-packing). For deeper or option-bearing shapes, routes through the
-/// generalized `vec_encoder` with `VecLeafSpec::Bool` — the
-/// `has_inner_option` flag (`false` here) selects the bare bit-packed
-/// `MutableBitmap` layout inside `build_vec_leaf_pieces`.
+/// Bare-bool variant with a depth-1 `BooleanArray::from_slice` fast path.
 fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     // The depth-1 fast path uses `(&access).iter().copied()`, which
     // requires a plain `&bool`-yielding iterator. Any inner access chain
@@ -556,8 +437,6 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
 }
 
-/// `Vec<bool>` body: `Vec::extend` per outer row into a flat `Vec<bool>`,
-/// then `BooleanArray::from_slice` at the end.
 fn bool_bare_depth1_body(
     access: &TokenStream,
     leaf_dtype: &TokenStream,
@@ -730,14 +609,6 @@ fn vec_leaf_plan(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>) -> VecLeafPlan {
     }
 }
 
-/// Build the depth-N `vec(inner)` encoder for every leaf shape. The
-/// [`LeafSpec`] already encodes the parser's accept set, so the match
-/// below is exhaustive by construction — `Struct`/`Generic` leaves never
-/// reach this dispatcher (they route through `build_nested_encoder`).
-///
-/// Covers: bare numeric, `ISize`/`USize` (widened to `i64`/`u64` at the leaf
-/// push site), `String`, `Bool`, `Decimal`, `DateTime`, `as_str` borrow,
-/// and `to_string`.
 pub(super) fn try_build_vec_encoder(
     leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
@@ -769,15 +640,6 @@ pub(super) fn try_build_vec_encoder(
     }
 }
 
-/// Build a single arm of the leaf encoder for a primitive `LeafSpec`. The
-/// `kind` parameter selects between the unwrapped (`Bare`) and `[Option]`
-/// (`Option`) shapes — only the requested arm is constructed. Total over
-/// the primitive variants of `LeafSpec` — `Struct`/`Generic` cannot reach
-/// this dispatcher because `super::strategy::LeafSpec::route` routes them
-/// through `build_nested_encoder`. The fixed-width and `ISize`/`USize`
-/// numeric variants both route to `numeric_leaf`; the widening info is
-/// carried inline on `NumericKind`, so the two provenances yield distinct
-/// push tokens without needing distinct dispatcher arms.
 pub(super) fn build_leaf(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>, kind: LeafArmKind) -> LeafArm {
     match leaf {
         PrimitiveLeaf::Numeric(num_kind) => leaf::numeric_leaf(ctx, num_kind, kind),

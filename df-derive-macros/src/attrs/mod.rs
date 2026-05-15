@@ -1,5 +1,7 @@
 mod container;
+mod decimal;
 mod field;
+mod field_conflicts;
 mod spanned;
 
 pub use container::{

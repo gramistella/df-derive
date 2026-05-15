@@ -162,10 +162,19 @@ fn cow_inner_type(type_path: &TypePath) -> Option<&Type> {
     let PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
-    args.args.iter().find_map(|arg| match arg {
-        GenericArgument::Type(ty) => Some(ty),
-        _ => None,
-    })
+    let mut inner_ty = None;
+    for arg in &args.args {
+        match arg {
+            GenericArgument::Lifetime(_) => {}
+            GenericArgument::Type(ty) => {
+                if inner_ty.replace(ty).is_some() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    inner_ty
 }
 
 pub(super) fn borrowed_reference_base(reference: &syn::TypeReference) -> Option<AnalyzedBase> {

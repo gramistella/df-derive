@@ -4,7 +4,7 @@ use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 use proc_macro2::Span;
 
 use super::diagnostics;
-use super::field::default_leaf_for_base;
+use super::leaf::default_leaf_for_base;
 use super::wrappers::normalize_wrappers;
 
 #[derive(Clone, Copy)]

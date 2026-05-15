@@ -1,4 +1,4 @@
-use crate::attrs::{FieldOverride, LeafOverride};
+use crate::attrs::LeafOverride;
 use crate::ir::TupleElement;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 use proc_macro2::Span;
@@ -8,15 +8,9 @@ use super::field::default_leaf_for_base;
 use super::wrappers::normalize_wrappers;
 
 #[derive(Clone, Copy)]
-pub(super) enum FieldOverrideRef<'a> {
-    Field {
-        value: &'a FieldOverride,
-        span: Span,
-    },
-    Leaf {
-        value: &'a LeafOverride,
-        span: Span,
-    },
+pub(super) enum FieldAttrRef<'a> {
+    Binary { span: Span },
+    Leaf { value: &'a LeafOverride, span: Span },
 }
 
 /// Reject every field-level override on a tuple-typed field with a
@@ -28,28 +22,15 @@ pub(super) enum FieldOverrideRef<'a> {
 pub(super) fn reject_attrs_on_tuple(
     _field: &syn::Field,
     field_display_name: &str,
-    override_: Option<FieldOverrideRef<'_>>,
+    override_: Option<FieldAttrRef<'_>>,
 ) -> Result<(), syn::Error> {
     let (attr, span) = match override_ {
-        None
-        | Some(FieldOverrideRef::Field {
-            value: FieldOverride::Skip,
-            ..
-        }) => return Ok(()),
-        Some(FieldOverrideRef::Field {
-            value: FieldOverride::AsBinary,
+        None => return Ok(()),
+        Some(FieldAttrRef::Binary { span }) => ("as_binary", span),
+        Some(FieldAttrRef::Leaf {
+            value: override_,
             span,
-        }) => ("as_binary", span),
-        Some(
-            FieldOverrideRef::Field {
-                value: FieldOverride::Leaf(override_),
-                span,
-            }
-            | FieldOverrideRef::Leaf {
-                value: override_,
-                span,
-            },
-        ) => match override_ {
+        }) => match override_ {
             LeafOverride::AsStr => ("as_str", span),
             LeafOverride::AsString => ("as_string", span),
             LeafOverride::Decimal { .. } => ("decimal(...)", span),

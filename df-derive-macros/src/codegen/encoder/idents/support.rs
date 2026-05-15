@@ -2,7 +2,7 @@ use quote::format_ident;
 use syn::Ident;
 
 pub(in crate::codegen) fn columns() -> Ident {
-    format_ident!("columns")
+    format_ident!("__df_derive_columns")
 }
 
 pub(in crate::codegen) fn populator_iter() -> Ident {

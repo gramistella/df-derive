@@ -4,9 +4,7 @@ use syn::spanned::Spanned as SynSpanned;
 
 use super::Spanned;
 
-/// Leaf-level conversion override declared via `#[df_derive(...)]`.
-/// `skip` and `as_binary` are field dispositions, so they are deliberately
-/// not representable here and cannot reach leaf parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeafOverride {
     AsStr,
     AsString,
@@ -14,20 +12,67 @@ pub enum LeafOverride {
     TimeUnit(DateTimeUnit),
 }
 
-/// Mutually-exclusive field-level override declared via `#[df_derive(...)]`.
-pub enum FieldOverride {
+#[derive(Clone, Debug)]
+pub enum FieldDisposition {
+    Include {
+        leaf_override: Option<Spanned<LeafOverride>>,
+    },
     Skip,
-    AsBinary,
+    Binary {
+        span: Span,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldAttr {
+    Skip,
+    Binary,
     Leaf(LeafOverride),
 }
 
-pub type ParsedFieldOverride = Option<Spanned<FieldOverride>>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldOverrideKey {
+    Skip,
+    AsBinary,
+    AsStr,
+    AsString,
+    Decimal,
+    TimeUnit,
+}
 
-impl FieldOverride {
-    pub const fn leaf(&self) -> Option<&LeafOverride> {
+impl FieldAttr {
+    const fn key(self) -> FieldOverrideKey {
         match self {
-            Self::Leaf(override_) => Some(override_),
-            Self::Skip | Self::AsBinary => None,
+            Self::Skip => FieldOverrideKey::Skip,
+            Self::Binary => FieldOverrideKey::AsBinary,
+            Self::Leaf(LeafOverride::AsStr) => FieldOverrideKey::AsStr,
+            Self::Leaf(LeafOverride::AsString) => FieldOverrideKey::AsString,
+            Self::Leaf(LeafOverride::Decimal { .. }) => FieldOverrideKey::Decimal,
+            Self::Leaf(LeafOverride::TimeUnit(_)) => FieldOverrideKey::TimeUnit,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self.key() {
+            FieldOverrideKey::Skip => "skip",
+            FieldOverrideKey::AsBinary => "as_binary",
+            FieldOverrideKey::AsStr => "as_str",
+            FieldOverrideKey::AsString => "as_string",
+            FieldOverrideKey::Decimal => "decimal(...)",
+            FieldOverrideKey::TimeUnit => "time_unit",
+        }
+    }
+
+    const fn into_disposition(self, span: Span) -> FieldDisposition {
+        match self {
+            Self::Skip => FieldDisposition::Skip,
+            Self::Binary => FieldDisposition::Binary { span },
+            Self::Leaf(leaf_override) => FieldDisposition::Include {
+                leaf_override: Some(Spanned {
+                    value: leaf_override,
+                    span,
+                }),
+            },
         }
     }
 }
@@ -128,19 +173,15 @@ fn parse_time_unit_attr(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<DateTim
     }
 }
 
-/// Build the conflict error when a second mutually-exclusive override key is
-/// encountered after the first has already been set. Spans on the field so
-/// the message lands on the entire `#[df_derive(...)]` plus declaration block.
 fn override_conflict(
     field: &syn::Field,
     field_display_name: &str,
-    existing: &FieldOverride,
-    incoming: &FieldOverride,
+    existing: FieldAttr,
+    incoming: FieldAttr,
 ) -> syn::Error {
     let message = match (existing, incoming) {
-        (FieldOverride::Leaf(LeafOverride::AsStr), FieldOverride::Leaf(LeafOverride::AsString))
-        | (FieldOverride::Leaf(LeafOverride::AsString), FieldOverride::Leaf(LeafOverride::AsStr)) =>
-        {
+        (FieldAttr::Leaf(LeafOverride::AsStr), FieldAttr::Leaf(LeafOverride::AsString))
+        | (FieldAttr::Leaf(LeafOverride::AsString), FieldAttr::Leaf(LeafOverride::AsStr)) => {
             format!(
                 "field `{field_display_name}` has both `as_str` and `as_string`; \
              pick one — `as_str` borrows via `AsRef<str>` without formatting, \
@@ -148,12 +189,12 @@ fn override_conflict(
             )
         }
         (
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-            FieldOverride::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
+            FieldAttr::Leaf(LeafOverride::Decimal { .. }),
+            FieldAttr::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
         )
         | (
-            FieldOverride::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
+            FieldAttr::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
+            FieldAttr::Leaf(LeafOverride::Decimal { .. }),
         ) => {
             format!(
                 "field `{field_display_name}` combines `decimal(...)` with `as_str`/`as_string`; \
@@ -162,12 +203,12 @@ fn override_conflict(
             )
         }
         (
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-            FieldOverride::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(_)),
+            FieldAttr::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
         )
         | (
-            FieldOverride::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
+            FieldAttr::Leaf(LeafOverride::AsStr | LeafOverride::AsString),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(_)),
         ) => {
             format!(
                 "field `{field_display_name}` combines `time_unit = \"...\"` with \
@@ -176,12 +217,12 @@ fn override_conflict(
             )
         }
         (
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
+            FieldAttr::Leaf(LeafOverride::Decimal { .. }),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(_)),
         )
         | (
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(_)),
+            FieldAttr::Leaf(LeafOverride::Decimal { .. }),
         ) => format!(
             "field `{field_display_name}` combines `decimal(...)` with `time_unit = \"...\"`; \
              pick one — `decimal(...)` applies to decimal backend candidates, \
@@ -189,45 +230,25 @@ fn override_conflict(
              `chrono::NaiveDateTime`, `std::time::Duration`, \
              `core::time::Duration`, or `chrono::Duration`"
         ),
-        (FieldOverride::Skip, _) | (_, FieldOverride::Skip) => format!(
+        (FieldAttr::Skip, _) | (_, FieldAttr::Skip) => format!(
             "field `{field_display_name}` combines `skip` with another field attribute; \
              `skip` omits the field entirely, so conversion attributes have no effect; drop one"
         ),
-        (FieldOverride::AsBinary, _) | (_, FieldOverride::AsBinary) => format!(
+        (FieldAttr::Binary, _) | (_, FieldAttr::Binary) => format!(
             "field `{field_display_name}` combines `as_binary` with another override; \
              `as_binary` produces a Binary column over a `Vec<u8>` shape and is \
              mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and \
              `time_unit = \"...\"` — drop one"
         ),
-        (FieldOverride::Leaf(LeafOverride::AsStr), FieldOverride::Leaf(LeafOverride::AsStr))
-        | (
-            FieldOverride::Leaf(LeafOverride::AsString),
-            FieldOverride::Leaf(LeafOverride::AsString),
-        )
-        | (
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-            FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-        )
-        | (
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-            FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-        ) => format!(
+        _ if existing.key() == incoming.key() => format!(
             "field `{field_display_name}` declares duplicate `{}` override; remove one",
-            override_key(incoming)
+            incoming.label()
         ),
+        _ => {
+            format!("field `{field_display_name}` combines incompatible field attributes; drop one")
+        }
     };
     syn::Error::new_spanned(field, message)
-}
-
-const fn override_key(override_: &FieldOverride) -> &'static str {
-    match override_ {
-        FieldOverride::Skip => "skip",
-        FieldOverride::AsBinary => "as_binary",
-        FieldOverride::Leaf(LeafOverride::AsStr) => "as_str",
-        FieldOverride::Leaf(LeafOverride::AsString) => "as_string",
-        FieldOverride::Leaf(LeafOverride::Decimal { .. }) => "decimal(...)",
-        FieldOverride::Leaf(LeafOverride::TimeUnit(_)) => "time_unit",
-    }
 }
 
 const fn time_unit_attr_value(unit: DateTimeUnit) -> &'static str {
@@ -240,19 +261,19 @@ const fn time_unit_attr_value(unit: DateTimeUnit) -> &'static str {
 
 fn duplicate_override_conflict(
     field_display_name: &str,
-    existing: &FieldOverride,
-    incoming: &FieldOverride,
+    existing: FieldAttr,
+    incoming: FieldAttr,
     existing_span: Span,
     incoming_span: Span,
 ) -> syn::Error {
-    let key = override_key(incoming);
+    let key = incoming.label();
     let message = match (existing, incoming) {
         (
-            FieldOverride::Leaf(LeafOverride::Decimal {
+            FieldAttr::Leaf(LeafOverride::Decimal {
                 precision: existing_precision,
                 scale: existing_scale,
             }),
-            FieldOverride::Leaf(LeafOverride::Decimal {
+            FieldAttr::Leaf(LeafOverride::Decimal {
                 precision: incoming_precision,
                 scale: incoming_scale,
             }),
@@ -264,11 +285,11 @@ fn duplicate_override_conflict(
             )
         }
         (
-            FieldOverride::Leaf(LeafOverride::TimeUnit(existing_unit)),
-            FieldOverride::Leaf(LeafOverride::TimeUnit(incoming_unit)),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(existing_unit)),
+            FieldAttr::Leaf(LeafOverride::TimeUnit(incoming_unit)),
         ) if existing_unit != incoming_unit => {
-            let existing_unit = time_unit_attr_value(*existing_unit);
-            let incoming_unit = time_unit_attr_value(*incoming_unit);
+            let existing_unit = time_unit_attr_value(existing_unit);
+            let incoming_unit = time_unit_attr_value(incoming_unit);
             format!(
                 "field `{field_display_name}` declares duplicate `time_unit` overrides with \
                  different values; first is `{existing_unit}`, second is `{incoming_unit}`; pick one"
@@ -287,15 +308,11 @@ fn duplicate_override_conflict(
     error
 }
 
-/// Set `override_` to `incoming` only if no override has been declared yet;
-/// otherwise emit the conflict error for the (existing, incoming) pair. Same-key
-/// repeats (`#[df_derive(as_str, as_str)]`, two `decimal(...)` blocks) are
-/// rejected so users do not accidentally rely on declaration order.
 fn set_override(
     field: &syn::Field,
     field_display_name: &str,
-    override_: &mut Option<(FieldOverride, Span)>,
-    incoming: FieldOverride,
+    override_: &mut Option<(FieldAttr, Span)>,
+    incoming: FieldAttr,
     incoming_span: Span,
 ) -> Result<(), syn::Error> {
     match override_ {
@@ -303,11 +320,11 @@ fn set_override(
             *override_ = Some((incoming, incoming_span));
             Ok(())
         }
-        Some((existing, existing_span)) if same_override_key(existing, &incoming) => {
+        Some((existing, existing_span)) if same_override_key(*existing, incoming) => {
             Err(duplicate_override_conflict(
                 field_display_name,
-                existing,
-                &incoming,
+                *existing,
+                incoming,
                 *existing_span,
                 incoming_span,
             ))
@@ -315,41 +332,21 @@ fn set_override(
         Some((existing, _)) => Err(override_conflict(
             field,
             field_display_name,
-            existing,
-            &incoming,
+            *existing,
+            incoming,
         )),
     }
 }
 
-const fn same_override_key(existing: &FieldOverride, incoming: &FieldOverride) -> bool {
-    matches!(
-        (existing, incoming),
-        (FieldOverride::Skip, FieldOverride::Skip)
-            | (FieldOverride::AsBinary, FieldOverride::AsBinary)
-            | (
-                FieldOverride::Leaf(LeafOverride::AsStr),
-                FieldOverride::Leaf(LeafOverride::AsStr),
-            )
-            | (
-                FieldOverride::Leaf(LeafOverride::AsString),
-                FieldOverride::Leaf(LeafOverride::AsString),
-            )
-            | (
-                FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-                FieldOverride::Leaf(LeafOverride::Decimal { .. }),
-            )
-            | (
-                FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-                FieldOverride::Leaf(LeafOverride::TimeUnit(_)),
-            )
-    )
+fn same_override_key(existing: FieldAttr, incoming: FieldAttr) -> bool {
+    existing.key() == incoming.key()
 }
 
-pub fn parse_field_override(
+pub fn parse_field_disposition(
     field: &syn::Field,
     field_display_name: &str,
-) -> Result<ParsedFieldOverride, syn::Error> {
-    let mut override_: Option<(FieldOverride, Span)> = None;
+) -> Result<FieldDisposition, syn::Error> {
+    let mut override_: Option<(FieldAttr, Span)> = None;
     for attr in &field.attrs {
         if attr.path().is_ident("df_derive") {
             attr.parse_nested_meta(|meta| {
@@ -359,7 +356,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::Skip,
+                        FieldAttr::Skip,
                         incoming_span,
                     )
                 } else if meta.path.is_ident("as_string") {
@@ -367,7 +364,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::Leaf(LeafOverride::AsString),
+                        FieldAttr::Leaf(LeafOverride::AsString),
                         incoming_span,
                     )
                 } else if meta.path.is_ident("as_str") {
@@ -375,7 +372,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::Leaf(LeafOverride::AsStr),
+                        FieldAttr::Leaf(LeafOverride::AsStr),
                         incoming_span,
                     )
                 } else if meta.path.is_ident("as_binary") {
@@ -383,7 +380,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::AsBinary,
+                        FieldAttr::Binary,
                         incoming_span,
                     )
                 } else if meta.path.is_ident("decimal") {
@@ -392,7 +389,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::Leaf(LeafOverride::Decimal { precision, scale }),
+                        FieldAttr::Leaf(LeafOverride::Decimal { precision, scale }),
                         incoming_span,
                     )
                 } else if meta.path.is_ident("time_unit") {
@@ -401,7 +398,7 @@ pub fn parse_field_override(
                         field,
                         field_display_name,
                         &mut override_,
-                        FieldOverride::Leaf(LeafOverride::TimeUnit(unit)),
+                        FieldAttr::Leaf(LeafOverride::TimeUnit(unit)),
                         incoming_span,
                     )
                 } else {
@@ -412,63 +409,69 @@ pub fn parse_field_override(
             })?;
         }
     }
-    Ok(override_.map(|(value, span)| Spanned { value, span }))
+    Ok(override_.map_or(
+        FieldDisposition::Include {
+            leaf_override: None,
+        },
+        |(value, span)| value.into_disposition(span),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_override(field: &syn::Field) -> syn::Result<ParsedFieldOverride> {
-        parse_field_override(field, "value")
+    fn parse_disposition(field: &syn::Field) -> syn::Result<FieldDisposition> {
+        parse_field_disposition(field, "value")
     }
 
-    fn override_value(field: &syn::Field) -> FieldOverride {
-        parse_override(field)
-            .expect("field override should parse")
-            .expect("field override should be present")
-            .value
+    fn leaf_override_value(field: &syn::Field) -> LeafOverride {
+        let disposition = parse_disposition(field).expect("field disposition should parse");
+        let FieldDisposition::Include {
+            leaf_override: Some(leaf_override),
+        } = disposition
+        else {
+            panic!("field leaf override should be present");
+        };
+        leaf_override.value
     }
 
     #[test]
     fn parses_string_and_decimal_field_overrides() {
-        let as_str = override_value(&syn::parse_quote! {
+        let as_str = leaf_override_value(&syn::parse_quote! {
             #[df_derive(as_str)]
             value: String
         });
-        assert!(matches!(as_str, FieldOverride::Leaf(LeafOverride::AsStr)));
+        assert!(matches!(as_str, LeafOverride::AsStr));
 
-        let as_string = override_value(&syn::parse_quote! {
+        let as_string = leaf_override_value(&syn::parse_quote! {
             #[df_derive(as_string)]
             value: DisplayType
         });
-        assert!(matches!(
-            as_string,
-            FieldOverride::Leaf(LeafOverride::AsString)
-        ));
+        assert!(matches!(as_string, LeafOverride::AsString));
 
-        let decimal = override_value(&syn::parse_quote! {
+        let decimal = leaf_override_value(&syn::parse_quote! {
             #[df_derive(decimal(precision = 10, scale = 2))]
             value: Decimal
         });
         assert!(matches!(
             decimal,
-            FieldOverride::Leaf(LeafOverride::Decimal {
+            LeafOverride::Decimal {
                 precision: 10,
                 scale: 2,
-            })
+            }
         ));
     }
 
     #[test]
     fn rejects_duplicate_decimal_keys_and_bad_time_units() {
-        let duplicate_decimal = parse_override(&syn::parse_quote! {
+        let duplicate_decimal = parse_disposition(&syn::parse_quote! {
             #[df_derive(decimal(precision = 10, precision = 11, scale = 2))]
             value: Decimal
         });
         assert!(duplicate_decimal.is_err());
 
-        let bad_time_unit = parse_override(&syn::parse_quote! {
+        let bad_time_unit = parse_disposition(&syn::parse_quote! {
             #[df_derive(time_unit = "bad")]
             value: chrono::NaiveDateTime
         });
@@ -477,7 +480,7 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_string_overrides() {
-        let result = parse_override(&syn::parse_quote! {
+        let result = parse_disposition(&syn::parse_quote! {
             #[df_derive(as_str, as_string)]
             value: String
         });

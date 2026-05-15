@@ -1,9 +1,9 @@
-use crate::attrs::{FieldOverride, LeafOverride, parse_field_override};
+use crate::attrs::{FieldDisposition, LeafOverride, Spanned, parse_field_disposition};
 use crate::ir::{
     DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase,
 };
 use crate::lower::tuple::{
-    FieldOverrideRef, analyzed_to_tuple_element, reject_attrs_on_tuple,
+    FieldAttrRef, analyzed_to_tuple_element, reject_attrs_on_tuple,
     reject_unsupported_wrapped_nested_tuples,
 };
 use crate::lower::validation::reject_direct_self_reference;
@@ -18,19 +18,6 @@ use syn::Ident;
 
 use super::diagnostics;
 
-/// Single source of truth for combining a parsed `FieldOverride` with the
-/// analyzed base type into the final `LeafSpec` carried on the IR. Performs
-/// base-type compatibility checks for every override variant and injects
-/// the default semantics (`DateTimeToInt(Milliseconds)` for
-/// `chrono::DateTime<Tz>`, `Decimal(38, 10)` for bare `Decimal` /
-/// `rust_decimal::Decimal`)
-/// when no override was declared.
-///
-/// The match is exhaustive over `(FieldOverride, AnalyzedBase)` and produces
-/// one `LeafSpec` per parser-accepted pair — no `unreachable!` arms downstream.
-/// `AsBinary` is handled in [`lower_field`] before this function runs
-/// because it also rewrites the wrapper stack (strips the innermost `Vec`),
-/// so it cannot be expressed as a `(base, override) -> LeafSpec` mapping.
 fn parse_leaf_spec(
     field: &syn::Field,
     field_display_name: &str,
@@ -45,7 +32,7 @@ fn parse_leaf_spec(
         reject_attrs_on_tuple(
             field,
             field_display_name,
-            Some(FieldOverrideRef::Leaf {
+            Some(FieldAttrRef::Leaf {
                 value: override_,
                 span,
             }),
@@ -64,15 +51,6 @@ fn parse_leaf_spec(
     }
 }
 
-/// Map an analyzed base to its default `LeafSpec` (no override declared).
-/// Each base picks the parser-injected default semantics — `Milliseconds`
-/// for `DateTime<Tz>`, `Nanoseconds` for `Duration`, `Decimal(38, 10)`,
-/// etc. The decimal default is intentionally syntax-based and narrow: bare
-/// `Decimal` and canonical `rust_decimal::Decimal` are treated as decimal
-/// backends while other paths require an explicit `decimal(...)` attribute.
-/// Tuple bases recurse: each element runs through the same default pipeline
-/// (no field-level overrides apply at element level — the parser rejects
-/// them on the parent field).
 pub(super) fn default_leaf_for_base<S: ToTokens + ?Sized>(
     span: &S,
     field_display_name: &str,
@@ -136,10 +114,6 @@ fn parse_leaf_as_str(
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
         AnalyzedBase::Struct(ty) => Ok(LeafSpec::AsStr(StringyBase::Struct(ty))),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::AsStr(StringyBase::Generic(ident))),
-        // Tuple bases reach this dispatcher only when `parse_leaf_spec`'s
-        // upstream `reject_attrs_on_tuple` was bypassed, which it isn't —
-        // but the match must be exhaustive on `AnalyzedBase`. Surface a
-        // distinct error if it ever does fire.
         AnalyzedBase::Tuple(_)
         | AnalyzedBase::Numeric(_)
         | AnalyzedBase::BorrowedBytes
@@ -194,9 +168,6 @@ fn display_base_for_as_string(
         AnalyzedBase::BorrowedSlice | AnalyzedBase::CowSlice => {
             Err(diagnostics::as_string_slice(field, field_display_name))
         }
-        // Tuple bases are rejected by `reject_attrs_on_tuple` before this
-        // function runs. Keep this branch explicit so any bypass still emits
-        // the same public diagnostic family instead of silently accepting it.
         AnalyzedBase::Tuple(_) => Err(diagnostics::as_string_tuple(field, field_display_name)),
     }
 }
@@ -209,12 +180,6 @@ fn parse_leaf_decimal(
     scale: u8,
 ) -> Result<LeafSpec, syn::Error> {
     match base {
-        // `Decimal` by name is the implicit path (`Decimal` or
-        // `rust_decimal::Decimal`). Proc macros cannot resolve whether an
-        // arbitrary custom type is *actually* a decimal type, so the explicit
-        // `decimal(...)` attribute is the user assertion that a differently
-        // named custom/generic backend should use the same `Decimal128Encode`
-        // dispatch.
         AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
             Ok(LeafSpec::Decimal { precision, scale })
         }
@@ -223,25 +188,21 @@ fn parse_leaf_decimal(
 }
 
 fn decimal_generic_params_for_override(
-    override_: Option<&FieldOverride>,
+    override_: Option<&LeafOverride>,
     base: &AnalyzedBase,
 ) -> Vec<Ident> {
     match (override_, base) {
-        (Some(FieldOverride::Leaf(LeafOverride::Decimal { .. })), AnalyzedBase::Generic(ident)) => {
-            vec![ident.clone()]
-        }
+        (Some(LeafOverride::Decimal { .. }), AnalyzedBase::Generic(ident)) => vec![ident.clone()],
         _ => Vec::new(),
     }
 }
 
 fn decimal_backend_ty_for_override(
-    override_: Option<&FieldOverride>,
+    override_: Option<&LeafOverride>,
     base: &AnalyzedBase,
 ) -> Option<syn::Type> {
     match (override_, base) {
-        (Some(FieldOverride::Leaf(LeafOverride::Decimal { .. })), AnalyzedBase::Struct(ty)) => {
-            Some(ty.clone())
-        }
+        (Some(LeafOverride::Decimal { .. }), AnalyzedBase::Struct(ty)) => Some(ty.clone()),
         _ => None,
     }
 }
@@ -273,16 +234,6 @@ fn parse_leaf_time_unit(
     }
 }
 
-/// Validate an `as_binary` field's analyzed `(base, wrappers)` pair and,
-/// on success, produce the rewritten `(LeafSpec::Binary, wrappers')` pair —
-/// `wrappers'` is `wrappers` with the innermost `Vec` stripped, since the
-/// `Vec<u8>` collapses into the leaf itself.
-///
-/// Accepts the shapes spelled out in the public docstring on `as_binary`:
-/// `Vec<u8>` / `Option<Vec<u8>>` / `Vec<Vec<u8>>` / `Vec<Option<Vec<u8>>>`
-/// / `Option<Vec<Vec<u8>>>` and so on. Rejects bare `u8`, `Option<u8>`,
-/// `Vec<Option<u8>>` (`BinaryView` cannot carry per-byte nulls), and any
-/// non-`u8` leaf with a tailored error message anchored at the field span.
 fn parse_as_binary_shape(
     field: &syn::Field,
     field_display_name: &str,
@@ -307,9 +258,6 @@ fn parse_as_binary_shape(
     match wrappers.last() {
         None => Err(diagnostics::bare_binary_u8(field, field_display_name)),
         Some(RawWrapper::Option) => {
-            // Either bare `Option<u8>` (single `Option` wrapper) or any deeper
-            // stack ending in `Option`-immediately-above-`u8`. Both share the
-            // "no per-byte nulls" rejection.
             if wrappers.len() == 1 {
                 Err(diagnostics::bare_binary_u8(field, field_display_name))
             } else {
@@ -327,10 +275,6 @@ fn parse_as_binary_shape(
     }
 }
 
-/// Run the per-field pipeline (override parsing, type analysis, leaf-spec
-/// resolution, wrapper normalization) and produce the corresponding `FieldIR`.
-/// Named and tuple arms share this body; they only differ in how `name_ident`
-/// and `field_index` are derived from the surrounding `Fields` shape.
 pub fn lower_field(
     field: &syn::Field,
     name_ident: Ident,
@@ -339,42 +283,41 @@ pub fn lower_field(
     generic_params: &[Ident],
 ) -> Result<Option<FieldIR>, syn::Error> {
     let display_name = name_ident.to_string();
-    let override_ = parse_field_override(field, &display_name)?;
-    let override_value = override_.as_ref().map(|override_| &override_.value);
-    let override_span = override_.as_ref().map(|override_| override_.span);
-    if matches!(override_value, Some(FieldOverride::Skip)) {
+    let disposition = parse_field_disposition(field, &display_name)?;
+    if matches!(disposition, FieldDisposition::Skip) {
         return Ok(None);
     }
     let analyzed = analyze_type(&field.ty, generic_params)?;
     reject_direct_self_reference(&analyzed, &display_name, struct_name)?;
     reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
+    let leaf_override: Option<&Spanned<LeafOverride>> = match &disposition {
+        FieldDisposition::Include { leaf_override } => leaf_override.as_ref(),
+        FieldDisposition::Skip => unreachable!("skip disposition returned before type analysis"),
+        FieldDisposition::Binary { .. } => None,
+    };
+    let leaf_override_value = leaf_override.map(|override_| &override_.value);
     let decimal_generic_params =
-        decimal_generic_params_for_override(override_value, &analyzed.base);
-    let decimal_backend_ty = decimal_backend_ty_for_override(override_value, &analyzed.base);
-    let (leaf_spec, wrapper_shape) = if matches!(override_value, Some(FieldOverride::AsBinary)) {
-        // `as_binary` over a tuple is rejected here too — `parse_as_binary_shape`
-        // only checks the leaf base, but the tuple itself fails the same
-        // multi-column attribute rule as every other field-level attribute.
-        if matches!(analyzed.base, AnalyzedBase::Tuple(_))
-            && let Some(value) = override_value
-            && let Some(span) = override_span
-        {
+        decimal_generic_params_for_override(leaf_override_value, &analyzed.base);
+    let decimal_backend_ty = decimal_backend_ty_for_override(leaf_override_value, &analyzed.base);
+    let (leaf_spec, wrapper_shape) = if let FieldDisposition::Binary { span } = &disposition {
+        if matches!(analyzed.base, AnalyzedBase::Tuple(_)) {
             reject_attrs_on_tuple(
                 field,
                 &display_name,
-                Some(FieldOverrideRef::Field { value, span }),
+                Some(FieldAttrRef::Binary { span: *span }),
             )?;
         }
         let (leaf, trimmed) =
             parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
         (leaf, normalize_wrappers(&trimmed))
     } else {
+        let leaf_override_span = leaf_override.map(|override_| override_.span);
         let leaf = parse_leaf_spec(
             field,
             &display_name,
-            override_value.and_then(FieldOverride::leaf),
-            override_span,
+            leaf_override_value,
+            leaf_override_span,
             analyzed.base,
         )?;
         (leaf, normalize_wrappers(&analyzed.wrappers))

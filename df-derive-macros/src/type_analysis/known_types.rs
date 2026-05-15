@@ -4,6 +4,7 @@ use syn::{GenericArgument, PathArguments, Type, TypePath};
 use super::AnalyzedBase;
 use super::path_match::{PathView, path_is_exact_no_args, path_is_exact_with_leaf_args};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum KnownBase {
     Numeric(NumericKind),
     Bool,

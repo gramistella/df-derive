@@ -57,6 +57,15 @@ impl GenericContext {
     }
 }
 
+#[derive(PartialEq, Eq)]
+struct TypeKey(String);
+
+impl TypeKey {
+    fn new(ty: &Type) -> Self {
+        Self(ty.to_token_stream().to_string())
+    }
+}
+
 pub fn generate_eager_asserts(
     ir: &StructIR,
     to_dataframe_trait: &syn::Path,
@@ -184,11 +193,8 @@ fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &
 }
 
 pub(in crate::codegen) fn push_unique_type(out: &mut Vec<Type>, ty: &Type) {
-    let key = ty.to_token_stream().to_string();
-    if !out
-        .iter()
-        .any(|existing| existing.to_token_stream().to_string() == key)
-    {
+    let key = TypeKey::new(ty);
+    if !out.iter().any(|existing| TypeKey::new(existing) == key) {
         out.push(ty.clone());
     }
 }

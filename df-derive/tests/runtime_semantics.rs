@@ -84,3 +84,6 @@ mod mixed_row_behavior_lock;
 
 #[path = "runtime/58-mixed-wrapper-shape-row.rs"]
 mod mixed_wrapper_shape_row;
+
+#[path = "runtime/59-tuple-vector-projection.rs"]
+mod tuple_vector_projection;

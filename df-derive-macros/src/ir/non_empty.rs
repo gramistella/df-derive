@@ -1,7 +1,7 @@
 use std::ops::{Index, IndexMut};
 
 /// A non-empty sequence with the first element encoded in the type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NonEmpty<T> {
     first: T,
     rest: Vec<T>,

@@ -65,11 +65,24 @@ mod tests {
         assert!(is_direct_self_type(ty, &syn::parse_quote!(Node)));
     }
 
+    fn assert_not_direct(ty: &syn::Type) {
+        assert!(!is_direct_self_type(ty, &syn::parse_quote!(Node)));
+    }
+
     #[test]
     fn rejects_direct_self_recursion_shapes() {
         assert_direct(&syn::parse_quote!(Self));
         assert_direct(&syn::parse_quote!(Node<T>));
         assert_direct(&syn::parse_quote!(crate::Node<T>));
         assert_direct(&syn::parse_quote!(self::Node<T>));
+        assert_direct(&syn::parse_quote!(crate::Node<'a, T>));
+        assert_direct(&syn::parse_quote!(crate::Node<Assoc = X>));
+    }
+
+    #[test]
+    fn allows_non_direct_self_like_paths() {
+        assert_not_direct(&syn::parse_quote!(other::Node<T>));
+        assert_not_direct(&syn::parse_quote!(super::Node<T>));
+        assert_not_direct(&syn::parse_quote!(crate::module::Node<T>));
     }
 }

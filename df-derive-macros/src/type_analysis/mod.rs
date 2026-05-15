@@ -27,7 +27,7 @@ pub const DEFAULT_DECIMAL_SCALE: u8 = 10;
 
 /// Raw wrapper position before normalization. The parser collapses these
 /// into a `WrapperShape` after type analysis.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RawWrapper {
     Option,
     Vec,

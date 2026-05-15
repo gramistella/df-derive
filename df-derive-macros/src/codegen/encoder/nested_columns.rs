@@ -33,7 +33,7 @@ pub(super) enum NestedWrapper<'a> {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NestedMaterializeKind {
     LeafBare,
     LeafOptional,
@@ -357,10 +357,6 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
     )
 }
 
-/// Build the per-column emit body that iterates `<T as ToDataFrame>::schema()?`
-/// and pushes each inner-Series-yielding expression onto `columns` with the
-/// parent name prefixed. Shared by every nested dispatch arm, with each arm
-/// supplying a different per-column inner-Series expression.
 pub(super) fn consume_nested_columns(
     columns: &syn::Ident,
     parent_name: &str,

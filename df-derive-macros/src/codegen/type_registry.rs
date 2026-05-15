@@ -6,41 +6,13 @@ use quote::{format_ident, quote};
 
 use super::external_paths::ExternalPaths;
 
-/// Token bundle for one numeric-shaped primitive base. Every fast-path
-/// emitter consumes some subset of these — collected here so the 14-arm
-/// match per metadata kind doesn't have to be repeated at every call site.
-///
-/// `widen_from` carries the SOURCE Rust type (`isize`/`usize`) when widening
-/// is needed; `native` is the storage type (`i64`/`u64` in that case). For
-/// fixed-width bases (`i8/i16/.../f64`) `widen_from` is `None` and `native`
-/// matches the source type. Polars supports only fixed-width integer
-/// lanes, so the encoder widens `ISize`/`USize` reads to `i64`/`u64` at the
-/// leaf push site and stores into a `Vec<i64>` / `Vec<u64>` whose downstream
-/// chunked-array build matches the schema dtype directly.
 pub(super) struct NumericInfo {
-    /// Native Rust storage type token, e.g. `i8`, `f64`. For `ISize`/`USize`
-    /// this is the widened storage type (`i64`/`u64`); for fixed-width bases
-    /// it equals the source type.
     pub native: TokenStream,
-    /// `#pp::DataType::<Variant>` for the leaf, e.g. `#pp::DataType::Int8`.
     pub dtype: TokenStream,
-    /// `#pp::<Variant>Chunked` alias, e.g. `#pp::Int8Chunked`.
     pub chunked: TokenStream,
-    /// `Some(source_type_tokens)` when the leaf push site must widen reads
-    /// (`isize`/`usize` → `i64`/`u64` via an `as` cast). `None` for
-    /// fixed-width bases where storage matches the source.
     pub widen_from: Option<TokenStream>,
 }
 
-/// Token bundle for the chosen numeric kind. Every numeric-shaped primitive
-/// goes through this. `ISize`/`USize` carry `widen_from = Some(isize|usize)`
-/// and `native = i64|u64`; the leaf push site reads `(*v) as i64` / `(*v) as
-/// u64` to match the storage type.
-///
-/// Total over `NumericKind` (no `Option` return) — the parser has already
-/// classified the leaf as numeric, so the encoder consumer knows the result
-/// is non-empty. The 14-arm match here is the one place that translates the
-/// parser-tagged kind into the polars-prelude token shape.
 pub(super) fn numeric_info_for(kind: NumericKind, paths: &ExternalPaths) -> NumericInfo {
     let pp = paths.prelude();
     let info = |native: TokenStream, variant: &str, widen_from: Option<TokenStream>| {
@@ -71,9 +43,6 @@ pub(super) fn numeric_info_for(kind: NumericKind, paths: &ExternalPaths) -> Nume
     }
 }
 
-/// Convert a source numeric expression into the value stored in the Polars
-/// primitive lane. `NonZero*` values project through `.get()`, while
-/// platform-sized integer families cast to the fixed-width lane Polars uses.
 pub(super) fn numeric_stored_value(
     kind: NumericKind,
     source_value: TokenStream,
@@ -91,7 +60,6 @@ pub(super) fn numeric_stored_value(
     }
 }
 
-/// Tokens for `polars::prelude::TimeUnit::<variant>`.
 pub(super) fn time_unit_tokens(unit: DateTimeUnit, paths: &ExternalPaths) -> TokenStream {
     let pp = paths.prelude();
     match unit {
@@ -101,7 +69,7 @@ pub(super) fn time_unit_tokens(unit: DateTimeUnit, paths: &ExternalPaths) -> Tok
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::codegen) enum LogicalPrimitive {
     Numeric(NumericKind),
     String,
@@ -166,28 +134,12 @@ impl PrimitiveLeaf<'_> {
         }
     }
 
-    /// Compile-time element-level dtype for this leaf, BEFORE the wrapper
-    /// stack adds `List<>` envelopes. The encoder also calls this directly
-    /// when it needs the leaf's logical dtype for the cast / typed-null path.
-    /// This is the single codegen mapping from [`LeafSpec`] to logical
-    /// Polars dtype; list assembly compatibility is maintained by
-    /// `encoder::shape_walk`, which pairs this logical dtype with the
-    /// physical Arrow arrays emitted by the leaf builders.
-    ///
-    /// `AsStr` shares the `String` arm because attribute stringification
-    /// (`as_string`) and borrowing (`as_str`) both materialize as `String`.
-    /// The borrowing path emits `Vec<&str>` buffers directly; dtype selection
-    /// remains a pure schema mapping.
     pub(super) fn dtype(&self, paths: &ExternalPaths) -> TokenStream {
         self.logical().dtype(paths)
     }
 }
 
-/// Primitive leaves that require a scalar expression transform before they
-/// can be pushed into their physical storage lane. String borrowing and
-/// `Display` formatting have dedicated encoders, so they are not members of
-/// this type and cannot accidentally route through the mapped-scalar path.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::codegen) enum ScalarTransform {
     DateTime(DateTimeUnit),
     NaiveDateTime(DateTimeUnit),
@@ -220,10 +172,6 @@ impl ScalarTransform {
     }
 }
 
-/// Full-field dtype: leaf dtype wrapped in `List<>` envelopes for each
-/// `Vec` layer in the wrapper stack. Consumers that want the leaf-only
-/// dtype (e.g. the encoder's per-leaf logical-dtype payload) call
-/// [`LeafSpec::dtype`] directly.
 pub fn full_dtype(
     leaf: PrimitiveLeaf<'_>,
     wrapper: &WrapperShape,
@@ -234,17 +182,10 @@ pub fn full_dtype(
     super::external_paths::wrap_list_layers_compile_time(pp, elem_dtype, wrapper.vec_depth())
 }
 
-/// Whether the expression passed to [`map_primitive_expr`] is a value place
-/// or an existing reference.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::codegen) enum PrimitiveExprReceiver {
-    /// `var` is a field/place expression that must be borrowed before
-    /// calling reference-taking trait methods.
     Place,
-    /// `var` already evaluates to `&T`.
     Ref,
-    /// `var` evaluates to `&&T`; this occurs when a collapsed option access
-    /// stores `Option<&T>` and the option leaf matches through `&(option)`.
     RefRef,
 }
 
@@ -258,10 +199,6 @@ impl PrimitiveExprReceiver {
     }
 }
 
-/// Map a per-row primitive value through a scalar storage transform
-/// (`DateTime` → epoch i64, `Decimal` → i128 mantissa, etc.). Leaves that do
-/// not need this scalar transform cannot be represented by
-/// [`ScalarTransform`].
 #[allow(clippy::too_many_lines)]
 pub fn map_primitive_expr(
     var: &TokenStream,

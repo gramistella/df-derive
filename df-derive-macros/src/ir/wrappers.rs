@@ -2,8 +2,7 @@ use std::num::NonZeroUsize;
 
 use super::{AccessChain, NonEmpty};
 
-/// Leaf-only wrapper stack.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeafShape {
     Bare,
     Optional {
@@ -28,9 +27,8 @@ impl LeafShape {
     }
 }
 
-/// One `Vec` layer in a normalized wrapper stack. Outermost layer first.
 /// Polars folds consecutive `Option`s at a list level into one validity bit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VecLayerSpec {
     pub option_layers_above: usize,
     pub access: AccessChain,
@@ -42,8 +40,7 @@ impl VecLayerSpec {
     }
 }
 
-/// Normalized form of a `Vec`-bearing wrapper stack.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VecLayers {
     pub layers: NonEmpty<VecLayerSpec>,
     pub inner_option_layers: usize,
@@ -64,16 +61,13 @@ impl VecLayers {
     }
 }
 
-/// Per-wrapper semantic shape. `Option` counts preserve source nesting even
-/// though Polars stores consecutive `Option`s as a single validity bit.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WrapperShape {
     Leaf(LeafShape),
     Vec(VecLayers),
 }
 
 impl WrapperShape {
-    /// Number of `Vec<...>` layers in the wrapper stack.
     pub const fn vec_depth(&self) -> usize {
         match self {
             Self::Leaf(_) => 0,

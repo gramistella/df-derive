@@ -40,6 +40,7 @@ fn tests() {
     t.pass("tests/pass/44-cow-unsized.rs");
     t.pass("tests/pass/46-datetime-timezones.rs");
     t.pass("tests/pass/47-option-access-chain-no-clone.rs");
+    t.pass("tests/pass/48-runtime-override-combinations.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");

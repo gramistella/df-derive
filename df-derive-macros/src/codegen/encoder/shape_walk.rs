@@ -117,24 +117,11 @@ fn projected_layer_bind(
     quote! { (#tuple_ref).map(|#param| #projected) }
 }
 
-/// Unified per-layer identifier bundle shared by the flat-vec path and the
-/// nested-struct path. Both paths construct these via the shared
-/// `emit::layer_idents` factory, which dispatches on `field_idx:
-/// Option<usize>` between the per-layer (per-element-push) and per-(field,
-/// layer) (collect-then-bulk) ident sets. Once built, every consumer (scan
-/// walker, precount walker, offsets-decl helper, validity-decl helper,
-/// final-assemble) reads from the same shape.
 pub(super) struct LayerIdents {
-    /// Mutable `Vec<i64>` offsets accumulator for this layer.
     pub offsets: syn::Ident,
-    /// Frozen `OffsetsBuffer<i64>` for this layer (post `try_from`).
     pub offsets_buf: syn::Ident,
-    /// Mutable `MutableBitmap` for this layer's outer-Option validity.
     pub validity_mb: syn::Ident,
-    /// Frozen `Bitmap` for this layer's outer-Option validity (post `From`).
     pub validity_bm: syn::Ident,
-    /// Per-layer iteration binding. Layer 0 binds the field access; deeper
-    /// layers bind the previous layer's iterator output.
     pub bind: syn::Ident,
 }
 
@@ -150,39 +137,18 @@ impl From<idents::LayerIds> for LayerIdents {
     }
 }
 
-/// Inputs to the shared shape-walker for the per-row push/scan body.
-///
-/// `outer_some_prefix` is the ident-prefix used for the inner-Some bind in
-/// `match Some(<bind>) ...` arms. The flat-vec path uses
-/// `__df_derive_some_` and the nested path uses `__df_derive_n_some_` —
-/// the `n_` infix isolates the two paths' bind names so they cannot collide
-/// inside one generated function (today they cannot appear together; the
-/// divergence is a safety margin against future emitter combinations).
-///
-/// `leaf_body` produces the deepest-layer for-loop body. The walker hands it
-/// the inner Vec binding (already Option-unwrapped where applicable) and the
-/// caller emits whatever per-element work the leaf needs (typed-buffer push,
-/// flat-ref push + optional position scatter, etc).
-///
-/// `leaf_offsets_post_push` is the token-stream-valued `usize` expression
-/// checked, converted to `i64`, and pushed onto the innermost-layer offsets
-/// vec after each outer row's leaf iteration. The flat-vec path passes its
-/// typed buffer's `len()`; the nested path passes `flat.len()` (or
-/// `positions.len()` under `has_inner_option`).
-pub(super) struct ShapeScan<'a> {
-    pub shape: &'a VecLayers,
-    pub access: &'a TokenStream,
-    pub layers: &'a [LayerIdents],
-    pub outer_some_prefix: &'a str,
-    pub leaf_body: &'a dyn Fn(&TokenStream) -> TokenStream,
-    pub leaf_offsets_post_push: &'a TokenStream,
-    pub pp: &'a TokenStream,
-    pub projection: Option<LayerProjection<'a>>,
+pub(super) struct ShapeScan<'shape, 'body> {
+    pub shape: &'shape VecLayers,
+    pub access: &'shape TokenStream,
+    pub layers: &'shape [LayerIdents],
+    pub outer_some_prefix: &'shape str,
+    pub leaf_body: &'body dyn Fn(&TokenStream) -> TokenStream,
+    pub leaf_offsets_post_push: &'body TokenStream,
+    pub pp: &'shape TokenStream,
+    pub projection: Option<LayerProjection<'shape>>,
 }
 
-impl ShapeScan<'_> {
-    /// Build the per-row scan body. Wraps the layer-0 walk in the
-    /// `for __df_derive_it in items { ... }` ring shared by both paths.
+impl ShapeScan<'_, '_> {
     pub(super) fn build(&self) -> TokenStream {
         let layer0_iter_src = {
             let access = self.access;
@@ -197,8 +163,6 @@ impl ShapeScan<'_> {
         }
     }
 
-    /// Emit the body for the iteration at layer `cur`. At the deepest layer,
-    /// hand off to `leaf_body`; otherwise recurse into the next layer.
     fn build_iter(&self, cur: usize, vec_bind: &TokenStream) -> TokenStream {
         let depth = self.shape.depth();
         if cur + 1 == depth {
@@ -237,8 +201,6 @@ impl ShapeScan<'_> {
         }
     }
 
-    /// Emit the layer-`cur` body: the outer-Option match (when present), the
-    /// inner iteration, and the per-layer offsets push.
     fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
         let depth = self.shape.depth();
         let layer = &self.layers[cur];
@@ -431,10 +393,10 @@ impl<'a> ShapeEmitter<'a> {
         .build()
     }
 
-    pub(super) fn scan(
+    pub(super) fn scan<'body>(
         &self,
-        leaf_body: &'a dyn Fn(&TokenStream) -> TokenStream,
-        leaf_offsets_post_push: &'a TokenStream,
+        leaf_body: &'body dyn Fn(&TokenStream) -> TokenStream,
+        leaf_offsets_post_push: &'body TokenStream,
     ) -> TokenStream {
         ShapeScan {
             shape: self.shape,
@@ -470,30 +432,8 @@ impl<'a> ShapeEmitter<'a> {
         shape_layer_wraps_move(self.shape, self.layers, self.pa_root)
     }
 }
-
-/// Per-layer inputs to the shared layer-wrap stack.
-///
-/// `offsets_buf` is the per-layer offsets-buffer expression — an `OwnPolicy`
-/// the helper splices verbatim into the `LargeListArray::new` argument
-/// position. The flat-vec path passes `OwnPolicy::Move` (its frozen
-/// buffer is single-use); the nested-struct path passes `OwnPolicy::Clone`
-/// (its buffer is shared across the four-arm dispatch's `for col in
-/// schema { ... }` iterations and so cannot be moved out).
-///
-/// `validity_bm` is the optional outer-Option validity-bitmap source —
-/// `None` when the layer has no outer Option (the wrap passes
-/// `Option::None` for its validity argument). When present it is always
-/// cloned (the same frozen `Bitmap` rides under every list-array layer's
-/// `LargeListArray::new` in the same arm and across multiple arms in the
-/// nested four-way dispatch).
 pub(super) enum OwnPolicy<'a> {
-    /// Move the named local into the wrap argument. The local is bound
-    /// inside the helper's emission scope and used exactly once.
     Move(&'a syn::Ident),
-    /// Clone the named local (`Clone::clone(&#ident)`). Used when the same
-    /// frozen buffer is read across multiple `LargeListArray::new` sites
-    /// (e.g. across the nested four-arm dispatch's `for col in schema`
-    /// iterations).
     Clone(&'a syn::Ident),
 }
 
@@ -509,9 +449,6 @@ impl OwnPolicy<'_> {
 pub(super) struct LayerWrap<'a> {
     pub offsets_buf: OwnPolicy<'a>,
     pub validity_bm: Option<&'a syn::Ident>,
-    /// Optional per-layer freeze decl emitted immediately before this
-    /// layer's `LargeListArray::new` call. The nested-struct path leaves
-    /// this empty because its freezes are hoisted.
     pub freeze_decl: TokenStream,
 }
 
@@ -588,8 +525,6 @@ pub(super) fn shape_layer_wraps_clone<'a>(
     out
 }
 
-/// Freeze a per-layer `Vec<i64>` into an `OffsetsBuffer<i64>` (single
-/// statement). Centralized for all list-stack emitters.
 pub(super) fn freeze_offsets_buf(
     buf: &syn::Ident,
     offsets: &syn::Ident,
@@ -601,8 +536,6 @@ pub(super) fn freeze_offsets_buf(
     }
 }
 
-/// Freeze a per-layer `MutableBitmap` into a `Bitmap` (single statement).
-/// Shared by every list-stack emitter that carries outer-list validity.
 pub(super) fn freeze_validity_bitmap(
     bm: &syn::Ident,
     mb: &syn::Ident,
@@ -616,26 +549,6 @@ pub(super) fn freeze_validity_bitmap(
     }
 }
 
-/// Stack `layers.len()` `LargeListArray::new` calls (innermost-first,
-/// outermost-last) and route the outermost through
-/// `__df_derive_assemble_list_series_unchecked`.
-///
-/// `seed` is an expression evaluating to an `ArrayRef` (boxed leaf array
-/// for the flat-vec path, `chunks()[0].clone()` for the nested path). It
-/// is moved verbatim into the innermost `LargeListArray::new` call's
-/// values argument. `seed_dtype` is the arrow dtype of that seed array
-/// as a token expression.
-///
-/// `leaf_logical_dtype` is the per-leaf logical dtype (e.g. `DataType::String`
-/// for the flat-vec path, `(*__df_derive_dtype).clone()` for the nested
-/// path). The helper wraps it in `(layers.len() - 1)` extra `List<>`
-/// envelopes so the schema dtype matches the runtime list nesting (the
-/// generated list-assembly wrapper adds and checks the outermost `List<>`
-/// itself).
-///
-/// `arr_id_for_layer(cur)` produces the per-layer `LargeListArray` local
-/// ident — the flat-vec path uses [`idents::vec_layer_list_arr`] and the
-/// nested path uses [`idents::nested_layer_list_arr`].
 pub(super) fn shape_assemble_list_stack(
     seed: TokenStream,
     seed_dtype: TokenStream,
@@ -696,9 +609,6 @@ pub(super) fn shape_assemble_list_stack(
     }
 }
 
-/// Per-layer offsets-vec declarations. Layer 0 is sized `items.len() + 1`;
-/// deeper layers' capacity comes from the caller-supplied counter expression
-/// (the precount loop's per-layer counter ident, plus `1`).
 pub(super) fn shape_offsets_decls(
     layers: &[&syn::Ident],
     layer_counter: &dyn Fn(usize) -> TokenStream,
@@ -720,9 +630,6 @@ pub(super) fn shape_offsets_decls(
     quote! { #(#out)* }
 }
 
-/// Per-layer outer-`Option` validity-bitmap declarations. Allocated push-
-/// based (no pre-fill) — `Some` arms push `true`, `None` arms push `false`.
-/// Skips layers without an outer Option.
 pub(super) fn shape_validity_decls(
     shape: &VecLayers,
     validity_per_layer: &[&syn::Ident],

@@ -3,7 +3,7 @@ use syn::{Ident, Type};
 use super::TupleElement;
 
 /// Datetime time unit chosen via `#[df_derive(time_unit = "ms"|"us"|"ns")]`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DateTimeUnit {
     Milliseconds,
     Microseconds,
@@ -11,7 +11,7 @@ pub enum DateTimeUnit {
 }
 
 /// Source of a `Duration` field.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurationSource {
     Std,
     Chrono,
@@ -19,7 +19,7 @@ pub enum DurationSource {
 
 /// Numeric primitive kind, including widened platform-sized integers and
 /// `std::num::NonZero*` values.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericKind {
     I8,
     I16,
@@ -100,7 +100,7 @@ impl NumericKind {
 }
 
 /// Primitive numeric storage lane after non-zero wrappers have been erased.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageNumericKind {
     I8,
     I16,
@@ -118,7 +118,7 @@ pub enum StorageNumericKind {
     USize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StringyBase {
     String,
     BorrowedStr,
@@ -133,7 +133,7 @@ impl StringyBase {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayBase {
     Inherent,
     Struct(Type),
@@ -142,7 +142,7 @@ pub enum DisplayBase {
 
 /// Per-leaf semantic shape after type analysis and field overrides have been
 /// lowered into the encoder vocabulary.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeafSpec {
     Numeric(NumericKind),
     String,
@@ -168,7 +168,7 @@ pub enum LeafSpec {
 }
 
 /// Borrowed view of a single-column primitive leaf.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrimitiveLeaf<'a> {
     Numeric(NumericKind),
     String,
@@ -205,14 +205,14 @@ impl PrimitiveLeaf<'_> {
 }
 
 /// Borrowed view of a multi-column nested leaf.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NestedLeaf<'a> {
     Struct(&'a Type),
     Generic(&'a Ident),
 }
 
 /// Lossless borrowed route for a [`LeafSpec`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeafRoute<'a> {
     Primitive(PrimitiveLeaf<'a>),
     Nested(NestedLeaf<'a>),

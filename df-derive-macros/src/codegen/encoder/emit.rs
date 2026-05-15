@@ -21,19 +21,10 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
 use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
-use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapeEmitter, shape_assemble_list_stack, shape_layer_wraps_clone,
-    shape_layer_wraps_move,
-};
+use super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
-/// Per-layer ident bundle factory. `field_idx == None` produces the
-/// per-element-push path's flat-vec idents (`__df_derive_layer_*_{layer}`,
-/// no field namespacing — the emit block is scoped per field via
-/// `__df_derive_field_series_<idx>`); `field_idx == Some(idx)` produces the
-/// collect-then-bulk path's per-(field, layer) namespaced idents
-/// (`__df_derive_n_*_{idx}_{layer}`).
 fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
     let namespace = field_idx.map_or(idents::LayerNamespace::Vec, |idx| {
         idents::LayerNamespace::Nested { field_idx: idx }
@@ -41,29 +32,6 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
     idents::LayerIds::new(namespace, layer_idx).into()
 }
 
-/// Build the per-layer `LayerWrap` slice the shared list-stack helper
-/// consumes. Each layer's `freeze_decl` is empty for the
-/// collect-then-bulk path (freezes hoisted above) and contains the
-/// fully qualified offsets conversion plus optional `Bitmap::from(...)`
-/// for the per-element-push path (freezes interleaved with each wrap).
-fn layer_wraps<'a>(
-    shape: &VecLayers,
-    layers: &'a [LayerIdents],
-    kind: &LeafKind,
-    pa_root: &TokenStream,
-) -> Vec<LayerWrap<'a>> {
-    if kind.freeze_hoisted() {
-        shape_layer_wraps_clone(shape, layers)
-    } else {
-        shape_layer_wraps_move(shape, layers, pa_root)
-    }
-}
-
-/// Per-element-push leaf body. Wraps the `per_elem_push` token stream in
-/// the deepest-layer for-loop, handling the multi-Option collapse for
-/// `inner_option_layers > 1` (the bare for-loop binding becomes
-/// `__df_derive_v_raw` and is collapsed into `__df_derive_v: Option<&T>`
-/// before splicing the push body).
 fn pep_leaf_body<'a>(
     shape: &'a VecLayers,
     leaf_bind: &'a syn::Ident,
@@ -121,10 +89,6 @@ fn ctb_depth0_ref_expr(access: &TokenStream, access_chain: &AccessChain) -> Toke
     }
 }
 
-/// Collect-then-bulk leaf body. The deepest-layer push pushes a `&T` ref
-/// into `flat`, plus (when `has_inner_option`) an `Option<IdxSize>` slot
-/// into `positions` so the post-scan dispatcher can scatter values back
-/// into their original row positions via `IdxCa::take`.
 fn ctb_leaf_body<'a>(
     shape: &'a VecLayers,
     flat: &'a syn::Ident,
@@ -190,19 +154,12 @@ fn ctb_leaf_body<'a>(
     }
 }
 
-/// Materialize the post-scan tokens for the per-element-push leaf kind:
-/// build the typed leaf array, then chain the depth-N `LargeListArray::new`
-/// wraps with offsets/validity freezes interleaved per layer.
 fn pep_materialize(
     pep: &super::leaf_kind::PerElementPush,
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    kind: &LeafKind,
-    pa_root: &TokenStream,
+    emitter: &ShapeEmitter<'_>,
     pp: &TokenStream,
 ) -> TokenStream {
-    // Capture the leaf dtype before boxing because boxing moves the typed
-    // array into the list stack.
+    let pa_root = emitter.pa_root;
     let leaf_arr = idents::leaf_arr();
     let seed_arrow_dtype_id = idents::seed_arrow_dtype();
     let seed_dtype_decl = quote! {
@@ -211,7 +168,7 @@ fn pep_materialize(
     };
     let seed = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
     let seed_dtype = quote! { #seed_arrow_dtype_id };
-    let wrap_layers = layer_wraps(shape, layers, kind, pa_root);
+    let wrap_layers = emitter.layer_wraps_move();
     let stack = shape_assemble_list_stack(
         seed,
         seed_dtype,
@@ -229,7 +186,6 @@ fn pep_materialize(
     }
 }
 
-/// Materialize the post-scan tokens for the collect-then-bulk leaf kind.
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,
@@ -279,10 +235,6 @@ fn ctb_materialize(
     })
 }
 
-/// Build the per-element-push storage decls + leaf-body + post-scan
-/// materialization scope. Wraps everything in
-/// `let __df_derive_field_series_<idx>: Series = { ... };` so the caller
-/// can splice it as a single Series-producing block.
 #[allow(clippy::too_many_arguments)]
 fn pep_emit(
     pep: &super::leaf_kind::PerElementPush,
@@ -317,7 +269,7 @@ fn pep_emit(
     let offsets_decls = emitter.offsets_decls(&counter_for_depth);
     let validity_decls = emitter.validity_decls(&counter_for_depth);
 
-    let materialize = pep_materialize(pep, shape, layers, kind, pa_root, pp);
+    let materialize = pep_materialize(pep, &emitter, pp);
     let storage_decls = &pep.storage_decls;
     let extra_imports = &pep.extra_imports;
 
@@ -334,13 +286,6 @@ fn pep_emit(
     }
 }
 
-/// Build the depth-0 (`WrapperShape::Leaf`) row scan for the collect-then-bulk
-/// path. At depth 0 every row contributes at most one leaf, so the body is a
-/// straight per-row push (`option_layers == 0`) or a per-row Option match
-/// (`option_layers >= 1`) without any inner-Vec iteration. For
-/// `option_layers >= 2` the access expression is pre-collapsed to
-/// `Option<&T>` via [`collapse_options_to_ref`]; the depth >= 1 walker does
-/// the equivalent collapse via [`ShapeScan::build_layer`].
 fn ctb_leaf_scan_depth0(
     access: &TokenStream,
     flat: &syn::Ident,
@@ -382,15 +327,6 @@ fn ctb_leaf_scan_depth0(
     }
 }
 
-/// Build the collect-then-bulk emit body. The collect-then-bulk path emits
-/// directly into `columns` rather than producing a single Series local —
-/// the for-loop over inner schema columns runs `columns.push(...)` per
-/// inner column. Returns the entire `{ ... }` block.
-///
-/// At depth 0 (`WrapperShape::Leaf`) the precount / offsets / validity decls
-/// drop out and the scan runs per-row (one push per row); the dispatch in
-/// [`ctb_materialize`] uses `items.len()` rather than `total` for the
-/// all-absent arm length.
 #[allow(clippy::too_many_arguments)]
 fn ctb_emit(
     ctb: &CollectThenBulk<'_>,
@@ -408,9 +344,6 @@ fn ctb_emit(
     let positions = idents::nested_positions(ctb.idx);
     let ty = ctb.ty;
 
-    // Per-shape scan + sizing. At depth 0 the precount loop and per-layer
-    // offsets/validity decls are vacuous, so the scan is the entire driver;
-    // depth >= 1 routes through the shared shape walkers.
     let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
         WrapperShape::Leaf(LeafShape::Bare) => {
             let empty_access = AccessChain::empty();

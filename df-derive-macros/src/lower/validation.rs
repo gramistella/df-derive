@@ -1,6 +1,7 @@
-use crate::diagnostics;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType};
 use syn::Ident;
+
+use super::diagnostics;
 
 fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {
     let syn::Type::Path(type_path) = ty else {

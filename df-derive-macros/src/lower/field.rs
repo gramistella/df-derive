@@ -1,5 +1,4 @@
 use crate::attrs::field::{FieldOverride, LeafOverride, parse_field_override};
-use crate::diagnostics;
 use crate::ir::{
     DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase,
 };
@@ -16,6 +15,8 @@ use crate::type_analysis::{
 use proc_macro2::Span;
 use quote::ToTokens;
 use syn::Ident;
+
+use super::diagnostics;
 
 /// Single source of truth for combining a parsed `FieldOverride` with the
 /// analyzed base type into the final `LeafSpec` carried on the IR. Performs

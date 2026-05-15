@@ -1,10 +1,11 @@
 use crate::attrs::field::{FieldOverride, LeafOverride};
-use crate::diagnostics;
 use crate::ir::TupleElement;
 use crate::lower::field::default_leaf_for_base;
 use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 use proc_macro2::Span;
+
+use super::diagnostics;
 
 #[derive(Clone, Copy)]
 pub enum FieldOverrideRef<'a> {

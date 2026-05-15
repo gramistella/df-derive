@@ -19,7 +19,6 @@ extern crate proc_macro;
 
 mod attrs;
 mod codegen;
-mod diagnostics;
 mod ir;
 mod lower;
 mod parser;

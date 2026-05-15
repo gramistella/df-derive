@@ -30,7 +30,7 @@ jobs:
       # Pin to x86-64-v3 (AVX2 + BMI1/BMI2 + LZCNT + MOVBE) instead of `native` so bench
       # results are stable across heterogeneous GitHub Actions runners.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C link-arg=-fuse-ld=bfd"
       # Pin parallelism for determinism
       RAYON_NUM_THREADS: '1'
       POLARS_MAX_THREADS: '1'
@@ -81,7 +81,7 @@ jobs:
       # 5. Upload the HTML report as an artifact (only on `main` branch)
       # This prepares the report for deployment to GitHub Pages.
       - name: Upload Pages artifact
-        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main'
+        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main' && hashFiles('target/criterion/**') != ''
         uses: actions/upload-pages-artifact@v3
         with:
           # The folder where the HTML report is generated.
@@ -89,7 +89,7 @@ jobs:
 
       # 6. Deploy the report to GitHub Pages (only on `main` branch)
       - name: Deploy to GitHub Pages
-        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main'
+        if: inputs.event_name == 'push' && inputs.ref == 'refs/heads/main' && hashFiles('target/criterion/**') != ''
         id: deployment
         uses: actions/deploy-pages@v4
 
@@ -103,7 +103,7 @@ jobs:
       # Pin to x86-64-v3 (AVX2 + BMI1/BMI2 + LZCNT + MOVBE) instead of `native` so bench
       # results are stable across heterogeneous GitHub Actions runners.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C codegen-units=1 -C opt-level=3 -C link-arg=-fuse-ld=bfd"
       # Pin parallelism for determinism
       RAYON_NUM_THREADS: '1'
       POLARS_MAX_THREADS: '1'

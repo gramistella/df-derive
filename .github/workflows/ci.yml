@@ -54,7 +54,7 @@ jobs:
       # Cargo's target-specific env vars so nested trybuild Cargo invocations
       # inherit the linker choice too.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,7 +102,7 @@ jobs:
       CARGO_TERM_COLOR: always
       # Keep the test runner on GNU ld.bfd for the same reason as the lint job.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,7 +127,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -3,3 +3,9 @@ error: field `pair` has `as_str` but its type is a tuple; field-level attributes
   |
 7 |     #[df_derive(as_str)]
   |                 ^^^^^^
+
+error: field `tuple` has `as_str` but its type is a tuple; field-level attributes do not apply to multi-column tuple fields. Hoist the tuple into a named struct that derives `ToDataFrame` if you need per-element attributes.
+  --> tests/fail/122-fail-as-str-on-tuple.rs:13:17
+   |
+13 |     #[df_derive(as_str)]
+   |                 ^^^^^^

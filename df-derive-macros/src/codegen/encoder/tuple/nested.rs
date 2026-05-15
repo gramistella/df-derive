@@ -4,13 +4,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::super::nested_columns::{
-    NestedColumnIdents, NestedMaterializeBranches, NestedMaterializeKind, consume_nested_columns,
-    inner_col_all_absent as nested_inner_col_all_absent,
-    inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
-    inner_col_take as nested_inner_col_take, nested_df_decl, nested_materialize_dispatch,
-    nested_take_decl,
+    NestedMaterializeCtx, NestedWrapper, materialize_nested_columns,
 };
-use super::super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
+use super::super::shape_walk::{LayerIdents, ShapeEmitter};
 use super::super::{idents, idx_size_len_expr};
 use super::projection::TupleProjection;
 use super::vec_parent::{tuple_layer_counters, tuple_layer_idents, tuple_scan_leaf_body};
@@ -40,15 +36,6 @@ pub(super) fn emit_vec_parent_nested(
     let total_leaves = idents::nested_total(field_idx);
     let flat = idents::nested_flat(field_idx);
     let positions = idents::nested_positions(field_idx);
-    let df = idents::nested_df(field_idx);
-    let take = idents::nested_take(field_idx);
-    let columns = idents::columns();
-    let col_name = idents::nested_col_name();
-    let dtype = idents::nested_col_dtype();
-    let inner_full = idents::nested_inner_full();
-    let inner_chunk = idents::nested_inner_chunk();
-    let inner_col = idents::nested_inner_col();
-    let inner_rech = idents::nested_inner_rech();
 
     let layers: Vec<LayerIdents> = (0..composed_shape.depth())
         .map(|i| tuple_layer_idents(field_idx, i))
@@ -125,114 +112,22 @@ pub(super) fn emit_vec_parent_nested(
         TokenStream::new()
     };
 
-    // Per-column inner-Series expressions for the four dispatch branches.
-    let column_idents = NestedColumnIdents {
-        df: &df,
-        take: &take,
-        col_name: &col_name,
-        dtype: &dtype,
-        inner_full: &inner_full,
-    };
-    let inner_col_direct = nested_inner_col_direct(column_idents);
-    let inner_col_take = nested_inner_col_take(column_idents);
-    let inner_col_empty = nested_inner_col_empty(&dtype, pp);
-    let all_absent_len = quote! { #total_leaves };
-    let inner_col_all_absent = nested_inner_col_all_absent(&dtype, &all_absent_len, pp);
-
-    let series_direct = wrap_per_column_layers(
-        &emitter,
-        &inner_col_direct,
-        pp,
-        &inner_chunk,
-        &inner_col,
-        &inner_rech,
-        &dtype,
-    );
-    let series_take = wrap_per_column_layers(
-        &emitter,
-        &inner_col_take,
-        pp,
-        &inner_chunk,
-        &inner_col,
-        &inner_rech,
-        &dtype,
-    );
-    let series_empty = wrap_per_column_layers(
-        &emitter,
-        &inner_col_empty,
-        pp,
-        &inner_chunk,
-        &inner_col,
-        &inner_rech,
-        &dtype,
-    );
-    let series_all_absent = wrap_per_column_layers(
-        &emitter,
-        &inner_col_all_absent,
-        pp,
-        &inner_chunk,
-        &inner_col,
-        &inner_rech,
-        &dtype,
-    );
-
-    let consume_direct = consume_nested_columns(
-        &columns,
+    let dispatch = materialize_nested_columns(&NestedMaterializeCtx {
+        field_idx,
+        ty: type_path,
         column_prefix,
-        to_df_trait,
-        type_path,
-        &series_direct,
-        pp,
-    );
-    let consume_take = consume_nested_columns(
-        &columns,
-        column_prefix,
-        to_df_trait,
-        type_path,
-        &series_take,
-        pp,
-    );
-    let consume_empty = consume_nested_columns(
-        &columns,
-        column_prefix,
-        to_df_trait,
-        type_path,
-        &series_empty,
-        pp,
-    );
-    let consume_all_absent = consume_nested_columns(
-        &columns,
-        column_prefix,
-        to_df_trait,
-        type_path,
-        &series_all_absent,
-        pp,
-    );
-
-    let df_decl = nested_df_decl(&df, type_path, columnar_trait, &flat);
-    let take_decl = nested_take_decl(&take, &positions, pp);
-
-    // Hoist offsets/validity freezes above the dispatch — collect-then-bulk
-    // path reuses them per-column.
-    let validity_freeze = emitter.freeze_validity_bitmaps();
-    let offsets_freeze = emitter.freeze_offsets_buffers();
-
-    let dispatch = nested_materialize_dispatch(
-        NestedMaterializeKind::Vec { has_inner_option },
-        &flat,
-        Some(&total_leaves),
-        &quote! { items.len() },
-        NestedMaterializeBranches {
-            validity_freeze,
-            offsets_freeze,
-            df_decl,
-            take_decl,
-            consume_direct,
-            consume_take,
-            consume_empty,
-            consume_all_absent,
+        flat: &flat,
+        positions: has_inner_option.then_some(&positions),
+        total_len: quote! { #total_leaves },
+        wrapper: NestedWrapper::List {
+            shape: composed_shape,
+            layers: &layers,
+            arr_id_for_layer: idents::tuple_layer_list_arr,
         },
-    );
+        columnar_trait,
+        to_df_trait,
+        paths: &config.external_paths,
+    });
 
     quote! {
         {
@@ -246,42 +141,4 @@ pub(super) fn emit_vec_parent_nested(
             #dispatch
         }
     }
-}
-
-/// Wrap a per-column inner Series expression in the composed shape's
-/// `LargeListArray::new` layers, routed through the assemble helper. Mirrors
-/// `emit::ctb_layer_wrap` but owns its layer idents.
-#[allow(clippy::too_many_arguments)]
-fn wrap_per_column_layers(
-    emitter: &ShapeEmitter<'_>,
-    inner_col_expr: &TokenStream,
-    pp: &TokenStream,
-    inner_chunk: &syn::Ident,
-    inner_col: &syn::Ident,
-    inner_rech: &syn::Ident,
-    dtype: &syn::Ident,
-) -> TokenStream {
-    if emitter.shape.depth() == 0 {
-        return inner_col_expr.clone();
-    }
-    let pa_root = emitter.pa_root;
-    let chunk_decl = quote! {
-        let #inner_col: #pp::Series = #inner_col_expr;
-        let #inner_rech = #inner_col.rechunk();
-        let #inner_chunk: #pp::ArrayRef = #inner_rech.chunks()[0].clone();
-    };
-    let wrap_layers = emitter.layer_wraps_clone();
-    let stack = shape_assemble_list_stack(
-        quote! { #inner_chunk },
-        quote! { #inner_chunk.dtype().clone() },
-        &wrap_layers,
-        quote! { (*#dtype).clone() },
-        pp,
-        pa_root,
-        &idents::tuple_layer_list_arr,
-    );
-    quote! {{
-        #chunk_decl
-        #stack
-    }}
 }

@@ -43,9 +43,8 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     // `to_dataframe(&self)` delegates to the `Columnar::columnar_from_refs`
     // trait method with a single-element ref slice. There is no parallel
     // per-row codegen path — the trait method is the one source of truth
-    // for row-shape logic (with bulk-emit branches for nested-leaf,
-    // `Option<Inner>`, and `Vec<Inner>` shapes that keep the N=1 cost
-    // within ~10% of the previous specialized per-row path).
+    // for row-shape logic. Bulk-emit branches for nested-leaf,
+    // `Option<Inner>`, and `Vec<Inner>` shapes keep the N=1 cost bounded.
     //
     // `empty_dataframe` and `schema` keep their own codegen because they
     // never take a `&self` — they're shape-only operations. Routing

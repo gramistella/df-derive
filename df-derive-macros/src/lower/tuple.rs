@@ -1,14 +1,14 @@
-use crate::attrs::field::{FieldOverride, LeafOverride};
+use crate::attrs::{FieldOverride, LeafOverride};
 use crate::ir::TupleElement;
-use crate::lower::field::default_leaf_for_base;
-use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 use proc_macro2::Span;
 
 use super::diagnostics;
+use super::field::default_leaf_for_base;
+use super::wrappers::normalize_wrappers;
 
 #[derive(Clone, Copy)]
-pub enum FieldOverrideRef<'a> {
+pub(super) enum FieldOverrideRef<'a> {
     Field {
         value: &'a FieldOverride,
         span: Span,
@@ -25,7 +25,7 @@ pub enum FieldOverrideRef<'a> {
 /// / `as_binary` / `decimal(...)` / `time_unit = "..."` over a tuple is
 /// always ambiguous. The fix is to hoist the tuple into a named struct
 /// where per-element attributes can be applied at field level.
-pub fn reject_attrs_on_tuple(
+pub(super) fn reject_attrs_on_tuple(
     _field: &syn::Field,
     field_display_name: &str,
     override_: Option<FieldOverrideRef<'_>>,
@@ -68,7 +68,7 @@ pub fn reject_attrs_on_tuple(
 /// the element, and normalizes the element's wrapper stack independently of
 /// the parent's. Field-level attributes are not applied here — they are
 /// rejected on the parent field by [`reject_attrs_on_tuple`] before this runs.
-pub fn analyzed_to_tuple_element(
+pub(super) fn analyzed_to_tuple_element(
     analyzed: AnalyzedType,
     field_display_name: &str,
 ) -> Result<TupleElement, syn::Error> {
@@ -86,7 +86,7 @@ const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
     !wrappers.is_empty()
 }
 
-pub fn reject_unsupported_wrapped_nested_tuples(
+pub(super) fn reject_unsupported_wrapped_nested_tuples(
     analyzed: &AnalyzedType,
     field_display_name: &str,
 ) -> Result<(), syn::Error> {

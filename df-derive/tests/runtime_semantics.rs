@@ -81,3 +81,6 @@ mod as_string_fmt_error;
 
 #[path = "runtime/57-mixed-row-behavior-lock.rs"]
 mod mixed_row_behavior_lock;
+
+#[path = "runtime/58-mixed-wrapper-shape-row.rs"]
+mod mixed_wrapper_shape_row;

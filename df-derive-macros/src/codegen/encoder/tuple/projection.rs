@@ -1,5 +1,5 @@
 use crate::ir::{
-    AccessChain, AccessStep, LeafShape, LeafSpec, TupleElement, VecLayers, WrapperShape,
+    AccessChain, AccessStep, LeafRoute, LeafShape, LeafSpec, TupleElement, VecLayers, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -17,22 +17,11 @@ fn is_copy_element_projection(elem: &TupleElement) -> bool {
         }
 }
 
-/// True when the element's leaf is `Copy` AND a primitive that the
-/// standard Option-leaf encoder expects to receive by value (not by
-/// reference). The parent-Option tuple projection first forms a smart-pointer
-/// resolved element reference, so outer `Box<T>` / `&T` wrappers over these
-/// leaves are still copy-projectable. Option-only element stacks over Copy
-/// leaves are also copy-projectable because `Option<Copy>` is Copy. Vecs and
-/// access chains with smart pointers below an Option stay reference-oriented.
 const fn is_copy_leaf_for_projection(leaf: &LeafSpec) -> bool {
-    matches!(
-        leaf,
-        LeafSpec::Numeric(_)
-            | LeafSpec::Bool
-            | LeafSpec::NaiveDate
-            | LeafSpec::NaiveTime
-            | LeafSpec::Duration { .. }
-    )
+    match leaf.route() {
+        LeafRoute::Primitive(primitive) => primitive.is_copy(),
+        LeafRoute::Nested(_) | LeafRoute::Tuple(_) => false,
+    }
 }
 
 pub(super) fn option_tuple_projection_receiver(

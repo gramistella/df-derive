@@ -466,20 +466,8 @@ impl<'a> ShapeEmitter<'a> {
         shape_validity_decls(self.shape, &validity, counter_for_depth, self.pa_root)
     }
 
-    pub(super) fn freeze_validity_bitmaps(&self) -> TokenStream {
-        shape_freeze_validity_bitmaps(self.shape, self.layers, self.pa_root)
-    }
-
-    pub(super) fn freeze_offsets_buffers(&self) -> TokenStream {
-        shape_freeze_offsets_buffers(self.layers, self.pa_root)
-    }
-
     pub(super) fn layer_wraps_move(&self) -> Vec<LayerWrap<'a>> {
         shape_layer_wraps_move(self.shape, self.layers, self.pa_root)
-    }
-
-    pub(super) fn layer_wraps_clone(&self) -> Vec<LayerWrap<'a>> {
-        shape_layer_wraps_clone(self.shape, self.layers)
     }
 }
 

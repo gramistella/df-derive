@@ -8,4 +8,10 @@ struct WithAsStrOnTuple {
     pair: (String, i32),
 }
 
+#[derive(ToDataFrame)]
+struct WithAsStrOnStringTuple {
+    #[df_derive(as_str)]
+    tuple: (String, String),
+}
+
 fn main() {}

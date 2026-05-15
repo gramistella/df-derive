@@ -1,5 +1,5 @@
 use crate::ir::{FieldIR, StructIR};
-use crate::lower::field::lower_field;
+use crate::lower::lower_field;
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
 

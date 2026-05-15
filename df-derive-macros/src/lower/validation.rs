@@ -7,30 +7,35 @@ fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {
     let syn::Type::Path(type_path) = ty else {
         return false;
     };
+
     if type_path.qself.is_some() {
         return false;
     }
+
     let segments = &type_path.path.segments;
-    let Some(segment) = segments.last() else {
-        return false;
-    };
-    if segments.len() == 1 {
-        return segment.ident == "Self" || &segment.ident == struct_name;
+
+    match segments.len() {
+        1 => {
+            let Some(last) = segments.last() else {
+                return false;
+            };
+
+            last.ident == "Self" || last.ident == *struct_name
+        }
+        2 => {
+            let Some(first) = segments.first() else {
+                return false;
+            };
+            let Some(last) = segments.last() else {
+                return false;
+            };
+
+            matches!(first.arguments, syn::PathArguments::None)
+                && (first.ident == "crate" || first.ident == "self")
+                && last.ident == *struct_name
+        }
+        _ => false,
     }
-    if segments.len() != 2
-        || !segments
-            .iter()
-            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
-    {
-        return false;
-    }
-    let Some(first_segment) = segments.first() else {
-        return false;
-    };
-    // Keep this intentionally narrow: broader qualified paths can name
-    // distinct same-named types outside the deriving type's module.
-    (first_segment.ident == "crate" || first_segment.ident == "self")
-        && &segment.ident == struct_name
 }
 
 pub fn reject_direct_self_reference(
@@ -49,5 +54,22 @@ pub fn reject_direct_self_reference(
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_direct(ty: &syn::Type) {
+        assert!(is_direct_self_type(ty, &syn::parse_quote!(Node)));
+    }
+
+    #[test]
+    fn rejects_direct_self_recursion_shapes() {
+        assert_direct(&syn::parse_quote!(Self));
+        assert_direct(&syn::parse_quote!(Node<T>));
+        assert_direct(&syn::parse_quote!(crate::Node<T>));
+        assert_direct(&syn::parse_quote!(self::Node<T>));
     }
 }

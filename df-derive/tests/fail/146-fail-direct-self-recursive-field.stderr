@@ -33,3 +33,21 @@ error: field `field_1` recursively references `TupleStruct` after transparent wr
    |
 35 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
    |                                    ^^^^^^^^^^^
+
+error: field `child` recursively references `GenericNode` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:42:23
+   |
+42 |     child: Option<Box<GenericNode<T>>>,
+   |                       ^^^^^^^^^^^^^^
+
+error: field `child` recursively references `CrateQualifiedGeneric` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:50:23
+   |
+50 |     child: Option<Box<crate::CrateQualifiedGeneric<T>>>,
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: field `child` recursively references `SelfQualifiedGeneric` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:58:23
+   |
+58 |     child: Option<Box<self::SelfQualifiedGeneric<T>>>,
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

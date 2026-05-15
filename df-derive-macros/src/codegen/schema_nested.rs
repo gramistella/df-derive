@@ -1,7 +1,5 @@
 // Schema/empty-frame helpers used by `to_dataframe::schema` and
-// `empty_dataframe`. Every per-row vec-anyvalues codegen path was retired
-// in step 5; nested-struct columnar paths route through the encoder fold
-// in the `encoder` module.
+// `empty_dataframe`.
 
 use proc_macro2::TokenStream;
 use quote::quote;

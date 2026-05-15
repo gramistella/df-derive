@@ -1,5 +1,5 @@
-//! Safety net for the encoder identifier registry at
-//! `df-derive-macros/src/codegen/encoder/idents.rs`.
+//! Safety net for the encoder identifier registry under
+//! `df-derive-macros/src/codegen/encoder/idents/`.
 //!
 //! Every `__df_derive_*` identifier the macro emits must come from that
 //! registry. New emitters that mint identifiers as raw `format_ident!` /
@@ -8,7 +8,7 @@
 //! scope. The registry is the single source of truth that prevents this.
 //!
 //! This test scans every source file under `src/codegen/` (recursively) other
-//! than `idents.rs` itself for the literal substring `__df_derive_` outside
+//! than the `idents/` registry itself for the literal substring `__df_derive_` outside
 //! of comments. If any are found the test fails with a per-occurrence list,
 //! pointing the developer at the registry file as the place to add a function
 //! and route the literal through it.
@@ -109,12 +109,8 @@ fn no_uncentralized_df_derive_idents() {
         codegen_root.display()
     );
 
-    // The registry file itself is the only place every `__df_derive_*`
-    // literal is allowed to live. Compute its canonical path so the
-    // filter survives symlinks and path-component oddities (drive
-    // letters, `.` vs no `.`, etc).
-    let registry_path = codegen_root.join("encoder").join("idents.rs");
-    let registry_canon = fs::canonicalize(&registry_path).unwrap_or(registry_path);
+    let registry_dir = codegen_root.join("encoder").join("idents");
+    let registry_canon = fs::canonicalize(&registry_dir).unwrap_or(registry_dir);
 
     let mut files = Vec::new();
     collect_rs_files(&codegen_root, &mut files);
@@ -124,7 +120,7 @@ fn no_uncentralized_df_derive_idents() {
     let mut violations: Vec<String> = Vec::new();
     for path in &files {
         let path_canon = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        if path_canon == registry_canon {
+        if path_canon.starts_with(&registry_canon) {
             continue;
         }
         let src =
@@ -150,9 +146,9 @@ fn no_uncentralized_df_derive_idents() {
 
     assert!(
         violations.is_empty(),
-        "found `{needle}` literals outside `df-derive-macros/src/codegen/encoder/idents.rs`. \
+        "found `{needle}` literals outside `df-derive-macros/src/codegen/encoder/idents/`. \
          Every `__df_derive_*` identifier the macro emits must come from a \
-         function or constant in `df-derive-macros/src/codegen/encoder/idents.rs` — add one \
+         function or constant in `df-derive-macros/src/codegen/encoder/idents/` — add one \
          there and route the literal through it.\n\nviolations:\n{}",
         violations.join("\n"),
     );

@@ -32,8 +32,8 @@ mod emit;
 pub(in crate::codegen) mod idents;
 mod leaf;
 mod leaf_kind;
-mod nested;
 mod nested_columns;
+mod nested_leaf;
 mod option;
 mod shape_walk;
 mod tuple;
@@ -46,7 +46,7 @@ use syn::PathArguments;
 
 use super::external_paths::ExternalPaths;
 
-pub use nested::{NestedLeafCtx, build_nested_encoder};
+pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
 pub use tuple::{
     build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
 };

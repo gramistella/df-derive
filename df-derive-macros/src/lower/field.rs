@@ -1,4 +1,4 @@
-use crate::attrs::field::{FieldOverride, LeafOverride, parse_field_override};
+use crate::attrs::{FieldOverride, LeafOverride, parse_field_override};
 use crate::ir::{
     DateTimeUnit, DisplayBase, DurationSource, FieldIR, LeafSpec, NumericKind, StringyBase,
 };

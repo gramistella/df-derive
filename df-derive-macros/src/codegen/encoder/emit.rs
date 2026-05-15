@@ -20,16 +20,10 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
 use super::idents;
 use super::leaf_kind::{CollectThenBulk, LeafKind};
-use super::nested_columns::{
-    NestedColumnIdents, NestedMaterializeBranches, NestedMaterializeKind, consume_nested_columns,
-    inner_col_all_absent as nested_inner_col_all_absent,
-    inner_col_direct as nested_inner_col_direct, inner_col_empty as nested_inner_col_empty,
-    inner_col_take as nested_inner_col_take, nested_df_decl, nested_materialize_dispatch,
-    nested_take_decl,
-};
+use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
 use super::shape_walk::{
-    LayerIdents, LayerWrap, ShapeEmitter, shape_assemble_list_stack, shape_freeze_offsets_buffers,
-    shape_freeze_validity_bitmaps, shape_layer_wraps_clone, shape_layer_wraps_move,
+    LayerIdents, LayerWrap, ShapeEmitter, shape_assemble_list_stack, shape_layer_wraps_clone,
+    shape_layer_wraps_move,
 };
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
@@ -63,30 +57,6 @@ fn layer_wraps<'a>(
     } else {
         shape_layer_wraps_move(shape, layers, pa_root)
     }
-}
-
-/// Build the hoisted-freeze pair for the collect-then-bulk path:
-/// converts each layer's `MutableBitmap` to `Bitmap` (where the layer
-/// has an outer Option) and each layer's `Vec<i64>` to
-/// `OffsetsBuffer<i64>`. Returns empty token streams for the
-/// per-element-push path (freezes interleaved per-layer instead).
-///
-/// The pair is `(validity_freeze, offsets_freeze)` — the call site
-/// emits validity first (any outer-Option arms reference the frozen
-/// `Bitmap` lifetime) then offsets at the head of each branch.
-fn hoisted_freezes(
-    shape: &VecLayers,
-    layers: &[LayerIdents],
-    kind: &LeafKind,
-    pa_root: &TokenStream,
-) -> (TokenStream, TokenStream) {
-    if !kind.freeze_hoisted() {
-        return (TokenStream::new(), TokenStream::new());
-    }
-    (
-        shape_freeze_validity_bitmaps(shape, layers, pa_root),
-        shape_freeze_offsets_buffers(layers, pa_root),
-    )
 }
 
 /// Per-element-push leaf body. Wraps the `per_elem_push` token stream in
@@ -220,56 +190,6 @@ fn ctb_leaf_body<'a>(
     }
 }
 
-/// Wrap a per-column inner-Series expression in `depth` `LargeListArray::new`
-/// layers (innermost-first, outermost-last) and route the outermost through
-/// `__df_derive_assemble_list_series_unchecked` via the shared
-/// [`shape_assemble_list_stack`] helper. Used by the collect-then-bulk
-/// post-scan branches; each branch supplies a different inner-column
-/// expression (direct/take/empty/all-absent) but shares the layer-wrap
-/// stack.
-///
-/// At depth 0 (`WrapperShape::Leaf`) the helper degenerates to the
-/// `inner_col_expr` unchanged — the depth-0 shape (bare/option `Nested`) has
-/// no list layers, so rechunking and stacking would just round-trip the
-/// inner Series through `chunks()[0]`.
-fn ctb_layer_wrap(
-    wrapper: &WrapperShape,
-    layers: &[LayerIdents],
-    kind: &LeafKind,
-    inner_col_expr: &TokenStream,
-    pp: &TokenStream,
-    pa_root: &TokenStream,
-) -> TokenStream {
-    let WrapperShape::Vec(shape) = wrapper else {
-        return inner_col_expr.clone();
-    };
-    let inner_chunk = idents::nested_inner_chunk();
-    let inner_col = idents::nested_inner_col();
-    let inner_rech = idents::nested_inner_rech();
-    let chunk_decl = quote! {
-        let #inner_col: #pp::Series = #inner_col_expr;
-        let #inner_rech = #inner_col.rechunk();
-        let #inner_chunk: #pp::ArrayRef =
-            #inner_rech.chunks()[0].clone();
-    };
-    let wrap_layers = layer_wraps(shape, layers, kind, pa_root);
-    let seed_dtype = quote! { #inner_chunk.dtype().clone() };
-    let dtype = idents::nested_col_dtype();
-    let stack = shape_assemble_list_stack(
-        quote! { #inner_chunk },
-        seed_dtype,
-        &wrap_layers,
-        quote! { (*#dtype).clone() },
-        pp,
-        pa_root,
-        &idents::nested_layer_list_arr,
-    );
-    quote! {{
-        #chunk_decl
-        #stack
-    }}
-}
-
 /// Materialize the post-scan tokens for the per-element-push leaf kind:
 /// build the typed leaf array, then chain the depth-N `LargeListArray::new`
 /// wraps with offsets/validity freezes interleaved per layer.
@@ -309,34 +229,12 @@ fn pep_materialize(
     }
 }
 
-/// Materialize the post-scan tokens for the collect-then-bulk leaf kind:
-/// freeze offsets/validity once above the dispatch (the freezes are read
-/// per-arm and per-inner-schema-column, so re-freezing inside each arm
-/// would waste work), branch on `(total, flat.len())` to 1, 2, 3, or 4
-/// arms (depending on shape), and per arm iterate the inner schema to wrap
-/// each per-column inner Series in N `LargeListArray::new` layers (zero
-/// layers at depth 0 — see [`ctb_layer_wrap`]).
-///
-/// Branch shapes:
-/// - depth 0, bare (`Leaf { option_layers: 0 }`): 1 branch — direct
-///   (every row contributes one leaf, no per-row Option to skip).
-/// - depth 0, option (`Leaf { option_layers >= 1 }`): 3 branches —
-///   `flat.is_empty()` (every row was None; typed-null Series of length
-///   `items.len()`), `flat.len() == items.len()` (every row was Some;
-///   direct), else mixed (`IdxCa::take` per column).
-/// - depth >= 1, no inner-Option: 2 branches — empty (no leaves) or direct.
-/// - depth >= 1, with inner-Option: 4 branches — `total == 0` (no leaf
-///   slots), `flat.is_empty() && total > 0` (all leaves None; typed-null
-///   Series of length `total`), `flat.len() == total` (all Some; direct),
-///   else mixed (`IdxCa::take` per column).
-#[allow(clippy::too_many_lines)]
+/// Materialize the post-scan tokens for the collect-then-bulk leaf kind.
 fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    kind: &LeafKind,
-    pa_root: &TokenStream,
-    pp: &TokenStream,
+    paths: &ExternalPaths,
 ) -> TokenStream {
     let CollectThenBulk {
         ty,
@@ -347,77 +245,38 @@ fn ctb_materialize(
     } = *ctb;
     let flat = idents::nested_flat(idx);
     let positions = idents::nested_positions(idx);
-    let df = idents::nested_df(idx);
-    let take = idents::nested_take(idx);
     let total = idents::nested_total(idx);
-    let columns = idents::columns();
-    let col_name = idents::nested_col_name();
-    let dtype = idents::nested_col_dtype();
-    let inner_full = idents::nested_inner_full();
 
-    // Decls reused across match arms.
-    let df_decl = nested_df_decl(&df, ty, columnar_trait, &flat);
-    let take_decl = nested_take_decl(&take, &positions, pp);
-
-    // Per-column inner-Series expressions for the four branches (or two,
-    // when no inner Option). The list-array wrap is identical across
-    // branches; only the seed expression differs.
-    let column_idents = NestedColumnIdents {
-        df: &df,
-        take: &take,
-        col_name: &col_name,
-        dtype: &dtype,
-        inner_full: &inner_full,
-    };
-    let inner_col_direct = nested_inner_col_direct(column_idents);
-    let inner_col_take = nested_inner_col_take(column_idents);
-    let inner_col_empty = nested_inner_col_empty(&dtype, pp);
-    // Depth 0 has no offsets to constrain the null length, so the all-absent
-    // arm there uses `items.len()` (one row per outer position). Depth >= 1
-    // sizes the typed-null chunk to `total` (sum of inner-Vec lengths) so
-    // the offsets buffer's max value doesn't exceed the chunk's length.
-    let absent_len: TokenStream = match wrapper {
-        WrapperShape::Leaf(_) => quote! { items.len() },
-        WrapperShape::Vec(_) => quote! { #total },
-    };
-    let inner_col_all_absent = nested_inner_col_all_absent(&dtype, &absent_len, pp);
-
-    let series_direct = ctb_layer_wrap(wrapper, layers, kind, &inner_col_direct, pp, pa_root);
-    let series_take = ctb_layer_wrap(wrapper, layers, kind, &inner_col_take, pp, pa_root);
-    let series_empty = ctb_layer_wrap(wrapper, layers, kind, &inner_col_empty, pp, pa_root);
-    let series_all_absent =
-        ctb_layer_wrap(wrapper, layers, kind, &inner_col_all_absent, pp, pa_root);
-
-    let consume_direct =
-        consume_nested_columns(&columns, name, to_df_trait, ty, &series_direct, pp);
-    let consume_take = consume_nested_columns(&columns, name, to_df_trait, ty, &series_take, pp);
-    let consume_empty = consume_nested_columns(&columns, name, to_df_trait, ty, &series_empty, pp);
-    let consume_all_absent =
-        consume_nested_columns(&columns, name, to_df_trait, ty, &series_all_absent, pp);
-
-    let (validity_freeze, offsets_freeze) = match wrapper {
-        WrapperShape::Leaf(_) => (TokenStream::new(), TokenStream::new()),
-        WrapperShape::Vec(shape) => hoisted_freezes(shape, layers, kind, pa_root),
+    let (nested_wrapper, positions, total_len) = match wrapper {
+        WrapperShape::Leaf(LeafShape::Bare) => (NestedWrapper::None, None, quote! { items.len() }),
+        WrapperShape::Leaf(LeafShape::Optional { .. }) => (
+            NestedWrapper::None,
+            Some(&positions),
+            quote! { items.len() },
+        ),
+        WrapperShape::Vec(shape) => (
+            NestedWrapper::List {
+                shape,
+                layers,
+                arr_id_for_layer: idents::nested_layer_list_arr,
+            },
+            shape.has_inner_option().then_some(&positions),
+            quote! { #total },
+        ),
     };
 
-    let kind = match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => NestedMaterializeKind::LeafBare,
-        WrapperShape::Leaf(LeafShape::Optional { .. }) => NestedMaterializeKind::LeafOptional,
-        WrapperShape::Vec(shape) => NestedMaterializeKind::Vec {
-            has_inner_option: shape.has_inner_option(),
-        },
-    };
-    let branches = NestedMaterializeBranches {
-        validity_freeze,
-        offsets_freeze,
-        df_decl,
-        take_decl,
-        consume_direct,
-        consume_take,
-        consume_empty,
-        consume_all_absent,
-    };
-    nested_materialize_dispatch(kind, &flat, Some(&total), &quote! { items.len() }, branches)
+    materialize_nested_columns(&NestedMaterializeCtx {
+        field_idx: idx,
+        ty,
+        column_prefix: name,
+        flat: &flat,
+        positions,
+        total_len,
+        wrapper: nested_wrapper,
+        columnar_trait,
+        to_df_trait,
+        paths,
+    })
 }
 
 /// Build the per-element-push storage decls + leaf-body + post-scan
@@ -543,6 +402,7 @@ fn ctb_emit(
     total: &syn::Ident,
     pa_root: &TokenStream,
     pp: &TokenStream,
+    paths: &ExternalPaths,
 ) -> TokenStream {
     let flat = idents::nested_flat(ctb.idx);
     let positions = idents::nested_positions(ctb.idx);
@@ -633,7 +493,7 @@ fn ctb_emit(
         TokenStream::new()
     };
 
-    let materialize = ctb_materialize(ctb, wrapper, layers, kind, pa_root, pp);
+    let materialize = ctb_materialize(ctb, wrapper, layers, paths);
 
     quote! {{
         #precount
@@ -709,5 +569,6 @@ pub(super) fn vec_emit_ctb(
         &total,
         pa_root,
         pp,
+        paths,
     )
 }

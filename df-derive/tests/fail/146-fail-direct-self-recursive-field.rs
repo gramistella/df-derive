@@ -34,4 +34,28 @@ struct TupleField {
 #[derive(ToDataFrame)]
 struct TupleStruct(u64, Option<Box<TupleStruct>>);
 
+#[derive(ToDataFrame)]
+struct GenericNode<T> {
+    id: u64,
+    #[df_derive(skip)]
+    marker: std::marker::PhantomData<T>,
+    child: Option<Box<GenericNode<T>>>,
+}
+
+#[derive(ToDataFrame)]
+struct CrateQualifiedGeneric<T> {
+    id: u64,
+    #[df_derive(skip)]
+    marker: std::marker::PhantomData<T>,
+    child: Option<Box<crate::CrateQualifiedGeneric<T>>>,
+}
+
+#[derive(ToDataFrame)]
+struct SelfQualifiedGeneric<T> {
+    id: u64,
+    #[df_derive(skip)]
+    marker: std::marker::PhantomData<T>,
+    child: Option<Box<self::SelfQualifiedGeneric<T>>>,
+}
+
 fn main() {}

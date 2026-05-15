@@ -178,3 +178,111 @@ fn analyze_tuple_base(
     }
     Ok(Some(AnalyzedBase::Tuple(elements)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proc_macro2::Span;
+
+    fn analyze(ty: &Type) -> AnalyzedType {
+        analyze_type(ty, &[]).expect("type should analyze")
+    }
+
+    fn analyze_with_generics(ty: &Type, generic_params: &[&str]) -> AnalyzedType {
+        let generic_params: Vec<Ident> = generic_params
+            .iter()
+            .map(|param| Ident::new(param, Span::call_site()))
+            .collect();
+        analyze_type(ty, &generic_params).expect("type should analyze")
+    }
+
+    #[test]
+    fn recognizes_string_paths() {
+        for ty in [
+            syn::parse_quote!(String),
+            syn::parse_quote!(std::string::String),
+            syn::parse_quote!(alloc::string::String),
+        ] {
+            assert!(matches!(analyze(&ty).base, AnalyzedBase::String));
+        }
+    }
+
+    #[test]
+    fn recognizes_borrowed_and_cow_unsized_bases() {
+        assert!(matches!(
+            analyze(&syn::parse_quote!(&'a str)).base,
+            AnalyzedBase::BorrowedStr
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(std::borrow::Cow<'a, str>)).base,
+            AnalyzedBase::CowStr
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(&'a [u8])).base,
+            AnalyzedBase::BorrowedBytes
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(std::borrow::Cow<'a, [u8]>)).base,
+            AnalyzedBase::CowBytes
+        ));
+        assert!(matches!(
+            analyze_with_generics(&syn::parse_quote!(&'a [T]), &["T"]).base,
+            AnalyzedBase::BorrowedSlice
+        ));
+    }
+
+    #[test]
+    fn recognizes_duration_families() {
+        assert!(matches!(
+            analyze(&syn::parse_quote!(std::time::Duration)).base,
+            AnalyzedBase::StdDuration
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(core::time::Duration)).base,
+            AnalyzedBase::StdDuration
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(chrono::Duration)).base,
+            AnalyzedBase::ChronoDuration
+        ));
+        assert!(matches!(
+            analyze(&syn::parse_quote!(chrono::TimeDelta)).base,
+            AnalyzedBase::ChronoDuration
+        ));
+    }
+
+    #[test]
+    fn records_wrapper_stack_order_from_outer_to_inner() {
+        let opt_vec_u8 = analyze(&syn::parse_quote!(Option<Vec<u8>>));
+        assert!(matches!(
+            opt_vec_u8.wrappers.as_slice(),
+            [RawWrapper::Option, RawWrapper::Vec]
+        ));
+        assert!(matches!(
+            opt_vec_u8.base,
+            AnalyzedBase::Numeric(NumericKind::U8)
+        ));
+
+        let nested = analyze_with_generics(&syn::parse_quote!(Vec<Option<Vec<T>>>), &["T"]);
+        assert!(matches!(
+            nested.wrappers.as_slice(),
+            [RawWrapper::Vec, RawWrapper::Option, RawWrapper::Vec]
+        ));
+        assert!(matches!(nested.base, AnalyzedBase::Generic(ref ident) if ident == "T"));
+    }
+
+    #[test]
+    fn recursively_analyzes_tuple_elements() {
+        let analyzed = analyze(&syn::parse_quote!((i32, String)));
+        let AnalyzedBase::Tuple(elements) = analyzed.base else {
+            panic!("tuple should analyze as tuple base");
+        };
+
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(
+            elements[0].base,
+            AnalyzedBase::Numeric(NumericKind::I32)
+        ));
+        assert!(matches!(elements[1].base, AnalyzedBase::String));
+    }
+}

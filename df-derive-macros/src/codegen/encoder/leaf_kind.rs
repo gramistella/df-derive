@@ -1,13 +1,10 @@
 //! Leaf-kind abstraction for the depth-N `Vec`-bearing emitter.
 //!
-//! [`LeafKind`] dispatches the unified emitter
-//! [`super::emit::vec_emit_general`] between two payload shapes:
+//! [`LeafKind`] lets the shape-aware emitters dispatch between two payload shapes:
 //! `PerElementPush` (primitive leaves: typed-buffer push per row, one
 //! `Series` out) and `CollectThenBulk` (nested struct / generic leaves:
 //! gather `&T` refs, one `columnar_from_refs` call, per-inner-column
 //! list-array stacking).
-//!
-//! See `docs/encoder-ir.md` for the conceptual model.
 
 use proc_macro2::TokenStream;
 

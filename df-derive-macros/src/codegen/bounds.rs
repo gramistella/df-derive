@@ -26,38 +26,20 @@ fn contains_ident(items: &[syn::Ident], ident: &syn::Ident) -> bool {
 }
 
 fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
-    leaf.walk_leaves(&mut |leaf| match leaf {
-        LeafSpec::Generic(ident) => {
+    leaf.walk_terminal_leaves(&mut |leaf| {
+        if let LeafSpec::Generic(ident) = leaf {
             push_unique(&mut reqs.nested_params, ident);
-        }
-        LeafSpec::Struct(ty) => {
+        } else if let LeafSpec::Struct(ty) = leaf {
             helpers::push_unique_type(&mut reqs.nested_types, ty);
-        }
-        LeafSpec::AsStr(StringyBase::Generic(ident)) => {
+        } else if let LeafSpec::AsStr(StringyBase::Generic(ident)) = leaf {
             push_unique(&mut reqs.as_ref_str, ident);
-        }
-        LeafSpec::AsStr(StringyBase::Struct(ty)) => {
+        } else if let LeafSpec::AsStr(StringyBase::Struct(ty)) = leaf {
             helpers::push_unique_type(&mut reqs.as_ref_str_types, ty);
-        }
-        LeafSpec::AsString(DisplayBase::Generic(ident)) => {
+        } else if let LeafSpec::AsString(DisplayBase::Generic(ident)) = leaf {
             push_unique(&mut reqs.display_params, ident);
-        }
-        LeafSpec::AsString(DisplayBase::Struct(ty)) => {
+        } else if let LeafSpec::AsString(DisplayBase::Struct(ty)) = leaf {
             helpers::push_unique_type(&mut reqs.display_types, ty);
         }
-        LeafSpec::Numeric(_)
-        | LeafSpec::String
-        | LeafSpec::Bool
-        | LeafSpec::DateTime(_)
-        | LeafSpec::NaiveDateTime(_)
-        | LeafSpec::NaiveDate
-        | LeafSpec::NaiveTime
-        | LeafSpec::Duration { .. }
-        | LeafSpec::Decimal { .. }
-        | LeafSpec::AsString(_)
-        | LeafSpec::AsStr(_)
-        | LeafSpec::Binary
-        | LeafSpec::Tuple(_) => {}
     });
 }
 

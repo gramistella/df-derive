@@ -417,3 +417,73 @@ pub fn parse_field_override(
     }
     Ok(override_.map(|(value, span)| Spanned { value, span }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_override(field: &syn::Field) -> syn::Result<ParsedFieldOverride> {
+        parse_field_override(field, "value")
+    }
+
+    fn override_value(field: &syn::Field) -> FieldOverride {
+        parse_override(field)
+            .expect("field override should parse")
+            .expect("field override should be present")
+            .value
+    }
+
+    #[test]
+    fn parses_string_and_decimal_field_overrides() {
+        let as_str = override_value(&syn::parse_quote! {
+            #[df_derive(as_str)]
+            value: String
+        });
+        assert!(matches!(as_str, FieldOverride::Leaf(LeafOverride::AsStr)));
+
+        let as_string = override_value(&syn::parse_quote! {
+            #[df_derive(as_string)]
+            value: DisplayType
+        });
+        assert!(matches!(
+            as_string,
+            FieldOverride::Leaf(LeafOverride::AsString)
+        ));
+
+        let decimal = override_value(&syn::parse_quote! {
+            #[df_derive(decimal(precision = 10, scale = 2))]
+            value: Decimal
+        });
+        assert!(matches!(
+            decimal,
+            FieldOverride::Leaf(LeafOverride::Decimal {
+                precision: 10,
+                scale: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_decimal_keys_and_bad_time_units() {
+        let duplicate_decimal = parse_override(&syn::parse_quote! {
+            #[df_derive(decimal(precision = 10, precision = 11, scale = 2))]
+            value: Decimal
+        });
+        assert!(duplicate_decimal.is_err());
+
+        let bad_time_unit = parse_override(&syn::parse_quote! {
+            #[df_derive(time_unit = "bad")]
+            value: chrono::NaiveDateTime
+        });
+        assert!(bad_time_unit.is_err());
+    }
+
+    #[test]
+    fn rejects_conflicting_string_overrides() {
+        let result = parse_override(&syn::parse_quote! {
+            #[df_derive(as_str, as_string)]
+            value: String
+        });
+        assert!(result.is_err());
+    }
+}

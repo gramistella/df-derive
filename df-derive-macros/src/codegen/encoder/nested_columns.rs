@@ -25,6 +25,7 @@ pub(super) fn nested_materialize_dispatch(
     kind: NestedMaterializeKind,
     flat: &syn::Ident,
     total: Option<&syn::Ident>,
+    outer_len: &TokenStream,
     branches: NestedMaterializeBranches,
 ) -> TokenStream {
     let NestedMaterializeBranches {
@@ -49,7 +50,7 @@ pub(super) fn nested_materialize_dispatch(
             quote! {
                 if #flat.is_empty() {
                     #consume_all_absent
-                } else if #flat.len() == items.len() {
+                } else if #flat.len() == #outer_len {
                     #df_decl
                     #consume_direct
                 } else {
@@ -193,6 +194,7 @@ pub(super) fn inner_col_all_absent(
 /// parent name prefixed. Shared by every nested dispatch arm, with each arm
 /// supplying a different per-column inner-Series expression.
 pub(super) fn consume_nested_columns(
+    columns: &syn::Ident,
     parent_name: &str,
     to_df_trait: &syn::Path,
     ty: &TokenStream,
@@ -217,7 +219,7 @@ pub(super) fn consume_nested_columns(
                 let #inner: #pp::Series = #series_expr;
                 let #named = #inner
                     .with_name(#prefixed.as_str().into());
-                columns.push(#named.into());
+                #columns.push(#named.into());
             }
         }
     }

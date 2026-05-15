@@ -42,6 +42,7 @@ pub(super) fn emit_vec_parent_nested(
     let positions = idents::nested_positions(field_idx);
     let df = idents::nested_df(field_idx);
     let take = idents::nested_take(field_idx);
+    let columns = idents::columns();
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
@@ -175,13 +176,32 @@ pub(super) fn emit_vec_parent_nested(
         &dtype,
     );
 
-    let consume_direct =
-        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_direct, pp);
-    let consume_take =
-        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_take, pp);
-    let consume_empty =
-        consume_nested_columns(column_prefix, to_df_trait, type_path, &series_empty, pp);
+    let consume_direct = consume_nested_columns(
+        &columns,
+        column_prefix,
+        to_df_trait,
+        type_path,
+        &series_direct,
+        pp,
+    );
+    let consume_take = consume_nested_columns(
+        &columns,
+        column_prefix,
+        to_df_trait,
+        type_path,
+        &series_take,
+        pp,
+    );
+    let consume_empty = consume_nested_columns(
+        &columns,
+        column_prefix,
+        to_df_trait,
+        type_path,
+        &series_empty,
+        pp,
+    );
     let consume_all_absent = consume_nested_columns(
+        &columns,
         column_prefix,
         to_df_trait,
         type_path,
@@ -201,6 +221,7 @@ pub(super) fn emit_vec_parent_nested(
         NestedMaterializeKind::Vec { has_inner_option },
         &flat,
         Some(&total_leaves),
+        &quote! { items.len() },
         NestedMaterializeBranches {
             validity_freeze,
             offsets_freeze,

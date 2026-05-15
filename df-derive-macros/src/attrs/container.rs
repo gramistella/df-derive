@@ -165,13 +165,58 @@ fn mixed_builtin_runtime_override(
 ) -> Option<syn::Error> {
     let to_df_trait_path = to_df_trait_path?;
     let columnar_trait_path = columnar_trait_path?;
-    let to_df_module = trait_module_path(&to_df_trait_path.path, "ToDataFrame")?;
-    let columnar_module = trait_module_path(&columnar_trait_path.path, "Columnar")?;
-    let to_df_builtin = is_builtin_default_dataframe_mod(&to_df_module);
-    let columnar_builtin = is_builtin_default_dataframe_mod(&columnar_module);
+    let to_df_module = trait_module_path(&to_df_trait_path.path, "ToDataFrame");
+    let columnar_module = trait_module_path(&columnar_trait_path.path, "Columnar");
+    let to_df_builtin = to_df_module
+        .as_ref()
+        .is_some_and(is_builtin_default_dataframe_mod);
+    let columnar_builtin = columnar_module
+        .as_ref()
+        .is_some_and(is_builtin_default_dataframe_mod);
 
-    ((to_df_builtin || columnar_builtin) && !path_segments_equal(&to_df_module, &columnar_module))
-        .then(|| mixed_builtin_runtime_error(to_df_trait_path, columnar_trait_path))
+    if to_df_builtin {
+        let Some(to_df_module) = &to_df_module else {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        };
+        let Some(columnar_module) = &columnar_module else {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        };
+        if !path_segments_equal(to_df_module, columnar_module) {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        }
+    }
+
+    if columnar_builtin {
+        let Some(to_df_module) = &to_df_module else {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        };
+        let Some(columnar_module) = &columnar_module else {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        };
+        if !path_segments_equal(to_df_module, columnar_module) {
+            return Some(mixed_builtin_runtime_error(
+                to_df_trait_path,
+                columnar_trait_path,
+            ));
+        }
+    }
+
+    None
 }
 
 pub fn explicit_builtin_default_dataframe_mod(
@@ -235,4 +280,31 @@ pub fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs>
         columnar,
         decimal128_encode,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn override_path(path: syn::Path) -> RuntimeOverridePath {
+        RuntimeOverridePath {
+            path,
+            span: Span::call_site(),
+        }
+    }
+
+    #[test]
+    fn accepts_fully_custom_runtime_even_with_custom_trait_names() {
+        let to_dataframe = override_path(syn::parse_quote!(my_runtime::MyToDataFrame));
+        let columnar = override_path(syn::parse_quote!(my_runtime::MyColumnarTrait));
+
+        assert!(mixed_builtin_runtime_override(Some(&to_dataframe), Some(&columnar)).is_none());
+    }
+
+    #[test]
+    fn trait_module_path_requires_the_expected_trait_name() {
+        let path = syn::parse_quote!(my_runtime::MyColumnarTrait);
+
+        assert!(trait_module_path(&path, "Columnar").is_none());
+    }
 }

@@ -23,6 +23,13 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
+/// Column accumulator local in the generated `Columnar::columnar_from_refs`
+/// body. Nested helpers accept it explicitly so they do not depend on an
+/// ambient identifier by convention.
+pub(in crate::codegen) fn columns() -> Ident {
+    format_ident!("columns")
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::codegen) enum LayerNamespace {
     Vec,

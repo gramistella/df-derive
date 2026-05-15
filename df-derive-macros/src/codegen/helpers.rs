@@ -154,7 +154,7 @@ pub fn generate_eager_asserts(
 }
 
 fn collect_nested_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    leaf.walk_leaves(&mut |leaf| {
+    leaf.walk_terminal_leaves(&mut |leaf| {
         if let LeafSpec::Struct(ty) = leaf
             && !type_depends_on_generics(ty, generic_ctx)
         {
@@ -164,7 +164,7 @@ fn collect_nested_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &m
 }
 
 fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    leaf.walk_leaves(&mut |leaf| {
+    leaf.walk_terminal_leaves(&mut |leaf| {
         if let LeafSpec::AsStr(StringyBase::Struct(ty)) = leaf
             && !type_depends_on_generics(ty, generic_ctx)
         {
@@ -174,7 +174,7 @@ fn collect_as_ref_str_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out
 }
 
 fn collect_display_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
-    leaf.walk_leaves(&mut |leaf| {
+    leaf.walk_terminal_leaves(&mut |leaf| {
         if let LeafSpec::AsString(DisplayBase::Struct(ty)) = leaf
             && !type_depends_on_generics(ty, generic_ctx)
         {

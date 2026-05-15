@@ -457,10 +457,10 @@ fn vec_encoder_series_local(idx: usize) -> syn::Ident {
 ///
 /// Lowers `VecLeafSpec` (the per-element-push leaf description local to
 /// this file) into [`LeafKind::PerElementPush`] and routes through the
-/// unified [`vec_emit_general`]. The lowering is mechanical: the storage
+/// shape-aware [`vec_emit_pep`]. The lowering is mechanical: the storage
 /// decls / per-elem push / leaf-array build / offsets-push expression are
 /// already shaped by `build_vec_leaf_pieces`; the leaf logical dtype rides
-/// into the unified emitter via the `PerElementPush` payload.
+/// into the shape-aware emitter via the `PerElementPush` payload.
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,

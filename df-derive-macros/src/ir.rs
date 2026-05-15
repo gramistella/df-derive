@@ -539,19 +539,20 @@ impl LeafSpec {
         matches!(self, Self::Tuple(_))
     }
 
-    pub fn walk_leaves<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
-        f(self);
-
-        if let Self::Tuple(elements) = self {
-            for element in elements {
-                element.leaf_spec.walk_leaves(f);
+    pub fn walk_terminal_leaves<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
+        match self {
+            Self::Tuple(elements) => {
+                for element in elements {
+                    element.leaf_spec.walk_terminal_leaves(f);
+                }
             }
+            leaf => f(leaf),
         }
     }
 
     pub fn any_leaf(&self, mut pred: impl FnMut(&Self) -> bool) -> bool {
         let mut found = false;
-        self.walk_leaves(&mut |leaf| {
+        self.walk_terminal_leaves(&mut |leaf| {
             if pred(leaf) {
                 found = true;
             }

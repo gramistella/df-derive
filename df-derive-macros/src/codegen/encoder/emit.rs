@@ -1,9 +1,9 @@
 //! Unified shape-aware emitter parameterized by [`LeafKind`].
 //!
-//! [`vec_emit_general`] is the single place that ties together the
+//! The shape-aware emitters ([`vec_emit_pep`] and [`vec_emit_ctb`]) tie together the
 //! depth-N walker primitives ([`ShapePrecount`], [`ShapeScan`],
 //! [`shape_offsets_decls`], [`shape_validity_decls`],
-//! [`shape_assemble_list_stack`]). It dispatches on [`LeafKind`] for the
+//! [`shape_assemble_list_stack`]). They dispatch on [`LeafKind`] for the
 //! points where per-element-push and collect-then-bulk genuinely diverge.
 //!
 //! The collect-then-bulk path also accepts the depth-0 (`Leaf`) wrapper —
@@ -13,8 +13,6 @@
 //! is_empty`) and using `items.len()` rather than the precount `total` for
 //! the all-absent arm length (precount has no leaves to count at depth 0).
 //!
-//! See `docs/encoder-ir.md` for the conceptual model.
-
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -356,6 +354,7 @@ fn ctb_materialize(
     let df = idents::nested_df(idx);
     let take = idents::nested_take(idx);
     let total = idents::nested_total(idx);
+    let columns = idents::columns();
     let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
@@ -393,10 +392,12 @@ fn ctb_materialize(
     let series_all_absent =
         ctb_layer_wrap(wrapper, layers, kind, &inner_col_all_absent, pp, pa_root);
 
-    let consume_direct = consume_nested_columns(name, to_df_trait, ty, &series_direct, pp);
-    let consume_take = consume_nested_columns(name, to_df_trait, ty, &series_take, pp);
-    let consume_empty = consume_nested_columns(name, to_df_trait, ty, &series_empty, pp);
-    let consume_all_absent = consume_nested_columns(name, to_df_trait, ty, &series_all_absent, pp);
+    let consume_direct =
+        consume_nested_columns(&columns, name, to_df_trait, ty, &series_direct, pp);
+    let consume_take = consume_nested_columns(&columns, name, to_df_trait, ty, &series_take, pp);
+    let consume_empty = consume_nested_columns(&columns, name, to_df_trait, ty, &series_empty, pp);
+    let consume_all_absent =
+        consume_nested_columns(&columns, name, to_df_trait, ty, &series_all_absent, pp);
 
     let (validity_freeze, offsets_freeze) = match wrapper {
         WrapperShape::Leaf(_) => (TokenStream::new(), TokenStream::new()),
@@ -420,7 +421,7 @@ fn ctb_materialize(
         consume_empty,
         consume_all_absent,
     };
-    nested_materialize_dispatch(kind, &flat, Some(&total), branches)
+    nested_materialize_dispatch(kind, &flat, Some(&total), &quote! { items.len() }, branches)
 }
 
 /// Build the per-element-push storage decls + leaf-body + post-scan

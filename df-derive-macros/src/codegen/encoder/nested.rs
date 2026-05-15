@@ -4,7 +4,7 @@
 //! any `Option<...<Option<Nested>>>` stack, and every `Vec`-bearing stack
 //! including deep nestings, mid-stack `Option`s, and outer-list validity —
 //! through a single [`CollectThenBulk`] leaf and the unified emitter
-//! [`super::emit::vec_emit_general`]. The depth-0 (`Leaf`) shape is the
+//! [`super::emit::vec_emit_ctb`]. The depth-0 (`Leaf`) shape is the
 //! degenerate case of the depth-N walker: no list-array wrap, the
 //! all-absent arm uses `items.len()` instead of the precount `total`,
 //! and the per-row scan body matches each row's optional access directly

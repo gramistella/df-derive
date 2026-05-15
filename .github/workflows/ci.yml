@@ -44,13 +44,13 @@ jobs:
       - name: Check workspace
         run: cargo check --workspace --all-features --all-targets --locked
 
-  build:
-    name: Lint and test
+  lint:
+    name: Lint and format
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
       # Avoid intermittent rust-lld SIGBUS crashes while linking the
-      # Polars-heavy trybuild binaries on GitHub-hosted Linux runners. Use
+      # Polars-heavy bench/test binaries on GitHub-hosted Linux runners. Use
       # Cargo's target-specific env vars so nested trybuild Cargo invocations
       # inherit the linker choice too.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
@@ -73,10 +73,48 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # Keep the test runner on GNU ld.bfd for the same reason as the lint job.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Tests
         env:
           CARGO_BUILD_JOBS: '1'
-        run: cargo test --workspace --all-features --all-targets -- --nocapture
+        run: cargo test --workspace --all-features -- --nocapture
+
+  package:
+    name: Package dry run
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - test
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C linker-features=-lld -C link-arg=-fuse-ld=bfd"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Check package contents
         run: cargo package --workspace --list
@@ -86,8 +124,11 @@ jobs:
 
   bench:
     name: Benchmarks (after tests)
-    needs: build
-    if: ${{ needs.build.result == 'success' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+    needs:
+      - lint
+      - test
+      - package
+    if: ${{ needs.lint.result == 'success' && needs.test.result == 'success' && needs.package.result == 'success' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
     uses: ./.github/workflows/bench.yml
     with:
       event_name: ${{ github.event_name }}

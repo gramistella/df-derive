@@ -56,6 +56,7 @@ fn columnar_method_body(
         pushes,
         builders,
     } = prepare_columnar_parts(ir, config, it_ident);
+    let columns = idents::columns();
     let push_loop = if pushes.is_empty() {
         TokenStream::new()
     } else {
@@ -68,9 +69,9 @@ fn columnar_method_body(
         }
         #(#decls)*
         #push_loop
-        let mut columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
+        let mut #columns: ::std::vec::Vec<#pp::Column> = ::std::vec::Vec::new();
         #(#builders)*
-        if columns.is_empty() {
+        if #columns.is_empty() {
             let num_rows = items.len();
             let dummy = #pp::Series::new_empty(
                 "_dummy".into(),
@@ -81,7 +82,7 @@ fn columnar_method_body(
             df.drop_in_place("_dummy")?;
             return ::std::result::Result::Ok(df);
         }
-        #pp::DataFrame::new_infer_height(columns)
+        #pp::DataFrame::new_infer_height(#columns)
     }
 }
 

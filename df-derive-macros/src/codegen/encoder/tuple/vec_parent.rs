@@ -124,6 +124,7 @@ fn emit_vec_parent_primitive(
     let pa_root = config.external_paths.polars_arrow_root();
     let series_local = idents::vec_field_series(field_idx);
     let named = idents::field_named_series();
+    let columns = idents::columns();
     let leaf_arr = idents::leaf_arr();
     let total_leaves = idents::total_leaves();
 
@@ -195,7 +196,7 @@ fn emit_vec_parent_primitive(
                 #materialize
             };
             let #named = #series_local.with_name(#column_prefix.into());
-            columns.push(#named.into());
+            #columns.push(#named.into());
         }
     }
 }

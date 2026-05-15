@@ -2,6 +2,8 @@ use crate::ir::DateTimeUnit;
 use proc_macro2::Span;
 use syn::spanned::Spanned as SynSpanned;
 
+use super::Spanned;
+
 /// Leaf-level conversion override declared via `#[df_derive(...)]`.
 /// `skip` and `as_binary` are field dispositions, so they are deliberately
 /// not representable here and cannot reach leaf parsing.
@@ -17,11 +19,6 @@ pub enum FieldOverride {
     Skip,
     AsBinary,
     Leaf(LeafOverride),
-}
-
-pub struct Spanned<T> {
-    pub value: T,
-    pub span: Span,
 }
 
 pub type ParsedFieldOverride = Option<Spanned<FieldOverride>>;

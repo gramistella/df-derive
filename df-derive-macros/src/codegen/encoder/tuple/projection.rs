@@ -4,9 +4,9 @@ use crate::ir::{
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::super::idents;
 use super::super::shape_walk::LayerProjection;
 use super::super::{access_chain_to_option_ref, access_chain_to_ref};
-use super::idents;
 
 fn is_copy_element_projection(elem: &TupleElement) -> bool {
     is_copy_leaf_for_projection(&elem.leaf_spec)

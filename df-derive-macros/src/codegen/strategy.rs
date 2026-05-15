@@ -224,9 +224,10 @@ fn build_primitive_emit(
             push,
             series,
         } => {
+            let columns = idents::columns();
             let builder = quote! {{
                 let s = #series;
-                columns.push(s.into());
+                #columns.push(s.into());
             }};
             FieldEmit::RowWise {
                 decls,

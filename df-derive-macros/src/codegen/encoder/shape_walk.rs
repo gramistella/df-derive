@@ -658,6 +658,10 @@ pub(super) fn shape_assemble_list_stack(
     arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
 ) -> TokenStream {
     let depth = layers.len();
+    debug_assert!(
+        depth > 0,
+        "shape_assemble_list_stack requires at least one Vec layer"
+    );
 
     let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
     let mut prev_payload = seed;

@@ -272,6 +272,14 @@ mod tests {
     }
 
     #[test]
+    fn does_not_peel_wrappers_with_extra_generic_arguments() {
+        let analyzed = analyze_with_generics(&syn::parse_quote!(Option<T, U>), &["T", "U"]);
+
+        assert!(analyzed.wrappers.is_empty());
+        assert!(matches!(analyzed.base, AnalyzedBase::Struct(_)));
+    }
+
+    #[test]
     fn recursively_analyzes_tuple_elements() {
         let analyzed = analyze(&syn::parse_quote!((i32, String)));
         let AnalyzedBase::Tuple(elements) = analyzed.base else {

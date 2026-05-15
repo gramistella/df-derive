@@ -10,7 +10,7 @@
 //! to a primitive leaf encoder — because it sits at the leaf/vec boundary
 //! and `try_build_vec_encoder` shares the leaf coverage matrix.
 
-use crate::codegen::type_registry::MappedPrimitiveLeaf;
+use crate::codegen::type_registry::ScalarTransform;
 use crate::ir::{PrimitiveLeaf, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -472,11 +472,12 @@ fn vec_encoder(
     let decl = vec_emit_pep(&pep, ctx.base.access, ctx.base.idx, shape, ctx.paths);
     let name = ctx.base.name;
     let named = idents::field_named_series();
+    let columns = idents::columns();
     let columnar = quote! {
         {
             #decl
             let #named = #series_local.with_name(#name.into());
-            columns.push(#named.into());
+            #columns.push(#named.into());
         }
     };
     Encoder::Multi { columnar }
@@ -540,12 +541,13 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp);
         let name = ctx.base.name;
         let named = idents::field_named_series();
+        let columns = idents::columns();
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
         let columnar = quote! {
             {
                 #decl
                 let #named = #series_local.with_name(#name.into());
-                columns.push(#named.into());
+                #columns.push(#named.into());
             }
         };
         return Encoder::Multi { columnar };
@@ -608,7 +610,7 @@ fn bool_bare_depth1_body(
 
 fn mapped_numeric_plan(
     ctx: &LeafCtx<'_>,
-    leaf: MappedPrimitiveLeaf,
+    leaf: ScalarTransform,
     native: TokenStream,
 ) -> VecLeafPlan {
     let v = idents::leaf_value();
@@ -664,27 +666,25 @@ fn vec_leaf_plan(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>) -> VecLeafPlan {
             leaf_dtype: leaf.dtype(ctx.paths),
         },
         PrimitiveLeaf::DateTime(unit) => {
-            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::DateTime(unit), quote! { i64 })
+            mapped_numeric_plan(ctx, ScalarTransform::DateTime(unit), quote! { i64 })
         }
-        PrimitiveLeaf::NaiveDateTime(unit) => mapped_numeric_plan(
-            ctx,
-            MappedPrimitiveLeaf::NaiveDateTime(unit),
-            quote! { i64 },
-        ),
+        PrimitiveLeaf::NaiveDateTime(unit) => {
+            mapped_numeric_plan(ctx, ScalarTransform::NaiveDateTime(unit), quote! { i64 })
+        }
         PrimitiveLeaf::NaiveTime => {
-            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::NaiveTime, quote! { i64 })
+            mapped_numeric_plan(ctx, ScalarTransform::NaiveTime, quote! { i64 })
         }
         PrimitiveLeaf::Duration { unit, source } => mapped_numeric_plan(
             ctx,
-            MappedPrimitiveLeaf::Duration { unit, source },
+            ScalarTransform::Duration { unit, source },
             quote! { i64 },
         ),
         PrimitiveLeaf::NaiveDate => {
-            mapped_numeric_plan(ctx, MappedPrimitiveLeaf::NaiveDate, quote! { i32 })
+            mapped_numeric_plan(ctx, ScalarTransform::NaiveDate, quote! { i32 })
         }
         PrimitiveLeaf::Decimal { precision, scale } => mapped_numeric_plan(
             ctx,
-            MappedPrimitiveLeaf::Decimal { precision, scale },
+            ScalarTransform::Decimal { precision, scale },
             quote! { i128 },
         ),
         PrimitiveLeaf::AsString => {

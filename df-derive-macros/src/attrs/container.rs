@@ -1,7 +1,9 @@
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
-use syn::spanned::Spanned;
+use syn::spanned::Spanned as SynSpanned;
 use syn::{DeriveInput, PathArguments};
+
+use super::Spanned;
 
 pub struct ContainerAttrs {
     pub to_dataframe: Option<RuntimeOverridePath>,
@@ -9,10 +11,7 @@ pub struct ContainerAttrs {
     pub decimal128_encode: Option<RuntimeOverridePath>,
 }
 
-pub struct RuntimeOverridePath {
-    pub path: syn::Path,
-    pub span: Span,
-}
+pub type RuntimeOverridePath = Spanned<syn::Path>;
 
 pub fn runtime_trait_path(dataframe_mod: &proc_macro2::TokenStream, trait_name: &str) -> syn::Path {
     let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::call_site());
@@ -62,8 +61,8 @@ fn set_runtime_override(
         return Err(error);
     }
 
-    *slot = Some(RuntimeOverridePath {
-        path,
+    *slot = Some(Spanned {
+        value: path,
         span: incoming_span,
     });
     Ok(())
@@ -165,8 +164,8 @@ fn mixed_builtin_runtime_override(
 ) -> Option<syn::Error> {
     let to_df_trait_path = to_df_trait_path?;
     let columnar_trait_path = columnar_trait_path?;
-    let to_df_module = trait_module_path(&to_df_trait_path.path, "ToDataFrame");
-    let columnar_module = trait_module_path(&columnar_trait_path.path, "Columnar");
+    let to_df_module = trait_module_path(&to_df_trait_path.value, "ToDataFrame");
+    let columnar_module = trait_module_path(&columnar_trait_path.value, "Columnar");
     let to_df_builtin = to_df_module
         .as_ref()
         .is_some_and(is_builtin_default_dataframe_mod);
@@ -223,13 +222,13 @@ pub fn explicit_builtin_default_dataframe_mod(
     to_df_trait_path: Option<&RuntimeOverridePath>,
     columnar_trait_path: Option<&RuntimeOverridePath>,
 ) -> Option<syn::Path> {
-    let to_df_module = trait_module_path(&to_df_trait_path?.path, "ToDataFrame")?;
+    let to_df_module = trait_module_path(&to_df_trait_path?.value, "ToDataFrame")?;
     if !is_builtin_default_dataframe_mod(&to_df_module) {
         return None;
     }
 
     if let Some(columnar) = columnar_trait_path {
-        let columnar_module = trait_module_path(&columnar.path, "Columnar")?;
+        let columnar_module = trait_module_path(&columnar.value, "Columnar")?;
         if !path_segments_equal(&to_df_module, &columnar_module) {
             return None;
         }
@@ -287,8 +286,8 @@ mod tests {
     use super::*;
 
     fn override_path(path: syn::Path) -> RuntimeOverridePath {
-        RuntimeOverridePath {
-            path,
+        Spanned {
+            value: path,
             span: Span::call_site(),
         }
     }

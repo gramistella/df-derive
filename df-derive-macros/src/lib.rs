@@ -38,19 +38,19 @@ fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
     );
     let to_dataframe = attrs.to_dataframe.as_ref().map_or_else(
         || attrs::container::runtime_trait_path(&default_df_mod, "ToDataFrame"),
-        |override_| override_.path.clone(),
+        |override_| override_.value.clone(),
     );
     let columnar = match (&attrs.columnar, &attrs.to_dataframe) {
-        (Some(override_), _) => override_.path.clone(),
+        (Some(override_), _) => override_.value.clone(),
         (None, Some(override_)) => {
-            attrs::container::rebase_last_segment(&override_.path, "Columnar")
+            attrs::container::rebase_last_segment(&override_.value, "Columnar")
         }
         (None, None) => attrs::container::runtime_trait_path(&default_df_mod, "Columnar"),
     };
     let decimal128_encode = match (&attrs.decimal128_encode, &attrs.to_dataframe) {
-        (Some(override_), _) => override_.path.clone(),
+        (Some(override_), _) => override_.value.clone(),
         (None, Some(override_)) => {
-            attrs::container::rebase_last_segment(&override_.path, "Decimal128Encode")
+            attrs::container::rebase_last_segment(&override_.value, "Decimal128Encode")
         }
         (None, None) => attrs::container::runtime_trait_path(&default_df_mod, "Decimal128Encode"),
     };

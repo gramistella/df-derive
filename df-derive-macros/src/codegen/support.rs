@@ -20,7 +20,7 @@ fn needs_list_assembly(ir: &StructIR) -> bool {
 }
 
 fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
-    leaf.any_leaf(|leaf| matches!(leaf, LeafSpec::Struct(_) | LeafSpec::Generic(_)))
+    leaf.any_terminal_leaf(|leaf| matches!(leaf, LeafSpec::Struct(_) | LeafSpec::Generic(_)))
 }
 
 fn needs_nested_validation(ir: &StructIR) -> bool {

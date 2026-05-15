@@ -155,10 +155,6 @@ fn ctb_depth0_ref_expr(access: &TokenStream, access_chain: &AccessChain) -> Toke
 /// into `flat`, plus (when `has_inner_option`) an `Option<IdxSize>` slot
 /// into `positions` so the post-scan dispatcher can scatter values back
 /// into their original row positions via `IdxCa::take`.
-///
-/// Debug-asserts `inner_option_layers <= 1` (the parser-injected encoder
-/// boundary already enforces this for nested-struct/generic paths; the
-/// debug-assert is a safety margin against future emitter changes).
 fn ctb_leaf_body<'a>(
     shape: &'a VecLayers,
     flat: &'a syn::Ident,

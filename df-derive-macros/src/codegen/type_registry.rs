@@ -188,7 +188,7 @@ impl PrimitiveLeaf<'_> {
 /// `Display` formatting have dedicated encoders, so they are not members of
 /// this type and cannot accidentally route through the mapped-scalar path.
 #[derive(Clone, Copy)]
-pub(in crate::codegen) enum MappedPrimitiveLeaf {
+pub(in crate::codegen) enum ScalarTransform {
     DateTime(DateTimeUnit),
     NaiveDateTime(DateTimeUnit),
     NaiveDate,
@@ -203,7 +203,7 @@ pub(in crate::codegen) enum MappedPrimitiveLeaf {
     },
 }
 
-impl MappedPrimitiveLeaf {
+impl ScalarTransform {
     const fn logical(self) -> LogicalPrimitive {
         match self {
             Self::DateTime(unit) => LogicalPrimitive::DateTime(unit),
@@ -261,17 +261,17 @@ impl PrimitiveExprReceiver {
 /// Map a per-row primitive value through a scalar storage transform
 /// (`DateTime` → epoch i64, `Decimal` → i128 mantissa, etc.). Leaves that do
 /// not need this scalar transform cannot be represented by
-/// [`MappedPrimitiveLeaf`].
+/// [`ScalarTransform`].
 #[allow(clippy::too_many_lines)]
 pub fn map_primitive_expr(
     var: &TokenStream,
     receiver: PrimitiveExprReceiver,
-    leaf: MappedPrimitiveLeaf,
+    leaf: ScalarTransform,
     decimal128_encode_trait: &syn::Path,
     paths: &ExternalPaths,
 ) -> TokenStream {
     match leaf {
-        MappedPrimitiveLeaf::DateTime(unit) => match unit {
+        ScalarTransform::DateTime(unit) => match unit {
             DateTimeUnit::Milliseconds => quote! { (#var).timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
@@ -283,7 +283,7 @@ pub fn map_primitive_expr(
                 }
             }
         },
-        MappedPrimitiveLeaf::NaiveDateTime(unit) => match unit {
+        ScalarTransform::NaiveDateTime(unit) => match unit {
             DateTimeUnit::Milliseconds => quote! { (#var).and_utc().timestamp_millis() },
             DateTimeUnit::Microseconds => quote! { (#var).and_utc().timestamp_micros() },
             DateTimeUnit::Nanoseconds => {
@@ -295,7 +295,7 @@ pub fn map_primitive_expr(
                 }
             }
         },
-        MappedPrimitiveLeaf::NaiveDate => {
+        ScalarTransform::NaiveDate => {
             let chrono = super::external_paths::chrono_root();
             quote! {
                 {
@@ -304,7 +304,7 @@ pub fn map_primitive_expr(
                 }
             }
         }
-        MappedPrimitiveLeaf::NaiveTime => {
+        ScalarTransform::NaiveTime => {
             let chrono = super::external_paths::chrono_root();
             quote! {
                 {
@@ -314,7 +314,7 @@ pub fn map_primitive_expr(
                 }
             }
         }
-        MappedPrimitiveLeaf::Duration { unit, source } => {
+        ScalarTransform::Duration { unit, source } => {
             let pp = paths.prelude();
             match source {
                 DurationSource::Std => match unit {
@@ -351,7 +351,7 @@ pub fn map_primitive_expr(
                 },
             }
         }
-        MappedPrimitiveLeaf::Decimal { precision, scale } => {
+        ScalarTransform::Decimal { precision, scale } => {
             // Dispatch the rescale through the user-controlled
             // `Decimal128Encode` trait so different decimal backends
             // (`rust_decimal::Decimal`, `bigdecimal::BigDecimal`, …) can

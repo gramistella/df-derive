@@ -82,13 +82,14 @@ pub(super) fn emit_via_standard_encoder_with_option_receiver(
             let it = idents::populator_iter();
             let named = idents::field_named_series();
             let series_local = idents::vec_field_series(field_idx);
+            let columns = idents::columns();
             quote! {
                 {
                     #(#decls)*
                     for #it in items { #push }
                     let #series_local: #pp::Series = #series;
                     let #named = #series_local.with_name(#column_prefix.into());
-                    columns.push(#named.into());
+                    #columns.push(#named.into());
                 }
             }
         }

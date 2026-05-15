@@ -1,4 +1,4 @@
-use syn::{GenericArgument, PathArguments, Type, TypePath};
+use syn::{AngleBracketedGenericArguments, GenericArgument, PathArguments, Type, TypePath};
 
 use super::known_types::{is_bare_str_type, is_u8_type};
 use super::path_match::{path_is_exact_with_leaf_args, wrapper_path_matches};
@@ -107,11 +107,23 @@ fn extract_inner_type<'a>(ty: &'a Type, wrapper: &str, qualified: &[&str]) -> Op
         && wrapper_path_matches(type_path, wrapper, qualified)
         && let Some(segment) = type_path.path.segments.last()
         && let PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+        && let Some(inner_ty) = single_type_arg(args)
     {
         return Some(inner_ty);
     }
     None
+}
+
+fn single_type_arg(args: &AngleBracketedGenericArguments) -> Option<&Type> {
+    let mut args = args.args.iter();
+    let first = args.next()?;
+    if args.next().is_some() {
+        return None;
+    }
+    match first {
+        GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    }
 }
 
 enum CowPeel<'a> {

@@ -74,8 +74,30 @@ jobs:
         run: cargo fmt --all -- --check
 
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: architecture
+            command: cargo test -p df-derive --test architecture --all-features -- --nocapture
+          - name: trybuild
+            command: cargo test -p df-derive --test progress --all-features -- --nocapture
+          - name: runtime
+            command: cargo test -p df-derive --test runtime_semantics --all-features -- --nocapture
+          - name: unit-and-light
+            command: >-
+              cargo test -p df-derive-core --all-features -- --nocapture &&
+              cargo test -p df-derive-macros --all-features -- --nocapture &&
+              cargo test -p df-derive --lib --all-features -- --nocapture &&
+              cargo test -p df-derive
+              --test clippy_unsafe_derive_deserialize
+              --test codegen_path_centralization
+              --test generated_lint_hygiene
+              --test idents_centralization
+              --test local_runtime
+              --all-features -- --nocapture
     env:
       CARGO_TERM_COLOR: always
       # Keep the test runner on GNU ld.bfd for the same reason as the lint job.
@@ -94,7 +116,7 @@ jobs:
       - name: Tests
         env:
           CARGO_BUILD_JOBS: '1'
-        run: cargo test --workspace --all-features -- --nocapture
+        run: ${{ matrix.command }}
 
   package:
     name: Package dry run

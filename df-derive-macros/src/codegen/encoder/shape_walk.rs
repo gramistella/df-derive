@@ -9,7 +9,7 @@ use quote::{format_ident, quote};
 
 use crate::ir::{AccessChain, NonEmpty, VecLayers};
 
-use super::idents;
+use super::idents::{self, LayerIdents};
 use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_expr};
 
 /// Optional tuple projection injected at an inter-layer transition.
@@ -56,26 +56,6 @@ fn projected_layer_bind(
     let param = format_ident!("{bind_prefix}proj_{cur}");
     let projected = project_from(&quote! { #param });
     quote! { (#tuple_ref).map(|#param| #projected) }
-}
-
-pub(super) struct LayerIdents {
-    pub offsets: syn::Ident,
-    pub offsets_buf: syn::Ident,
-    pub validity_mb: syn::Ident,
-    pub validity_bm: syn::Ident,
-    pub bind: syn::Ident,
-}
-
-impl From<idents::LayerIds> for LayerIdents {
-    fn from(ids: idents::LayerIds) -> Self {
-        Self {
-            offsets: ids.offsets,
-            offsets_buf: ids.offsets_buf,
-            validity_mb: ids.validity_mb,
-            validity_bm: ids.validity_bm,
-            bind: ids.bind,
-        }
-    }
 }
 
 pub(super) struct ShapeScan<'shape, 'body> {
@@ -288,6 +268,77 @@ pub(super) struct ShapeEmitter<'a> {
 }
 
 impl<'a> ShapeEmitter<'a> {
+    pub(super) const fn vec(
+        shape: &'a VecLayers,
+        access: &'a TokenStream,
+        layers: &'a [LayerIdents],
+        total_counter: &'a syn::Ident,
+        layer_counters: &'a [syn::Ident],
+        pp: &'a TokenStream,
+        pa_root: &'a TokenStream,
+    ) -> Self {
+        Self {
+            shape,
+            access,
+            layers,
+            outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
+            precount_outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
+            total_counter,
+            layer_counters,
+            pp,
+            pa_root,
+            projection: None,
+        }
+    }
+
+    pub(super) const fn nested(
+        shape: &'a VecLayers,
+        access: &'a TokenStream,
+        layers: &'a [LayerIdents],
+        total_counter: &'a syn::Ident,
+        layer_counters: &'a [syn::Ident],
+        pp: &'a TokenStream,
+        pa_root: &'a TokenStream,
+    ) -> Self {
+        Self {
+            shape,
+            access,
+            layers,
+            outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
+            precount_outer_some_prefix: idents::NESTED_PRE_OUTER_SOME_PREFIX,
+            total_counter,
+            layer_counters,
+            pp,
+            pa_root,
+            projection: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) const fn tuple(
+        shape: &'a VecLayers,
+        access: &'a TokenStream,
+        layers: &'a [LayerIdents],
+        total_counter: &'a syn::Ident,
+        layer_counters: &'a [syn::Ident],
+        pp: &'a TokenStream,
+        pa_root: &'a TokenStream,
+        projection: Option<LayerProjection<'a>>,
+    ) -> Self {
+        Self {
+            shape,
+            access,
+            layers,
+            outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
+            precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
+            total_counter,
+            layer_counters,
+            pp,
+            pa_root,
+            projection,
+        }
+    }
+
     pub(super) fn precount(&self) -> TokenStream {
         ShapePrecount {
             shape: self.shape,
@@ -319,21 +370,17 @@ impl<'a> ShapeEmitter<'a> {
         .build()
     }
 
-    pub(super) fn offsets_decls(
-        &self,
-        counter_for_depth: &dyn Fn(usize) -> TokenStream,
-    ) -> TokenStream {
-        let offsets: Vec<&syn::Ident> = self.layers.iter().map(|layer| &layer.offsets).collect();
-        shape_offsets_decls(&offsets, counter_for_depth)
+    fn counter_for_depth(&self, depth: usize) -> TokenStream {
+        let counter = &self.layer_counters[depth];
+        quote! { #counter }
     }
 
-    pub(super) fn validity_decls(
-        &self,
-        counter_for_depth: &dyn Fn(usize) -> TokenStream,
-    ) -> TokenStream {
-        let validity: Vec<&syn::Ident> =
-            self.layers.iter().map(|layer| &layer.validity_mb).collect();
-        shape_validity_decls(self.shape, &validity, counter_for_depth, self.pa_root)
+    pub(super) fn offsets_decls(&self) -> TokenStream {
+        shape_offsets_decls(self)
+    }
+
+    pub(super) fn validity_decls(&self) -> TokenStream {
+        shape_validity_decls(self)
     }
 
     pub(super) fn layer_wraps_move(&self) -> NonEmpty<LayerWrap<'a>> {
@@ -512,16 +559,14 @@ pub(super) fn shape_assemble_list_stack(
     }
 }
 
-pub(super) fn shape_offsets_decls(
-    layers: &[&syn::Ident],
-    layer_counter: &dyn Fn(usize) -> TokenStream,
-) -> TokenStream {
-    let mut out: Vec<TokenStream> = Vec::with_capacity(layers.len());
-    for (i, offsets) in layers.iter().enumerate() {
+fn shape_offsets_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
+    let mut out: Vec<TokenStream> = Vec::with_capacity(emitter.layers.len());
+    for (i, layer) in emitter.layers.iter().enumerate() {
+        let offsets = &layer.offsets;
         let cap = if i == 0 {
             quote! { items.len() + 1 }
         } else {
-            let counter = layer_counter(i - 1);
+            let counter = emitter.counter_for_depth(i - 1);
             quote! { #counter + 1 }
         };
         out.push(quote! {
@@ -533,23 +578,20 @@ pub(super) fn shape_offsets_decls(
     quote! { #(#out)* }
 }
 
-pub(super) fn shape_validity_decls(
-    shape: &VecLayers,
-    validity_per_layer: &[&syn::Ident],
-    layer_counter: &dyn Fn(usize) -> TokenStream,
-    pa_root: &TokenStream,
-) -> TokenStream {
+fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::new();
-    for (i, validity) in validity_per_layer.iter().enumerate() {
-        if !shape.layers[i].has_outer_validity() {
+    for (i, layer) in emitter.layers.iter().enumerate() {
+        if !emitter.shape.layers[i].has_outer_validity() {
             continue;
         }
+        let validity = &layer.validity_mb;
         let cap = if i == 0 {
             quote! { items.len() }
         } else {
-            let counter = layer_counter(i - 1);
+            let counter = emitter.counter_for_depth(i - 1);
             quote! { #counter }
         };
+        let pa_root = emitter.pa_root;
         out.push(quote! {
             let mut #validity: #pa_root::bitmap::MutableBitmap =
                 #pa_root::bitmap::MutableBitmap::with_capacity(#cap);

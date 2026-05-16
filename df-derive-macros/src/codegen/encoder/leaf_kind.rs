@@ -1,14 +1,9 @@
-//! Leaf-kind abstraction for the depth-N `Vec`-bearing emitter.
+//! Leaf payloads for the depth-N `Vec`-bearing emitter.
 //!
-//! [`LeafKind`] lets the shape-aware emitters dispatch between two payload shapes:
-//! `PerElementPush` (primitive leaves: typed-buffer push per row, one
-//! `Series` out) and `CollectThenBulk` (nested struct / generic leaves:
-//! gather `&T` refs, one `columnar_from_refs` call, per-inner-column
-//! list-array stacking).
+//! Primitive leaves use per-element push into typed storage. Nested struct and
+//! generic leaves collect references and materialize via `Columnar::columnar_from_refs`.
 
 use proc_macro2::TokenStream;
-
-use super::idents;
 
 #[derive(Clone)]
 pub(super) struct PerElementPush {
@@ -27,25 +22,4 @@ pub(super) struct CollectThenBulk<'a> {
     pub to_df_trait: &'a syn::Path,
     pub name: &'a str,
     pub idx: usize,
-}
-
-pub(super) enum LeafKind {
-    PerElementPush,
-    CollectThenBulk,
-}
-
-impl LeafKind {
-    pub(super) const fn scan_outer_some_prefix(&self) -> &'static str {
-        match self {
-            Self::PerElementPush => idents::VEC_OUTER_SOME_PREFIX,
-            Self::CollectThenBulk => idents::NESTED_OUTER_SOME_PREFIX,
-        }
-    }
-
-    pub(super) const fn precount_outer_some_prefix(&self) -> &'static str {
-        match self {
-            Self::PerElementPush => idents::VEC_OUTER_SOME_PREFIX,
-            Self::CollectThenBulk => idents::NESTED_PRE_OUTER_SOME_PREFIX,
-        }
-    }
 }

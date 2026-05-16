@@ -3,10 +3,11 @@ use crate::ir::{AccessChain, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::super::idents::LayerIdents;
 use super::super::nested_columns::{
     NestedMaterializeCtx, NestedWrapper, materialize_nested_columns,
 };
-use super::super::shape_walk::{LayerIdents, ShapeEmitter};
+use super::super::shape_walk::ShapeEmitter;
 use super::super::{idents, idx_size_len_expr};
 use super::projection::TupleProjection;
 use super::vec_parent::{tuple_layer_counters, tuple_layer_idents, tuple_scan_leaf_body};
@@ -41,18 +42,16 @@ pub(super) fn emit_vec_parent_nested(
         .map(|i| tuple_layer_idents(field_idx, i))
         .collect();
     let layer_counters = tuple_layer_counters(field_idx, composed_shape.depth());
-    let emitter = ShapeEmitter {
-        shape: composed_shape,
-        access: parent_access,
-        layers: &layers,
-        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
-        precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
-        total_counter: &total_leaves,
-        layer_counters: &layer_counters,
+    let emitter = ShapeEmitter::tuple(
+        composed_shape,
+        parent_access,
+        &layers,
+        &total_leaves,
+        &layer_counters,
         pp,
         pa_root,
-        projection: projection.as_layer_projection(composed_shape),
-    };
+        projection.as_layer_projection(composed_shape),
+    );
     let precount = emitter.precount();
 
     let has_inner_option = composed_shape.has_inner_option();
@@ -96,12 +95,8 @@ pub(super) fn emit_vec_parent_nested(
         &per_elem_push,
     );
     let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
-    let counter_for_depth = |layer: usize| -> TokenStream {
-        let counter = &layer_counters[layer];
-        quote! { #counter }
-    };
-    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
-    let validity_decls = emitter.validity_decls(&counter_for_depth);
+    let offsets_decls = emitter.offsets_decls();
+    let validity_decls = emitter.validity_decls();
 
     let positions_decl = if has_inner_option {
         quote! {

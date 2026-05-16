@@ -3,8 +3,9 @@ use crate::ir::{AccessChain, LeafShape, PrimitiveLeaf, TupleElement, VecLayers, 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
-use super::super::{BaseCtx, LeafCtx, access_chain_to_ref, idents};
+use super::super::idents::{self, LayerIdents};
+use super::super::shape_walk::{ShapeEmitter, shape_assemble_list_stack};
+use super::super::{BaseCtx, LeafCtx, access_chain_to_ref};
 use super::nested::emit_vec_parent_nested;
 use super::projection::{
     TupleProjection, concat_access_chains, deepest_leaf_projection_access,
@@ -146,18 +147,16 @@ fn emit_vec_parent_primitive(
     let pep = super::super::vec::pep_for_primitive_leaf(leaf, &leaf_ctx, composed_shape);
     let leaf_projection_access = deepest_leaf_projection_access(composed_shape, projection, elem);
 
-    let emitter = ShapeEmitter {
-        shape: composed_shape,
-        access: parent_access,
-        layers: &layers,
-        outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
-        precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
-        total_counter: &total_leaves,
-        layer_counters: &layer_counters,
+    let emitter = ShapeEmitter::tuple(
+        composed_shape,
+        parent_access,
+        &layers,
+        &total_leaves,
+        &layer_counters,
         pp,
         pa_root,
-        projection: projection.as_layer_projection(composed_shape),
-    };
+        projection.as_layer_projection(composed_shape),
+    );
     let precount = emitter.precount();
     let leaf_body = tuple_scan_leaf_body(
         composed_shape,
@@ -166,12 +165,8 @@ fn emit_vec_parent_primitive(
         &pep.per_elem_push,
     );
     let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
-    let counter_for_depth = |layer: usize| -> TokenStream {
-        let counter = &layer_counters[layer];
-        quote! { #counter }
-    };
-    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
-    let validity_decls = emitter.validity_decls(&counter_for_depth);
+    let offsets_decls = emitter.offsets_decls();
+    let validity_decls = emitter.validity_decls();
 
     let materialize = build_materialize(
         &emitter,
@@ -202,7 +197,7 @@ fn emit_vec_parent_primitive(
 }
 
 pub(super) fn tuple_layer_idents(field_idx: usize, layer: usize) -> LayerIdents {
-    idents::LayerIds::new(idents::LayerNamespace::Tuple { field_idx }, layer).into()
+    LayerIdents::new(idents::LayerNamespace::Tuple { field_idx }, layer)
 }
 
 pub(super) fn tuple_layer_counters(field_idx: usize, depth: usize) -> Vec<syn::Ident> {

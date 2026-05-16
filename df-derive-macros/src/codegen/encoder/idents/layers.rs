@@ -1,5 +1,4 @@
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::format_ident;
 use syn::Ident;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,7 +8,7 @@ pub(in crate::codegen) enum LayerNamespace {
     Tuple { field_idx: usize },
 }
 
-pub(in crate::codegen) struct LayerIds {
+pub(in crate::codegen) struct LayerIdents {
     pub offsets: Ident,
     pub offsets_buf: Ident,
     pub validity_mb: Ident,
@@ -17,7 +16,7 @@ pub(in crate::codegen) struct LayerIds {
     pub bind: Ident,
 }
 
-impl LayerIds {
+impl LayerIdents {
     pub(in crate::codegen) fn new(namespace: LayerNamespace, layer: usize) -> Self {
         match namespace {
             LayerNamespace::Vec => Self {
@@ -136,13 +135,3 @@ pub(in crate::codegen) fn tuple_layer_list_arr(layer: usize) -> Ident {
 
 pub(in crate::codegen) const TUPLE_OUTER_SOME_PREFIX: &str = "__df_derive_t_some_";
 pub(in crate::codegen) const TUPLE_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_t_pre_some_";
-
-pub(in crate::codegen) fn vec_layer_total_token(layer: usize) -> TokenStream {
-    let id = vec_layer_total(layer);
-    quote! { #id }
-}
-
-pub(in crate::codegen) fn nested_layer_total_token(layer: usize) -> TokenStream {
-    let id = nested_layer_total(layer);
-    quote! { #id }
-}

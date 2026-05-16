@@ -1,10 +1,7 @@
-//! Unified shape-aware emitter parameterized by [`LeafKind`].
+//! Unified shape-aware emitter for vector-backed leaves.
 //!
-//! The shape-aware emitters ([`vec_emit_pep`] and [`vec_emit_ctb`]) tie together the
-//! depth-N walker primitives ([`ShapePrecount`], [`ShapeScan`],
-//! [`shape_offsets_decls`], [`shape_validity_decls`],
-//! [`shape_assemble_list_stack`]). They dispatch on [`LeafKind`] for the
-//! points where per-element-push and collect-then-bulk genuinely diverge.
+//! The shape-aware emitters ([`vec_emit_pep`] and [`vec_emit_ctb`]) tie together
+//! the depth-N walker primitives and diverge only at leaf storage/materialization.
 //!
 //! The collect-then-bulk path also accepts the depth-0 (`Leaf`) wrapper —
 //! a bare nested struct or a single/multi-`Option<Nested>` — and routes it
@@ -18,10 +15,10 @@ use quote::quote;
 
 use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 
-use super::idents;
-use super::leaf_kind::{CollectThenBulk, LeafKind};
+use super::idents::{self, LayerIdents};
+use super::leaf_kind::CollectThenBulk;
 use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
-use super::shape_walk::{LayerIdents, ShapeEmitter, shape_assemble_list_stack};
+use super::shape_walk::{ShapeEmitter, shape_assemble_list_stack};
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
@@ -29,7 +26,7 @@ fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
     let namespace = field_idx.map_or(idents::LayerNamespace::Vec, |idx| {
         idents::LayerNamespace::Nested { field_idx: idx }
     });
-    idents::LayerIds::new(namespace, layer_idx).into()
+    LayerIdents::new(namespace, layer_idx)
 }
 
 fn pep_leaf_body<'a>(
@@ -242,32 +239,19 @@ fn pep_emit(
     series_local: &syn::Ident,
     shape: &VecLayers,
     layers: &[LayerIdents],
-    kind: &LeafKind,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
     pa_root: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
-    let emitter = ShapeEmitter {
-        shape,
-        access,
-        layers,
-        outer_some_prefix: kind.scan_outer_some_prefix(),
-        precount_outer_some_prefix: kind.precount_outer_some_prefix(),
-        total_counter: total,
-        layer_counters,
-        pp,
-        pa_root,
-        projection: None,
-    };
+    let emitter = ShapeEmitter::vec(shape, access, layers, total, layer_counters, pp, pa_root);
     let precount = emitter.precount();
     let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
     let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
 
-    let counter_for_depth = |i: usize| idents::vec_layer_total_token(i);
-    let offsets_decls = emitter.offsets_decls(&counter_for_depth);
-    let validity_decls = emitter.validity_decls(&counter_for_depth);
+    let offsets_decls = emitter.offsets_decls();
+    let validity_decls = emitter.validity_decls();
 
     let materialize = pep_materialize(pep, &emitter, pp);
     let storage_decls = &pep.storage_decls;
@@ -333,7 +317,6 @@ fn ctb_emit(
     access: &TokenStream,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    kind: &LeafKind,
     layer_counters: &[syn::Ident],
     total: &syn::Ident,
     pa_root: &TokenStream,
@@ -377,18 +360,8 @@ fn ctb_emit(
             )
         }
         WrapperShape::Vec(shape) => {
-            let emitter = ShapeEmitter {
-                shape,
-                access,
-                layers,
-                outer_some_prefix: kind.scan_outer_some_prefix(),
-                precount_outer_some_prefix: kind.precount_outer_some_prefix(),
-                total_counter: total,
-                layer_counters,
-                pp,
-                pa_root,
-                projection: None,
-            };
+            let emitter =
+                ShapeEmitter::nested(shape, access, layers, total, layer_counters, pp, pa_root);
             let precount = emitter.precount();
             let leaf_body = ctb_leaf_body(shape, &flat, &positions, pp);
             let leaf_offsets_post_push = if shape.has_inner_option() {
@@ -397,9 +370,8 @@ fn ctb_emit(
                 quote! { #flat.len() }
             };
             let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
-            let counter_for_depth = |i: usize| idents::nested_layer_total_token(i);
-            let offsets_decls = emitter.offsets_decls(&counter_for_depth);
-            let validity_decls = emitter.validity_decls(&counter_for_depth);
+            let offsets_decls = emitter.offsets_decls();
+            let validity_decls = emitter.validity_decls();
             (
                 precount,
                 scan,
@@ -451,7 +423,6 @@ pub(super) fn vec_emit_pep(
 ) -> TokenStream {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
-    let kind = LeafKind::PerElementPush;
     let depth = shape.depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(None, i)).collect();
     let total = idents::total_leaves();
@@ -465,7 +436,6 @@ pub(super) fn vec_emit_pep(
         &series_local,
         shape,
         &layers,
-        &kind,
         &layer_counters,
         &total,
         pa_root,
@@ -485,7 +455,6 @@ pub(super) fn vec_emit_ctb(
 ) -> TokenStream {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
-    let kind = LeafKind::CollectThenBulk;
     let depth = wrapper.vec_depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(Some(idx), i)).collect();
     let total = idents::nested_total(idx);
@@ -497,7 +466,6 @@ pub(super) fn vec_emit_ctb(
         access,
         wrapper,
         &layers,
-        &kind,
         &layer_counters,
         &total,
         pa_root,

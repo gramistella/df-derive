@@ -4,10 +4,10 @@ use quote::quote;
 use crate::codegen::external_paths::ExternalPaths;
 use crate::ir::VecLayers;
 
-use super::idents;
+use super::idents::{self, LayerIdents};
 use super::shape_walk::{
-    LayerIdents, shape_assemble_list_stack, shape_freeze_offsets_buffers,
-    shape_freeze_validity_bitmaps, shape_layer_wraps_clone,
+    shape_assemble_list_stack, shape_freeze_offsets_buffers, shape_freeze_validity_bitmaps,
+    shape_layer_wraps_clone,
 };
 
 pub(super) struct NestedMaterializeCtx<'a> {

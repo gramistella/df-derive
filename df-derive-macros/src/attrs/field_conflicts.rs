@@ -157,10 +157,6 @@ fn conflict_message(field_display_name: &str, existing: FieldAttr, incoming: Fie
              mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and \
              `time_unit = \"...\"` — drop one"
         ),
-        _ if existing.key() == incoming.key() => format!(
-            "field `{field_display_name}` declares duplicate `{}` override; remove one",
-            incoming.label()
-        ),
         _ => {
             format!("field `{field_display_name}` combines incompatible field attributes; drop one")
         }

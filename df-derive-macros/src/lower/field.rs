@@ -1,4 +1,6 @@
-use crate::attrs::{FieldDisposition, LeafOverride, Spanned, parse_field_disposition};
+use crate::attrs::{
+    FieldConversion, FieldDisposition, LeafOverride, Spanned, parse_field_disposition,
+};
 use crate::ir::FieldIR;
 use crate::lower::binary::parse_as_binary_shape;
 use crate::lower::decimal::{decimal_backend_ty_for_override, decimal_generic_params_for_override};
@@ -29,37 +31,43 @@ pub fn lower_field(
     reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
 
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
-    let leaf_override: Option<&Spanned<LeafOverride>> = match &disposition {
-        FieldDisposition::Include { leaf_override } => leaf_override.as_ref(),
+    let conversion = match &disposition {
+        FieldDisposition::Include(conversion) => conversion,
         FieldDisposition::Skip => unreachable!("skip disposition returned before type analysis"),
-        FieldDisposition::Binary { .. } => None,
+    };
+    let leaf_override: Option<&Spanned<LeafOverride>> = match conversion {
+        FieldConversion::Default | FieldConversion::Binary { .. } => None,
+        FieldConversion::LeafOverride(override_) => Some(override_),
     };
     let leaf_override_value = leaf_override.map(|override_| &override_.value);
     let decimal_generic_params =
         decimal_generic_params_for_override(leaf_override_value, &analyzed.base);
     let decimal_backend_ty = decimal_backend_ty_for_override(leaf_override_value, &analyzed.base);
 
-    let (leaf_spec, wrapper_shape) = if let FieldDisposition::Binary { span } = &disposition {
-        if matches!(analyzed.base, AnalyzedBase::Tuple(_)) {
-            reject_attrs_on_tuple(
+    let (leaf_spec, wrapper_shape) = match conversion {
+        FieldConversion::Binary { span } => {
+            if matches!(analyzed.base, AnalyzedBase::Tuple(_)) {
+                reject_attrs_on_tuple(
+                    field,
+                    &display_name,
+                    Some(FieldAttrRef::Binary { span: *span }),
+                )?;
+            }
+            let (leaf, trimmed) =
+                parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
+            (leaf, normalize_wrappers(&trimmed))
+        }
+        FieldConversion::Default | FieldConversion::LeafOverride(_) => {
+            let leaf_override_span = leaf_override.map(|override_| override_.span);
+            let leaf = parse_leaf_spec(
                 field,
                 &display_name,
-                Some(FieldAttrRef::Binary { span: *span }),
+                leaf_override_value,
+                leaf_override_span,
+                analyzed.base,
             )?;
+            (leaf, normalize_wrappers(&analyzed.wrappers))
         }
-        let (leaf, trimmed) =
-            parse_as_binary_shape(field, &display_name, &analyzed.base, &analyzed.wrappers)?;
-        (leaf, normalize_wrappers(&trimmed))
-    } else {
-        let leaf_override_span = leaf_override.map(|override_| override_.span);
-        let leaf = parse_leaf_spec(
-            field,
-            &display_name,
-            leaf_override_value,
-            leaf_override_span,
-            analyzed.base,
-        )?;
-        (leaf, normalize_wrappers(&analyzed.wrappers))
     };
 
     Ok(Some(FieldIR {

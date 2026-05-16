@@ -1,7 +1,7 @@
 use crate::type_analysis::{AnalyzedBase, AnalyzedType};
 use syn::Ident;
 
-use super::diagnostics;
+use super::errors;
 
 fn is_direct_self_type(ty: &syn::Type, struct_name: &Ident) -> bool {
     let syn::Type::Path(type_path) = ty else {
@@ -45,7 +45,7 @@ pub fn reject_direct_self_reference(
 ) -> Result<(), syn::Error> {
     match &analyzed.base {
         AnalyzedBase::Struct(ty) if is_direct_self_type(ty, struct_name) => Err(
-            diagnostics::direct_self_reference(ty, field_display_name, struct_name),
+            errors::direct_self_reference(ty, field_display_name, struct_name),
         ),
         AnalyzedBase::Tuple(elements) => {
             for element in elements {

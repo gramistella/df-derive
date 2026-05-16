@@ -63,7 +63,7 @@ pub fn build_field_emit(
     elements: &[TupleElement],
 ) -> FieldEmit {
     let inner_it = idents::populator_iter();
-    let parent_access = field_access(field, &inner_it);
+    let parent_access = crate::codegen::access::field_access(field, &inner_it);
     let parent_name = crate::codegen::names::column_name_for_ident(&field.name);
 
     let mut builders: Vec<TokenStream> = Vec::with_capacity(elements.len());
@@ -87,26 +87,6 @@ pub fn build_field_emit(
 pub(super) enum TupleLeafRoute<'a> {
     Primitive(PrimitiveLeaf<'a>),
     Nested(NestedLeaf<'a>),
-}
-
-/// `<it>.<field>` rooted at the populator iter, with smart-pointer derefs
-/// applied. Mirrors `strategy::it_access`.
-fn field_access(field: &FieldIR, it_ident: &syn::Ident) -> TokenStream {
-    let raw = field.field_index.map_or_else(
-        || {
-            let id = &field.name;
-            quote! { #it_ident.#id }
-        },
-        |i| {
-            let li = syn::Index::from(i);
-            quote! { #it_ident.#li }
-        },
-    );
-    let mut out = raw;
-    for _ in 0..field.outer_smart_ptr_depth {
-        out = quote! { (*(#out)) };
-    }
-    out
 }
 
 /// Emit one element column. Composes the parent's wrappers with the element's

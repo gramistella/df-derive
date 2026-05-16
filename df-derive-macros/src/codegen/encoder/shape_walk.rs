@@ -7,7 +7,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::ir::{AccessChain, VecLayers};
+use crate::ir::{AccessChain, NonEmpty, VecLayers};
 
 use super::idents;
 use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_expr};
@@ -336,7 +336,7 @@ impl<'a> ShapeEmitter<'a> {
         shape_validity_decls(self.shape, &validity, counter_for_depth, self.pa_root)
     }
 
-    pub(super) fn layer_wraps_move(&self) -> Vec<LayerWrap<'a>> {
+    pub(super) fn layer_wraps_move(&self) -> NonEmpty<LayerWrap<'a>> {
         shape_layer_wraps_move(self.shape, self.layers, self.pa_root)
     }
 }
@@ -392,7 +392,7 @@ pub(super) fn shape_layer_wraps_move<'a>(
     shape: &VecLayers,
     layers: &'a [LayerIdents],
     pa_root: &TokenStream,
-) -> Vec<LayerWrap<'a>> {
+) -> NonEmpty<LayerWrap<'a>> {
     let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
     for (cur, layer) in layers.iter().enumerate() {
         let mut freeze_decl = freeze_offsets_buf(&layer.offsets_buf, &layer.offsets, pa_root);
@@ -412,13 +412,13 @@ pub(super) fn shape_layer_wraps_move<'a>(
             freeze_decl,
         });
     }
-    out
+    NonEmpty::from_vec(out).expect("VecLayers always has at least one layer")
 }
 
 pub(super) fn shape_layer_wraps_clone<'a>(
     shape: &VecLayers,
     layers: &'a [LayerIdents],
-) -> Vec<LayerWrap<'a>> {
+) -> NonEmpty<LayerWrap<'a>> {
     let mut out: Vec<LayerWrap<'_>> = Vec::with_capacity(shape.depth());
     for (cur, layer) in layers.iter().enumerate() {
         let validity_bm = shape.layers[cur]
@@ -430,7 +430,7 @@ pub(super) fn shape_layer_wraps_clone<'a>(
             freeze_decl: TokenStream::new(),
         });
     }
-    out
+    NonEmpty::from_vec(out).expect("VecLayers always has at least one layer")
 }
 
 pub(super) fn freeze_offsets_buf(
@@ -460,18 +460,13 @@ pub(super) fn freeze_validity_bitmap(
 pub(super) fn shape_assemble_list_stack(
     seed: TokenStream,
     seed_dtype: TokenStream,
-    layers: &[LayerWrap<'_>],
+    layers: &NonEmpty<LayerWrap<'_>>,
     leaf_logical_dtype: TokenStream,
     pp: &TokenStream,
     pa_root: &TokenStream,
     arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
 ) -> TokenStream {
     let depth = layers.len();
-    debug_assert!(
-        depth > 0,
-        "shape_assemble_list_stack requires at least one Vec layer"
-    );
-
     let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
     let mut prev_payload = seed;
     let mut prev_dtype = seed_dtype;

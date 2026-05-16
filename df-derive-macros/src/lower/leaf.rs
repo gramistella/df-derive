@@ -8,7 +8,7 @@ use crate::type_analysis::{
 use proc_macro2::Span;
 use quote::ToTokens;
 
-use super::diagnostics;
+use super::errors;
 
 pub(super) fn parse_leaf_spec(
     field: &syn::Field,
@@ -54,18 +54,18 @@ pub(super) fn default_leaf_for_base<S: ToTokens + ?Sized>(
         AnalyzedBase::String => Ok(LeafSpec::String),
         AnalyzedBase::BorrowedStr => Ok(LeafSpec::AsStr(StringyBase::BorrowedStr)),
         AnalyzedBase::CowStr => Ok(LeafSpec::AsStr(StringyBase::CowStr)),
-        AnalyzedBase::BorrowedBytes => Err(diagnostics::unannotated_borrowed_bytes(
+        AnalyzedBase::BorrowedBytes => Err(errors::unannotated_borrowed_bytes(
             span,
             field_display_name,
             can_add_as_binary,
         )),
-        AnalyzedBase::CowBytes => Err(diagnostics::unannotated_cow_bytes(
+        AnalyzedBase::CowBytes => Err(errors::unannotated_cow_bytes(
             span,
             field_display_name,
             can_add_as_binary,
         )),
-        AnalyzedBase::BorrowedSlice => Err(diagnostics::borrowed_slice(span, field_display_name)),
-        AnalyzedBase::CowSlice => Err(diagnostics::cow_slice(span, field_display_name)),
+        AnalyzedBase::BorrowedSlice => Err(errors::borrowed_slice(span, field_display_name)),
+        AnalyzedBase::CowSlice => Err(errors::cow_slice(span, field_display_name)),
         AnalyzedBase::Bool => Ok(LeafSpec::Bool),
         AnalyzedBase::DateTimeTz => Ok(LeafSpec::DateTime(DEFAULT_DATETIME_UNIT)),
         AnalyzedBase::NaiveDate => Ok(LeafSpec::NaiveDate),
@@ -119,7 +119,7 @@ fn parse_leaf_as_str(
         | AnalyzedBase::NaiveDateTime
         | AnalyzedBase::StdDuration
         | AnalyzedBase::ChronoDuration
-        | AnalyzedBase::Decimal => Err(diagnostics::as_str_wrong_base(field, field_display_name)),
+        | AnalyzedBase::Decimal => Err(errors::as_str_wrong_base(field, field_display_name)),
     }
 }
 
@@ -150,17 +150,14 @@ fn display_base_for_as_string(
         | AnalyzedBase::Decimal => Ok(DisplayBase::Inherent),
         AnalyzedBase::Struct(ty) => Ok(DisplayBase::Struct(ty.clone())),
         AnalyzedBase::Generic(ident) => Ok(DisplayBase::Generic(ident.clone())),
-        AnalyzedBase::StdDuration => Err(diagnostics::as_string_std_duration(
-            field,
-            field_display_name,
-        )),
+        AnalyzedBase::StdDuration => Err(errors::as_string_std_duration(field, field_display_name)),
         AnalyzedBase::BorrowedBytes | AnalyzedBase::CowBytes => {
-            Err(diagnostics::as_string_bytes(field, field_display_name))
+            Err(errors::as_string_bytes(field, field_display_name))
         }
         AnalyzedBase::BorrowedSlice | AnalyzedBase::CowSlice => {
-            Err(diagnostics::as_string_slice(field, field_display_name))
+            Err(errors::as_string_slice(field, field_display_name))
         }
-        AnalyzedBase::Tuple(_) => Err(diagnostics::as_string_tuple(field, field_display_name)),
+        AnalyzedBase::Tuple(_) => Err(errors::as_string_tuple(field, field_display_name)),
     }
 }
 
@@ -175,7 +172,7 @@ fn parse_leaf_decimal(
         AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
             Ok(LeafSpec::Decimal { precision, scale })
         }
-        _ => Err(diagnostics::decimal_wrong_base(field, field_display_name)),
+        _ => Err(errors::decimal_wrong_base(field, field_display_name)),
     }
 }
 
@@ -196,12 +193,8 @@ fn parse_leaf_time_unit(
             unit,
             source: DurationSource::Chrono,
         }),
-        AnalyzedBase::NaiveDate => {
-            Err(diagnostics::time_unit_naive_date(field, field_display_name))
-        }
-        AnalyzedBase::NaiveTime => {
-            Err(diagnostics::time_unit_naive_time(field, field_display_name))
-        }
-        _ => Err(diagnostics::time_unit_wrong_base(field, field_display_name)),
+        AnalyzedBase::NaiveDate => Err(errors::time_unit_naive_date(field, field_display_name)),
+        AnalyzedBase::NaiveTime => Err(errors::time_unit_naive_time(field, field_display_name)),
+        _ => Err(errors::time_unit_wrong_base(field, field_display_name)),
     }
 }

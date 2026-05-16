@@ -1,3 +1,4 @@
+mod access;
 mod asserts;
 mod bounds;
 mod columnar_impl;

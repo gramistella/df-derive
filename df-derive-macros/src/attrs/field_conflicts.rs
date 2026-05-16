@@ -2,7 +2,7 @@ use crate::ir::DateTimeUnit;
 use proc_macro2::Span;
 
 use super::Spanned;
-use super::field::{FieldDisposition, LeafOverride};
+use super::field::{FieldConversion, FieldDisposition, LeafOverride};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FieldAttr {
@@ -47,13 +47,13 @@ impl FieldAttr {
     pub(super) const fn into_disposition(self, span: Span) -> FieldDisposition {
         match self {
             Self::Skip => FieldDisposition::Skip,
-            Self::Binary => FieldDisposition::Binary { span },
-            Self::Leaf(leaf_override) => FieldDisposition::Include {
-                leaf_override: Some(Spanned {
+            Self::Binary => FieldDisposition::Include(FieldConversion::Binary { span }),
+            Self::Leaf(leaf_override) => {
+                FieldDisposition::Include(FieldConversion::LeafOverride(Spanned {
                     value: leaf_override,
                     span,
-                }),
-            },
+                }))
+            }
         }
     }
 }

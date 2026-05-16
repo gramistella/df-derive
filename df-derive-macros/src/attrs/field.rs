@@ -16,13 +16,15 @@ pub enum LeafOverride {
 
 #[derive(Clone, Debug)]
 pub enum FieldDisposition {
-    Include {
-        leaf_override: Option<Spanned<LeafOverride>>,
-    },
     Skip,
-    Binary {
-        span: Span,
-    },
+    Include(FieldConversion),
+}
+
+#[derive(Clone, Debug)]
+pub enum FieldConversion {
+    Default,
+    LeafOverride(Spanned<LeafOverride>),
+    Binary { span: Span },
 }
 
 fn parse_time_unit_attr(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<DateTimeUnit, syn::Error> {
@@ -100,9 +102,7 @@ pub fn parse_field_disposition(
         }
     }
     Ok(override_.map_or(
-        FieldDisposition::Include {
-            leaf_override: None,
-        },
+        FieldDisposition::Include(FieldConversion::Default),
         |(value, span)| value.into_disposition(span),
     ))
 }
@@ -117,9 +117,7 @@ mod tests {
 
     fn leaf_override_value(field: &syn::Field) -> LeafOverride {
         let disposition = parse_disposition(field).expect("field disposition should parse");
-        let FieldDisposition::Include {
-            leaf_override: Some(leaf_override),
-        } = disposition
+        let FieldDisposition::Include(FieldConversion::LeafOverride(leaf_override)) = disposition
         else {
             panic!("field leaf override should be present");
         };

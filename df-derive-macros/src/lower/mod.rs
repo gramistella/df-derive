@@ -2,7 +2,7 @@
 
 mod binary;
 mod decimal;
-mod diagnostics;
+mod errors;
 mod field;
 mod leaf;
 mod tuple;

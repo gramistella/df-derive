@@ -36,34 +36,6 @@ fn nested_type_path(nested: NestedLeaf<'_>) -> TokenStream {
     }
 }
 
-/// `<it>.<field>` — the field-access expression rooted at a per-row
-/// iterator binding. Used by every emit path that needs to reach into
-/// the per-row item.
-///
-/// Wraps the raw access in `field.outer_smart_ptr_depth` explicit `*`
-/// derefs so `Box<isize> as i64` and `match &(box_option) { Some(_) => ... }`
-/// see the inner value: numeric `as` casts and pattern positions don't
-/// trigger `Deref` autoderef, so the codegen has to peel manually. Inner
-/// smart pointers (below a wrapper) are preserved in the normalized wrapper
-/// access chains and dereffed at the wrapper boundary where they occur.
-fn it_access(field: &FieldIR, it_ident: &Ident) -> TokenStream {
-    let raw = field.field_index.map_or_else(
-        || {
-            let id = &field.name;
-            quote! { #it_ident.#id }
-        },
-        |i| {
-            let li = syn::Index::from(i);
-            quote! { #it_ident.#li }
-        },
-    );
-    let mut out = raw;
-    for _ in 0..field.outer_smart_ptr_depth {
-        out = quote! { (*(#out)) };
-    }
-    out
-}
-
 /// Whether a per-field emission produces schema entries (`(name, dtype)`
 /// tuples) or empty-series rows. Both modes iterate the same field set and
 /// share the Primitive-vs-Nested classification; only the leaf expression
@@ -175,7 +147,7 @@ fn build_nested_emit(
     // hard-rooted at the centralized populator-iter ident regardless of the
     // call site's outer-loop binding.
     let inner_it = idents::populator_iter();
-    let access = it_access(field, &inner_it);
+    let access = super::access::field_access(field, &inner_it);
     let name = super::names::column_name_for_ident(&field.name);
     let ctx = NestedLeafCtx {
         base: BaseCtx {
@@ -207,7 +179,7 @@ fn build_primitive_emit(
     leaf: PrimitiveLeaf<'_>,
 ) -> FieldEmit {
     let name = super::names::column_name_for_ident(&field.name);
-    let access = it_access(field, it_ident);
+    let access = super::access::field_access(field, it_ident);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
             access: &access,

@@ -1,15 +1,15 @@
-mod diagnostics;
 mod known_types;
 mod path_match;
+mod rejections;
 mod wrappers;
 
 use crate::ir::{DateTimeUnit, NumericKind};
 use syn::{Ident, PathArguments, Type};
 
-use diagnostics::{
+use known_types::classify_known_base;
+use rejections::{
     reject_bare_duration, reject_bare_unsized_leaf, reject_unsupported_collection_type,
 };
-use known_types::classify_known_base;
 use wrappers::{analyze_cow_base, borrowed_reference_base, peel_type_wrappers};
 
 /// Default `Datetime` precision for `chrono::DateTime<Tz>` and
@@ -35,7 +35,7 @@ pub enum RawWrapper {
 }
 
 /// Analyzed base type before parser-time override fusion into a `LeafSpec`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AnalyzedBase {
     Numeric(NumericKind),
     String,
@@ -76,7 +76,7 @@ pub enum AnalyzedBase {
     Tuple(Vec<AnalyzedType>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalyzedType {
     pub base: AnalyzedBase,
     pub wrappers: Vec<RawWrapper>,
@@ -203,52 +203,52 @@ mod tests {
             syn::parse_quote!(std::string::String),
             syn::parse_quote!(alloc::string::String),
         ] {
-            assert!(matches!(analyze(&ty).base, AnalyzedBase::String));
+            assert_eq!(analyze(&ty).base, AnalyzedBase::String);
         }
     }
 
     #[test]
     fn recognizes_borrowed_and_cow_unsized_bases() {
-        assert!(matches!(
+        assert_eq!(
             analyze(&syn::parse_quote!(&'a str)).base,
             AnalyzedBase::BorrowedStr
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(std::borrow::Cow<'a, str>)).base,
             AnalyzedBase::CowStr
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(&'a [u8])).base,
             AnalyzedBase::BorrowedBytes
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(std::borrow::Cow<'a, [u8]>)).base,
             AnalyzedBase::CowBytes
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze_with_generics(&syn::parse_quote!(&'a [T]), &["T"]).base,
             AnalyzedBase::BorrowedSlice
-        ));
+        );
     }
 
     #[test]
     fn recognizes_duration_families() {
-        assert!(matches!(
+        assert_eq!(
             analyze(&syn::parse_quote!(std::time::Duration)).base,
             AnalyzedBase::StdDuration
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(core::time::Duration)).base,
             AnalyzedBase::StdDuration
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(chrono::Duration)).base,
             AnalyzedBase::ChronoDuration
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             analyze(&syn::parse_quote!(chrono::TimeDelta)).base,
             AnalyzedBase::ChronoDuration
-        ));
+        );
     }
 
     #[test]
@@ -258,10 +258,7 @@ mod tests {
             opt_vec_u8.wrappers.as_slice(),
             [RawWrapper::Option, RawWrapper::Vec]
         ));
-        assert!(matches!(
-            opt_vec_u8.base,
-            AnalyzedBase::Numeric(NumericKind::U8)
-        ));
+        assert_eq!(opt_vec_u8.base, AnalyzedBase::Numeric(NumericKind::U8));
 
         let nested = analyze_with_generics(&syn::parse_quote!(Vec<Option<Vec<T>>>), &["T"]);
         assert!(matches!(
@@ -295,10 +292,7 @@ mod tests {
         };
 
         assert_eq!(elements.len(), 2);
-        assert!(matches!(
-            elements[0].base,
-            AnalyzedBase::Numeric(NumericKind::I32)
-        ));
-        assert!(matches!(elements[1].base, AnalyzedBase::String));
+        assert_eq!(elements[0].base, AnalyzedBase::Numeric(NumericKind::I32));
+        assert_eq!(elements[1].base, AnalyzedBase::String);
     }
 }

@@ -3,7 +3,7 @@ use crate::ir::TupleElement;
 use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
 use proc_macro2::Span;
 
-use super::diagnostics;
+use super::errors;
 use super::leaf::default_leaf_for_base;
 use super::wrappers::normalize_wrappers;
 
@@ -37,7 +37,7 @@ pub(super) fn reject_attrs_on_tuple(
             LeafOverride::TimeUnit(_) => ("time_unit = \"...\"", span),
         },
     };
-    Err(diagnostics::unsupported_tuple_attr_at(
+    Err(errors::unsupported_tuple_attr_at(
         span,
         field_display_name,
         attr,
@@ -80,7 +80,7 @@ pub(super) fn reject_unsupported_wrapped_nested_tuples(
         if matches!(element.base, AnalyzedBase::Tuple(_))
             && (parent_wrapped || has_semantic_wrappers(&element.wrappers))
         {
-            return Err(diagnostics::unsupported_wrapped_nested_tuple(
+            return Err(errors::unsupported_wrapped_nested_tuple(
                 &element.field_ty,
                 field_display_name,
             ));

@@ -2,39 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
-### Fixed
-
-- Generated list offsets now use checked `usize` to `i64` conversions and
-  return a Polars error on overflow instead of silently wrapping.
-- Builder-only columnar impls no longer emit an empty top-level row loop.
-- Scalar-only numeric/bool derives with explicit custom runtime paths no
-  longer require a direct `polars-arrow` dependency.
-- `decimal(...)` field attributes now reject duplicate inner `precision` and
-  `scale` keys instead of silently using the last value.
-- Unsupported collection diagnostics now cover `BTreeSet`, `VecDeque`, and
-  `LinkedList` with tailored migration hints.
-- Obvious direct self-recursive nested fields such as `Option<Box<Node>>` are
-  now rejected before codegen instead of producing recursive schemas or
-  unusable impls.
-- Unsized smart-pointer leaves such as `Box<str>` and `Box<[u8]>` are now
-  rejected with targeted diagnostics instead of being misclassified as nested
-  custom structs.
-
-## [0.3.0] - 2026-05-11
+## [0.3.0] - 2026-05-16
 
 ### Added
 
-- The crate family is now split into `df-derive` (facade),
-  `df-derive-core` (shared runtime trait identity), and
-  `df-derive-macros` (proc macro implementation). Normal users can depend on
-  `df-derive` and derive without defining local runtime traits or adding a
-  runtime-path override.
-- `df-derive-core` provides the canonical default runtime trait surface for
-  non-paft projects, including `ToDataFrame`, `Columnar`, `ToDataFrameVec`,
-  `Decimal128Encode`, the `()` payload impls, and the reference
-  `Decimal128Encode for rust_decimal::Decimal` implementation.
+- `df-derive` is now a normal facade crate with a built-in runtime. Most
+  projects can depend on `df-derive`, import `df_derive::prelude::*`, and use
+  `#[derive(ToDataFrame)]` without defining local runtime traits or adding
+  `#[df_derive(trait = "...")]`.
+- New `df-derive-core` and `df-derive-macros` crates are available for users
+  who want the shared runtime traits separately from the proc macro.
+  `df-derive-core` provides `ToDataFrame`, `Columnar`, `ToDataFrameVec`,
+  `Decimal128Encode`, the `()` payload impls, and the default
+  `rust_decimal::Decimal` decimal encoder.
 - Generic structs are now supported by `#[derive(ToDataFrame)]`, including
   default type parameters and multiple generic parameters. The macro injects
   bounds by role (`ToDataFrame + Columnar`, `AsRef<str>`, `Display`, or
@@ -55,8 +35,8 @@ All notable changes to this project will be documented in this file.
   (`Vec<u8>`, `&[u8]`, and `Cow<'_, [u8]>`) as Polars `Binary` instead of the
   default `List(UInt8)`.
 - New `#[df_derive(decimal(precision = N, scale = N))]` field attribute
-  overrides Decimal dtype precision/scale for supported decimal backend
-  shapes.
+  overrides Decimal dtype precision/scale and lets custom decimal backends opt
+  into Polars decimal columns through `Decimal128Encode`.
 - New `#[df_derive(time_unit = "ms"|"us"|"ns")]` field attribute overrides the
   time unit for `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`,
   `std::time::Duration`, `core::time::Duration`, and `chrono::Duration`.
@@ -75,8 +55,10 @@ All notable changes to this project will be documented in this file.
   transparently before schema and encoder selection. `Cow<'_, str>` is
   treated as a borrowed string leaf, and `Cow<'_, [u8]>` is supported with
   `#[df_derive(as_binary)]`.
-- Unsupported map/set fields such as `HashMap`, `BTreeMap`, and `HashSet`
-  now produce targeted diagnostics with migration hints.
+- More unsupported shapes now produce targeted diagnostics with migration
+  hints, including maps, sets, `VecDeque`, `LinkedList`, mutable references,
+  unsized smart-pointer leaves, recursive nested fields, and ambiguous bare
+  `Duration` fields.
 
 ### Changed
 
@@ -110,53 +92,66 @@ All notable changes to this project will be documented in this file.
 - Container-level `#[df_derive(...)]` runtime overrides now reject duplicate
   keys, and `columnar = "..."` is rejected unless it is paired with
   `trait = "..."` to avoid mixed-runtime impls.
-- Decimal codegen now dispatches through `Decimal128Encode` instead of
-  inlining `rust_decimal::Decimal::scale()` / `mantissa()`, so custom decimal
+- Decimal fields now encode through `Decimal128Encode` instead of being tied
+  to `rust_decimal::Decimal::scale()` / `mantissa()`, so custom decimal
   backends can plug in without forking the macro. Implementations must use
   round-half-to-even on scale-down to match Polars' decimal parser.
-- Generic and concrete nested field codegen now uses explicit trait paths,
-  improving support for qualified paths, associated types, and custom runtime
-  overrides.
+- Generic and concrete nested fields now use explicit trait paths, improving
+  support for qualified paths, associated types, and custom runtime overrides.
 - `df-derive = { default-features = false }` now also disables
   `df-derive-core`'s default `rust_decimal` feature instead of enabling it
   through the facade's core dependency.
 - The default runtime enables the Polars dtype feature flags required by the
   supported type matrix, including small integers, 128-bit integers, date/time,
   duration, and decimal dtypes.
+- Scalar-only numeric and bool derives using custom runtime paths no longer
+  require a direct `polars-arrow` dependency.
 
 ### Fixed
 
-- Codegen now propagates generic arguments declared on nested struct field
-  types into emitted call paths, fixing nested generic fields such as
+- Nested struct fields now preserve their declared generic arguments in
+  generated call paths, fixing nested generic fields such as
   `Outer<M> { inner: Vec<Inner<M>> }`.
-- Generated code consistently routes Polars and Polars Arrow paths through the
-  central `external_paths` helper, so renamed downstream dependencies keep
-  working.
-- Bulk generic and nested-struct emitters avoid adding a `Clone` bound by using
-  borrowed reference batches.
+- Qualified type paths, associated type paths, renamed dependencies, and
+  explicit built-in runtime paths are handled more reliably in generated code.
+- Bulk generic and nested-struct conversions avoid adding unnecessary `Clone`
+  bounds.
 - Generated `ToDataFrame` and `Columnar` impls are now marked
   `#[automatically_derived]` for better lint and tooling behavior.
 - `#[df_derive(as_string)]` now adds the required `Display` bounds for custom
-  struct and generic field types and propagates formatting failures as Polars
-  errors.
+  struct and generic field types, rejects non-displayable concrete fields
+  earlier, and propagates formatting failures as Polars errors.
+- `#[df_derive(as_str)]` validates `AsRef<str>` requirements for concrete,
+  generic, and smart-pointer fields before compilation proceeds.
 - Generated code now uses fully-qualified standard library paths, including
   `TryFrom`, so downstream preludes and user-defined names are less likely to
   shadow generated code.
 - Raw identifiers such as `r#type` are emitted as column name `type` instead
   of `r#type`.
-- Nested list assembly now validates height and dtype invariants before using
-  unchecked Polars constructors, turning bad manual runtime impls into Polars
-  errors instead of unsound DataFrames.
+- Nested list construction now validates offsets, lengths, heights, dtypes,
+  and decimal precision before constructing Polars arrays. Overflow,
+  truncation, bad manual runtime impls, and invalid decimal scales now return
+  Polars errors instead of panicking, wrapping, or producing invalid output.
+- Container and field attributes now reject duplicate keys and incompatible
+  combinations instead of silently accepting the last value or producing mixed
+  runtime impls.
+- Enum and union derive targets, wrapped nested tuples, direct `()` fields,
+  invalid binary fields, invalid time-unit fields, and invalid decimal fields
+  now fail with clearer diagnostics.
+- `df-derive = { default-features = false }` no longer pulls in the default
+  `rust_decimal` support through `df-derive-core`.
 
 ### Performance
 
-- Bulk conversion reuses `columnar_from_refs` for generic and nested struct
-  paths, avoiding per-row `DataFrame` construction and extra clones.
-- String columns borrow from input rows in the columnar path, avoiding per-row
-  `String` clones before Polars copies the bytes into its own buffers.
+- Batch conversion for nested structs, generic fields, and list-heavy shapes
+  avoids per-row `DataFrame` construction and unnecessary clones.
+- String and `#[df_derive(as_str)]` columns borrow from input rows during
+  column construction instead of cloning each value first.
+- Decimal columns encode through `i128` mantissas instead of formatting values
+  through strings.
 - List-output paths use typed Polars builders or direct Arrow array assembly
-  instead of round-tripping through `AnyValue::List`, keeping inner buffers
-  typed end to end.
+  instead of round-tripping through `AnyValue::List`, improving nested
+  `Vec<T>`, `Vec<Option<T>>`, `Vec<Vec<T>>`, and `Vec<Struct>` conversions.
 
 ## [0.2.0] - 2025-11-8
 

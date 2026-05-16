@@ -68,7 +68,7 @@ All notable changes to this project will be documented in this file.
   the repository root must target `df-derive/` instead.
 - **Breaking**: generated code now targets `polars` v0.53. Downstream crates
   using generated impls must use `polars = "0.53"`.
-- **Breaking**: the minimum supported Rust version is now 1.89.
+- **Breaking**: the minimum supported Rust version is now 1.90.
 - Default `df-derive` / `df-derive-core` generated code now routes Polars
   implementation dependency paths through hidden runtime re-exports, so
   downstream crates no longer need a direct `polars-arrow` dependency unless

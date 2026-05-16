@@ -56,8 +56,8 @@ jobs:
 
       # 2. Set up Rust toolchain and cache dependencies
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.89.0
-      
+        uses: dtolnay/rust-toolchain@1.90.0
+
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
 
@@ -121,7 +121,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.89.0
+        uses: dtolnay/rust-toolchain@1.90.0
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2

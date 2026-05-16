@@ -34,7 +34,7 @@ polars = "0.53"
 
 # If your models use these types:
 chrono = { version = "0.4", features = ["serde"] }
-rust_decimal = { version = "1.41", default-features = false, features = ["std"] }
+rust_decimal = { version = "1.42", default-features = false, features = ["std"] }
 ```
 
 With the default `df-derive` facade, generated impls use hidden runtime

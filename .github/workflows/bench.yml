@@ -131,8 +131,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y valgrind
 
-      - name: Install Gungraun runner
-        run: cargo install --version 0.18.2 gungraun-runner --locked
+      - name: Install matching Gungraun runner
+        run: |
+          gungraun_version="$(cargo pkgid --locked -p gungraun | sed 's/.*@//')"
+          cargo install --version "$gungraun_version" gungraun-runner --locked
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main

@@ -1,12 +1,13 @@
 mod access;
 mod asserts;
 mod bounds;
+mod column_emit;
 mod columnar_impl;
 mod config;
 mod encoder;
 pub mod external_paths;
+mod schema;
 mod schema_nested;
-mod strategy;
 mod support;
 mod trait_impl;
 mod type_deps;
@@ -51,7 +52,7 @@ mod tests {
     use super::*;
     use crate::ir::{
         AccessChain, ColumnIR, ColumnSource, FieldSource, LeafShape, LeafSpec, NonEmpty,
-        NumericKind, StructIR, VecLayerSpec, VecLayers, WrapperShape,
+        NumericKind, StructIR, TerminalLeafSpec, VecLayerSpec, VecLayers, WrapperShape,
     };
     use quote::{format_ident, quote};
 
@@ -93,7 +94,7 @@ mod tests {
         ColumnIR {
             name: name.to_owned(),
             source: ColumnSource::Field(field_source(name)),
-            leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+            leaf_spec: terminal_leaf(LeafSpec::Numeric(NumericKind::U32)),
             wrapper_shape,
         }
     }
@@ -102,9 +103,13 @@ mod tests {
         ColumnIR {
             name: name.to_owned(),
             source: ColumnSource::Field(field_source(name)),
-            leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
+            leaf_spec: terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
             wrapper_shape,
         }
+    }
+
+    fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
+        TerminalLeafSpec::new(leaf).expect("test leaf should be terminal")
     }
 
     fn depth_one_vec_shape() -> WrapperShape {
@@ -212,7 +217,7 @@ mod tests {
             columns: vec![ColumnIR {
                 name: "pair.field_0".to_owned(),
                 source: ColumnSource::Field(field_source("pair")),
-                leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
+                leaf_spec: terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
                 wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
             }],
         };

@@ -18,7 +18,7 @@ use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
 use super::idents::{self, LayerIdents};
 use super::leaf_kind::CollectThenBulk;
 use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
-use super::shape_walk::{ShapeEmitter, shape_assemble_list_stack};
+use super::shape_walk::{ShapeEmitter, ShapeEmitterParts, shape_assemble_list_stack};
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
@@ -245,7 +245,15 @@ fn pep_emit(
     pp: &TokenStream,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
-    let emitter = ShapeEmitter::vec(shape, access, layers, total, layer_counters, pp, pa_root);
+    let emitter = ShapeEmitter::vec(ShapeEmitterParts {
+        shape,
+        access,
+        layers,
+        total_counter: total,
+        layer_counters,
+        pp,
+        pa_root,
+    });
     let precount = emitter.precount();
     let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
     let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
@@ -360,8 +368,15 @@ fn ctb_emit(
             )
         }
         WrapperShape::Vec(shape) => {
-            let emitter =
-                ShapeEmitter::nested(shape, access, layers, total, layer_counters, pp, pa_root);
+            let emitter = ShapeEmitter::nested(ShapeEmitterParts {
+                shape,
+                access,
+                layers,
+                total_counter: total,
+                layer_counters,
+                pp,
+                pa_root,
+            });
             let precount = emitter.precount();
             let leaf_body = ctb_leaf_body(shape, &flat, &positions, pp);
             let leaf_offsets_post_push = if shape.has_inner_option() {

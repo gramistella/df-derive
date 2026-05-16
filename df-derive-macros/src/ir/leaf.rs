@@ -219,18 +219,30 @@ pub enum NestedLeaf<'a> {
     Generic(&'a Ident),
 }
 
-/// Lossless borrowed route for a [`LeafSpec`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LeafRoute<'a> {
-    Primitive(PrimitiveLeaf<'a>),
-    Nested(NestedLeaf<'a>),
-    Tuple(&'a [TupleElement]),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalLeafRoute<'a> {
     Primitive(PrimitiveLeaf<'a>),
     Nested(NestedLeaf<'a>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalLeafSpec(LeafSpec);
+
+impl TerminalLeafSpec {
+    pub fn new(leaf: LeafSpec) -> Option<Self> {
+        leaf.terminal_route()?;
+        Some(Self(leaf))
+    }
+
+    pub const fn route(&self) -> TerminalLeafRoute<'_> {
+        self.0
+            .terminal_route()
+            .expect("TerminalLeafSpec invariant violated")
+    }
+
+    pub const fn as_leaf_spec(&self) -> &LeafSpec {
+        &self.0
+    }
 }
 
 impl LeafSpec {
@@ -269,34 +281,6 @@ impl LeafSpec {
             Self::Struct(ty) => Some(TerminalLeafRoute::Nested(NestedLeaf::Struct(ty))),
             Self::Generic(ident) => Some(TerminalLeafRoute::Nested(NestedLeaf::Generic(ident))),
             Self::Tuple(_) => None,
-        }
-    }
-
-    pub const fn route(&self) -> LeafRoute<'_> {
-        match self {
-            Self::Numeric(kind) => LeafRoute::Primitive(PrimitiveLeaf::Numeric(*kind)),
-            Self::String => LeafRoute::Primitive(PrimitiveLeaf::String),
-            Self::Bool => LeafRoute::Primitive(PrimitiveLeaf::Bool),
-            Self::DateTime(unit) => LeafRoute::Primitive(PrimitiveLeaf::DateTime(*unit)),
-            Self::NaiveDateTime(unit) => LeafRoute::Primitive(PrimitiveLeaf::NaiveDateTime(*unit)),
-            Self::NaiveDate => LeafRoute::Primitive(PrimitiveLeaf::NaiveDate),
-            Self::NaiveTime => LeafRoute::Primitive(PrimitiveLeaf::NaiveTime),
-            Self::Duration { unit, source } => LeafRoute::Primitive(PrimitiveLeaf::Duration {
-                unit: *unit,
-                source: *source,
-            }),
-            Self::Decimal {
-                precision, scale, ..
-            } => LeafRoute::Primitive(PrimitiveLeaf::Decimal {
-                precision: *precision,
-                scale: *scale,
-            }),
-            Self::AsString(_) => LeafRoute::Primitive(PrimitiveLeaf::AsString),
-            Self::AsStr(stringy) => LeafRoute::Primitive(PrimitiveLeaf::AsStr(stringy)),
-            Self::Binary => LeafRoute::Primitive(PrimitiveLeaf::Binary),
-            Self::Struct(ty) => LeafRoute::Nested(NestedLeaf::Struct(ty)),
-            Self::Generic(ident) => LeafRoute::Nested(NestedLeaf::Generic(ident)),
-            Self::Tuple(elements) => LeafRoute::Tuple(elements.as_slice()),
         }
     }
 

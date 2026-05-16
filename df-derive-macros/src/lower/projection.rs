@@ -1,6 +1,7 @@
 use crate::ir::{
     AccessChain, AccessStep, ColumnIR, ColumnSource, FieldIR, FieldSource, LeafShape, LeafSpec,
-    ProjectionContext, TupleElement, TupleProjectionStep, VecLayers, WrapperShape,
+    ProjectionContext, TerminalLeafSpec, TupleElement, TupleProjectionStep, VecLayers,
+    WrapperShape, column_name_for_ident,
 };
 
 pub fn project_fields_to_columns(fields: Vec<FieldIR>) -> Vec<ColumnIR> {
@@ -25,7 +26,7 @@ fn project_field(field: FieldIR, columns: &mut Vec<ColumnIR>) {
         leaf_spec => columns.push(ColumnIR {
             name,
             source: ColumnSource::Field(root),
-            leaf_spec,
+            leaf_spec: terminal_leaf(leaf_spec),
             wrapper_shape: field.wrapper_shape,
         }),
     }
@@ -58,6 +59,7 @@ fn project_tuple_elements(
             continue;
         }
 
+        let leaf_spec = terminal_leaf(element.leaf_spec.clone());
         let (wrapper_shape, context) = compose_parent_with_element(parent_wrapper, element);
         columns.push(ColumnIR {
             name,
@@ -66,10 +68,14 @@ fn project_tuple_elements(
                 path,
                 context,
             },
-            leaf_spec: element.leaf_spec.clone(),
+            leaf_spec,
             wrapper_shape,
         });
     }
+}
+
+fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
+    TerminalLeafSpec::new(leaf).expect("projection only emits terminal column leaves")
 }
 
 fn compose_parent_with_element(
@@ -175,8 +181,4 @@ fn prepend_parent_option_access(parent_access: &AccessChain, access: &AccessChai
     } else {
         access.clone()
     }
-}
-
-fn column_name_for_ident(ident: &syn::Ident) -> String {
-    ident.to_string().trim_start_matches("r#").to_owned()
 }

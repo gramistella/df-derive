@@ -13,7 +13,7 @@ use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
 
 // Nested-path payload: implements `ToDataFrame` + `Columnar`, deliberately
 // NOT `Clone`. Used as the generic argument for fields without a transform
-// (which route through the nested-struct strategy).
+// (which route through the nested-struct encoder path).
 #[derive(Debug)]
 struct NoClonePayload {
     value: i64,
@@ -42,7 +42,7 @@ impl Columnar for NoClonePayload {
 
 // Primitive-path payload: also NOT `Clone`, also implements `AsRef<str>` so
 // it can be used with `#[df_derive(as_str)]`. The `as_str` transform routes
-// the field through the primitive strategy, which was the path containing
+// the field through the primitive encoder path, which was the path containing
 // the `(*elem).clone()` that this test locks in as gone.
 #[derive(Debug)]
 struct NoCloneTag {
@@ -93,7 +93,7 @@ struct NestedHolder<T> {
 }
 
 // Same wrapper shapes, but every generic field carries `as_str` so it
-// routes through the primitive strategy. The deep-tail shapes
+// routes through the primitive encoder path. The deep-tail shapes
 // (`Vec<Option<T>>`, `Vec<Vec<T>>`) hit the recursive fallback that used to
 // clone each element. `T: AsRef<str>` is required by the `as_str` attribute
 // itself (validated by a per-field const-fn assert in the derive); `Clone`

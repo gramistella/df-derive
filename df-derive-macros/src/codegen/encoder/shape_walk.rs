@@ -267,74 +267,62 @@ pub(super) struct ShapeEmitter<'a> {
     pub projection: Option<LayerProjection<'a>>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ShapeEmitterParts<'a> {
+    pub shape: &'a VecLayers,
+    pub access: &'a TokenStream,
+    pub layers: &'a [LayerIdents],
+    pub total_counter: &'a syn::Ident,
+    pub layer_counters: &'a [syn::Ident],
+    pub pp: &'a TokenStream,
+    pub pa_root: &'a TokenStream,
+}
+
 impl<'a> ShapeEmitter<'a> {
-    pub(super) const fn vec(
-        shape: &'a VecLayers,
-        access: &'a TokenStream,
-        layers: &'a [LayerIdents],
-        total_counter: &'a syn::Ident,
-        layer_counters: &'a [syn::Ident],
-        pp: &'a TokenStream,
-        pa_root: &'a TokenStream,
-    ) -> Self {
+    pub(super) const fn vec(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
-            shape,
-            access,
-            layers,
+            shape: parts.shape,
+            access: parts.access,
+            layers: parts.layers,
             outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
             precount_outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
-            total_counter,
-            layer_counters,
-            pp,
-            pa_root,
+            total_counter: parts.total_counter,
+            layer_counters: parts.layer_counters,
+            pp: parts.pp,
+            pa_root: parts.pa_root,
             projection: None,
         }
     }
 
-    pub(super) const fn nested(
-        shape: &'a VecLayers,
-        access: &'a TokenStream,
-        layers: &'a [LayerIdents],
-        total_counter: &'a syn::Ident,
-        layer_counters: &'a [syn::Ident],
-        pp: &'a TokenStream,
-        pa_root: &'a TokenStream,
-    ) -> Self {
+    pub(super) const fn nested(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
-            shape,
-            access,
-            layers,
+            shape: parts.shape,
+            access: parts.access,
+            layers: parts.layers,
             outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
             precount_outer_some_prefix: idents::NESTED_PRE_OUTER_SOME_PREFIX,
-            total_counter,
-            layer_counters,
-            pp,
-            pa_root,
+            total_counter: parts.total_counter,
+            layer_counters: parts.layer_counters,
+            pp: parts.pp,
+            pa_root: parts.pa_root,
             projection: None,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) const fn tuple(
-        shape: &'a VecLayers,
-        access: &'a TokenStream,
-        layers: &'a [LayerIdents],
-        total_counter: &'a syn::Ident,
-        layer_counters: &'a [syn::Ident],
-        pp: &'a TokenStream,
-        pa_root: &'a TokenStream,
+        parts: ShapeEmitterParts<'a>,
         projection: Option<LayerProjection<'a>>,
     ) -> Self {
         Self {
-            shape,
-            access,
-            layers,
+            shape: parts.shape,
+            access: parts.access,
+            layers: parts.layers,
             outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
             precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
-            total_counter,
-            layer_counters,
-            pp,
-            pa_root,
+            total_counter: parts.total_counter,
+            layer_counters: parts.layer_counters,
+            pp: parts.pp,
+            pa_root: parts.pa_root,
             projection,
         }
     }

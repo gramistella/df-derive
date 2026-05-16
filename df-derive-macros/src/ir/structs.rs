@@ -1,6 +1,6 @@
 use syn::Ident;
 
-use super::{AccessChain, LeafSpec, WrapperShape};
+use super::{AccessChain, LeafSpec, TerminalLeafSpec, WrapperShape};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructIR {
@@ -18,11 +18,19 @@ pub struct FieldIR {
     pub outer_smart_ptr_depth: usize,
 }
 
+/// Codegen-ready terminal column.
+///
+/// Invariants:
+/// - `leaf_spec` is never `LeafSpec::Tuple`.
+/// - Tuple fields are flattened into one `ColumnIR` per terminal element.
+/// - `ParentVec` projections have a single terminal tuple projection step.
+/// - `ParentOption` projections compose the parent option into `wrapper_shape`.
+/// - `wrapper_shape.vec_depth()` already includes parent tuple-list layers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnIR {
     pub name: String,
     pub source: ColumnSource,
-    pub leaf_spec: LeafSpec,
+    pub leaf_spec: TerminalLeafSpec,
     pub wrapper_shape: WrapperShape,
 }
 

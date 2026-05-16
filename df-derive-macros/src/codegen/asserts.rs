@@ -19,10 +19,11 @@ pub fn generate_eager_asserts(
     let mut display_types = Vec::new();
 
     for column in &ir.columns {
-        collect_nested_asserts(&column.leaf_spec, &generic_ctx, &mut nested_types);
-        collect_decimal_asserts(&column.leaf_spec, &generic_ctx, &mut decimal_backend_types);
-        collect_as_ref_str_asserts(&column.leaf_spec, &generic_ctx, &mut as_ref_str_types);
-        collect_display_asserts(&column.leaf_spec, &generic_ctx, &mut display_types);
+        let leaf_spec = column.leaf_spec.as_leaf_spec();
+        collect_nested_asserts(leaf_spec, &generic_ctx, &mut nested_types);
+        collect_decimal_asserts(leaf_spec, &generic_ctx, &mut decimal_backend_types);
+        collect_as_ref_str_asserts(leaf_spec, &generic_ctx, &mut as_ref_str_types);
+        collect_display_asserts(leaf_spec, &generic_ctx, &mut display_types);
     }
 
     if nested_types.is_empty()

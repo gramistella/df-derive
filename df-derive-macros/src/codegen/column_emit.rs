@@ -1,10 +1,4 @@
-//! Per-column codegen entry point. Translates a [`ColumnIR`] into the four
-//! pieces of generated code each column contributes to: schema entries,
-//! empty-series rows, columnar populator decls/pushes/finishes.
-//!
-//! The columnar path routes through the encoder IR in
-//! [`super::encoder`] for every primitive shape — bare leaves, arbitrary
-//! `Option<…<Option<T>>>` stacks, and every vec-bearing wrapper stack.
+//! Per-column encoder dispatch.
 
 use crate::ir::{
     ColumnIR, ColumnSource, NestedLeaf, PrimitiveLeaf, ProjectionContext, TerminalLeafRoute,
@@ -36,79 +30,6 @@ fn nested_type_path(nested: NestedLeaf<'_>) -> TokenStream {
         NestedLeaf::Struct(ty) => struct_type_tokens(ty),
         NestedLeaf::Generic(id) => quote! { #id },
     }
-}
-
-/// Whether a column emission produces schema entries (`(name, dtype)`
-/// tuples) or empty-series rows. Both modes iterate the same column set and
-/// share the Primitive-vs-Nested classification; only the leaf expression
-/// (and the runtime accumulator inside [`super::schema_nested`]) varies.
-#[derive(Clone, Copy)]
-pub(in crate::codegen) enum EmitMode {
-    SchemaEntries,
-    EmptyRows,
-}
-
-/// Shared column emitter for the schema / empty-rows pair.
-fn build_column_entries(
-    column: &ColumnIR,
-    mode: EmitMode,
-    config: &super::MacroConfig,
-) -> TokenStream {
-    let name = column.name.as_str();
-    match (column_leaf_route(column), mode) {
-        (TerminalLeafRoute::Nested(nested), EmitMode::SchemaEntries) => {
-            let type_path = nested_type_path(nested);
-            super::schema_nested::generate_schema_entries_for_struct(
-                &type_path,
-                &config.traits.to_dataframe,
-                name,
-                column.wrapper_shape.vec_depth(),
-                &config.external_paths,
-            )
-        }
-        (TerminalLeafRoute::Nested(nested), EmitMode::EmptyRows) => {
-            let type_path = nested_type_path(nested);
-            super::schema_nested::nested_empty_series_row(
-                &type_path,
-                &config.traits.to_dataframe,
-                name,
-                column.wrapper_shape.vec_depth(),
-                &config.external_paths,
-            )
-        }
-        (TerminalLeafRoute::Primitive(leaf), EmitMode::SchemaEntries) => {
-            let dtype = column_full_dtype(leaf, column, config);
-            quote! { ::std::vec![(::std::string::String::from(#name), #dtype)] }
-        }
-        (TerminalLeafRoute::Primitive(leaf), EmitMode::EmptyRows) => {
-            let dtype = column_full_dtype(leaf, column, config);
-            let pp = config.external_paths.prelude();
-            quote! { ::std::vec![#pp::Series::new_empty(#name.into(), &#dtype).into()] }
-        }
-    }
-}
-
-/// Build the schema entries token expression for one column. Evaluates to a
-/// `Vec<(String, DataType)>` at runtime — primitive columns return a
-/// one-element vec, nested columns return one entry per inner schema column
-/// (with the parent name prefixed).
-pub fn build_schema_entries(column: &ColumnIR, config: &super::MacroConfig) -> TokenStream {
-    build_column_entries(column, EmitMode::SchemaEntries, config)
-}
-
-/// Build the empty-series token expression for one column. Evaluates to a
-/// `Vec<Column>` at runtime — primitive columns produce one empty Series,
-/// nested columns produce one empty Series per inner schema column.
-pub fn build_empty_series(column: &ColumnIR, config: &super::MacroConfig) -> TokenStream {
-    build_column_entries(column, EmitMode::EmptyRows, config)
-}
-
-fn column_full_dtype(
-    leaf: PrimitiveLeaf<'_>,
-    column: &ColumnIR,
-    config: &super::MacroConfig,
-) -> TokenStream {
-    super::type_registry::full_dtype(leaf, &column.wrapper_shape, &config.external_paths)
 }
 
 /// Build the columnar emit pieces for one column. Routes every primitive
@@ -306,10 +227,7 @@ fn build_projected_standard_emit(
 }
 
 const fn column_leaf_route(column: &ColumnIR) -> TerminalLeafRoute<'_> {
-    column
-        .leaf_spec
-        .terminal_route()
-        .expect("projected columns never contain tuple leaves")
+    column.leaf_spec.route()
 }
 
 fn build_nested_emit_with_access(

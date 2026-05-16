@@ -11,7 +11,7 @@ struct ColumnarParts {
     builders: Vec<TokenStream>,
 }
 
-/// Walk every column, build its [`ColumnEmit`](super::strategy::ColumnEmit),
+/// Walk every column, build its [`ColumnEmit`](super::column_emit::ColumnEmit),
 /// and concatenate decls/pushes/builders into the three buckets the
 /// columnar pipeline splices into the generated impl. Each `ColumnEmit`
 /// explicitly declares whether it contributes row-wise work or builds whole
@@ -23,9 +23,9 @@ fn prepare_columnar_parts(
 ) -> ColumnarParts {
     let mut parts = ColumnarParts::default();
     for (idx, column) in ir.columns.iter().enumerate() {
-        let emit = super::strategy::build_column_emit(column, config, idx, it_ident);
+        let emit = super::column_emit::build_column_emit(column, config, idx, it_ident);
         match emit {
-            super::strategy::ColumnEmit::RowWise {
+            super::column_emit::ColumnEmit::RowWise {
                 decls: emit_decls,
                 push,
                 builders: emit_builders,
@@ -34,7 +34,7 @@ fn prepare_columnar_parts(
                 parts.pushes.push(push);
                 parts.builders.extend(emit_builders);
             }
-            super::strategy::ColumnEmit::WholeColumn {
+            super::column_emit::ColumnEmit::WholeColumn {
                 builders: emit_builders,
             } => {
                 parts.builders.extend(emit_builders);

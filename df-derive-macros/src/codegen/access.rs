@@ -1,6 +1,6 @@
 use crate::ir::{
-    AccessStep, ColumnIR, ColumnSource, FieldSource, LeafRoute, LeafShape, ProjectionContext,
-    TupleProjectionStep, WrapperShape,
+    AccessStep, ColumnIR, ColumnSource, FieldSource, LeafShape, ProjectionContext,
+    TerminalLeafRoute, TupleProjectionStep, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -142,7 +142,7 @@ fn project_parent_option_tuple_column(
 }
 
 fn is_copy_parent_option_projection(column: &ColumnIR) -> bool {
-    let LeafRoute::Primitive(primitive) = column.leaf_spec.route() else {
+    let TerminalLeafRoute::Primitive(primitive) = column.leaf_spec.route() else {
         return false;
     };
     if !primitive.is_copy() {

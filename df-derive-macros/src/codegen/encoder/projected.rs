@@ -5,7 +5,9 @@ use quote::quote;
 
 use super::idents::{self, LayerIdents};
 use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
-use super::shape_walk::{LayerProjection, ShapeEmitter, shape_assemble_list_stack};
+use super::shape_walk::{
+    LayerProjection, ShapeEmitter, ShapeEmitterParts, shape_assemble_list_stack,
+};
 use super::{BaseCtx, LeafCtx, access_chain_to_option_ref, access_chain_to_ref, idx_size_len_expr};
 
 #[derive(Clone, Copy)]
@@ -282,13 +284,15 @@ fn emit_projected_vec_primitive(
     let leaf_projection_access = leaf_projection_access(shape, &projection);
 
     let emitter = ShapeEmitter::tuple(
-        shape,
-        parent_access,
-        &layers,
-        &total_leaves,
-        &layer_counters,
-        pp,
-        pa_root,
+        ShapeEmitterParts {
+            shape,
+            access: parent_access,
+            layers: &layers,
+            total_counter: &total_leaves,
+            layer_counters: &layer_counters,
+            pp,
+            pa_root,
+        },
         Some(projection.projection),
     );
     let precount = emitter.precount();
@@ -348,13 +352,15 @@ fn emit_projected_vec_nested(
     let layers = projected_layer_idents(idx, shape.depth());
     let layer_counters = projected_layer_counters(idx, shape.depth());
     let emitter = ShapeEmitter::tuple(
-        shape,
-        parent_access,
-        &layers,
-        &total_leaves,
-        &layer_counters,
-        pp,
-        pa_root,
+        ShapeEmitterParts {
+            shape,
+            access: parent_access,
+            layers: &layers,
+            total_counter: &total_leaves,
+            layer_counters: &layer_counters,
+            pp,
+            pa_root,
+        },
         Some(projection.projection),
     );
     let precount = emitter.precount();

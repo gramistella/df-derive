@@ -119,8 +119,8 @@ mod tests {
         let doubly_optional = column(&ir, "doubly_optional");
         assert_leaf_option_layers(&doubly_optional.wrapper_shape, 2);
         assert!(matches!(
-            doubly_optional.leaf_spec,
-            LeafSpec::Generic(ref ident) if ident == "T"
+            doubly_optional.leaf_spec.as_leaf_spec(),
+            LeafSpec::Generic(ident) if ident == "T"
         ));
 
         assert_vec_shape(&column(&ir, "optional_vec").wrapper_shape, &[1], 0);
@@ -131,7 +131,7 @@ mod tests {
         let optional_tuple_0 = column(&ir, "optional_tuple.field_0");
         assert_leaf_option_layers(&optional_tuple_0.wrapper_shape, 1);
         assert!(matches!(
-            optional_tuple_0.leaf_spec,
+            optional_tuple_0.leaf_spec.as_leaf_spec(),
             LeafSpec::Numeric(NumericKind::I32)
         ));
         assert!(matches!(
@@ -142,7 +142,9 @@ mod tests {
             }
         ));
         assert!(matches!(
-            column(&ir, "optional_tuple.field_1").leaf_spec,
+            column(&ir, "optional_tuple.field_1")
+                .leaf_spec
+                .as_leaf_spec(),
             LeafSpec::String
         ));
 
@@ -188,7 +190,7 @@ mod tests {
         });
 
         assert!(matches!(
-            column(&ir, "runtime").leaf_spec,
+            column(&ir, "runtime").leaf_spec.as_leaf_spec(),
             LeafSpec::Decimal {
                 precision: 38,
                 scale: 10,
@@ -197,7 +199,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            &column(&ir, "generic").leaf_spec,
+            column(&ir, "generic").leaf_spec.as_leaf_spec(),
             LeafSpec::Decimal {
                 precision: 12,
                 scale: 3,
@@ -206,7 +208,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            &column(&ir, "custom").leaf_spec,
+            column(&ir, "custom").leaf_spec.as_leaf_spec(),
             LeafSpec::Decimal {
                 precision: 18,
                 scale: 4,
@@ -258,7 +260,7 @@ mod tests {
         assert_vec_shape(&column(&ir, "vec_parent.field_0").wrapper_shape, &[0, 0], 0);
         assert_vec_shape(&column(&ir, "vec_parent.field_1").wrapper_shape, &[0], 1);
         assert!(matches!(
-            column(&ir, "boxed_nested.field_1").leaf_spec,
+            column(&ir, "boxed_nested.field_1").leaf_spec.as_leaf_spec(),
             LeafSpec::Bool
         ));
     }

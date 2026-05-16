@@ -6,7 +6,12 @@ use quote::quote;
 
 use super::encoder::idents;
 use super::external_paths::ExternalPaths;
-use super::strategy::EmitMode;
+
+#[derive(Clone, Copy)]
+enum EmitMode {
+    SchemaEntries,
+    EmptyRows,
+}
 
 /// Emit a runtime loop that wraps the per-iteration `DataType` accumulator
 /// (named via [`idents::schema_wrapped_dtype`]) in `layers` `List<>` envelopes.

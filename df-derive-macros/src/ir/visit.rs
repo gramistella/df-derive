@@ -11,14 +11,4 @@ impl LeafSpec {
             leaf => f(leaf),
         }
     }
-
-    pub fn any_terminal_leaf(&self, mut pred: impl FnMut(&Self) -> bool) -> bool {
-        let mut found = false;
-        self.walk_terminal_leaves(&mut |leaf| {
-            if pred(leaf) {
-                found = true;
-            }
-        });
-        found
-    }
 }

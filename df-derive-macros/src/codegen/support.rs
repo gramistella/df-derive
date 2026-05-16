@@ -1,5 +1,5 @@
 use super::{MacroConfig, encoder};
-use crate::ir::{LeafSpec, StructIR};
+use crate::ir::{StructIR, TerminalLeafRoute};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -9,14 +9,10 @@ fn needs_list_assembly(ir: &StructIR) -> bool {
         .any(|column| column.wrapper_shape.vec_depth() > 0)
 }
 
-fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
-    leaf.any_terminal_leaf(|leaf| matches!(leaf, LeafSpec::Struct(_) | LeafSpec::Generic(_)))
-}
-
 fn needs_nested_validation(ir: &StructIR) -> bool {
     ir.columns
         .iter()
-        .any(|column| leaf_needs_nested_validation(&column.leaf_spec))
+        .any(|column| matches!(column.leaf_spec.route(), TerminalLeafRoute::Nested(_)))
 }
 
 #[allow(clippy::too_many_lines)]

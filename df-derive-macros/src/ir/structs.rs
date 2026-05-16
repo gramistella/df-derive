@@ -23,7 +23,7 @@ pub struct FieldIR {
 /// Invariants:
 /// - `leaf_spec` is never `LeafSpec::Tuple`.
 /// - Tuple fields are flattened into one `ColumnIR` per terminal element.
-/// - `ParentVec` projections have a single terminal tuple projection step.
+/// - `ParentVec::terminal_step` is the projected terminal element.
 /// - `ParentOption` projections compose the parent option into `wrapper_shape`.
 /// - `wrapper_shape.vec_depth()` already includes parent tuple-list layers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub struct FieldSource {
     pub outer_smart_ptr_depth: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TupleProjectionStep {
     pub index: usize,
     pub outer_smart_ptr_depth: usize,
@@ -66,5 +66,6 @@ pub enum ProjectionContext {
     ParentVec {
         projection_layer: usize,
         parent_inner_access: AccessChain,
+        terminal_step: TupleProjectionStep,
     },
 }

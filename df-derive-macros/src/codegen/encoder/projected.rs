@@ -72,7 +72,7 @@ fn projected_parent_access(column: &ColumnIR) -> TokenStream {
         return TokenStream::new();
     };
     let it = idents::populator_iter();
-    crate::codegen::access::field_source_access(root, &it)
+    crate::codegen::source_access::field_source_access(root, &it)
 }
 
 fn projected_path_tokens(column: &ColumnIR) -> TokenStream {
@@ -84,7 +84,7 @@ fn projected_path_tokens(column: &ColumnIR) -> TokenStream {
     else {
         return TokenStream::new();
     };
-    crate::codegen::access::projection_path_suffix(path)
+    crate::codegen::source_access::projection_path_suffix(path)
 }
 
 fn parent_vec_projection<'a>(
@@ -92,11 +92,11 @@ fn parent_vec_projection<'a>(
     path_tokens: &'a TokenStream,
 ) -> ParentVecProjection<'a> {
     let ColumnSource::TupleProjection {
-        path,
         context:
             ProjectionContext::ParentVec {
                 projection_layer,
                 parent_inner_access,
+                terminal_step,
             },
         ..
     } = &column.source
@@ -108,7 +108,7 @@ fn parent_vec_projection<'a>(
             layer: *projection_layer,
             path: path_tokens,
             parent_access: parent_inner_access,
-            smart_ptr_depth: crate::codegen::access::projection_terminal_smart_ptr_depth(path),
+            smart_ptr_depth: terminal_step.outer_smart_ptr_depth,
         },
         parent_inner_access,
     }

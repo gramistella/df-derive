@@ -1,4 +1,3 @@
-mod access;
 mod asserts;
 mod bounds;
 mod column_emit;
@@ -8,6 +7,7 @@ mod encoder;
 pub mod external_paths;
 mod schema;
 mod schema_nested;
+mod source_access;
 mod support;
 mod trait_impl;
 mod type_deps;

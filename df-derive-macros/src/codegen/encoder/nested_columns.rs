@@ -166,7 +166,7 @@ pub(super) struct NestedColumnIdents<'a> {
     pub inner_full: &'a syn::Ident,
 }
 
-pub(super) fn inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
+pub(super) fn build_inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
         df,
@@ -182,7 +182,7 @@ pub(super) fn inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
     }}
 }
 
-pub(super) fn inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
+pub(super) fn build_inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
     let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
         df,
@@ -200,13 +200,13 @@ pub(super) fn inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
     }}
 }
 
-pub(super) fn inner_col_empty(dtype: &syn::Ident, pp: &TokenStream) -> TokenStream {
+pub(super) fn build_inner_col_empty(dtype: &syn::Ident, pp: &TokenStream) -> TokenStream {
     quote! {
         #pp::Series::new_empty("".into(), #dtype)
     }
 }
 
-pub(super) fn inner_col_all_absent(
+pub(super) fn build_inner_col_all_absent(
     dtype: &syn::Ident,
     len: &TokenStream,
     pp: &TokenStream,
@@ -273,10 +273,10 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
         dtype: &dtype,
         inner_full: &inner_full,
     };
-    let inner_col_direct = inner_col_direct(column_idents);
-    let inner_col_take = inner_col_take(column_idents);
-    let inner_col_empty = inner_col_empty(&dtype, pp);
-    let inner_col_all_absent = inner_col_all_absent(&dtype, &ctx.total_len, pp);
+    let inner_col_direct = build_inner_col_direct(column_idents);
+    let inner_col_take = build_inner_col_take(column_idents);
+    let inner_col_empty = build_inner_col_empty(&dtype, pp);
+    let inner_col_all_absent = build_inner_col_all_absent(&dtype, &ctx.total_len, pp);
 
     let series_direct = wrap_nested_column(&ctx.wrapper, &inner_col_direct, &dtype, pp, pa_root);
     let series_take = wrap_nested_column(&ctx.wrapper, &inner_col_take, &dtype, pp, pa_root);

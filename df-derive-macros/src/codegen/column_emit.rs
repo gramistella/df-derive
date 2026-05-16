@@ -71,7 +71,7 @@ fn build_nested_emit(
     // hard-rooted at the centralized populator-iter ident regardless of the
     // call site's outer-loop binding.
     let inner_it = idents::populator_iter();
-    let access = super::access::column_access(column, &inner_it);
+    let access = super::source_access::column_access(column, &inner_it);
     let name = column.name.as_str();
     let ctx = NestedLeafCtx {
         base: BaseCtx {
@@ -103,7 +103,7 @@ fn build_primitive_emit(
     leaf: PrimitiveLeaf<'_>,
 ) -> ColumnEmit {
     let name = column.name.as_str();
-    let access = super::access::column_access(column, it_ident);
+    let access = super::source_access::column_access(column, it_ident);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
             access: &access,
@@ -173,7 +173,7 @@ fn build_projected_standard_emit(
     it_ident: &Ident,
 ) -> ColumnEmit {
     let pp = config.external_paths.prelude();
-    let access = super::access::column_access(column, it_ident);
+    let access = super::source_access::column_access(column, it_ident);
 
     if let TerminalLeafRoute::Nested(nested) = column_leaf_route(column) {
         let type_path = nested_type_path(nested);
@@ -196,7 +196,7 @@ fn build_projected_standard_emit(
         leaf,
         &column.wrapper_shape,
         &leaf_ctx,
-        super::access::column_option_some_receiver(column),
+        super::source_access::column_option_some_receiver(column),
     );
     let builder = match enc {
         Encoder::Leaf {

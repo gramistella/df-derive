@@ -42,10 +42,11 @@ fn project_tuple_elements(
 ) {
     for (index, element) in elements.iter().enumerate() {
         let mut path = path_prefix.to_owned();
-        path.push(TupleProjectionStep {
+        let step = TupleProjectionStep {
             index,
             outer_smart_ptr_depth: element.outer_smart_ptr_depth,
-        });
+        };
+        path.push(step);
         let name = format!("{column_prefix}.field_{index}");
         if let LeafSpec::Tuple(inner) = &element.leaf_spec {
             project_tuple_elements(
@@ -60,7 +61,7 @@ fn project_tuple_elements(
         }
 
         let leaf_spec = terminal_leaf(element.leaf_spec.clone());
-        let (wrapper_shape, context) = compose_parent_with_element(parent_wrapper, element);
+        let (wrapper_shape, context) = compose_parent_with_element(parent_wrapper, element, step);
         columns.push(ColumnIR {
             name,
             source: ColumnSource::TupleProjection {
@@ -81,6 +82,7 @@ fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
 fn compose_parent_with_element(
     parent_wrapper: &WrapperShape,
     element: &TupleElement,
+    terminal_step: TupleProjectionStep,
 ) -> (WrapperShape, ProjectionContext) {
     match parent_wrapper {
         WrapperShape::Leaf(LeafShape::Bare) => {
@@ -97,6 +99,7 @@ fn compose_parent_with_element(
             ProjectionContext::ParentVec {
                 projection_layer: parent_layers.depth(),
                 parent_inner_access: parent_layers.inner_access.clone(),
+                terminal_step,
             },
         ),
     }

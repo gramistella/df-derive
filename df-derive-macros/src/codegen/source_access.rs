@@ -68,17 +68,6 @@ pub(in crate::codegen) fn projection_path_suffix(path: &[TupleProjectionStep]) -
     suffix
 }
 
-pub(in crate::codegen) fn projection_terminal_smart_ptr_depth(
-    path: &[TupleProjectionStep],
-) -> usize {
-    debug_assert_eq!(
-        path.len(),
-        1,
-        "Vec tuple projections cannot contain nested tuple projection paths"
-    );
-    path.last().map_or(0, |step| step.outer_smart_ptr_depth)
-}
-
 pub(in crate::codegen) fn column_option_some_receiver(
     column: &ColumnIR,
 ) -> Option<crate::codegen::type_registry::PrimitiveExprReceiver> {

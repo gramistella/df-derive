@@ -10,7 +10,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     let (impl_generics, ty_generics, where_clause) =
         super::bounds::impl_parts_with_bounds(ir, config);
 
-    if ir.fields.is_empty() {
+    if ir.columns.is_empty() {
         return quote! {
             #[automatically_derived]
             impl #impl_generics #to_df_trait for #struct_name #ty_generics #where_clause {
@@ -30,14 +30,14 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
     }
 
     let empty_series_creations: Vec<TokenStream> = ir
-        .fields
+        .columns
         .iter()
-        .map(|field| super::strategy::build_empty_series(field, config))
+        .map(|column| super::strategy::build_empty_series(column, config))
         .collect();
     let schema_entries: Vec<TokenStream> = ir
-        .fields
+        .columns
         .iter()
-        .map(|field| super::strategy::build_schema_entries(field, config))
+        .map(|column| super::strategy::build_schema_entries(column, config))
         .collect();
 
     // `to_dataframe(&self)` delegates to the `Columnar::columnar_from_refs`

@@ -1,5 +1,5 @@
 use crate::ir::{FieldIR, StructIR};
-use crate::lower::lower_field;
+use crate::lower::{lower_field, project_fields_to_columns};
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
 
@@ -61,24 +61,27 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     Ok(StructIR {
         name,
         generics,
-        fields: fields_ir,
+        columns: project_fields_to_columns(fields_ir),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{DecimalBackend, LeafShape, LeafSpec, NumericKind, WrapperShape};
+    use crate::ir::{
+        ColumnIR, ColumnSource, DecimalBackend, LeafShape, LeafSpec, NumericKind,
+        ProjectionContext, WrapperShape,
+    };
 
     fn parse(input: &DeriveInput) -> StructIR {
         parse_to_ir(input).expect("input should lower to IR")
     }
 
-    fn field<'a>(ir: &'a StructIR, name: &str) -> &'a FieldIR {
-        ir.fields
+    fn column<'a>(ir: &'a StructIR, name: &str) -> &'a ColumnIR {
+        ir.columns
             .iter()
-            .find(|field| field.name == name)
-            .expect("field should exist")
+            .find(|column| column.name == name)
+            .expect("column should exist")
     }
 
     fn assert_leaf_option_layers(shape: &WrapperShape, expected: usize) {
@@ -113,38 +116,45 @@ mod tests {
             }
         });
 
-        let doubly_optional = field(&ir, "doubly_optional");
+        let doubly_optional = column(&ir, "doubly_optional");
         assert_leaf_option_layers(&doubly_optional.wrapper_shape, 2);
         assert!(matches!(
             doubly_optional.leaf_spec,
             LeafSpec::Generic(ref ident) if ident == "T"
         ));
 
-        assert_vec_shape(&field(&ir, "optional_vec").wrapper_shape, &[1], 0);
-        assert_vec_shape(&field(&ir, "vec_optional").wrapper_shape, &[0], 1);
-        assert_vec_shape(&field(&ir, "vec_option_vec").wrapper_shape, &[0, 1], 0);
-        assert_vec_shape(&field(&ir, "option_vec_option").wrapper_shape, &[1], 1);
+        assert_vec_shape(&column(&ir, "optional_vec").wrapper_shape, &[1], 0);
+        assert_vec_shape(&column(&ir, "vec_optional").wrapper_shape, &[0], 1);
+        assert_vec_shape(&column(&ir, "vec_option_vec").wrapper_shape, &[0, 1], 0);
+        assert_vec_shape(&column(&ir, "option_vec_option").wrapper_shape, &[1], 1);
 
-        let optional_tuple = field(&ir, "optional_tuple");
-        assert_leaf_option_layers(&optional_tuple.wrapper_shape, 1);
-        let LeafSpec::Tuple(elements) = &optional_tuple.leaf_spec else {
-            panic!("expected tuple leaf");
-        };
-        assert_eq!(elements.len(), 2);
+        let optional_tuple_0 = column(&ir, "optional_tuple.field_0");
+        assert_leaf_option_layers(&optional_tuple_0.wrapper_shape, 1);
         assert!(matches!(
-            elements[0].leaf_spec,
+            optional_tuple_0.leaf_spec,
             LeafSpec::Numeric(NumericKind::I32)
         ));
-        assert!(matches!(elements[1].leaf_spec, LeafSpec::String));
+        assert!(matches!(
+            optional_tuple_0.source,
+            ColumnSource::TupleProjection {
+                context: ProjectionContext::ParentOption { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            column(&ir, "optional_tuple.field_1").leaf_spec,
+            LeafSpec::String
+        ));
 
-        let vec_tuple = field(&ir, "vec_tuple");
-        assert_vec_shape(&vec_tuple.wrapper_shape, &[0], 0);
-        let LeafSpec::Tuple(elements) = &vec_tuple.leaf_spec else {
-            panic!("expected tuple leaf");
-        };
-        assert_eq!(elements.len(), 2);
-        assert_vec_shape(&elements[0].wrapper_shape, &[0], 0);
-        assert_leaf_option_layers(&elements[1].wrapper_shape, 1);
+        assert_vec_shape(&column(&ir, "vec_tuple.field_0").wrapper_shape, &[0, 0], 0);
+        assert_vec_shape(&column(&ir, "vec_tuple.field_1").wrapper_shape, &[0], 1);
+        assert!(matches!(
+            column(&ir, "vec_tuple.field_0").source,
+            ColumnSource::TupleProjection {
+                context: ProjectionContext::ParentVec { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -157,10 +167,10 @@ mod tests {
             }
         });
 
-        assert_eq!(ir.fields.len(), 1);
-        assert_eq!(ir.fields[0].name, "kept");
+        assert_eq!(ir.columns.len(), 1);
+        assert_eq!(ir.columns[0].name, "kept");
         assert!(matches!(
-            ir.fields[0].wrapper_shape,
+            ir.columns[0].wrapper_shape,
             WrapperShape::Leaf(LeafShape::Bare)
         ));
     }
@@ -178,7 +188,7 @@ mod tests {
         });
 
         assert!(matches!(
-            field(&ir, "runtime").leaf_spec,
+            column(&ir, "runtime").leaf_spec,
             LeafSpec::Decimal {
                 precision: 38,
                 scale: 10,
@@ -187,7 +197,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            &field(&ir, "generic").leaf_spec,
+            &column(&ir, "generic").leaf_spec,
             LeafSpec::Decimal {
                 precision: 12,
                 scale: 3,
@@ -196,12 +206,60 @@ mod tests {
         ));
 
         assert!(matches!(
-            &field(&ir, "custom").leaf_spec,
+            &column(&ir, "custom").leaf_spec,
             LeafSpec::Decimal {
                 precision: 18,
                 scale: 4,
                 backend: DecimalBackend::Struct(_),
             }
+        ));
+    }
+
+    #[test]
+    fn projects_tuple_fields_to_terminal_columns() {
+        let ir = parse(&syn::parse_quote! {
+            struct Row {
+                bare: (i32, String),
+                optional: Option<(Vec<i32>, String)>,
+                vec_parent: Vec<(Vec<i32>, Option<String>)>,
+                boxed_nested: Box<((i32, String), std::sync::Arc<bool>)>,
+            }
+        });
+
+        let names: Vec<&str> = ir
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "bare.field_0",
+                "bare.field_1",
+                "optional.field_0",
+                "optional.field_1",
+                "vec_parent.field_0",
+                "vec_parent.field_1",
+                "boxed_nested.field_0.field_0",
+                "boxed_nested.field_0.field_1",
+                "boxed_nested.field_1",
+            ]
+        );
+
+        assert!(matches!(
+            column(&ir, "bare.field_0").source,
+            ColumnSource::TupleProjection {
+                context: ProjectionContext::Static,
+                ..
+            }
+        ));
+        assert_vec_shape(&column(&ir, "optional.field_0").wrapper_shape, &[1], 0);
+        assert_leaf_option_layers(&column(&ir, "optional.field_1").wrapper_shape, 1);
+        assert_vec_shape(&column(&ir, "vec_parent.field_0").wrapper_shape, &[0, 0], 0);
+        assert_vec_shape(&column(&ir, "vec_parent.field_1").wrapper_shape, &[0], 1);
+        assert!(matches!(
+            column(&ir, "boxed_nested.field_1").leaf_spec,
+            LeafSpec::Bool
         ));
     }
 }

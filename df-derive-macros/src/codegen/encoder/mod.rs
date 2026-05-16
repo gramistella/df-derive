@@ -1,4 +1,4 @@
-//! Per-field encoder construction.
+//! Per-column encoder construction.
 //!
 //! `Vec` wrappers are already normalized into [`crate::ir::VecLayers`] before
 //! this phase. Polars folds consecutive `Option` layers into a single validity
@@ -14,17 +14,15 @@ mod leaf_kind;
 mod nested_columns;
 mod nested_leaf;
 mod option;
+mod projected;
 mod shape_walk;
 mod stringy;
-mod tuple;
 mod vec;
 
 pub use ctx::{BaseCtx, Encoder, LeafCtx, build_encoder};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
+pub(in crate::codegen) use projected::{build_projected_vec_nested, build_projected_vec_primitive};
 pub use stringy::struct_type_tokens;
-pub use tuple::{
-    build_field_emit as build_tuple_field_emit, build_field_entries as build_tuple_field_entries,
-};
 
 pub(super) use access_chain::{
     access_chain_to_option_ref, access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr,

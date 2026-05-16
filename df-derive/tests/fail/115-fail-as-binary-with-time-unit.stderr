@@ -1,6 +1,11 @@
 error: field `bytes` combines `as_binary` with another override; `as_binary` produces a Binary column over a `Vec<u8>` shape and is mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and `time_unit = "..."` — drop one
- --> tests/fail/115-fail-as-binary-with-time-unit.rs:7:5
+ --> tests/fail/115-fail-as-binary-with-time-unit.rs:7:28
   |
-7 | /     #[df_derive(as_binary, time_unit = "ns")]
-8 | |     bytes: Vec<u8>,
-  | |__________________^
+7 |     #[df_derive(as_binary, time_unit = "ns")]
+  |                            ^^^^^^^^^
+
+error: first `as_binary` override declared here
+ --> tests/fail/115-fail-as-binary-with-time-unit.rs:7:17
+  |
+7 |     #[df_derive(as_binary, time_unit = "ns")]
+  |                 ^^^^^^^^^

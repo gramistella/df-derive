@@ -5,7 +5,6 @@ mod columnar_impl;
 mod config;
 mod encoder;
 pub mod external_paths;
-mod names;
 mod schema_nested;
 mod strategy;
 mod support;
@@ -51,8 +50,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 mod tests {
     use super::*;
     use crate::ir::{
-        AccessChain, FieldIR, LeafShape, LeafSpec, NonEmpty, NumericKind, StructIR, TupleElement,
-        VecLayerSpec, VecLayers, WrapperShape,
+        AccessChain, ColumnIR, ColumnSource, FieldSource, LeafShape, LeafSpec, NonEmpty,
+        NumericKind, StructIR, VecLayerSpec, VecLayers, WrapperShape,
     };
     use quote::{format_ident, quote};
 
@@ -82,23 +81,29 @@ mod tests {
         assert!(generated.contains(&columnar_impl), "{generated}");
     }
 
-    fn numeric_field(name: &str, wrapper_shape: WrapperShape) -> FieldIR {
-        FieldIR {
+    fn field_source(name: &str) -> FieldSource {
+        FieldSource {
             name: format_ident!("{}", name),
             field_index: None,
-            leaf_spec: LeafSpec::Numeric(NumericKind::U32),
-            wrapper_shape,
             outer_smart_ptr_depth: 0,
         }
     }
 
-    fn nested_field(name: &str, wrapper_shape: WrapperShape) -> FieldIR {
-        FieldIR {
-            name: format_ident!("{}", name),
-            field_index: None,
+    fn numeric_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
+        ColumnIR {
+            name: name.to_owned(),
+            source: ColumnSource::Field(field_source(name)),
+            leaf_spec: LeafSpec::Numeric(NumericKind::U32),
+            wrapper_shape,
+        }
+    }
+
+    fn nested_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
+        ColumnIR {
+            name: name.to_owned(),
+            source: ColumnSource::Field(field_source(name)),
             leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
             wrapper_shape,
-            outer_smart_ptr_depth: 0,
         }
     }
 
@@ -121,14 +126,14 @@ mod tests {
         let empty_ir = StructIR {
             name: format_ident!("EmptyRow"),
             generics: syn::Generics::default(),
-            fields: Vec::new(),
+            columns: Vec::new(),
         };
         assert_generated_impls_are_automatically_derived(&empty_ir);
 
         let non_empty_ir = StructIR {
             name: format_ident!("Row"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
         };
         assert_generated_impls_are_automatically_derived(&non_empty_ir);
     }
@@ -138,7 +143,7 @@ mod tests {
         let scalar_ir = StructIR {
             name: format_ident!("ScalarRow"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
         };
         let scalar = generate_code(&scalar_ir, &test_config()).to_string();
         assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
@@ -151,7 +156,7 @@ mod tests {
         let vec_ir = StructIR {
             name: format_ident!("VecRow"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("ids", depth_one_vec_shape())],
+            columns: vec![numeric_column("ids", depth_one_vec_shape())],
         };
         let with_vec = generate_code(&vec_ir, &test_config()).to_string();
         assert!(with_vec.contains("__DfDeriveListAssembly"), "{with_vec}");
@@ -171,7 +176,7 @@ mod tests {
         let scalar_ir = StructIR {
             name: format_ident!("ScalarRow"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
         };
         let scalar = generate_code(&scalar_ir, &test_config()).to_string();
         assert!(!scalar.contains(&validate_nested_frame), "{scalar}");
@@ -180,7 +185,7 @@ mod tests {
         let primitive_vec_ir = StructIR {
             name: format_ident!("PrimitiveVecRow"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("ids", depth_one_vec_shape())],
+            columns: vec![numeric_column("ids", depth_one_vec_shape())],
         };
         let primitive_vec = generate_code(&primitive_vec_ir, &test_config()).to_string();
         assert!(
@@ -195,7 +200,7 @@ mod tests {
         let nested_ir = StructIR {
             name: format_ident!("NestedRow"),
             generics: syn::Generics::default(),
-            fields: vec![nested_field("inner", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![nested_column("inner", WrapperShape::Leaf(LeafShape::Bare))],
         };
         let nested = generate_code(&nested_ir, &test_config()).to_string();
         assert!(nested.contains(&validate_nested_frame), "{nested}");
@@ -204,16 +209,11 @@ mod tests {
         let tuple_nested_ir = StructIR {
             name: format_ident!("TupleNestedRow"),
             generics: syn::Generics::default(),
-            fields: vec![FieldIR {
-                name: format_ident!("pair"),
-                field_index: None,
-                leaf_spec: LeafSpec::Tuple(vec![TupleElement {
-                    leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
-                    wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
-                    outer_smart_ptr_depth: 0,
-                }]),
+            columns: vec![ColumnIR {
+                name: "pair.field_0".to_owned(),
+                source: ColumnSource::Field(field_source("pair")),
+                leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
                 wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
-                outer_smart_ptr_depth: 0,
             }],
         };
         let tuple_nested = generate_code(&tuple_nested_ir, &test_config()).to_string();
@@ -232,7 +232,7 @@ mod tests {
         let vec_ir = StructIR {
             name: format_ident!("VecOnlyRow"),
             generics: syn::Generics::default(),
-            fields: vec![numeric_field("ids", depth_one_vec_shape())],
+            columns: vec![numeric_column("ids", depth_one_vec_shape())],
         };
         let generated = generate_code(&vec_ir, &test_config()).to_string();
         let empty_loop = format!("for {} in items {{ }}", encoder::idents::populator_iter());

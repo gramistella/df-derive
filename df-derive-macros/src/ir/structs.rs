@@ -1,12 +1,12 @@
 use syn::Ident;
 
-use super::{LeafSpec, WrapperShape};
+use super::{AccessChain, LeafSpec, WrapperShape};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructIR {
     pub name: Ident,
     pub generics: syn::Generics,
-    pub fields: Vec<FieldIR>,
+    pub columns: Vec<ColumnIR>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,4 +16,47 @@ pub struct FieldIR {
     pub leaf_spec: LeafSpec,
     pub wrapper_shape: WrapperShape,
     pub outer_smart_ptr_depth: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnIR {
+    pub name: String,
+    pub source: ColumnSource,
+    pub leaf_spec: LeafSpec,
+    pub wrapper_shape: WrapperShape,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColumnSource {
+    Field(FieldSource),
+    TupleProjection {
+        root: FieldSource,
+        path: Vec<TupleProjectionStep>,
+        context: ProjectionContext,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldSource {
+    pub name: Ident,
+    pub field_index: Option<usize>,
+    pub outer_smart_ptr_depth: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TupleProjectionStep {
+    pub index: usize,
+    pub outer_smart_ptr_depth: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectionContext {
+    Static,
+    ParentOption {
+        access: AccessChain,
+    },
+    ParentVec {
+        projection_layer: usize,
+        parent_inner_access: AccessChain,
+    },
 }

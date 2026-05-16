@@ -1,6 +1,11 @@
 error: field `amount` combines `decimal(...)` with `time_unit = "..."`; pick one — `decimal(...)` applies to decimal backend candidates, `time_unit` only applies to `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`
- --> tests/fail/151-fail-decimal-with-time-unit.rs:7:5
+ --> tests/fail/151-fail-decimal-with-time-unit.rs:7:53
   |
-7 | /     #[df_derive(decimal(precision = 10, scale = 2), time_unit = "ns")]
-8 | |     amount: rust_decimal::Decimal,
-  | |_________________________________^
+7 |     #[df_derive(decimal(precision = 10, scale = 2), time_unit = "ns")]
+  |                                                     ^^^^^^^^^
+
+error: first `decimal(...)` override declared here
+ --> tests/fail/151-fail-decimal-with-time-unit.rs:7:17
+  |
+7 |     #[df_derive(decimal(precision = 10, scale = 2), time_unit = "ns")]
+  |                 ^^^^^^^

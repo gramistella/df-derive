@@ -11,9 +11,9 @@ struct ColumnarParts {
     builders: Vec<TokenStream>,
 }
 
-/// Walk every field, build its [`FieldEmit`](super::strategy::FieldEmit),
+/// Walk every column, build its [`ColumnEmit`](super::strategy::ColumnEmit),
 /// and concatenate decls/pushes/builders into the three buckets the
-/// columnar pipeline splices into the generated impl. Each `FieldEmit`
+/// columnar pipeline splices into the generated impl. Each `ColumnEmit`
 /// explicitly declares whether it contributes row-wise work or builds whole
 /// columns after the loop. Concatenation is order-preserving.
 fn prepare_columnar_parts(
@@ -22,10 +22,10 @@ fn prepare_columnar_parts(
     it_ident: &syn::Ident,
 ) -> ColumnarParts {
     let mut parts = ColumnarParts::default();
-    for (idx, f) in ir.fields.iter().enumerate() {
-        let emit = super::strategy::build_field_emit(f, config, idx, it_ident);
+    for (idx, column) in ir.columns.iter().enumerate() {
+        let emit = super::strategy::build_column_emit(column, config, idx, it_ident);
         match emit {
-            super::strategy::FieldEmit::RowWise {
+            super::strategy::ColumnEmit::RowWise {
                 decls: emit_decls,
                 push,
                 builders: emit_builders,
@@ -34,7 +34,7 @@ fn prepare_columnar_parts(
                 parts.pushes.push(push);
                 parts.builders.extend(emit_builders);
             }
-            super::strategy::FieldEmit::WholeColumn {
+            super::strategy::ColumnEmit::WholeColumn {
                 builders: emit_builders,
             } => {
                 parts.builders.extend(emit_builders);
@@ -98,7 +98,7 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
         super::bounds::impl_parts_with_bounds(ir, config);
 
     // The method body is intentionally token-identical for `&[Self]` and
-    // `&[&Self]`; field access in the borrowed path relies on Rust's
+    // `&[&Self]`; generated column access in the borrowed path relies on Rust's
     // autoderef. Keep both trait entry points so direct slices avoid the
     // top-level `Vec<&Self>` allocation while nested emitters can compose
     // borrowed rows without cloning.

@@ -1,7 +1,11 @@
 error: field `name` has both `as_str` and `as_string`; pick one — `as_str` borrows via `AsRef<str>` without formatting, `as_string` formats via `Display` into a reused scratch buffer
- --> tests/fail/99-fail-as-str-and-as-string-conflict.rs:7:5
+ --> tests/fail/99-fail-as-str-and-as-string-conflict.rs:8:17
   |
-7 | /     #[df_derive(as_str)]
-8 | |     #[df_derive(as_string)]
-9 | |     name: String,
-  | |________________^
+8 |     #[df_derive(as_string)]
+  |                 ^^^^^^^^^
+
+error: first `as_str` override declared here
+ --> tests/fail/99-fail-as-str-and-as-string-conflict.rs:7:17
+  |
+7 |     #[df_derive(as_str)]
+  |                 ^^^^^^

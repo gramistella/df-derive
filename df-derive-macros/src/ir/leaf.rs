@@ -227,7 +227,51 @@ pub enum LeafRoute<'a> {
     Tuple(&'a [TupleElement]),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalLeafRoute<'a> {
+    Primitive(PrimitiveLeaf<'a>),
+    Nested(NestedLeaf<'a>),
+}
+
 impl LeafSpec {
+    pub const fn terminal_route(&self) -> Option<TerminalLeafRoute<'_>> {
+        match self {
+            Self::Numeric(kind) => {
+                Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::Numeric(*kind)))
+            }
+            Self::String => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::String)),
+            Self::Bool => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::Bool)),
+            Self::DateTime(unit) => {
+                Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::DateTime(*unit)))
+            }
+            Self::NaiveDateTime(unit) => Some(TerminalLeafRoute::Primitive(
+                PrimitiveLeaf::NaiveDateTime(*unit),
+            )),
+            Self::NaiveDate => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::NaiveDate)),
+            Self::NaiveTime => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::NaiveTime)),
+            Self::Duration { unit, source } => {
+                Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::Duration {
+                    unit: *unit,
+                    source: *source,
+                }))
+            }
+            Self::Decimal {
+                precision, scale, ..
+            } => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::Decimal {
+                precision: *precision,
+                scale: *scale,
+            })),
+            Self::AsString(_) => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::AsString)),
+            Self::AsStr(stringy) => {
+                Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::AsStr(stringy)))
+            }
+            Self::Binary => Some(TerminalLeafRoute::Primitive(PrimitiveLeaf::Binary)),
+            Self::Struct(ty) => Some(TerminalLeafRoute::Nested(NestedLeaf::Struct(ty))),
+            Self::Generic(ident) => Some(TerminalLeafRoute::Nested(NestedLeaf::Generic(ident))),
+            Self::Tuple(_) => None,
+        }
+    }
+
     pub const fn route(&self) -> LeafRoute<'_> {
         match self {
             Self::Numeric(kind) => LeafRoute::Primitive(PrimitiveLeaf::Numeric(*kind)),

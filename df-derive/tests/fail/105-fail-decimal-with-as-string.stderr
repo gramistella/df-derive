@@ -1,6 +1,11 @@
 error: field `amount` combines `decimal(...)` with `as_str`/`as_string`; `as_str`/`as_string` produce a String column, so the `decimal(...)` dtype override has no effect — drop one
-  --> tests/fail/105-fail-decimal-with-as-string.rs:9:5
-   |
- 9 | /     #[df_derive(as_string, decimal(precision = 18, scale = 6))]
-10 | |     amount: Decimal,
-   | |___________________^
+ --> tests/fail/105-fail-decimal-with-as-string.rs:9:28
+  |
+9 |     #[df_derive(as_string, decimal(precision = 18, scale = 6))]
+  |                            ^^^^^^^
+
+error: first `as_string` override declared here
+ --> tests/fail/105-fail-decimal-with-as-string.rs:9:17
+  |
+9 |     #[df_derive(as_string, decimal(precision = 18, scale = 6))]
+  |                 ^^^^^^^^^

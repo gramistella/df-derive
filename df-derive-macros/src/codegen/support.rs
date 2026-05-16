@@ -3,20 +3,10 @@ use crate::ir::{LeafSpec, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-fn leaf_needs_list_assembly(leaf: &LeafSpec) -> bool {
-    let mut needs = false;
-    leaf.walk_tuple_elements(&mut |element| {
-        if element.wrapper_shape.vec_depth() > 0 {
-            needs = true;
-        }
-    });
-    needs
-}
-
 fn needs_list_assembly(ir: &StructIR) -> bool {
-    ir.fields.iter().any(|field| {
-        field.wrapper_shape.vec_depth() > 0 || leaf_needs_list_assembly(&field.leaf_spec)
-    })
+    ir.columns
+        .iter()
+        .any(|column| column.wrapper_shape.vec_depth() > 0)
 }
 
 fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
@@ -24,9 +14,9 @@ fn leaf_needs_nested_validation(leaf: &LeafSpec) -> bool {
 }
 
 fn needs_nested_validation(ir: &StructIR) -> bool {
-    ir.fields
+    ir.columns
         .iter()
-        .any(|field| leaf_needs_nested_validation(&field.leaf_spec))
+        .any(|column| leaf_needs_nested_validation(&column.leaf_spec))
 }
 
 #[allow(clippy::too_many_lines)]

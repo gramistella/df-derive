@@ -1,4 +1,4 @@
-use super::{LeafSpec, TupleElement};
+use super::LeafSpec;
 
 impl LeafSpec {
     pub fn walk_terminal_leaves<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
@@ -20,14 +20,5 @@ impl LeafSpec {
             }
         });
         found
-    }
-
-    pub fn walk_tuple_elements<'a>(&'a self, f: &mut impl FnMut(&'a TupleElement)) {
-        if let Self::Tuple(elements) = self {
-            for element in elements {
-                f(element);
-                element.leaf_spec.walk_tuple_elements(f);
-            }
-        }
     }
 }

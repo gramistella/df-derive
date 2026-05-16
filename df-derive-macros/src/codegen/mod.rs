@@ -2,6 +2,7 @@ mod access;
 mod asserts;
 mod bounds;
 mod columnar_impl;
+mod config;
 mod encoder;
 pub mod external_paths;
 mod names;
@@ -13,68 +14,10 @@ mod type_deps;
 mod type_registry;
 
 use crate::ir::StructIR;
-use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 
-/// Runtime trait paths used by generated impls and helper calls.
-pub struct RuntimeTraitPaths {
-    /// Fully-qualified path to the `ToDataFrame` trait.
-    pub to_dataframe: syn::Path,
-    /// Fully-qualified path to the `Columnar` trait.
-    pub columnar: syn::Path,
-    /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
-    /// fields.
-    pub decimal128_encode: syn::Path,
-}
-
-/// Macro-wide configuration for generated code
-#[allow(clippy::struct_field_names)]
-pub struct MacroConfig {
-    /// Runtime trait paths used by generated code.
-    pub traits: RuntimeTraitPaths,
-    /// External runtime dependency roots (`polars::prelude`,
-    /// `polars_arrow`) used by generated code.
-    pub external_paths: external_paths::ExternalPaths,
-}
-
-fn resolve_dataframe_mod_for_crate(name: &str, lib_crate_name: &str) -> Option<TokenStream> {
-    match crate_name(name) {
-        Ok(FoundCrate::Name(resolved)) => {
-            let ident = format_ident!("{}", resolved);
-            Some(quote! { ::#ident::dataframe })
-        }
-        Ok(FoundCrate::Itself) if is_expanding_lib_target(lib_crate_name) => {
-            Some(quote! { crate::dataframe })
-        }
-        Ok(FoundCrate::Itself) => {
-            let ident = format_ident!("{}", lib_crate_name);
-            Some(quote! { ::#ident::dataframe })
-        }
-        Err(_) => None,
-    }
-}
-
-fn is_expanding_lib_target(lib_crate_name: &str) -> bool {
-    // `proc_macro_crate` reports `Itself` for every target in a package.
-    // Only the library target has `crate::dataframe`; package examples,
-    // benches, and integration tests need the path through the library crate.
-    std::env::var("CARGO_CRATE_NAME").as_deref() == Ok(lib_crate_name)
-}
-
-pub fn resolve_default_dataframe_mod() -> TokenStream {
-    // Default discovery order:
-    // - `df-derive` facade (`df_derive::dataframe`, or `crate::dataframe` inside the facade)
-    // - `df-derive-core` shared runtime (`df_derive_core::dataframe`)
-    // - `paft-utils` direct runtime (`paft_utils::dataframe`)
-    // - `paft` facade (`paft::dataframe`)
-    // - local fallback (`crate::core::dataframe`)
-    resolve_dataframe_mod_for_crate("df-derive", "df_derive")
-        .or_else(|| resolve_dataframe_mod_for_crate("df-derive-core", "df_derive_core"))
-        .or_else(|| resolve_dataframe_mod_for_crate("paft-utils", "paft_utils"))
-        .or_else(|| resolve_dataframe_mod_for_crate("paft", "paft"))
-        .unwrap_or_else(|| quote! { crate::core::dataframe })
-}
+pub use config::{MacroConfig, build_macro_config};
 
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     let support = support::generate_support(ir, config);
@@ -116,7 +59,7 @@ mod tests {
     fn test_config() -> MacroConfig {
         let dataframe_mod = quote! { crate::dataframe };
         MacroConfig {
-            traits: RuntimeTraitPaths {
+            traits: config::RuntimeTraitPaths {
                 to_dataframe: syn::parse_quote!(crate::dataframe::ToDataFrame),
                 columnar: syn::parse_quote!(crate::dataframe::Columnar),
                 decimal128_encode: syn::parse_quote!(crate::dataframe::Decimal128Encode),
@@ -145,8 +88,6 @@ mod tests {
             field_index: None,
             leaf_spec: LeafSpec::Numeric(NumericKind::U32),
             wrapper_shape,
-            decimal_generic_params: Vec::new(),
-            decimal_backend_ty: None,
             outer_smart_ptr_depth: 0,
         }
     }
@@ -157,8 +98,6 @@ mod tests {
             field_index: None,
             leaf_spec: LeafSpec::Struct(syn::parse_quote!(Inner)),
             wrapper_shape,
-            decimal_generic_params: Vec::new(),
-            decimal_backend_ty: None,
             outer_smart_ptr_depth: 0,
         }
     }
@@ -274,8 +213,6 @@ mod tests {
                     outer_smart_ptr_depth: 0,
                 }]),
                 wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
-                decimal_generic_params: Vec::new(),
-                decimal_backend_ty: None,
                 outer_smart_ptr_depth: 0,
             }],
         };

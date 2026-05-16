@@ -1,5 +1,5 @@
 use crate::codegen::encoder::idents;
-use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
+use crate::ir::{DecimalBackend, DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
@@ -20,11 +20,7 @@ pub fn generate_eager_asserts(
 
     for field in &ir.fields {
         collect_nested_asserts(&field.leaf_spec, &generic_ctx, &mut nested_types);
-        if let Some(ty) = &field.decimal_backend_ty
-            && !type_depends_on_generics(ty, &generic_ctx)
-        {
-            push_unique_type(&mut decimal_backend_types, ty);
-        }
+        collect_decimal_asserts(&field.leaf_spec, &generic_ctx, &mut decimal_backend_types);
         collect_as_ref_str_asserts(&field.leaf_spec, &generic_ctx, &mut as_ref_str_types);
         collect_display_asserts(&field.leaf_spec, &generic_ctx, &mut display_types);
     }
@@ -100,6 +96,19 @@ pub fn generate_eager_asserts(
         #as_ref_str_asserts
         #display_asserts
     }
+}
+
+fn collect_decimal_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {
+    leaf.walk_terminal_leaves(&mut |leaf| {
+        if let LeafSpec::Decimal {
+            backend: DecimalBackend::Struct(ty),
+            ..
+        } = leaf
+            && !type_depends_on_generics(ty, generic_ctx)
+        {
+            push_unique_type(out, ty);
+        }
+    });
 }
 
 fn collect_nested_asserts(leaf: &LeafSpec, generic_ctx: &GenericContext, out: &mut Vec<Type>) {

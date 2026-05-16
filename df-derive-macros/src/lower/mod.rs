@@ -1,7 +1,6 @@
 //! Lowering helpers between type analysis and codegen IR.
 
 mod binary;
-mod decimal;
 mod errors;
 mod field;
 mod leaf;

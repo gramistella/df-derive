@@ -140,6 +140,13 @@ pub enum DisplayBase {
     Generic(Ident),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecimalBackend {
+    RuntimeKnown,
+    Generic(Ident),
+    Struct(Type),
+}
+
 /// Per-leaf semantic shape after type analysis and field overrides have been
 /// lowered into the encoder vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,6 +165,7 @@ pub enum LeafSpec {
     Decimal {
         precision: u8,
         scale: u8,
+        backend: DecimalBackend,
     },
     AsString(DisplayBase),
     AsStr(StringyBase),
@@ -233,7 +241,9 @@ impl LeafSpec {
                 unit: *unit,
                 source: *source,
             }),
-            Self::Decimal { precision, scale } => LeafRoute::Primitive(PrimitiveLeaf::Decimal {
+            Self::Decimal {
+                precision, scale, ..
+            } => LeafRoute::Primitive(PrimitiveLeaf::Decimal {
                 precision: *precision,
                 scale: *scale,
             }),

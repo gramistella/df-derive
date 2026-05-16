@@ -73,7 +73,9 @@ impl PrimitiveLeaf<'_> {
             Self::NaiveDate => LogicalPrimitive::NaiveDate,
             Self::NaiveTime => LogicalPrimitive::NaiveTime,
             Self::Duration { unit, source: _ } => LogicalPrimitive::Duration(unit),
-            Self::Decimal { precision, scale } => LogicalPrimitive::Decimal { precision, scale },
+            Self::Decimal {
+                precision, scale, ..
+            } => LogicalPrimitive::Decimal { precision, scale },
         }
     }
 

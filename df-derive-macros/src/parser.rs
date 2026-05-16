@@ -68,7 +68,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{LeafShape, LeafSpec, NumericKind, WrapperShape};
+    use crate::ir::{DecimalBackend, LeafShape, LeafSpec, NumericKind, WrapperShape};
 
     fn parse(input: &DeriveInput) -> StructIR {
         parse_to_ir(input).expect("input should lower to IR")
@@ -162,6 +162,46 @@ mod tests {
         assert!(matches!(
             ir.fields[0].wrapper_shape,
             WrapperShape::Leaf(LeafShape::Bare)
+        ));
+    }
+
+    #[test]
+    fn decimal_backend_is_part_of_leaf_spec() {
+        let ir = parse(&syn::parse_quote! {
+            struct Row<T> {
+                runtime: Decimal,
+                #[df_derive(decimal(precision = 12, scale = 3))]
+                generic: T,
+                #[df_derive(decimal(precision = 18, scale = 4))]
+                custom: CustomDecimal,
+            }
+        });
+
+        assert!(matches!(
+            field(&ir, "runtime").leaf_spec,
+            LeafSpec::Decimal {
+                precision: 38,
+                scale: 10,
+                backend: DecimalBackend::RuntimeKnown,
+            }
+        ));
+
+        assert!(matches!(
+            &field(&ir, "generic").leaf_spec,
+            LeafSpec::Decimal {
+                precision: 12,
+                scale: 3,
+                backend: DecimalBackend::Generic(ident),
+            } if ident == "T"
+        ));
+
+        assert!(matches!(
+            &field(&ir, "custom").leaf_spec,
+            LeafSpec::Decimal {
+                precision: 18,
+                scale: 4,
+                backend: DecimalBackend::Struct(_),
+            }
         ));
     }
 }

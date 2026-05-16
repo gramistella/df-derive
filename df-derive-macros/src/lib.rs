@@ -24,55 +24,7 @@ mod lower;
 mod parser;
 mod type_analysis;
 use proc_macro::TokenStream;
-use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
-
-fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
-    let default_df_mod = codegen::resolve_default_dataframe_mod();
-    let attrs = attrs::parse_container_attrs(ast)?;
-
-    let uses_default_dataframe_runtime = attrs.to_dataframe.is_none() && attrs.columnar.is_none();
-    let explicit_default_dataframe_mod = attrs::explicit_builtin_default_dataframe_mod(
-        attrs.to_dataframe.as_ref(),
-        attrs.columnar.as_ref(),
-    );
-    let to_dataframe = attrs.to_dataframe.as_ref().map_or_else(
-        || attrs::runtime_trait_path(&default_df_mod, "ToDataFrame"),
-        |override_| override_.value.clone(),
-    );
-    let columnar = match (&attrs.columnar, &attrs.to_dataframe) {
-        (Some(override_), _) => override_.value.clone(),
-        (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Columnar"),
-        (None, None) => attrs::runtime_trait_path(&default_df_mod, "Columnar"),
-    };
-    let decimal128_encode = match (&attrs.decimal128_encode, &attrs.to_dataframe) {
-        (Some(override_), _) => override_.value.clone(),
-        (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Decimal128Encode"),
-        (None, None) => attrs::runtime_trait_path(&default_df_mod, "Decimal128Encode"),
-    };
-    let external_paths = explicit_default_dataframe_mod.as_ref().map_or_else(
-        || {
-            if uses_default_dataframe_runtime {
-                codegen::external_paths::default_runtime_paths(&default_df_mod)
-            } else {
-                codegen::external_paths::direct_dependency_paths()
-            }
-        },
-        |dataframe_mod| {
-            let dataframe_mod = quote! { #dataframe_mod };
-            codegen::external_paths::default_runtime_paths(&dataframe_mod)
-        },
-    );
-
-    Ok(codegen::MacroConfig {
-        traits: codegen::RuntimeTraitPaths {
-            to_dataframe,
-            columnar,
-            decimal128_encode,
-        },
-        external_paths,
-    })
-}
 
 /// Derive `ToDataFrame` for structs and tuple structs to generate fast conversions to Polars.
 ///
@@ -185,7 +137,7 @@ fn build_macro_config(ast: &DeriveInput) -> syn::Result<codegen::MacroConfig> {
 pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     // Parse the input tokens into a syntax tree
     let ast = parse_macro_input!(input as DeriveInput);
-    let config = match build_macro_config(&ast) {
+    let config = match codegen::build_macro_config(&ast) {
         Ok(config) => config,
         Err(e) => return e.to_compile_error().into(),
     };

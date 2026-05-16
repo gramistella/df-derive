@@ -49,7 +49,7 @@ impl ExternalPaths {
 /// runtime crates: missing direct deps are best surfaced as `unresolved
 /// import ::<name>` at the call site rather than `unresolved name <name>`.
 ///
-/// The `mod::resolve_default_dataframe_mod` site is bespoke because its
+/// The default dataframe runtime resolver is bespoke because its
 /// `Itself` arm maps to `crate::dataframe` (a substantive path), not to the
 /// fallback — a different cascade shape that this helper cannot model
 /// cleanly.

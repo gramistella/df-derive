@@ -3,7 +3,6 @@ use crate::attrs::{
 };
 use crate::ir::FieldIR;
 use crate::lower::binary::parse_as_binary_shape;
-use crate::lower::decimal::{decimal_backend_ty_for_override, decimal_generic_params_for_override};
 use crate::lower::leaf::parse_leaf_spec;
 use crate::lower::tuple::{
     FieldAttrRef, reject_attrs_on_tuple, reject_unsupported_wrapped_nested_tuples,
@@ -40,9 +39,6 @@ pub fn lower_field(
         FieldConversion::LeafOverride(override_) => Some(override_),
     };
     let leaf_override_value = leaf_override.map(|override_| &override_.value);
-    let decimal_generic_params =
-        decimal_generic_params_for_override(leaf_override_value, &analyzed.base);
-    let decimal_backend_ty = decimal_backend_ty_for_override(leaf_override_value, &analyzed.base);
 
     let (leaf_spec, wrapper_shape) = match conversion {
         FieldConversion::Binary { span } => {
@@ -75,8 +71,6 @@ pub fn lower_field(
         field_index,
         leaf_spec,
         wrapper_shape,
-        decimal_generic_params,
-        decimal_backend_ty,
         outer_smart_ptr_depth,
     }))
 }

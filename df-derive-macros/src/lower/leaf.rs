@@ -1,5 +1,5 @@
 use crate::attrs::LeafOverride;
-use crate::ir::{DateTimeUnit, DisplayBase, DurationSource, LeafSpec, StringyBase};
+use crate::ir::{DateTimeUnit, DecimalBackend, DisplayBase, DurationSource, LeafSpec, StringyBase};
 use crate::lower::tuple::{FieldAttrRef, analyzed_to_tuple_element, reject_attrs_on_tuple};
 use crate::type_analysis::{
     AnalyzedBase, DEFAULT_DATETIME_UNIT, DEFAULT_DECIMAL_PRECISION, DEFAULT_DECIMAL_SCALE,
@@ -82,6 +82,7 @@ pub(super) fn default_leaf_for_base<S: ToTokens + ?Sized>(
         AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
             precision: DEFAULT_DECIMAL_PRECISION,
             scale: DEFAULT_DECIMAL_SCALE,
+            backend: DecimalBackend::RuntimeKnown,
         }),
         AnalyzedBase::Struct(ty) => Ok(LeafSpec::Struct(ty)),
         AnalyzedBase::Generic(ident) => Ok(LeafSpec::Generic(ident)),
@@ -169,9 +170,21 @@ fn parse_leaf_decimal(
     scale: u8,
 ) -> Result<LeafSpec, syn::Error> {
     match base {
-        AnalyzedBase::Decimal | AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_) => {
-            Ok(LeafSpec::Decimal { precision, scale })
-        }
+        AnalyzedBase::Decimal => Ok(LeafSpec::Decimal {
+            precision,
+            scale,
+            backend: DecimalBackend::RuntimeKnown,
+        }),
+        AnalyzedBase::Struct(ty) => Ok(LeafSpec::Decimal {
+            precision,
+            scale,
+            backend: DecimalBackend::Struct(ty.clone()),
+        }),
+        AnalyzedBase::Generic(ident) => Ok(LeafSpec::Decimal {
+            precision,
+            scale,
+            backend: DecimalBackend::Generic(ident.clone()),
+        }),
         _ => Err(errors::decimal_wrong_base(field, field_display_name)),
     }
 }

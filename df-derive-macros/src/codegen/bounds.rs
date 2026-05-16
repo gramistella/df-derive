@@ -1,5 +1,5 @@
 use super::{MacroConfig, type_deps};
-use crate::ir::{DisplayBase, LeafSpec, StringyBase, StructIR};
+use crate::ir::{DecimalBackend, DisplayBase, LeafSpec, StringyBase, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -39,6 +39,14 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
             push_unique(&mut reqs.display_params, ident);
         } else if let LeafSpec::AsString(DisplayBase::Struct(ty)) = leaf {
             type_deps::push_unique_type(&mut reqs.display_types, ty);
+        } else if let LeafSpec::Decimal { backend, .. } = leaf {
+            match backend {
+                DecimalBackend::RuntimeKnown => {}
+                DecimalBackend::Generic(ident) => push_unique(&mut reqs.decimal_params, ident),
+                DecimalBackend::Struct(ty) => {
+                    type_deps::push_unique_type(&mut reqs.decimal_types, ty);
+                }
+            }
         }
     });
 }
@@ -48,14 +56,6 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
 
     for field in &ir.fields {
         collect_leaf_requirements(&field.leaf_spec, &mut reqs);
-
-        for ident in &field.decimal_generic_params {
-            push_unique(&mut reqs.decimal_params, ident);
-        }
-
-        if let Some(ty) = &field.decimal_backend_ty {
-            type_deps::push_unique_type(&mut reqs.decimal_types, ty);
-        }
     }
 
     reqs

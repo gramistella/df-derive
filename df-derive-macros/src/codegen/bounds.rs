@@ -55,7 +55,7 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
     let mut reqs = GenericRequirements::default();
 
     for column in &ir.columns {
-        collect_leaf_requirements(column.leaf_spec.as_leaf_spec(), &mut reqs);
+        collect_leaf_requirements(column.leaf_spec().as_leaf_spec(), &mut reqs);
     }
 
     reqs

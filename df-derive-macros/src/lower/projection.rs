@@ -1,7 +1,7 @@
 use crate::ir::{
-    AccessChain, AccessStep, ColumnIR, ColumnSource, FieldIR, FieldSource, LeafShape, LeafSpec,
-    ProjectionContext, TerminalLeafSpec, TupleElement, TupleProjectionStep, VecLayers,
-    WrapperShape, column_name_for_ident,
+    AccessChain, AccessStep, ColumnIR, FieldIR, FieldSource, LeafShape, LeafSpec, TerminalLeafSpec,
+    TupleElement, TupleProjectionPath, TupleProjectionStep, VecLayers, WrapperShape,
+    column_name_for_ident,
 };
 
 pub fn project_fields_to_columns(fields: Vec<FieldIR>) -> Vec<ColumnIR> {
@@ -23,12 +23,12 @@ fn project_field(field: FieldIR, columns: &mut Vec<ColumnIR>) {
         LeafSpec::Tuple(elements) => {
             project_tuple_elements(columns, &root, &name, &field.wrapper_shape, &elements, &[]);
         }
-        leaf_spec => columns.push(ColumnIR {
+        leaf_spec => columns.push(ColumnIR::field(
             name,
-            source: ColumnSource::Field(root),
-            leaf_spec: terminal_leaf(leaf_spec),
-            wrapper_shape: field.wrapper_shape,
-        }),
+            root,
+            terminal_leaf(leaf_spec),
+            field.wrapper_shape,
+        )),
     }
 }
 
@@ -49,6 +49,10 @@ fn project_tuple_elements(
         path.push(step);
         let name = format!("{column_prefix}.field_{index}");
         if let LeafSpec::Tuple(inner) = &element.leaf_spec {
+            debug_assert!(
+                !matches!(parent_wrapper, WrapperShape::Vec(_)),
+                "validation must reject nested tuple projections inside Vec tuple parents"
+            );
             project_tuple_elements(
                 columns,
                 root,
@@ -61,16 +65,46 @@ fn project_tuple_elements(
         }
 
         let leaf_spec = terminal_leaf(element.leaf_spec.clone());
-        let (wrapper_shape, context) = compose_parent_with_element(parent_wrapper, element, step);
-        columns.push(ColumnIR {
-            name,
-            source: ColumnSource::TupleProjection {
-                root: root.clone(),
-                path,
-                context,
-            },
-            leaf_spec,
-            wrapper_shape,
+        let context = compose_parent_with_element(parent_wrapper, element);
+        columns.push(match context {
+            ProjectedColumnContext::Static { wrapper_shape } => ColumnIR::tuple_static(
+                name,
+                root.clone(),
+                projection_path(path),
+                leaf_spec,
+                wrapper_shape,
+            ),
+            ProjectedColumnContext::ParentOption {
+                wrapper_shape,
+                parent_access,
+            } => ColumnIR::tuple_parent_option(
+                name,
+                root.clone(),
+                projection_path(path),
+                parent_access,
+                leaf_spec,
+                wrapper_shape,
+            ),
+            ProjectedColumnContext::ParentVec {
+                wrapper_shape,
+                projection_layer,
+                parent_inner_access,
+            } => {
+                debug_assert_eq!(
+                    path.len(),
+                    1,
+                    "Vec tuple projections must end at the tuple element"
+                );
+                ColumnIR::tuple_parent_vec(
+                    name,
+                    root.clone(),
+                    step,
+                    projection_layer,
+                    parent_inner_access,
+                    leaf_spec,
+                    wrapper_shape,
+                )
+            }
         });
     }
 }
@@ -79,29 +113,44 @@ fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
     TerminalLeafSpec::new(leaf).expect("projection only emits terminal column leaves")
 }
 
+fn projection_path(path: Vec<TupleProjectionStep>) -> TupleProjectionPath {
+    TupleProjectionPath::from_vec(path).expect("tuple projection path is never empty")
+}
+
+enum ProjectedColumnContext {
+    Static {
+        wrapper_shape: WrapperShape,
+    },
+    ParentOption {
+        wrapper_shape: WrapperShape,
+        parent_access: AccessChain,
+    },
+    ParentVec {
+        wrapper_shape: VecLayers,
+        projection_layer: usize,
+        parent_inner_access: AccessChain,
+    },
+}
+
 fn compose_parent_with_element(
     parent_wrapper: &WrapperShape,
     element: &TupleElement,
-    terminal_step: TupleProjectionStep,
-) -> (WrapperShape, ProjectionContext) {
+) -> ProjectedColumnContext {
     match parent_wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => {
-            (element.wrapper_shape.clone(), ProjectionContext::Static)
+        WrapperShape::Leaf(LeafShape::Bare) => ProjectedColumnContext::Static {
+            wrapper_shape: element.wrapper_shape.clone(),
+        },
+        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => {
+            ProjectedColumnContext::ParentOption {
+                wrapper_shape: compose_option_with_element(&element.wrapper_shape),
+                parent_access: access.clone(),
+            }
         }
-        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => (
-            compose_option_with_element(&element.wrapper_shape),
-            ProjectionContext::ParentOption {
-                access: access.clone(),
-            },
-        ),
-        WrapperShape::Vec(parent_layers) => (
-            compose_vec_parent_with_element(parent_layers, &element.wrapper_shape),
-            ProjectionContext::ParentVec {
-                projection_layer: parent_layers.depth(),
-                parent_inner_access: parent_layers.inner_access.clone(),
-                terminal_step,
-            },
-        ),
+        WrapperShape::Vec(parent_layers) => ProjectedColumnContext::ParentVec {
+            wrapper_shape: compose_vec_parent_with_element(parent_layers, &element.wrapper_shape),
+            projection_layer: parent_layers.depth(),
+            parent_inner_access: parent_layers.inner_access.clone(),
+        },
     }
 }
 
@@ -134,7 +183,7 @@ fn compose_option_with_element(element_shape: &WrapperShape) -> WrapperShape {
 fn compose_vec_parent_with_element(
     parent_layers: &VecLayers,
     element_shape: &WrapperShape,
-) -> WrapperShape {
+) -> VecLayers {
     let mut composed_layers = parent_layers.layers.clone();
     let carried_inner_option = parent_layers.inner_option_layers;
 
@@ -157,11 +206,11 @@ fn compose_vec_parent_with_element(
         }
     };
 
-    WrapperShape::Vec(VecLayers {
+    VecLayers {
         layers: composed_layers,
         inner_option_layers: composed_inner_option,
         inner_access: composed_inner_access,
-    })
+    }
 }
 
 fn prepend_option_access(access: &AccessChain) -> AccessChain {

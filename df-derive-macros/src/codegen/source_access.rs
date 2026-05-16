@@ -1,6 +1,6 @@
 use crate::ir::{
-    AccessStep, ColumnIR, ColumnSource, FieldSource, LeafShape, ProjectionContext,
-    TerminalLeafRoute, TupleProjectionStep, WrapperShape,
+    AccessStep, FieldColumn, FieldSource, LeafShape, TerminalLeafRoute, TupleParentOptionColumn,
+    TupleProjectionPath, TupleProjectionStep, TupleStaticColumn, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -34,58 +34,50 @@ pub(in crate::codegen) fn field_source_access(
     apply_outer_smart_ptr_deref(raw, field.outer_smart_ptr_depth)
 }
 
-pub(in crate::codegen) fn column_access(column: &ColumnIR, it_ident: &syn::Ident) -> TokenStream {
-    match &column.source {
-        ColumnSource::Field(field) => field_source_access(field, it_ident),
-        ColumnSource::TupleProjection {
-            root,
-            path,
-            context,
-        } => {
-            let root_access = field_source_access(root, it_ident);
-            match context {
-                ProjectionContext::Static => apply_tuple_path(root_access, path),
-                ProjectionContext::ParentOption { access } => {
-                    let collapsed = access_chain_to_option_ref(&root_access, access);
-                    project_parent_option_tuple_column(
-                        &collapsed,
-                        path,
-                        is_copy_parent_option_projection(column),
-                    )
-                }
-                ProjectionContext::ParentVec { .. } => root_access,
-            }
-        }
-    }
+pub(in crate::codegen) fn field_column_access(
+    column: &FieldColumn,
+    it_ident: &syn::Ident,
+) -> TokenStream {
+    field_source_access(column.source(), it_ident)
 }
 
-pub(in crate::codegen) fn projection_path_suffix(path: &[TupleProjectionStep]) -> TokenStream {
-    let mut suffix = TokenStream::new();
-    for step in path {
-        let index = syn::Index::from(step.index);
-        suffix.extend(quote! { .#index });
-    }
-    suffix
+pub(in crate::codegen) fn tuple_static_access(
+    column: &TupleStaticColumn,
+    it_ident: &syn::Ident,
+) -> TokenStream {
+    let root_access = field_source_access(column.root(), it_ident);
+    apply_tuple_path(root_access, column.path())
 }
 
-pub(in crate::codegen) fn column_option_some_receiver(
-    column: &ColumnIR,
+pub(in crate::codegen) fn tuple_parent_option_access(
+    column: &TupleParentOptionColumn,
+    it_ident: &syn::Ident,
+) -> TokenStream {
+    let root_access = field_source_access(column.root(), it_ident);
+    let collapsed = access_chain_to_option_ref(&root_access, column.parent_access());
+    project_parent_option_tuple_column(
+        &collapsed,
+        column.path(),
+        is_copy_parent_option_projection(column),
+    )
+}
+
+pub(in crate::codegen) fn projection_step_suffix(step: TupleProjectionStep) -> TokenStream {
+    let index = syn::Index::from(step.index);
+    quote! { .#index }
+}
+
+pub(in crate::codegen) fn tuple_parent_option_some_receiver(
+    column: &TupleParentOptionColumn,
 ) -> Option<crate::codegen::type_registry::PrimitiveExprReceiver> {
-    if !matches!(
-        column.source,
-        ColumnSource::TupleProjection {
-            context: ProjectionContext::ParentOption { .. },
-            ..
-        }
-    ) || is_copy_parent_option_projection(column)
-    {
+    if is_copy_parent_option_projection(column) {
         return None;
     }
 
     let WrapperShape::Leaf(LeafShape::Optional {
         option_layers,
         access,
-    }) = &column.wrapper_shape
+    }) = column.wrapper_shape()
     else {
         return None;
     };
@@ -97,8 +89,8 @@ pub(in crate::codegen) fn column_option_some_receiver(
     }
 }
 
-fn apply_tuple_path(mut expr: TokenStream, path: &[TupleProjectionStep]) -> TokenStream {
-    for step in path {
+fn apply_tuple_path(mut expr: TokenStream, path: &TupleProjectionPath) -> TokenStream {
+    for step in path.iter() {
         let index = syn::Index::from(step.index);
         expr = quote! { (#expr).#index };
         expr = apply_outer_smart_ptr_deref(expr, step.outer_smart_ptr_depth);
@@ -106,9 +98,9 @@ fn apply_tuple_path(mut expr: TokenStream, path: &[TupleProjectionStep]) -> Toke
     expr
 }
 
-fn project_tuple_path_ref(tuple_ref: &TokenStream, path: &[TupleProjectionStep]) -> TokenStream {
+fn project_tuple_path_ref(tuple_ref: &TokenStream, path: &TupleProjectionPath) -> TokenStream {
     let mut projected = quote! { *(#tuple_ref) };
-    for step in path {
+    for step in path.iter() {
         let index = syn::Index::from(step.index);
         projected = quote! { (#projected).#index };
         projected = apply_outer_smart_ptr_deref(projected, step.outer_smart_ptr_depth);
@@ -118,7 +110,7 @@ fn project_tuple_path_ref(tuple_ref: &TokenStream, path: &[TupleProjectionStep])
 
 fn project_parent_option_tuple_column(
     collapsed_parent: &TokenStream,
-    path: &[TupleProjectionStep],
+    path: &TupleProjectionPath,
     copy_projection: bool,
 ) -> TokenStream {
     let param = super::encoder::idents::tuple_proj_param();
@@ -130,15 +122,15 @@ fn project_parent_option_tuple_column(
     }
 }
 
-fn is_copy_parent_option_projection(column: &ColumnIR) -> bool {
-    let TerminalLeafRoute::Primitive(primitive) = column.leaf_spec.route() else {
+fn is_copy_parent_option_projection(column: &TupleParentOptionColumn) -> bool {
+    let TerminalLeafRoute::Primitive(primitive) = column.leaf_spec().route() else {
         return false;
     };
     if !primitive.is_copy() {
         return false;
     }
 
-    let WrapperShape::Leaf(LeafShape::Optional { access, .. }) = &column.wrapper_shape else {
+    let WrapperShape::Leaf(LeafShape::Optional { access, .. }) = column.wrapper_shape() else {
         return false;
     };
     let Some((first, rest)) = access.steps.split_first() else {

@@ -4,15 +4,13 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 fn needs_list_assembly(ir: &StructIR) -> bool {
-    ir.columns
-        .iter()
-        .any(|column| column.wrapper_shape.vec_depth() > 0)
+    ir.columns.iter().any(|column| column.vec_depth() > 0)
 }
 
 fn needs_nested_validation(ir: &StructIR) -> bool {
     ir.columns
         .iter()
-        .any(|column| matches!(column.leaf_spec.route(), TerminalLeafRoute::Nested(_)))
+        .any(|column| matches!(column.leaf_spec().route(), TerminalLeafRoute::Nested(_)))
 }
 
 #[allow(clippy::too_many_lines)]

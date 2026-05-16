@@ -51,8 +51,8 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 mod tests {
     use super::*;
     use crate::ir::{
-        AccessChain, ColumnIR, ColumnSource, FieldSource, LeafShape, LeafSpec, NonEmpty,
-        NumericKind, StructIR, TerminalLeafSpec, VecLayerSpec, VecLayers, WrapperShape,
+        AccessChain, ColumnIR, FieldSource, LeafShape, LeafSpec, NonEmpty, NumericKind, StructIR,
+        TerminalLeafSpec, VecLayerSpec, VecLayers, WrapperShape,
     };
     use quote::{format_ident, quote};
 
@@ -91,21 +91,21 @@ mod tests {
     }
 
     fn numeric_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
-        ColumnIR {
-            name: name.to_owned(),
-            source: ColumnSource::Field(field_source(name)),
-            leaf_spec: terminal_leaf(LeafSpec::Numeric(NumericKind::U32)),
+        ColumnIR::field(
+            name.to_owned(),
+            field_source(name),
+            terminal_leaf(LeafSpec::Numeric(NumericKind::U32)),
             wrapper_shape,
-        }
+        )
     }
 
     fn nested_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
-        ColumnIR {
-            name: name.to_owned(),
-            source: ColumnSource::Field(field_source(name)),
-            leaf_spec: terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
+        ColumnIR::field(
+            name.to_owned(),
+            field_source(name),
+            terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
             wrapper_shape,
-        }
+        )
     }
 
     fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
@@ -214,12 +214,12 @@ mod tests {
         let tuple_nested_ir = StructIR {
             name: format_ident!("TupleNestedRow"),
             generics: syn::Generics::default(),
-            columns: vec![ColumnIR {
-                name: "pair.field_0".to_owned(),
-                source: ColumnSource::Field(field_source("pair")),
-                leaf_spec: terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
-                wrapper_shape: WrapperShape::Leaf(LeafShape::Bare),
-            }],
+            columns: vec![ColumnIR::field(
+                "pair.field_0".to_owned(),
+                field_source("pair"),
+                terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
+                WrapperShape::Leaf(LeafShape::Bare),
+            )],
         };
         let tuple_nested = generate_code(&tuple_nested_ir, &test_config()).to_string();
         assert!(

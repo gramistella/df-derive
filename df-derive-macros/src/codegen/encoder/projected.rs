@@ -1,5 +1,5 @@
 use crate::codegen::MacroConfig;
-use crate::ir::{AccessChain, ColumnIR, ColumnSource, ProjectionContext, VecLayers, WrapperShape};
+use crate::ir::{AccessChain, TupleParentVecColumn, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -17,14 +17,12 @@ struct ParentVecProjection<'a> {
 }
 
 pub(in crate::codegen) fn build_projected_vec_primitive(
-    column: &ColumnIR,
+    column: &TupleParentVecColumn,
     leaf: crate::ir::PrimitiveLeaf<'_>,
     idx: usize,
     config: &MacroConfig,
 ) -> TokenStream {
-    let WrapperShape::Vec(shape) = &column.wrapper_shape else {
-        return TokenStream::new();
-    };
+    let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
     let projection_path = projected_path_tokens(column);
     let projection = parent_vec_projection(column, &projection_path);
@@ -34,20 +32,18 @@ pub(in crate::codegen) fn build_projected_vec_primitive(
         projection,
         leaf,
         idx,
-        &column.name,
+        column.name(),
         config,
     )
 }
 
 pub(in crate::codegen) fn build_projected_vec_nested(
-    column: &ColumnIR,
+    column: &TupleParentVecColumn,
     type_path: &TokenStream,
     idx: usize,
     config: &MacroConfig,
 ) -> TokenStream {
-    let WrapperShape::Vec(shape) = &column.wrapper_shape else {
-        return TokenStream::new();
-    };
+    let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
     let projection_path = projected_path_tokens(column);
     let projection = parent_vec_projection(column, &projection_path);
@@ -57,60 +53,32 @@ pub(in crate::codegen) fn build_projected_vec_nested(
         projection,
         type_path,
         idx,
-        &column.name,
+        column.name(),
         config,
     )
 }
 
-fn projected_parent_access(column: &ColumnIR) -> TokenStream {
-    let ColumnSource::TupleProjection {
-        root,
-        context: ProjectionContext::ParentVec { .. },
-        ..
-    } = &column.source
-    else {
-        return TokenStream::new();
-    };
+fn projected_parent_access(column: &TupleParentVecColumn) -> TokenStream {
     let it = idents::populator_iter();
-    crate::codegen::source_access::field_source_access(root, &it)
+    crate::codegen::source_access::field_source_access(column.root(), &it)
 }
 
-fn projected_path_tokens(column: &ColumnIR) -> TokenStream {
-    let ColumnSource::TupleProjection {
-        path,
-        context: ProjectionContext::ParentVec { .. },
-        ..
-    } = &column.source
-    else {
-        return TokenStream::new();
-    };
-    crate::codegen::source_access::projection_path_suffix(path)
+fn projected_path_tokens(column: &TupleParentVecColumn) -> TokenStream {
+    crate::codegen::source_access::projection_step_suffix(column.terminal_step())
 }
 
-fn parent_vec_projection<'a>(
-    column: &'a ColumnIR,
+const fn parent_vec_projection<'a>(
+    column: &'a TupleParentVecColumn,
     path_tokens: &'a TokenStream,
 ) -> ParentVecProjection<'a> {
-    let ColumnSource::TupleProjection {
-        context:
-            ProjectionContext::ParentVec {
-                projection_layer,
-                parent_inner_access,
-                terminal_step,
-            },
-        ..
-    } = &column.source
-    else {
-        unreachable!("projected vec emit requires a ParentVec projection source");
-    };
     ParentVecProjection {
         projection: LayerProjection {
-            layer: *projection_layer,
+            layer: column.projection_layer(),
             path: path_tokens,
-            parent_access: parent_inner_access,
-            smart_ptr_depth: terminal_step.outer_smart_ptr_depth,
+            parent_access: column.parent_inner_access(),
+            smart_ptr_depth: column.terminal_step().outer_smart_ptr_depth,
         },
-        parent_inner_access,
+        parent_inner_access: column.parent_inner_access(),
     }
 }
 

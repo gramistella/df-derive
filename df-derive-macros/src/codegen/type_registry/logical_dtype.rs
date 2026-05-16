@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::{DateTimeUnit, NumericKind, PrimitiveLeaf, WrapperShape};
+use crate::ir::{DateTimeUnit, NumericKind, PrimitiveLeaf};
 
 use crate::codegen::external_paths::ExternalPaths;
 
@@ -82,18 +82,4 @@ impl PrimitiveLeaf<'_> {
     pub(in crate::codegen) fn dtype(&self, paths: &ExternalPaths) -> TokenStream {
         self.logical().dtype(paths)
     }
-}
-
-pub(in crate::codegen) fn full_dtype(
-    leaf: PrimitiveLeaf<'_>,
-    wrapper: &WrapperShape,
-    paths: &ExternalPaths,
-) -> TokenStream {
-    let pp = paths.prelude();
-    let elem_dtype = leaf.dtype(paths);
-    crate::codegen::external_paths::wrap_list_layers_compile_time(
-        pp,
-        elem_dtype,
-        wrapper.vec_depth(),
-    )
 }

@@ -69,7 +69,7 @@ fn assert_list_i32(df: &DataFrame, col: &str, row: usize, expected: &[Option<i32
     let AnyValue::List(inner) = df.column(col).unwrap().get(row).unwrap() else {
         panic!("expected List for {col}[{row}]");
     };
-    let actual: Vec<Option<i32>> = inner.i32().unwrap().into_iter().collect();
+    let actual: Vec<Option<i32>> = inner.i32().unwrap().iter().collect();
     assert_eq!(actual, expected, "{col}[{row}]");
 }
 
@@ -85,7 +85,7 @@ fn assert_nested_list_i32(
     let actual: Vec<Option<Vec<Option<i32>>>> = outer
         .iter()
         .map(|value| match value {
-            AnyValue::List(inner) => Some(inner.i32().unwrap().into_iter().collect()),
+            AnyValue::List(inner) => Some(inner.i32().unwrap().iter().collect()),
             AnyValue::Null => None,
             other => panic!("unexpected nested list value for {col}[{row}]: {other:?}"),
         })

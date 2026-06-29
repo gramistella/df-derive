@@ -243,7 +243,7 @@ fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
         AnyValue::List(series) => series
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .map(|value| value.map(str::to_owned))
             .collect(),
         other => panic!("expected string List, got {other:?}"),
@@ -252,14 +252,14 @@ fn list_strings(value: AnyValue<'_>) -> Vec<Option<String>> {
 
 fn list_i32s(value: AnyValue<'_>) -> Vec<Option<i32>> {
     match value {
-        AnyValue::List(series) => series.i32().unwrap().into_iter().collect(),
+        AnyValue::List(series) => series.i32().unwrap().iter().collect(),
         other => panic!("expected i32 List, got {other:?}"),
     }
 }
 
 fn list_i64s(value: AnyValue<'_>) -> Vec<Option<i64>> {
     match value {
-        AnyValue::List(series) => series.i64().unwrap().into_iter().collect(),
+        AnyValue::List(series) => series.i64().unwrap().iter().collect(),
         other => panic!("expected i64 List, got {other:?}"),
     }
 }
@@ -270,7 +270,7 @@ fn nested_i32_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<i32>>>> {
     };
     (0..outer.len())
         .map(|idx| match outer.get(idx).unwrap() {
-            AnyValue::List(inner) => Some(inner.i32().unwrap().into_iter().collect()),
+            AnyValue::List(inner) => Some(inner.i32().unwrap().iter().collect()),
             AnyValue::Null => None,
             other => panic!("expected inner i32 List or Null, got {other:?}"),
         })
@@ -287,7 +287,7 @@ fn nested_string_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<String>>>> 
                 inner
                     .str()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|value| value.map(str::to_owned))
                     .collect(),
             ),

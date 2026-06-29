@@ -57,7 +57,7 @@ fn main() {
 
     let df = user.to_dataframe().unwrap();
     println!("📊 Resulting DataFrame:\n{}", df);
-    
+
     assert_eq!(df.shape(), (1, 4));
     let expected_names = ["id", "location", "coords", "destinations"];
     assert_eq!(df.get_column_names(), expected_names);
@@ -73,10 +73,10 @@ fn main() {
     assert_eq!(df.column("id").unwrap().get(0).unwrap(), AnyValue::UInt32(1));
     assert_eq!(df.column("location").unwrap().get(0).unwrap(), AnyValue::String("New York, USA"));
     assert_eq!(df.column("coords").unwrap().get(0).unwrap(), AnyValue::String("(40.7128, -74.006)"));
-    
+
     let dests = df.column("destinations").unwrap().get(0).unwrap();
     if let AnyValue::List(series) = dests {
-        let ca: Vec<Option<&str>> = series.str().unwrap().into_iter().collect();
+        let ca: Vec<Option<&str>> = series.str().unwrap().iter().collect();
         assert_eq!(ca, vec![Some("London, UK"), Some("Tokyo, Japan")]);
     } else {
         panic!("Expected a list for destinations");

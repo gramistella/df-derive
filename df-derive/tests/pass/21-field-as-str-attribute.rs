@@ -65,7 +65,7 @@ fn assert_list_strs(df: &DataFrame, col: &str, expected: &[&str]) {
 fn assert_list_opt_strs(df: &DataFrame, col: &str, expected: &[Option<&str>]) {
     let av = df.column(col).unwrap().get(0).unwrap();
     if let AnyValue::List(inner) = av {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, expected);
     } else {
         panic!("expected List for {}, got {:?}", col, av)
@@ -118,14 +118,14 @@ fn main() {
     assert_eq!(df_batch.shape(), (3, 4));
 
     let status_col = df_batch.column("status").unwrap();
-    let status_strs: Vec<Option<&str>> = status_col.str().unwrap().into_iter().collect();
+    let status_strs: Vec<Option<&str>> = status_col.str().unwrap().iter().collect();
     assert_eq!(
         status_strs,
         vec![Some("ACTIVE"), Some("INACTIVE"), Some("ACTIVE")]
     );
 
     let opt_status_col = df_batch.column("opt_status").unwrap();
-    let opt_status_strs: Vec<Option<&str>> = opt_status_col.str().unwrap().into_iter().collect();
+    let opt_status_strs: Vec<Option<&str>> = opt_status_col.str().unwrap().iter().collect();
     assert_eq!(
         opt_status_strs,
         vec![Some("INACTIVE"), None, Some("INACTIVE")]
@@ -136,13 +136,13 @@ fn main() {
     let row0 = statuses_col.get(0).unwrap();
     let row1 = statuses_col.get(1).unwrap();
     if let AnyValue::List(inner) = row0 {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("ACTIVE"), Some("INACTIVE")]);
     } else {
         panic!("expected list for statuses[0]");
     }
     if let AnyValue::List(inner) = row1 {
-        let n: usize = inner.str().unwrap().into_iter().count();
+        let n: usize = inner.str().unwrap().iter().count();
         assert_eq!(n, 0);
     } else {
         panic!("expected list for statuses[1]");
@@ -151,7 +151,7 @@ fn main() {
     println!("🔄 Verifying Option<Vec<Status>> in batch (Some, None, Some)...");
     let opt_statuses_col = df_batch.column("opt_statuses").unwrap();
     if let AnyValue::List(inner) = opt_statuses_col.get(0).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("INACTIVE"), Some("ACTIVE")]);
     } else {
         panic!("expected list for opt_statuses[0]");
@@ -163,7 +163,7 @@ fn main() {
         row1_opt
     );
     if let AnyValue::List(inner) = opt_statuses_col.get(2).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("INACTIVE"), Some("ACTIVE")]);
     } else {
         panic!("expected list for opt_statuses[2]");
@@ -277,7 +277,7 @@ fn test_generic_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(
         labels,
@@ -288,19 +288,19 @@ fn test_generic_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(opt_labels, vec![Some("INACTIVE"), None, Some("INACTIVE")]);
 
     let labels_col = df_batch.column("labels").unwrap();
     if let AnyValue::List(inner) = labels_col.get(0).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("INACTIVE"), Some("ACTIVE")]);
     } else {
         panic!("expected list for labels[0]");
     }
     if let AnyValue::List(inner) = labels_col.get(1).unwrap() {
-        let n: usize = inner.str().unwrap().into_iter().count();
+        let n: usize = inner.str().unwrap().iter().count();
         assert_eq!(n, 0);
     } else {
         panic!("expected list for labels[1]");
@@ -388,7 +388,7 @@ fn test_smart_pointer_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(boxed_labels, vec![Some("ACTIVE"), None]);
     let nested_labels: Vec<Option<&str>> = df_batch
@@ -396,7 +396,7 @@ fn test_smart_pointer_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(nested_labels, vec![Some("INACTIVE"), None]);
     let boxed_strings: Vec<Option<&str>> = df_batch
@@ -404,7 +404,7 @@ fn test_smart_pointer_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(boxed_strings, vec![Some("boxed-string"), None]);
     let nested_strings: Vec<Option<&str>> = df_batch
@@ -412,7 +412,7 @@ fn test_smart_pointer_as_str() {
         .unwrap()
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .collect();
     assert_eq!(nested_strings, vec![Some("nested-string"), None]);
 }
@@ -460,18 +460,18 @@ fn test_deep_wrappers() {
     );
     let triple_col = df.column("triple").unwrap();
     if let AnyValue::List(outer) = triple_col.get(0).unwrap() {
-        let mid_lists: Vec<_> = outer.list().unwrap().into_iter().collect();
+        let mid_lists: Vec<_> = outer.list().unwrap().series_iter().collect();
         assert_eq!(mid_lists.len(), 2);
         // Mid-list 0 contains two inner lists.
         let mid0 = mid_lists[0].as_ref().unwrap();
-        let inner_lists: Vec<_> = mid0.list().unwrap().into_iter().collect();
+        let inner_lists: Vec<_> = mid0.list().unwrap().series_iter().collect();
         assert_eq!(inner_lists.len(), 2);
         let inner0: Vec<Option<&str>> = inner_lists[0]
             .as_ref()
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(inner0, vec![Some("ACTIVE"), Some("INACTIVE")]);
         let inner1: Vec<Option<&str>> = inner_lists[1]
@@ -479,12 +479,12 @@ fn test_deep_wrappers() {
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(inner1, vec![Some("ACTIVE")]);
         // Mid-list 1 is empty.
         let mid1 = mid_lists[1].as_ref().unwrap();
-        assert_eq!(mid1.list().unwrap().into_iter().count(), 0);
+        assert_eq!(mid1.list().unwrap().iter().count(), 0);
     } else {
         panic!("expected outer list for triple");
     }
@@ -497,11 +497,11 @@ fn test_deep_wrappers() {
     );
     let deep_col = df.column("deep").unwrap();
     if let AnyValue::List(outer) = deep_col.get(0).unwrap() {
-        let lists: Vec<_> = outer.list().unwrap().into_iter().collect();
+        let lists: Vec<_> = outer.list().unwrap().series_iter().collect();
         assert_eq!(lists.len(), 2);
-        let row0: Vec<Option<&str>> = lists[0].as_ref().unwrap().str().unwrap().into_iter().collect();
+        let row0: Vec<Option<&str>> = lists[0].as_ref().unwrap().str().unwrap().iter().collect();
         assert_eq!(row0, vec![Some("ACTIVE"), Some("INACTIVE")]);
-        let row1: Vec<Option<&str>> = lists[1].as_ref().unwrap().str().unwrap().into_iter().collect();
+        let row1: Vec<Option<&str>> = lists[1].as_ref().unwrap().str().unwrap().iter().collect();
         assert_eq!(row1, vec![Some("INACTIVE")]);
     } else {
         panic!("expected outer list for deep");
@@ -514,7 +514,7 @@ fn test_deep_wrappers() {
     );
     let vec_opt_col = df.column("vec_opt").unwrap();
     if let AnyValue::List(inner) = vec_opt_col.get(0).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("ACTIVE"), None, Some("INACTIVE")]);
     } else {
         panic!("expected list for vec_opt");
@@ -543,14 +543,14 @@ fn test_deep_wrappers() {
     // Row 0: original `item` values.
     let deep_col = df_batch.column("deep").unwrap();
     if let AnyValue::List(outer) = deep_col.get(0).unwrap() {
-        let lists: Vec<_> = outer.list().unwrap().into_iter().collect();
+        let lists: Vec<_> = outer.list().unwrap().series_iter().collect();
         assert_eq!(lists.len(), 2);
         let row0_a: Vec<Option<&str>> = lists[0]
             .as_ref()
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(row0_a, vec![Some("ACTIVE"), Some("INACTIVE")]);
     } else {
@@ -558,20 +558,20 @@ fn test_deep_wrappers() {
     }
     // Row 1: empty outer list.
     if let AnyValue::List(outer) = deep_col.get(1).unwrap() {
-        assert_eq!(outer.list().unwrap().into_iter().count(), 0);
+        assert_eq!(outer.list().unwrap().iter().count(), 0);
     } else {
         panic!("expected list for batch deep[1]");
     }
     // Row 2: distinct content from row 0.
     if let AnyValue::List(outer) = deep_col.get(2).unwrap() {
-        let lists: Vec<_> = outer.list().unwrap().into_iter().collect();
+        let lists: Vec<_> = outer.list().unwrap().series_iter().collect();
         assert_eq!(lists.len(), 2);
         let row2_a: Vec<Option<&str>> = lists[0]
             .as_ref()
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(row2_a, vec![Some("INACTIVE")]);
         let row2_b: Vec<Option<&str>> = lists[1]
@@ -579,7 +579,7 @@ fn test_deep_wrappers() {
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(row2_b, vec![] as Vec<Option<&str>>);
     } else {
@@ -588,18 +588,18 @@ fn test_deep_wrappers() {
 
     let vec_opt_col = df_batch.column("vec_opt").unwrap();
     if let AnyValue::List(inner) = vec_opt_col.get(0).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("ACTIVE"), None, Some("INACTIVE")]);
     } else {
         panic!("expected list for batch vec_opt[0]");
     }
     if let AnyValue::List(inner) = vec_opt_col.get(1).unwrap() {
-        assert_eq!(inner.str().unwrap().into_iter().count(), 0);
+        assert_eq!(inner.str().unwrap().iter().count(), 0);
     } else {
         panic!("expected list for batch vec_opt[1]");
     }
     if let AnyValue::List(inner) = vec_opt_col.get(2).unwrap() {
-        let vals: Vec<Option<&str>> = inner.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = inner.str().unwrap().iter().collect();
         assert_eq!(vals, vec![None, Some("ACTIVE")]);
     } else {
         panic!("expected list for batch vec_opt[2]");

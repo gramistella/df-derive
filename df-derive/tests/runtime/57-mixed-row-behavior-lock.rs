@@ -97,7 +97,7 @@ fn assert_u64_list(df: &DataFrame, col: &str, row: usize, expected: &[Option<u64
     let AnyValue::List(inner) = value else {
         panic!("expected List for {col} row {row}, got {value:?}");
     };
-    let actual: Vec<Option<u64>> = inner.u64().unwrap().into_iter().collect();
+    let actual: Vec<Option<u64>> = inner.u64().unwrap().iter().collect();
     assert_eq!(actual, expected, "col {col} row {row}");
 }
 
@@ -109,7 +109,7 @@ fn assert_string_list(df: &DataFrame, col: &str, row: usize, expected: &[Option<
     let actual: Vec<Option<String>> = inner
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .map(|value| value.map(str::to_owned))
         .collect();
     let expected_owned: Vec<Option<String>> = expected

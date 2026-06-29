@@ -31,7 +31,7 @@
 //! [dependencies]
 //! df-derive-core = "0.3"
 //! df-derive-macros = "0.3"
-//! polars = "0.53"
+//! polars = "0.54"
 //! ```
 //!
 //! Default-runtime generated code uses hidden dependency re-exports from this

@@ -75,7 +75,7 @@ fn runtime_semantics() {
     );
 
     let inner_0 = match voi32_outer.get(0).unwrap() {
-        AnyValue::List(s) => s.i32().unwrap().into_iter().collect::<Vec<_>>(),
+        AnyValue::List(s) => s.i32().unwrap().iter().collect::<Vec<_>>(),
         v => panic!("voi32[0] must be List, got {v:?}"),
     };
     assert_eq!(inner_0, vec![Some(1), Some(2), Some(3)]);
@@ -88,13 +88,13 @@ fn runtime_semantics() {
     );
 
     let inner_2 = match voi32_outer.get(2).unwrap() {
-        AnyValue::List(s) => s.i32().unwrap().into_iter().collect::<Vec<_>>(),
+        AnyValue::List(s) => s.i32().unwrap().iter().collect::<Vec<_>>(),
         v => panic!("voi32[2] must be List(empty), got {v:?}"),
     };
     assert_eq!(inner_2, Vec::<Option<i32>>::new());
 
     let inner_3 = match voi32_outer.get(3).unwrap() {
-        AnyValue::List(s) => s.i32().unwrap().into_iter().collect::<Vec<_>>(),
+        AnyValue::List(s) => s.i32().unwrap().iter().collect::<Vec<_>>(),
         v => panic!("voi32[3] must be List, got {v:?}"),
     };
     assert_eq!(inner_3, vec![Some(10), Some(20)]);
@@ -114,7 +114,7 @@ fn runtime_semantics() {
         AnyValue::List(s) => s
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .map(|o| o.map(str::to_string))
             .collect::<Vec<_>>(),
         v => panic!("voos[0] must be List, got {v:?}"),
@@ -132,7 +132,7 @@ fn runtime_semantics() {
         AnyValue::List(s) => s
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .map(|o| o.map(str::to_string))
             .collect::<Vec<_>>(),
         v => panic!("voos[2] must be List(empty), got {v:?}"),
@@ -152,7 +152,7 @@ fn runtime_semantics() {
     );
 
     let ovoi_0 = match ovoi_outer.get(0).unwrap() {
-        AnyValue::List(s) => s.i32().unwrap().into_iter().collect::<Vec<_>>(),
+        AnyValue::List(s) => s.i32().unwrap().iter().collect::<Vec<_>>(),
         v => panic!("ovoi[0] must be List, got {v:?}"),
     };
     assert_eq!(ovoi_0, vec![Some(100), Some(200)]);
@@ -162,7 +162,7 @@ fn runtime_semantics() {
         "ovoi[1] must be Null"
     );
     let ovoi_2 = match ovoi_outer.get(2).unwrap() {
-        AnyValue::List(s) => s.i32().unwrap().into_iter().collect::<Vec<_>>(),
+        AnyValue::List(s) => s.i32().unwrap().iter().collect::<Vec<_>>(),
         v => panic!("ovoi[2] must be List, got {v:?}"),
     };
     assert_eq!(ovoi_2, vec![Some(300)]);

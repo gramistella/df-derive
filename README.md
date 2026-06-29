@@ -30,7 +30,7 @@ types, duration types, byte blobs, and decimal backends.
 ```toml
 [dependencies]
 df-derive = "0.3"
-polars = "0.53"
+polars = "0.54"
 
 # If your models use these types:
 chrono = { version = "0.4", features = ["serde"] }
@@ -297,7 +297,7 @@ enable the matching features on that runtime's direct `polars` dependency.
 `Option<T>`, `Vec<T>`, tuples, and nested structs preserve the leaf dtype;
 each `Vec` layer wraps the leaf in `List(...)`.
 
-For Polars 0.53, `dtype-decimal` enables the decimal column machinery and its
+For Polars 0.54, `dtype-decimal` enables the decimal column machinery and its
 internal `Int128` backing path. You only need an explicit `dtype-i128` feature
 when your derived structs expose `i128` / `NonZeroI128` fields as `Int128`
 columns.
@@ -460,7 +460,7 @@ Use the macro crate directly with the shared core runtime:
 [dependencies]
 df-derive-core = "0.3"
 df-derive-macros = "0.3"
-polars = "0.53"
+polars = "0.54"
 ```
 
 ```rust
@@ -560,11 +560,11 @@ struct Tx {
 ## Compatibility
 
 - **Rust edition**: 2024
-- **Minimum supported Rust version**: 1.90. This is above the edition's
-  1.85 floor because the Polars 0.53 dependency graph uses language features
-  that first compile on Rust 1.90.
-- **Polars**: 0.53
-- **polars-arrow**: 0.53 through the default runtime facade. Custom runtimes
+- **Minimum supported Rust version**: 1.91. This is above the edition's
+  1.85 floor because the Polars 0.54 dependency graph uses language features
+  that first compile on Rust 1.91.
+- **Polars**: 0.54
+- **polars-arrow**: 0.54 through the default runtime facade. Custom runtimes
   selected with explicit trait overrides need a compatible direct dependency
   only for derived field shapes that emit public Arrow array builders; explicit
   facade/core runtime paths keep using the hidden default-runtime re-export.

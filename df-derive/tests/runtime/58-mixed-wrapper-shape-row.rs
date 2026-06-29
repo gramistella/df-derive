@@ -152,7 +152,7 @@ fn assert_i32_list(df: &DataFrame, col: &str, row: usize, expected: &[Option<i32
     let AnyValue::List(inner) = value else {
         panic!("expected List for {col} row {row}, got {value:?}");
     };
-    let actual: Vec<Option<i32>> = inner.i32().unwrap().into_iter().collect();
+    let actual: Vec<Option<i32>> = inner.i32().unwrap().iter().collect();
     assert_eq!(actual, expected, "col {col} row {row}");
 }
 
@@ -164,7 +164,7 @@ fn assert_string_list(df: &DataFrame, col: &str, row: usize, expected: &[Option<
     let actual: Vec<Option<String>> = inner
         .str()
         .unwrap()
-        .into_iter()
+        .iter()
         .map(|value| value.map(str::to_owned))
         .collect();
     let expected: Vec<Option<String>> = expected

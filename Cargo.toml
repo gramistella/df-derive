@@ -5,15 +5,15 @@ resolver = "3"
 [workspace.package]
 version = "0.3.1"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.91"
 authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
 license = "MIT"
 repository = "https://github.com/gramistella/df-derive"
 homepage = "https://github.com/gramistella/df-derive"
 
 [workspace.dependencies]
-polars = { version = "0.53", default-features = false }
-polars-arrow = "0.53"
+polars = { version = "0.54", default-features = false }
+polars-arrow = "0.54"
 rust_decimal = { version = "1.42", default-features = false }
 df-derive-core = { version = "0.3", path = "df-derive-core", default-features = false }
 df-derive-macros = { version = "0.3", path = "df-derive-macros" }

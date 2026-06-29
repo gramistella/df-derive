@@ -108,7 +108,7 @@ fn main() {
 
     let dests = df.column("destinations").unwrap().get(0).unwrap();
     if let AnyValue::List(series) = dests {
-        let ca: Vec<Option<&str>> = series.str().unwrap().into_iter().collect();
+        let ca: Vec<Option<&str>> = series.str().unwrap().iter().collect();
         assert_eq!(ca, vec![Some("LON"), Some("TYO")]);
     } else {
         panic!("Expected a list for destinations");
@@ -116,7 +116,7 @@ fn main() {
 
     let opt_dests = df.column("opt_destinations").unwrap().get(0).unwrap();
     if let AnyValue::List(series) = opt_dests {
-        let ca: Vec<Option<&str>> = series.str().unwrap().into_iter().collect();
+        let ca: Vec<Option<&str>> = series.str().unwrap().iter().collect();
         assert_eq!(ca, vec![Some("PAR"), Some("BER")]);
     } else {
         panic!("Expected a list for opt_destinations");

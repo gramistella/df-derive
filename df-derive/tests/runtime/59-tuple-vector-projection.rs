@@ -110,14 +110,14 @@ fn assert_schema(schema: &[(String, DataType)]) {
 
 fn u32_list(value: AnyValue<'_>) -> Vec<Option<u32>> {
     match value {
-        AnyValue::List(series) => series.u32().unwrap().into_iter().collect(),
+        AnyValue::List(series) => series.u32().unwrap().iter().collect(),
         other => panic!("expected u32 List, got {other:?}"),
     }
 }
 
 fn i32_list(value: AnyValue<'_>) -> Vec<Option<i32>> {
     match value {
-        AnyValue::List(series) => series.i32().unwrap().into_iter().collect(),
+        AnyValue::List(series) => series.i32().unwrap().iter().collect(),
         other => panic!("expected i32 List, got {other:?}"),
     }
 }
@@ -127,7 +127,7 @@ fn string_list(value: AnyValue<'_>) -> Vec<Option<String>> {
         AnyValue::List(series) => series
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .map(|value| value.map(str::to_owned))
             .collect(),
         other => panic!("expected string List, got {other:?}"),
@@ -140,7 +140,7 @@ fn nested_u32_lists(value: AnyValue<'_>) -> Vec<Option<Vec<Option<u32>>>> {
     };
     (0..outer.len())
         .map(|idx| match outer.get(idx).unwrap() {
-            AnyValue::List(inner) => Some(inner.u32().unwrap().into_iter().collect()),
+            AnyValue::List(inner) => Some(inner.u32().unwrap().iter().collect()),
             AnyValue::Null => None,
             other => panic!("expected inner u32 List or Null, got {other:?}"),
         })

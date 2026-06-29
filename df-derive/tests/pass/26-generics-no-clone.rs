@@ -215,7 +215,7 @@ fn test_primitive_path_no_clone() {
     // The deep-tail shapes are the ones that previously required `T: Clone`.
     let list_optional_av = df.column("list_optional").unwrap().get(0).unwrap();
     if let AnyValue::List(s) = list_optional_av {
-        let vals: Vec<Option<&str>> = s.str().unwrap().into_iter().collect();
+        let vals: Vec<Option<&str>> = s.str().unwrap().iter().collect();
         assert_eq!(vals, vec![Some("d"), None, Some("e")]);
     } else {
         panic!("expected list for list_optional");
@@ -223,14 +223,14 @@ fn test_primitive_path_no_clone() {
 
     let list_list_av = df.column("list_list").unwrap().get(0).unwrap();
     if let AnyValue::List(outer) = list_list_av {
-        let inner_lists: Vec<_> = outer.list().unwrap().into_iter().collect();
+        let inner_lists: Vec<_> = outer.list().unwrap().series_iter().collect();
         assert_eq!(inner_lists.len(), 3);
         let row0: Vec<Option<&str>> = inner_lists[0]
             .as_ref()
             .unwrap()
             .str()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect();
         assert_eq!(row0, vec![Some("f"), Some("g")]);
         assert_eq!(inner_lists[1].as_ref().unwrap().len(), 0);

@@ -29,8 +29,8 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive-core = "0.3"
-//! df-derive-macros = "0.3"
+//! df-derive-core = "0.4"
+//! df-derive-macros = "0.4"
 //! polars = "0.54"
 //! ```
 //!

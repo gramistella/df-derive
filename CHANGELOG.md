@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-29
+
+### Changed
+
+- **Breaking**: generated code and the default runtime now target `polars`
+  v0.54 and `polars-arrow` v0.54. Downstream crates using generated impls
+  should use `polars = "0.54"`.
+- **Breaking**: the minimum supported Rust version is now 1.91.
+- Updated tests and documentation for Polars 0.54 chunked-array iteration API
+  changes.
+
 ## [0.3.1] - 2026-05-26
 
 ### Added
@@ -198,6 +209,8 @@ Yanked due to polars breaking change, use 0.2.0 instead.
 
 - Initial public release.
 
+[0.4.0]: https://github.com/gramistella/df-derive/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/gramistella/df-derive/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gramistella/df-derive/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/gramistella/df-derive/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/gramistella/df-derive/compare/v0.1.0...v0.1.1

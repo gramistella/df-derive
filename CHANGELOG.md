@@ -12,6 +12,9 @@ All notable changes to this project will be documented in this file.
 - **Breaking**: the minimum supported Rust version is now 1.91.
 - Updated tests and documentation for Polars 0.54 chunked-array iteration API
   changes.
+- Refreshed the lockfile to the latest dependency graph currently resolvable
+  under the workspace constraints, including `gungraun` 0.19.3 and
+  `bincode-next` 3.1.1.
 
 ## [0.3.1] - 2026-05-26
 

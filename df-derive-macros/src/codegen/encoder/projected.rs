@@ -93,17 +93,14 @@ fn leaf_projection_access(
     if projection.projection.layer != shape.depth() {
         return None;
     }
-    let prefix_len = projection.parent_inner_access.steps.len();
+    let suffix = shape
+        .inner_access
+        .suffix_after(projection.parent_inner_access);
     debug_assert!(
-        shape
-            .inner_access
-            .steps
-            .starts_with(&projection.parent_inner_access.steps),
+        suffix.is_some(),
         "projected tuple leaf access must include the parent inner access prefix"
     );
-    Some(AccessChain {
-        steps: shape.inner_access.steps[prefix_len..].to_vec(),
-    })
+    suffix
 }
 
 fn project_tuple_element_ref(
@@ -122,7 +119,7 @@ fn apply_element_access(
     projected_ref: &TokenStream,
     element_access: &AccessChain,
 ) -> (TokenStream, bool) {
-    if element_access.option_layers() > 0 {
+    if element_access.has_option() {
         return (
             access_chain_to_option_ref(projected_ref, element_access),
             true,
@@ -138,11 +135,11 @@ fn projected_leaf_expr(
     element_access: &AccessChain,
 ) -> (TokenStream, bool) {
     let raw_ref = quote! { #raw_bind };
-    if projection.parent_access.option_layers() > 0 {
+    if projection.parent_access.has_option() {
         let tuple_ref = access_chain_to_option_ref(&raw_ref, projection.parent_access);
         let param = idents::tuple_proj_param();
         let projected_ref = project_tuple_element_ref(&quote! { #param }, projection);
-        if element_access.option_layers() > 0 {
+        if element_access.has_option() {
             let elem_ref = access_chain_to_option_ref(&projected_ref, element_access);
             (quote! { (#tuple_ref).and_then(|#param| #elem_ref) }, true)
         } else {

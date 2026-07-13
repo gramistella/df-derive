@@ -27,7 +27,7 @@ fn projection_base_to_ref(item_bind: &syn::Ident, parent_access: &AccessChain) -
     if parent_access.is_empty() {
         return quote! { #item_bind };
     }
-    if parent_access.option_layers() > 0 {
+    if parent_access.has_option() {
         return access_chain_to_option_ref(&quote! { #item_bind }, parent_access);
     }
     access_chain_to_ref(&quote! { #item_bind }, parent_access).expr
@@ -49,7 +49,7 @@ fn projected_layer_bind(
     };
 
     let tuple_ref = projection_base_to_ref(item_bind, projection.parent_access);
-    if projection.parent_access.option_layers() == 0 {
+    if !projection.parent_access.has_option() {
         return project_from(&tuple_ref);
     }
 

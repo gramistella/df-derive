@@ -68,7 +68,7 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{ColumnIR, DecimalBackend, LeafShape, LeafSpec, NumericKind, WrapperShape};
+    use crate::ir::{AccessStep, ColumnIR, DecimalBackend, LeafSpec, NumericKind, WrapperShape};
 
     fn parse(input: &DeriveInput) -> StructIR {
         parse_to_ir(input).expect("input should lower to IR")
@@ -94,7 +94,7 @@ mod tests {
         let WrapperShape::Leaf(shape) = shape else {
             panic!("expected leaf wrapper shape");
         };
-        assert_eq!(shape.option_layers(), expected);
+        assert_eq!(shape.access().option_layers(), expected);
     }
 
     fn assert_vec_shape(shape: &WrapperShape, outer_options: &[usize], inner_options: usize) {
@@ -103,9 +103,9 @@ mod tests {
         };
         assert_eq!(shape.depth(), outer_options.len());
         for (idx, expected) in outer_options.iter().copied().enumerate() {
-            assert_eq!(shape.layers[idx].option_layers_above, expected);
+            assert_eq!(shape.layers[idx].access.option_layers(), expected);
         }
-        assert_eq!(shape.inner_option_layers, inner_options);
+        assert_eq!(shape.inner_access.option_layers(), inner_options);
     }
 
     #[test]
@@ -119,6 +119,7 @@ mod tests {
                 option_vec_option: Option<Vec<Option<T>>>,
                 optional_tuple: Option<(i32, String)>,
                 vec_tuple: Vec<(Vec<i32>, Option<String>)>,
+                nested_optional_vec_tuple: Vec<Option<Option<(Vec<i32>, Option<String>)>>>,
             }
         });
 
@@ -170,6 +171,27 @@ mod tests {
             column(&ir, "vec_tuple.field_0"),
             ColumnIR::TupleParentVec(_)
         ));
+
+        let nested_vec = column_wrapper_shape(column(&ir, "nested_optional_vec_tuple.field_0"));
+        assert_vec_shape(&nested_vec, &[0, 1], 0);
+        let WrapperShape::Vec(nested_vec) = nested_vec else {
+            unreachable!("assert_vec_shape already proved this is a Vec shape");
+        };
+        assert_eq!(nested_vec.layers[0].access.iter().collect::<Vec<_>>(), []);
+        assert_eq!(
+            nested_vec.layers[1].access.iter().collect::<Vec<_>>(),
+            [AccessStep::Option]
+        );
+
+        let nested_leaf = column_wrapper_shape(column(&ir, "nested_optional_vec_tuple.field_1"));
+        assert_vec_shape(&nested_leaf, &[0], 3);
+        let WrapperShape::Vec(nested_leaf) = nested_leaf else {
+            unreachable!("assert_vec_shape already proved this is a Vec shape");
+        };
+        assert_eq!(
+            nested_leaf.inner_access.iter().collect::<Vec<_>>(),
+            [AccessStep::Option, AccessStep::Option, AccessStep::Option]
+        );
     }
 
     #[test]
@@ -187,7 +209,7 @@ mod tests {
         assert!(matches!(ir.columns[0], ColumnIR::Field(_)));
         assert!(matches!(
             column_wrapper_shape(&ir.columns[0]),
-            WrapperShape::Leaf(LeafShape::Bare)
+            WrapperShape::Leaf(shape) if shape.is_bare()
         ));
     }
 

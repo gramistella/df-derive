@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 
 use crate::codegen::external_paths::ExternalPaths;
-use crate::ir::{LeafShape, PrimitiveLeaf, WrapperShape};
+use crate::ir::{PrimitiveLeaf, WrapperShape};
 
 use super::{leaf, option, vec};
 
@@ -44,7 +44,7 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
     option_some_receiver: Option<crate::codegen::type_registry::PrimitiveExprReceiver>,
 ) -> Encoder {
     match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => {
+        WrapperShape::Leaf(shape) if shape.is_bare() => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -56,10 +56,7 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
                 series,
             }
         }
-        WrapperShape::Leaf(LeafShape::Optional {
-            option_layers,
-            access,
-        }) if option_layers.get() == 1 && access.is_single_plain_option() => {
+        WrapperShape::Leaf(shape) if shape.access().is_single_plain_option() => {
             let leaf::LeafArm {
                 decls,
                 push,
@@ -78,10 +75,12 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
                 series,
             }
         }
-        WrapperShape::Leaf(LeafShape::Optional {
-            option_layers,
-            access,
-        }) => option::wrap_option_access_chain_primitive(leaf, ctx, access, option_layers.get()),
+        WrapperShape::Leaf(shape) => option::wrap_option_access_chain_primitive(
+            leaf,
+            ctx,
+            shape.access(),
+            shape.access().option_layers(),
+        ),
         WrapperShape::Vec(vec_layers) => vec::try_build_vec_encoder(leaf, ctx, vec_layers),
     }
 }

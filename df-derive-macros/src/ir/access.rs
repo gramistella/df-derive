@@ -13,7 +13,7 @@ pub enum AccessStep {
 /// innermost `Vec` item to the leaf.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccessChain {
-    pub steps: Vec<AccessStep>,
+    steps: Vec<AccessStep>,
 }
 
 impl AccessChain {
@@ -28,6 +28,10 @@ impl AccessChain {
             .count()
     }
 
+    pub fn has_option(&self) -> bool {
+        self.steps.contains(&AccessStep::Option)
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
@@ -40,5 +44,35 @@ impl AccessChain {
         self.steps
             .iter()
             .all(|step| matches!(step, AccessStep::Option))
+    }
+
+    pub fn push(&mut self, step: AccessStep) {
+        self.steps.push(step);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = AccessStep> + '_ {
+        self.steps.iter().copied()
+    }
+
+    pub fn prepend_option(&self) -> Self {
+        let mut steps = Vec::with_capacity(self.steps.len() + 1);
+        steps.push(AccessStep::Option);
+        steps.extend(self.iter());
+        Self { steps }
+    }
+
+    pub fn concat(&self, suffix: &Self) -> Self {
+        let mut steps = Vec::with_capacity(self.steps.len() + suffix.steps.len());
+        steps.extend(self.iter());
+        steps.extend(suffix.iter());
+        Self { steps }
+    }
+
+    pub fn suffix_after(&self, prefix: &Self) -> Option<Self> {
+        self.steps
+            .strip_prefix(prefix.steps.as_slice())
+            .map(|steps| Self {
+                steps: steps.to_vec(),
+            })
     }
 }

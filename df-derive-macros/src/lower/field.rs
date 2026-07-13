@@ -2,7 +2,7 @@ use crate::attrs::{
     FieldConversion, FieldDisposition, FlattenConfig, LeafOverride, Spanned,
     parse_field_disposition,
 };
-use crate::ir::{FieldIR, LeafShape, NestedNamePolicy, WrapperShape};
+use crate::ir::{FieldIR, NestedNamePolicy, WrapperShape};
 use crate::lower::binary::parse_as_binary_shape;
 use crate::lower::leaf::parse_leaf_spec;
 use crate::lower::tuple::{
@@ -32,7 +32,7 @@ fn reject_invalid_flatten_field(
         analyzed.base,
         AnalyzedBase::Struct(_) | AnalyzedBase::Generic(_)
     );
-    let bare_shape = matches!(wrapper_shape, WrapperShape::Leaf(LeafShape::Bare));
+    let bare_shape = matches!(wrapper_shape, WrapperShape::Leaf(shape) if shape.is_bare());
     if nested_base && bare_shape {
         return Ok(());
     }

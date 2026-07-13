@@ -1,49 +1,49 @@
-use std::num::NonZeroUsize;
-
 use super::{AccessChain, NonEmpty};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LeafShape {
-    Bare,
-    Optional {
-        option_layers: NonZeroUsize,
-        access: AccessChain,
-    },
+pub struct LeafShape {
+    access: AccessChain,
 }
 
 impl LeafShape {
-    pub fn from_option_access(option_layers: usize, access: AccessChain) -> Self {
-        NonZeroUsize::new(option_layers).map_or(Self::Bare, |option_layers| Self::Optional {
-            option_layers,
-            access,
-        })
+    pub const fn bare() -> Self {
+        Self {
+            access: AccessChain::empty(),
+        }
     }
 
-    pub const fn option_layers(&self) -> usize {
-        match self {
-            Self::Bare => 0,
-            Self::Optional { option_layers, .. } => option_layers.get(),
-        }
+    pub fn from_access(access: AccessChain) -> Self {
+        assert!(
+            access.is_empty() || access.has_option(),
+            "non-empty leaf access must carry optionality"
+        );
+        Self { access }
+    }
+
+    pub const fn access(&self) -> &AccessChain {
+        &self.access
+    }
+
+    pub const fn is_bare(&self) -> bool {
+        self.access.is_empty()
     }
 }
 
 /// Polars folds consecutive `Option`s at a list level into one validity bit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VecLayerSpec {
-    pub option_layers_above: usize,
     pub access: AccessChain,
 }
 
 impl VecLayerSpec {
-    pub const fn has_outer_validity(&self) -> bool {
-        self.option_layers_above > 0
+    pub fn has_outer_validity(&self) -> bool {
+        self.access.has_option()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VecLayers {
     pub layers: NonEmpty<VecLayerSpec>,
-    pub inner_option_layers: usize,
     pub inner_access: AccessChain,
 }
 
@@ -56,8 +56,8 @@ impl VecLayers {
         self.layers.iter().any(VecLayerSpec::has_outer_validity)
     }
 
-    pub const fn has_inner_option(&self) -> bool {
-        self.inner_option_layers > 0
+    pub fn has_inner_option(&self) -> bool {
+        self.inner_access.has_option()
     }
 }
 

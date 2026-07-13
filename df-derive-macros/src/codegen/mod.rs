@@ -110,12 +110,10 @@ mod tests {
         WrapperShape::Vec(VecLayers {
             layers: NonEmpty::new(
                 VecLayerSpec {
-                    option_layers_above: 0,
                     access: AccessChain::empty(),
                 },
                 Vec::new(),
             ),
-            inner_option_layers: 0,
             inner_access: AccessChain::empty(),
         })
     }
@@ -132,7 +130,7 @@ mod tests {
         let non_empty_ir = StructIR {
             name: format_ident!("Row"),
             generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
         };
         assert_generated_impl_is_automatically_derived(&non_empty_ir);
     }
@@ -142,7 +140,7 @@ mod tests {
         let ir = StructIR {
             name: format_ident!("Row"),
             generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
         };
         let generated = generate_code(&ir, &test_config()).to_string();
 
@@ -180,7 +178,7 @@ mod tests {
         let non_empty_ir = StructIR {
             name: format_ident!("Row"),
             generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
         };
         let non_empty = generate_code(&non_empty_ir, &test_config()).to_string();
         let columns = encoder::idents::columns();
@@ -202,7 +200,7 @@ mod tests {
         let scalar_ir = StructIR {
             name: format_ident!("ScalarRow"),
             generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
         };
         let scalar = generate_code(&scalar_ir, &test_config()).to_string();
         assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
@@ -233,7 +231,7 @@ mod tests {
         let scalar_ir = StructIR {
             name: format_ident!("ScalarRow"),
             generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
         };
         let scalar = generate_code(&scalar_ir, &test_config()).to_string();
         assert!(!scalar.contains(&validate_nested_frame), "{scalar}");
@@ -252,7 +250,10 @@ mod tests {
         let nested_ir = StructIR {
             name: format_ident!("NestedRow"),
             generics: syn::Generics::default(),
-            columns: vec![nested_column("inner", WrapperShape::Leaf(LeafShape::Bare))],
+            columns: vec![nested_column(
+                "inner",
+                WrapperShape::Leaf(LeafShape::bare()),
+            )],
         };
         let nested = generate_code(&nested_ir, &test_config()).to_string();
         assert!(nested.contains(&validate_nested_frame), "{nested}");
@@ -274,7 +275,7 @@ mod tests {
                 "pair.field_0".to_owned(),
                 field_source("pair"),
                 terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
-                WrapperShape::Leaf(LeafShape::Bare),
+                WrapperShape::Leaf(LeafShape::bare()),
                 NestedNamePolicy::Field,
             )],
         };

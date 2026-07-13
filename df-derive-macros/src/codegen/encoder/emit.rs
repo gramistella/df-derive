@@ -13,7 +13,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::{AccessChain, LeafShape, VecLayers, WrapperShape};
+use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
 use super::idents::{self, LayerIdents};
 use super::leaf_kind::CollectThenBulk;
@@ -203,8 +203,10 @@ fn ctb_materialize(
     let total = idents::nested_total(idx);
 
     let (nested_wrapper, positions, total_len) = match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => (NestedWrapper::None, None, quote! { #rows.len() }),
-        WrapperShape::Leaf(LeafShape::Optional { .. }) => (
+        WrapperShape::Leaf(shape) if shape.is_bare() => {
+            (NestedWrapper::None, None, quote! { #rows.len() })
+        }
+        WrapperShape::Leaf(_) => (
             NestedWrapper::None,
             Some(&positions),
             quote! { #rows.len() },
@@ -343,7 +345,7 @@ fn ctb_emit(
     let rows = ctb.rows;
 
     let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => {
+        WrapperShape::Leaf(shape) if shape.is_bare() => {
             let empty_access = AccessChain::empty();
             let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp, rows);
             (
@@ -354,15 +356,13 @@ fn ctb_emit(
                 quote! { #rows.len() },
             )
         }
-        WrapperShape::Leaf(LeafShape::Optional {
-            option_layers,
-            access: access_chain,
-        }) => {
+        WrapperShape::Leaf(shape) => {
+            let access_chain = shape.access();
             let scan = ctb_leaf_scan_depth0(
                 access,
                 &flat,
                 &positions,
-                option_layers.get(),
+                access_chain.option_layers(),
                 access_chain,
                 pp,
                 rows,
@@ -409,8 +409,7 @@ fn ctb_emit(
     // `positions` is needed whenever any row can be absent: at depth 0 with
     // any outer Option, or at depth >= 1 with an inner Option above the leaf.
     let needs_positions = match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => false,
-        WrapperShape::Leaf(LeafShape::Optional { .. }) => true,
+        WrapperShape::Leaf(shape) => !shape.is_bare(),
         WrapperShape::Vec(shape) => shape.has_inner_option(),
     };
     let positions_decl = if needs_positions {

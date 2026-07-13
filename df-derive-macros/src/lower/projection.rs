@@ -1,5 +1,5 @@
 use crate::ir::{
-    AccessChain, AccessStep, ColumnIR, FieldIR, FieldSource, LeafShape, LeafSpec, TerminalLeafSpec,
+    AccessChain, ColumnIR, FieldIR, FieldSource, LeafShape, LeafSpec, TerminalLeafSpec,
     TupleElement, TupleProjectionPath, TupleProjectionStep, VecLayers, WrapperShape,
     column_name_for_ident,
 };
@@ -58,7 +58,7 @@ fn project_tuple_elements(
                 columns,
                 root,
                 &name,
-                &WrapperShape::Leaf(LeafShape::Bare),
+                &WrapperShape::Leaf(LeafShape::bare()),
                 inner,
                 &path,
             );
@@ -138,15 +138,13 @@ fn compose_parent_with_element(
     element: &TupleElement,
 ) -> ProjectedColumnContext {
     match parent_wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => ProjectedColumnContext::Static {
+        WrapperShape::Leaf(shape) if shape.is_bare() => ProjectedColumnContext::Static {
             wrapper_shape: element.wrapper_shape.clone(),
         },
-        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => {
-            ProjectedColumnContext::ParentOption {
-                wrapper_shape: compose_option_with_element(&element.wrapper_shape),
-                parent_access: access.clone(),
-            }
-        }
+        WrapperShape::Leaf(shape) => ProjectedColumnContext::ParentOption {
+            wrapper_shape: compose_option_with_element(&element.wrapper_shape),
+            parent_access: shape.access().clone(),
+        },
         WrapperShape::Vec(parent_layers) => ProjectedColumnContext::ParentVec {
             wrapper_shape: compose_vec_parent_with_element(parent_layers, &element.wrapper_shape),
             projection_layer: parent_layers.depth(),
@@ -157,24 +155,14 @@ fn compose_parent_with_element(
 
 fn compose_option_with_element(element_shape: &WrapperShape) -> WrapperShape {
     match element_shape {
-        WrapperShape::Leaf(LeafShape::Bare) => WrapperShape::Leaf(LeafShape::from_option_access(
-            1,
-            prepend_option_access(&AccessChain::empty()),
-        )),
-        WrapperShape::Leaf(LeafShape::Optional {
-            option_layers,
-            access,
-        }) => WrapperShape::Leaf(LeafShape::from_option_access(
-            1 + option_layers.get(),
-            prepend_option_access(access),
-        )),
+        WrapperShape::Leaf(shape) => {
+            WrapperShape::Leaf(LeafShape::from_access(shape.access().prepend_option()))
+        }
         WrapperShape::Vec(layers) => {
             let mut new_layers = layers.layers.clone();
-            new_layers[0].option_layers_above += 1;
-            new_layers[0].access = prepend_option_access(&new_layers[0].access);
+            new_layers[0].access = new_layers[0].access.prepend_option();
             WrapperShape::Vec(VecLayers {
                 layers: new_layers,
-                inner_option_layers: layers.inner_option_layers,
                 inner_access: layers.inner_access.clone(),
             })
         }
@@ -186,52 +174,21 @@ fn compose_vec_parent_with_element(
     element_shape: &WrapperShape,
 ) -> VecLayers {
     let mut composed_layers = parent_layers.layers.clone();
-    let carried_inner_option = parent_layers.inner_option_layers;
 
-    let composed_inner_option = match element_shape {
+    let composed_inner_access = match element_shape {
         WrapperShape::Vec(element_layers) => {
             let mut new_layers = element_layers.layers.clone();
-            new_layers[0].option_layers_above += carried_inner_option;
-            new_layers[0].access =
-                prepend_parent_option_access(&parent_layers.inner_access, &new_layers[0].access);
+            if parent_layers.inner_access.has_option() {
+                new_layers[0].access = new_layers[0].access.prepend_option();
+            }
             composed_layers.extend(new_layers);
-            element_layers.inner_option_layers
+            element_layers.inner_access.clone()
         }
-        WrapperShape::Leaf(leaf_shape) => carried_inner_option + leaf_shape.option_layers(),
-    };
-    let composed_inner_access = match element_shape {
-        WrapperShape::Vec(element_layers) => element_layers.inner_access.clone(),
-        WrapperShape::Leaf(LeafShape::Bare) => parent_layers.inner_access.clone(),
-        WrapperShape::Leaf(LeafShape::Optional { access, .. }) => {
-            concat_access_chains(&parent_layers.inner_access, access)
-        }
+        WrapperShape::Leaf(shape) => parent_layers.inner_access.concat(shape.access()),
     };
 
     VecLayers {
         layers: composed_layers,
-        inner_option_layers: composed_inner_option,
         inner_access: composed_inner_access,
-    }
-}
-
-fn prepend_option_access(access: &AccessChain) -> AccessChain {
-    let mut steps = Vec::with_capacity(access.steps.len() + 1);
-    steps.push(AccessStep::Option);
-    steps.extend(access.steps.iter().copied());
-    AccessChain { steps }
-}
-
-fn concat_access_chains(left: &AccessChain, right: &AccessChain) -> AccessChain {
-    let mut steps = Vec::with_capacity(left.steps.len() + right.steps.len());
-    steps.extend(left.steps.iter().copied());
-    steps.extend(right.steps.iter().copied());
-    AccessChain { steps }
-}
-
-fn prepend_parent_option_access(parent_access: &AccessChain, access: &AccessChain) -> AccessChain {
-    if parent_access.option_layers() > 0 {
-        prepend_option_access(access)
-    } else {
-        access.clone()
     }
 }

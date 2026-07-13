@@ -8,37 +8,30 @@ use crate::type_analysis::RawWrapper;
 /// steps are retained as an `AccessChain` at each wrapper boundary: above
 /// each `Vec`, immediately surrounding the leaf, or for the leaf-only path.
 /// Polars folds consecutive `Option`s into a single validity bit per
-/// position, so the count is also cached to choose the direct single-Option
-/// path versus the collapsed multi-Option path.
+/// position. Codegen derives that fact from each boundary's access chain.
 pub fn normalize_wrappers(wrappers: &[RawWrapper]) -> WrapperShape {
     let mut layers: Vec<VecLayerSpec> = Vec::new();
     let mut pending_access = AccessChain::empty();
     for w in wrappers {
         match w {
             RawWrapper::Option => {
-                pending_access.steps.push(AccessStep::Option);
+                pending_access.push(AccessStep::Option);
             }
             RawWrapper::SmartPtr => {
-                pending_access.steps.push(AccessStep::SmartPtr);
+                pending_access.push(AccessStep::SmartPtr);
             }
             RawWrapper::Vec => {
-                let option_layers_above = pending_access.option_layers();
                 layers.push(VecLayerSpec {
-                    option_layers_above,
                     access: std::mem::take(&mut pending_access),
                 });
             }
         }
     }
     let Some(layers) = NonEmpty::from_vec(layers) else {
-        return WrapperShape::Leaf(LeafShape::from_option_access(
-            pending_access.option_layers(),
-            pending_access,
-        ));
+        return WrapperShape::Leaf(LeafShape::from_access(pending_access));
     };
     WrapperShape::Vec(VecLayers {
         layers,
-        inner_option_layers: pending_access.option_layers(),
         inner_access: pending_access,
     })
 }

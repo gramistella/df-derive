@@ -9,6 +9,7 @@ struct Inner {
 }
 
 #[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
 struct Row {
     a: Vec<(u32, String)>,
     b: Vec<(Vec<u32>, Option<String>)>,
@@ -16,6 +17,7 @@ struct Row {
     d: Vec<Option<(Vec<u32>, String)>>,
     e: Vec<(Option<Vec<u32>>, Option<String>)>,
     f: Vec<(Inner, Option<Inner>)>,
+    g: Vec<Option<Option<(Vec<u32>, Option<String>)>>>,
 }
 
 fn row_zero() -> Row {
@@ -52,6 +54,12 @@ fn row_zero() -> Row {
                 None,
             ),
         ],
+        g: vec![
+            Some(Some((vec![60, 61], Some("g1".to_owned())))),
+            Some(None),
+            None,
+            Some(Some((Vec::new(), None))),
+        ],
     }
 }
 
@@ -63,6 +71,7 @@ fn row_one() -> Row {
         d: Vec::new(),
         e: Vec::new(),
         f: Vec::new(),
+        g: Vec::new(),
     }
 }
 
@@ -92,6 +101,8 @@ fn assert_schema(schema: &Schema) {
         ("f.field_0.label", list_string()),
         ("f.field_1.id", DataType::List(Box::new(DataType::Int32))),
         ("f.field_1.label", list_string()),
+        ("g.field_0", list_list_u32()),
+        ("g.field_1", list_string()),
     ];
 
     assert_eq!(schema.len(), expected.len());
@@ -153,12 +164,12 @@ fn tuple_vector_projection_schema_and_values() {
     assert_schema(&schema);
 
     let empty = Row::empty_dataframe().unwrap();
-    assert_eq!(empty.shape(), (0, 14));
+    assert_eq!(empty.shape(), (0, 16));
     assert_schema(empty.schema());
 
     let rows = vec![row_zero(), row_one()];
     let df = rows.as_slice().to_dataframe().unwrap();
-    assert_eq!(df.shape(), (2, 14));
+    assert_eq!(df.shape(), (2, 16));
     assert_schema(df.schema());
 
     assert_eq!(
@@ -217,6 +228,14 @@ fn tuple_vector_projection_schema_and_values() {
         string_list(df.column("f.field_1.label").unwrap().get(0).unwrap()),
         vec![Some("f1".to_owned()), None]
     );
+    assert_eq!(
+        nested_u32_lists(df.column("g.field_0").unwrap().get(0).unwrap()),
+        vec![Some(vec![Some(60), Some(61)]), None, None, Some(Vec::new()),]
+    );
+    assert_eq!(
+        string_list(df.column("g.field_1").unwrap().get(0).unwrap()),
+        vec![Some("g1".to_owned()), None, None, None]
+    );
 
     assert_eq!(
         u32_list(df.column("a.field_0").unwrap().get(1).unwrap()),
@@ -235,5 +254,9 @@ fn tuple_vector_projection_schema_and_values() {
     assert_eq!(
         string_list(df.column("f.field_1.label").unwrap().get(1).unwrap()),
         Vec::<Option<String>>::new()
+    );
+    assert_eq!(
+        nested_u32_lists(df.column("g.field_0").unwrap().get(1).unwrap()),
+        Vec::<Option<Vec<Option<u32>>>>::new()
     );
 }

@@ -93,7 +93,7 @@ pub(in crate::codegen) fn access_chain_to_ref(base: &TokenStream, chain: &Access
     let mut has_option = false;
     let mut pending_smart_ptrs = 0usize;
 
-    for step in &chain.steps {
+    for step in chain.iter() {
         match step {
             AccessStep::SmartPtr => {
                 pending_smart_ptrs += 1;

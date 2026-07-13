@@ -1,6 +1,6 @@
 use crate::ir::{
-    AccessStep, FieldColumn, FieldSource, LeafShape, TerminalLeafRoute, TupleParentOptionColumn,
-    TupleProjectionPath, TupleProjectionStep, TupleStaticColumn, WrapperShape,
+    FieldColumn, FieldSource, TerminalLeafRoute, TupleParentOptionColumn, TupleProjectionPath,
+    TupleProjectionStep, TupleStaticColumn, WrapperShape,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -74,15 +74,11 @@ pub(in crate::codegen) fn tuple_parent_option_some_receiver(
         return None;
     }
 
-    let WrapperShape::Leaf(LeafShape::Optional {
-        option_layers,
-        access,
-    }) = column.wrapper_shape()
-    else {
+    let WrapperShape::Leaf(shape) = column.wrapper_shape() else {
         return None;
     };
 
-    if option_layers.get() == 1 && access.is_single_plain_option() {
+    if shape.access().is_single_plain_option() {
         Some(crate::codegen::type_registry::PrimitiveExprReceiver::RefRef)
     } else {
         None
@@ -130,12 +126,8 @@ fn is_copy_parent_option_projection(column: &TupleParentOptionColumn) -> bool {
         return false;
     }
 
-    let WrapperShape::Leaf(LeafShape::Optional { access, .. }) = column.wrapper_shape() else {
+    let WrapperShape::Leaf(shape) = column.wrapper_shape() else {
         return false;
     };
-    let Some((first, rest)) = access.steps.split_first() else {
-        return false;
-    };
-    matches!(first, AccessStep::Option)
-        && rest.iter().all(|step| matches!(step, AccessStep::Option))
+    !shape.is_bare() && shape.access().is_only_options()
 }

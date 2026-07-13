@@ -16,10 +16,8 @@ use df_derive::ToDataFrame;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
-mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 use chrono::NaiveDate;
 use std::sync::Arc;

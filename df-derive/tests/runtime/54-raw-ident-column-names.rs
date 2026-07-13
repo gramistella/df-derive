@@ -1,5 +1,5 @@
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::AnyValue;
 
 #[derive(ToDataFrame, Clone)]

@@ -3,7 +3,7 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use std::marker::PhantomData;
-#[path = "../local_runtime.rs"]
+#[path = "../support/local_runtime.rs"]
 mod core;
 use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
 

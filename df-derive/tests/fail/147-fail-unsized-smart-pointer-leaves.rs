@@ -2,8 +2,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
 
 #[derive(ToDataFrame)]
 struct BoxedStr {

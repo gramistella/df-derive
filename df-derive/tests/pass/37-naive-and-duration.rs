@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use chrono::{NaiveDate, NaiveTime};
 use polars::prelude::*;

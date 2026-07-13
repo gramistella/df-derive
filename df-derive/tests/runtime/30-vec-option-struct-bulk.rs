@@ -13,8 +13,8 @@
 // Call the single `Columnar::encode` primitive directly so this regression
 // stays scoped to the batch encoder rather than its public convenience APIs.
 
-use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::Columnar;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 

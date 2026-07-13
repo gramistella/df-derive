@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
 #[derive(ToDataFrame, Clone)]

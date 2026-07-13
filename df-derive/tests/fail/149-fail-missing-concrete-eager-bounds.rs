@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
 
-#[path = "../common.rs"]
-mod core;
 
 struct Inner {
     value: i32,

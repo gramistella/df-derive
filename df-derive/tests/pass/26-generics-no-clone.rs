@@ -7,9 +7,7 @@
 
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
 
 // Nested-path payload: implements the sole batch primitive, deliberately NOT
 // `Clone`. Used as the generic argument for fields without a transform (which

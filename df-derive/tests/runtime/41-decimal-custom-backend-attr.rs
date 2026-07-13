@@ -1,5 +1,5 @@
-use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
 // A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`

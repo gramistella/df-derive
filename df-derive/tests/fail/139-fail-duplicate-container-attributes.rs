@@ -1,6 +1,4 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
 
 #[derive(ToDataFrame)]
 #[df_derive(trait = "core::dataframe::ToDataFrame")]

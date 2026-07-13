@@ -6,10 +6,6 @@
 //! sub-directory so cargo's bench auto-discovery does not pick it up as a
 //! standalone target. It owns the criterion timing config shared by every
 //! bench.
-//!
-//! The runtime-trait module (`tests/common.rs`) is pulled into every bench
-//! as a top-level `core` module so the proc-macro-generated
-//! `crate::core::dataframe::*` paths resolve.
 
 use criterion::Criterion;
 use std::time::Duration;

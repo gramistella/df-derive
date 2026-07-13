@@ -14,8 +14,8 @@
 // observes them via the `AnyValue::Null` cell and compares lengths and
 // values for the populated cases).
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 

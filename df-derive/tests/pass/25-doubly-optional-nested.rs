@@ -14,9 +14,7 @@
 
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {

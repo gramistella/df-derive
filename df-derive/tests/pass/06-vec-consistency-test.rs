@@ -2,10 +2,8 @@
 // consistently with the derive macro implementation
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame)]
 struct Address {

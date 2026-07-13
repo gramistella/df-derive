@@ -1,5 +1,5 @@
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
 mod domain {
@@ -47,7 +47,7 @@ mod domain {
         }
     }
 
-    impl crate::core::dataframe::Decimal128Encode for Money {
+    impl df_derive::dataframe::Decimal128Encode for Money {
         fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
             match self.scale.cmp(&target_scale) {
                 std::cmp::Ordering::Equal => Some(self.mantissa),

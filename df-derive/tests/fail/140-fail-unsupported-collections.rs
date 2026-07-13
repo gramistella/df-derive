@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
 use std::collections::{BTreeSet, LinkedList, VecDeque};
-#[path = "../common.rs"]
-mod core;
 
 #[derive(ToDataFrame)]
 struct UnsupportedBTreeSet {

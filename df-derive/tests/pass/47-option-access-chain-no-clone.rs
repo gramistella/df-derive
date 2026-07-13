@@ -7,9 +7,7 @@ use df_derive::ToDataFrame;
 use polars::prelude::*;
 use std::fmt;
 
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Decimal128Encode, ToDataFrameVec};
+use df_derive::dataframe::{Decimal128Encode, ToDataFrameVec};
 
 struct NoCloneDisplay(&'static str);
 

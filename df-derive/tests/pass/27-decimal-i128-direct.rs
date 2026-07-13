@@ -19,9 +19,7 @@
 // to truncation or to half-away-from-zero would fail loudly.
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use polars::prelude::*;
 use pretty_assertions::assert_eq;

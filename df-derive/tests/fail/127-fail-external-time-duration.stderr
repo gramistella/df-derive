@@ -1,6 +1,6 @@
 error: field `elapsed` has `time_unit = "..."` but its base type is not `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`; remove the attribute or change the field type
-  --> tests/fail/127-fail-external-time-duration.rs:11:5
+  --> tests/fail/127-fail-external-time-duration.rs:9:5
    |
-11 | /     #[df_derive(time_unit = "ns")]
-12 | |     elapsed: time::Duration,
+ 9 | /     #[df_derive(time_unit = "ns")]
+10 | |     elapsed: time::Duration,
    | |___________________________^

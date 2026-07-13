@@ -1,6 +1,4 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
 
 // Bring `Duration` into scope to mimic the realistic ambiguous case where
 // both crates' Durations are reachable. We never construct a `Duration`

@@ -1,8 +1,6 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 
 // A tuple struct that will be nested
 #[derive(ToDataFrame)]

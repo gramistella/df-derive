@@ -90,7 +90,6 @@ jobs:
               --test codegen_path_centralization
               --test generated_lint_hygiene
               --test idents_centralization
-              --test local_runtime
               --all-features -- --nocapture
     env:
       CARGO_TERM_COLOR: always

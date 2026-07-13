@@ -3,9 +3,7 @@ use polars::prelude::*;
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Status {

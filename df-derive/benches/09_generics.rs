@@ -15,7 +15,7 @@ use polars::prelude::*;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/local_runtime.rs"]
+#[path = "../tests/support/local_runtime.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
 use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame};

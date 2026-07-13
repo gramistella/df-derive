@@ -23,9 +23,7 @@
 // silently emitting a zero mantissa.
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 
 use polars::prelude::*;
 use rust_decimal::Decimal;

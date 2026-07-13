@@ -36,9 +36,7 @@ use polars::prelude::*;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-#[path = "common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Deserialize, Clone)]
 struct Inner {

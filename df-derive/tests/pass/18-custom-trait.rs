@@ -2,9 +2,7 @@ use df_derive::ToDataFrame;
 use polars::prelude::{DataFrame, DataType, PolarsResult, SchemaRef};
 
 // == SETUP 1: Use the shared `common` module for default traits ==
-#[path = "../common.rs"]
-mod common;
-use common::dataframe as paft_traits; // Alias for clarity
+use df_derive::dataframe as paft_traits; // Alias for clarity
 
 // == SETUP 2: Define a completely separate custom trait ==
 mod my_traits {

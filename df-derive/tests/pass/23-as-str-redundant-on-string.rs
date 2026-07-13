@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 // `as_str` on a raw `String` field is allowed and behaves identically to
 // omitting the attribute. The codegen routes through the same deref-coerce

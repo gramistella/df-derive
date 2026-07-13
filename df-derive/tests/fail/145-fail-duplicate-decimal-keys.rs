@@ -1,6 +1,4 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
 
 use rust_decimal::Decimal;
 

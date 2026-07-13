@@ -1,9 +1,7 @@
 // Test edge cases to ensure robust Vec<T> implementation
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 // Multiple levels of nesting
 #[derive(ToDataFrame)]

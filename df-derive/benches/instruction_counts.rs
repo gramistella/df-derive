@@ -3,9 +3,7 @@ use std::hint::black_box;
 use df_derive::ToDataFrame;
 use gungraun::prelude::*;
 
-#[path = "../tests/common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 const N_NUMERIC_ROWS: usize = 10_000;
 const N_NESTED_USERS: usize = 5_000;

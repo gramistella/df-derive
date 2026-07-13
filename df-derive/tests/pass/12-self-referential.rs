@@ -1,10 +1,8 @@
 // Test handling of self-referential and cyclic structures
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrameVec;
 
 // Simple self-referential structure (tree-like)
 #[derive(ToDataFrame)]

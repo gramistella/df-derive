@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
 use std::collections::HashMap;
-#[path = "../common.rs"]
-mod core;
 
 #[derive(ToDataFrame)]
 struct Unsupported {

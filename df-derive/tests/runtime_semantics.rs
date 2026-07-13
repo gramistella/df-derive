@@ -16,9 +16,6 @@
     clippy::unnecessary_literal_bound
 )]
 
-#[path = "common.rs"]
-mod core;
-
 #[path = "runtime/28-option-vec-struct-validity.rs"]
 mod option_vec_struct_validity;
 

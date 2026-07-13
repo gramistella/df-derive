@@ -1,17 +1,17 @@
 error: df-derive does not support `BTreeSet` fields. Convert to `Vec<T>` (order will follow the set's sorted iteration order).
- --> tests/fail/140-fail-unsupported-collections.rs:8:13
+ --> tests/fail/140-fail-unsupported-collections.rs:6:13
   |
-8 |     values: BTreeSet<String>,
+6 |     values: BTreeSet<String>,
   |             ^^^^^^^^^^^^^^^^
 
 error: df-derive does not support `VecDeque` fields. Convert to `Vec<T>` before assignment.
-  --> tests/fail/140-fail-unsupported-collections.rs:13:13
+  --> tests/fail/140-fail-unsupported-collections.rs:11:13
    |
-13 |     values: VecDeque<String>,
+11 |     values: VecDeque<String>,
    |             ^^^^^^^^^^^^^^^^
 
 error: df-derive does not support `LinkedList` fields. Convert to `Vec<T>` before assignment.
-  --> tests/fail/140-fail-unsupported-collections.rs:18:13
+  --> tests/fail/140-fail-unsupported-collections.rs:16:13
    |
-18 |     values: LinkedList<String>,
+16 |     values: LinkedList<String>,
    |             ^^^^^^^^^^^^^^^^^^

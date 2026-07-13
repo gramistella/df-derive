@@ -1,5 +1,5 @@
-use crate::core::dataframe::{Columnar, RowBatch};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{Columnar, RowBatch};
 use polars::prelude::*;
 
 #[derive(Clone)]

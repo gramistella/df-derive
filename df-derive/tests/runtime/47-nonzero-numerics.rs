@@ -7,7 +7,7 @@ use std::sync::Arc;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct NonZeroScalars {

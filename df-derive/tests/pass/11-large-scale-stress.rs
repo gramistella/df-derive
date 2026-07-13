@@ -1,10 +1,8 @@
 // Stress test with large data structures and performance considerations
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrameVec;
 
 // Large struct with many fields
 #[derive(ToDataFrame)]

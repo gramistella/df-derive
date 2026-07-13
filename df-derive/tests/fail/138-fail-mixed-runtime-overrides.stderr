@@ -1,35 +1,35 @@
 error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `Columnar::encode` and the blanket `ToDataFrame` schema API must come from one compatible runtime
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:13:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:11:5
    |
-13 |     columnar = "core::dataframe::Columnar"
+11 |     columnar = "core::dataframe::Columnar"
    |     ^^^^^^^^
 
 error: `trait` override involved in the mixed runtime pair
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:12:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:10:5
    |
-12 |     trait = "df_derive::dataframe::ToDataFrame",
+10 |     trait = "df_derive::dataframe::ToDataFrame",
    |     ^^^^^
 
 error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `Columnar::encode` and the blanket `ToDataFrame` schema API must come from one compatible runtime
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:22:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:20:5
    |
-22 |     columnar = "custom_runtime::MyColumnarTrait"
+20 |     columnar = "custom_runtime::MyColumnarTrait"
    |     ^^^^^^^^
 
 error: `trait` override involved in the mixed runtime pair
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:21:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:19:5
    |
-21 |     trait = "df_derive::dataframe::ToDataFrame",
+19 |     trait = "df_derive::dataframe::ToDataFrame",
    |     ^^^^^
 
 error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `Columnar::encode` and the blanket `ToDataFrame` schema API must come from one compatible runtime
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:31:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:29:5
    |
-31 |     columnar = "df_derive::dataframe::Columnar"
+29 |     columnar = "df_derive::dataframe::Columnar"
    |     ^^^^^^^^
 
 error: `trait` override involved in the mixed runtime pair
-  --> tests/fail/138-fail-mixed-runtime-overrides.rs:30:5
+  --> tests/fail/138-fail-mixed-runtime-overrides.rs:28:5
    |
-30 |     trait = "custom_runtime::MyToDataFrame",
+28 |     trait = "custom_runtime::MyToDataFrame",
    |     ^^^^^

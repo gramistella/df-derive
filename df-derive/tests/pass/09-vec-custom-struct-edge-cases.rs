@@ -1,9 +1,7 @@
 // Additional edge cases for Vec<CustomStruct> functionality
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 
 // Test 1: Vec<CustomStruct> with Option fields
 #[derive(ToDataFrame)]

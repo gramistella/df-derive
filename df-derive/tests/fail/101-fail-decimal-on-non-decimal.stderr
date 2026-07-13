@@ -1,6 +1,6 @@
 error: field `not_a_decimal` has `decimal(...)` but its base type is not a decimal backend candidate; `decimal(...)` applies to types named `Decimal`, custom struct types, or generic type parameters that implement `Decimal128Encode`
- --> tests/fail/101-fail-decimal-on-non-decimal.rs:7:5
+ --> tests/fail/101-fail-decimal-on-non-decimal.rs:5:5
   |
-7 | /     #[df_derive(decimal(precision = 38, scale = 18))]
-8 | |     not_a_decimal: f64,
+5 | /     #[df_derive(decimal(precision = 38, scale = 18))]
+6 | |     not_a_decimal: f64,
   | |______________________^

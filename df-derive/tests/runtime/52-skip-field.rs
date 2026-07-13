@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 struct CacheOnly {
     value: i32,

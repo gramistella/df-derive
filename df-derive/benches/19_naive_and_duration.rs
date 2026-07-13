@@ -3,10 +3,8 @@ use df_derive::ToDataFrame;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
-mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use chrono::{NaiveDate, NaiveTime};
 

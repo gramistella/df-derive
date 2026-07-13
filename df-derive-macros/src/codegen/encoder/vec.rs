@@ -463,7 +463,7 @@ fn bool_bare_depth1_body(
     let offset = list_offset_i64_expr(&quote! { #flat.len() }, pp);
     quote! {
         let mut #total_leaves: usize = 0;
-        for #it in #rows.iter() {
+        for #it in #rows.iter().copied() {
             #total_leaves += (&(#access)).len();
         }
         let mut #flat: ::std::vec::Vec<bool> =
@@ -471,7 +471,7 @@ fn bool_bare_depth1_body(
         let mut #inner_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(#rows.len() + 1);
         #inner_offsets.push(0);
-        for #it in #rows.iter() {
+        for #it in #rows.iter().copied() {
             #flat.extend((&(#access)).iter().copied());
             let #offset_ident: i64 = #offset;
             #inner_offsets.push(#offset_ident);

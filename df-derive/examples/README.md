@@ -102,6 +102,6 @@ cargo run -p df-derive --example nested_generics
 - **Different use cases**: From simple structs to complex nested data with lists
 
 The examples use the default `df-derive` facade runtime. Its single batch
-primitive is `Columnar::encode`, parameterized by `RowBatch`; `ToDataFrame`
-and its `SchemaRef`-returning `schema()` method are blanket-derived from that
-encoder.
+primitive is `Columnar::encode`, which accepts any iterator of borrowed rows
+and consumes it exactly once; `ToDataFrame` and its `SchemaRef`-returning
+`schema()` method are blanket-derived from that encoder.

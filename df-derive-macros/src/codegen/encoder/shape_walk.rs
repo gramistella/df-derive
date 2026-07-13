@@ -80,7 +80,7 @@ impl ShapeScan<'_, '_> {
         let it = idents::populator_iter();
         let rows = self.rows;
         quote! {
-            for #it in #rows.iter() {
+            for #it in #rows.iter().copied() {
                 #body
             }
         }
@@ -193,7 +193,7 @@ impl ShapePrecount<'_> {
         quote! {
             let mut #total: usize = 0;
             #(#counter_decls)*
-            for #it in #rows.iter() {
+            for #it in #rows.iter().copied() {
                 #body
             }
         }

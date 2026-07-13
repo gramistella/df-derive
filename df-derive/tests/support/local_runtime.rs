@@ -6,48 +6,11 @@
 pub mod dataframe {
     use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     pub trait Columnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     pub trait ToDataFrame: Columnar {
@@ -80,11 +43,12 @@ pub mod dataframe {
     }
 
     impl Columnar for () {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized,
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>,
         {
-            Ok(DataFrame::empty_with_height(rows.len()))
+            Ok(DataFrame::empty_with_height(rows.into_iter().count()))
         }
     }
 

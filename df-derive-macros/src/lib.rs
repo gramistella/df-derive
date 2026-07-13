@@ -31,9 +31,10 @@ use syn::{DeriveInput, parse_macro_input};
 /// What this macro generates (paths configurable via `#[df_derive(...)]`):
 ///
 /// - An implementation of `Columnar` for the annotated type `T` providing the
-///   single generic `encode<B: RowBatch<Self> + ?Sized>(&B)` batch primitive.
-///   The runtime's blanket `ToDataFrame` implementation derives single-row,
-///   empty-frame, and schema behavior from that operation.
+///   single generic `encode<'a, R>(R)` batch primitive for any
+///   `R: IntoIterator<Item = &'a Self>`. The iterator is consumed exactly
+///   once. The runtime's blanket `ToDataFrame` implementation derives
+///   single-row, empty-frame, and schema behavior from that operation.
 ///
 /// Supported shapes and types:
 ///
@@ -60,10 +61,10 @@ use syn::{DeriveInput, parse_macro_input};
 /// Attributes:
 ///
 /// - Container-level: `#[df_derive(trait = "path::ToDataFrame")]` to set the `ToDataFrame` trait
-///   path; the `Columnar`, `RowBatch`, and `Decimal128Encode` paths are inferred by replacing
+///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing
 ///   the last path segment. Optionally, set `Columnar` explicitly with
-///   `#[df_derive(columnar = "path::Columnar")]` (its sibling `RowBatch` and, when
-///   `trait` is omitted, sibling `ToDataFrame` paths are inferred) and
+///   `#[df_derive(columnar = "path::Columnar")]` (when `trait` is omitted, its sibling
+///   `ToDataFrame` path is inferred) and
 ///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. `decimal128_encode` is the
 ///   dispatch point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal
 ///   backends — see "Custom decimal backends" in the README for the trait contract. Explicit

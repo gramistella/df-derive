@@ -66,8 +66,8 @@ fn main() -> polars::prelude::PolarsResult<()> {
 ```
 
 The default runtime API is available as `df_derive::dataframe::*`. The prelude
-exports the derive macro plus `RowBatch`, `ToDataFrame`, `Columnar`,
-`ToDataFrameVec`, and `Decimal128Encode`; it also exports the trait as
+exports the derive macro plus `ToDataFrame`, `Columnar`, `ToDataFrameVec`, and
+`Decimal128Encode`; it also exports the trait as
 `ToDataFrameTrait` for code that wants an unambiguous type-namespace alias.
 
 ## Benchmarks
@@ -85,8 +85,8 @@ This repository uses a serde-like three-crate architecture:
 - `df-derive`: the normal facade crate. It re-exports the derive macro from
   `df-derive-macros` and the runtime API from `df-derive-core`.
 - `df-derive-core`: a normal library crate that owns the shared
-  `dataframe::{RowBatch, ToDataFrame, Columnar, ToDataFrameVec,
-  Decimal128Encode}` trait identity, the `()` columnar impl, and the optional reference
+  `dataframe::{ToDataFrame, Columnar, ToDataFrameVec, Decimal128Encode}` trait
+  identity, the `()` columnar impl, and the optional reference
   `Decimal128Encode for rust_decimal::Decimal` impl.
 - `df-derive-macros`: the proc-macro implementation. Power users can depend
   on this directly and target `df-derive-core`, `paft`, or a custom runtime.
@@ -102,25 +102,24 @@ operation:
 
 ```rust,ignore
 impl Columnar for T {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized;
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>;
 }
 ```
 
 The runtime blanket-implements `ToDataFrame` for every `T: Columnar`.
-`to_dataframe()` encodes a one-row slice, `empty_dataframe()` encodes an empty
-slice, and `schema()` returns the `SchemaRef` of that real typed empty output.
-Slices of values and slices of references both implement `RowBatch`, so the
-same generated body handles top-level and nested composition without a
-temporary `Vec<&Self>` adapter.
+`to_dataframe()` encodes one row, `empty_dataframe()` encodes an empty
+iterator, and `schema()` returns the `SchemaRef` of that real typed empty
+output. Slices, iterator adapters, and custom one-shot iterators all use the
+same entry point; a slice of borrowed references is passed as
+`refs.iter().copied()`. The caller's iterator is consumed exactly once.
 
-Manual `RowBatch` implementations must report the same length as their exact
-iterator and return the same rows in the same order on repeated traversals.
-Manual `Columnar` implementations must return exactly that many rows and keep
-their complete schema — width, ordered names, and dtypes — identical for empty
-and populated batches. Derived parents validate this contract before consuming
-a manual nested encoder.
+Manual `Columnar` implementations must return exactly one DataFrame row for
+every yielded input row and keep their complete schema — width, ordered names,
+and dtypes — identical for empty and populated inputs. Derived parents validate
+this contract before consuming a manual nested encoder.
 
 ## Representative Generated Code
 
@@ -130,7 +129,7 @@ shortened with imports, rustc's `vec!` expansion is omitted, and
 compiler-generated helper blocks are removed.
 
 ```rust,ignore
-use df_derive::dataframe::{Columnar, RowBatch};
+use df_derive::dataframe::Columnar;
 use df_derive::dataframe::__private::{
     polars::prelude::{
         Column, DataFrame, Float64Chunked, IntoSeries, PolarsResult,
@@ -141,15 +140,19 @@ use df_derive::dataframe::__private::{
 
 #[automatically_derived]
 impl Columnar for Trade {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        // Consume an arbitrary input iterator once, then stabilize the
+        // borrowed rows for the shape-dependent column-building passes.
+        let rows = rows.into_iter().collect::<Vec<&Self>>();
         let mut symbol = MutableBinaryViewArray::<str>::with_capacity(rows.len());
         let mut price = Vec::<f64>::with_capacity(rows.len());
         let mut size = Vec::<u64>::with_capacity(rows.len());
 
-        for item in rows.iter() {
+        for item in rows.iter().copied() {
             symbol.push_value_ignore_validity(item.symbol.as_str());
             price.push(item.price);
             size.push(item.size);
@@ -365,9 +368,9 @@ struct Row {
 ```
 
 If only `trait = "x::ToDataFrame"` is provided, the macro infers the sibling
-`x::Columnar`, `x::RowBatch`, and `x::Decimal128Encode` paths. A standalone
+`x::Columnar` and `x::Decimal128Encode` paths. A standalone
 `columnar = "x::Columnar"` override is also supported; the macro infers its
-sibling `ToDataFrame`, `RowBatch`, and `Decimal128Encode` paths.
+sibling `ToDataFrame` and `Decimal128Encode` paths.
 
 Explicit paths to the built-in facade/core runtimes,
 `df_derive::dataframe::ToDataFrame` or
@@ -446,53 +449,20 @@ mod runtime {
     pub mod dataframe {
         use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
-        pub trait RowBatch<T: ?Sized> {
-            fn len(&self) -> usize;
-            fn is_empty(&self) -> bool { self.len() == 0 }
-            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-            where
-                T: 'a;
-        }
-
-        impl<T> RowBatch<T> for [T] {
-            fn len(&self) -> usize {
-                <[T]>::len(self)
-            }
-
-            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-            where
-                T: 'a,
-            {
-                <[T]>::iter(self)
-            }
-        }
-
-        impl<T: ?Sized> RowBatch<T> for [&T] {
-            fn len(&self) -> usize {
-                <[&T]>::len(self)
-            }
-
-            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-            where
-                T: 'a,
-            {
-                <[&T]>::iter(self).copied()
-            }
-        }
-
         pub trait Columnar: Sized {
-            fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+            fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
             where
-                B: RowBatch<Self> + ?Sized;
+                Self: 'a,
+                R: IntoIterator<Item = &'a Self>;
         }
 
         pub trait ToDataFrame: Columnar {
             fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-                Self::encode(std::slice::from_ref(self))
+                Self::encode(std::iter::once(self))
             }
 
             fn empty_dataframe() -> PolarsResult<DataFrame> {
-                Self::encode(&[] as &[Self])
+                Self::encode(std::iter::empty::<&Self>())
             }
 
             fn schema() -> PolarsResult<SchemaRef> {
@@ -509,10 +479,10 @@ mod runtime {
 }
 ```
 
-The `RowBatch` and `Columnar` contracts are the same as for the default
-runtime: `len()` must match the exact iterator, iteration must be repeatable,
-and `encode` must preserve row count plus the complete ordered schema across
-empty and populated batches.
+The `Columnar` contract is the same as for the default runtime: `encode`
+consumes its input exactly once, preserves the number and order of yielded
+rows, and returns the same complete ordered schema for empty and populated
+inputs.
 
 ## Decimal Backends
 
@@ -586,9 +556,12 @@ has no inherent runtime performance penalty. The macro generates the hot
 column-building code at the impl site either way; the runtime path only
 selects which trait receives the impl.
 
-The generated `Columnar::encode` body accepts both `[Self]` and `[&Self]`
-through `RowBatch`. Top-level conversion has no temporary reference-vector
-adapter, while nested and generic composition remains borrowed and clone-free.
+The generated `Columnar::encode` body accepts any iterator of `&Self`,
+including slices, `refs.iter().copied()` over borrowed-reference slices, and
+one-shot iterator adapters.
+It consumes the iterator exactly once into a `Vec<&Self>` that stabilizes the
+borrowed rows for the shape-dependent column-building passes. Values remain
+borrowed and clone-free; the temporary vector stores references only.
 
 The generated hot path is shape-dependent. Primitive scalar fields are
 populated in one row loop. Nested fields collect references and call the

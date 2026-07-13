@@ -68,7 +68,7 @@ fn columnar_method_body(
     let push_loop = if pushes.is_empty() {
         TokenStream::new()
     } else {
-        quote! { for #it_ident in #rows.iter() { #(#pushes)* } }
+        quote! { for #it_ident in #rows.iter().copied() { #(#pushes)* } }
     };
     let unique_name_validation = if super::support::needs_unique_name_validation(ir) {
         let validate_unique_column_names = idents::validate_unique_column_names();
@@ -96,10 +96,10 @@ fn columnar_method_body(
 pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenStream {
     let struct_name = &ir.name;
     let columnar_trait = &config.traits.columnar;
-    let row_batch_trait = &config.traits.row_batch;
     let pp = config.external_paths.prelude();
     let it_ident = idents::populator_iter();
-    let batch_param = idents::row_batch_param(&ir.generics);
+    let row_iter_param = idents::row_iter_param(&ir.generics);
+    let row_lifetime = idents::row_lifetime(&ir.generics);
     let rows = idents::rows_param(&ir.generics);
     let (impl_generics, ty_generics, where_clause) =
         super::bounds::impl_parts_with_bounds(ir, config);
@@ -109,10 +109,15 @@ pub fn generate_columnar_impl(ir: &StructIR, config: &super::MacroConfig) -> Tok
     quote! {
         #[automatically_derived]
         impl #impl_generics #columnar_trait for #struct_name #ty_generics #where_clause {
-            fn encode<#batch_param>(#rows: &#batch_param) -> #pp::PolarsResult<#pp::DataFrame>
+            fn encode<#row_lifetime, #row_iter_param>(
+                #rows: #row_iter_param,
+            ) -> #pp::PolarsResult<#pp::DataFrame>
             where
-                #batch_param: #row_batch_trait<Self> + ?::core::marker::Sized,
+                Self: #row_lifetime,
+                #row_iter_param: ::core::iter::IntoIterator<Item = &#row_lifetime Self>,
             {
+                let #rows: ::std::vec::Vec<&#row_lifetime Self> =
+                    ::core::iter::IntoIterator::into_iter(#rows).collect();
                 #columnar_body
             }
         }

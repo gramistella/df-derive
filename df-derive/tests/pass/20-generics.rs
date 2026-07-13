@@ -5,7 +5,7 @@ use polars::prelude::*;
 use std::marker::PhantomData;
 #[path = "../support/local_runtime.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
@@ -50,13 +50,15 @@ where
     name: String,
 }
 
-// The derive's method-level batch parameter must be fresh against every
-// user-declared generic, including consecutive internal-looking names.
+// The derive's method-level iterator and lifetime parameters must be fresh
+// against every user-declared generic, including consecutive internal-looking
+// names.
 #[derive(ToDataFrame, Clone)]
 #[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
-struct BatchParamNameCollision<
-    __DfDeriveBatch,
-    const __DfDeriveBatch_1: usize,
+struct EncodeParamNameCollision<
+    '__df_derive_row,
+    __DfDeriveRows,
+    const __DfDeriveRows_1: usize,
     const rows: usize,
 > {
     id: u32,
@@ -64,7 +66,11 @@ struct BatchParamNameCollision<
     label: Option<String>,
     nested: MetaStruct,
     #[df_derive(skip)]
-    marker: PhantomData<([__DfDeriveBatch; __DfDeriveBatch_1], [(); rows])>,
+    marker: PhantomData<(
+        &'__df_derive_row __DfDeriveRows,
+        [__DfDeriveRows; __DfDeriveRows_1],
+        [(); rows],
+    )>,
 }
 
 // Generic field wrapped in Option
@@ -165,12 +171,16 @@ where
 // flatten via a single column. Implementing a local trait for a foreign
 // primitive is allowed in this fixture runtime.
 impl Columnar for f64 {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
-        let values: Vec<Self> = rows.iter().copied().collect();
-        DataFrame::new(rows.len(), vec![Series::new("value".into(), &values).into()])
+        let values: Vec<Self> = rows.into_iter().copied().collect();
+        DataFrame::new(
+            values.len(),
+            vec![Series::new("value".into(), &values).into()],
+        )
     }
 }
 
@@ -197,7 +207,7 @@ fn main() {
 }
 
 fn test_batch_param_name_collision() {
-    let row = BatchParamNameCollision::<u8, 2, 3> {
+    let row = EncodeParamNameCollision::<'static, u8, 2, 3> {
         id: 7,
         values: vec![true, false],
         label: Some("collision-safe".into()),

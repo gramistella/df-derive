@@ -20,7 +20,7 @@
 
 - Public import: `use df_derive::prelude::*;`.
 - Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must implement `Columnar`, normally by deriving `ToDataFrame`.
-- Runtime primitive: derived types implement only `Columnar::encode<B>(&B)` for `B: RowBatch<Self>`; the runtime supplies `RowBatch` for `[T]` and `[&T]`.
+- Runtime primitive: derived types implement only `Columnar::encode<'a, R>(R)` for `R: IntoIterator<Item = &'a Self>`; the input iterator is consumed exactly once.
 - Blanket API: every `Columnar` type receives `ToDataFrame::{to_dataframe, empty_dataframe, schema}` (`schema()` returns `SchemaRef`), plus the `ToDataFrameVec` slice extension.
 - Field attributes verified from the current README/docs: `skip`, `flatten`, `flatten(prefix = "...")`, `as_string`, `as_str`, `as_binary`, `decimal(precision = N, scale = S)`, and `time_unit = "ms" | "us" | "ns"`.
 - Sources checked: [docs.rs `df-derive`](https://docs.rs/df-derive), [GitHub README](https://github.com/gramistella/df-derive), and the local README in this checkout.

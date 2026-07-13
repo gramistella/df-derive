@@ -4,48 +4,11 @@ use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 mod custom_runtime {
     use super::*;
 
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     pub trait MyColumnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     pub trait MyToDataFrame: MyColumnar {
@@ -94,7 +57,7 @@ mod custom_runtime {
 mod columnar_only_runtime {
     pub use super::custom_runtime::{
         MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
-        MyToDataFrame as ToDataFrame, RowBatch,
+        MyToDataFrame as ToDataFrame,
     };
 }
 
@@ -132,8 +95,8 @@ struct CustomColumnarOnly {
 
 fn main() {
     let builtin_trait_only = [BuiltinTraitOnly { id: 1 }];
-    let df = df_derive::dataframe::ToDataFrameVec::to_dataframe(builtin_trait_only.as_slice())
-        .unwrap();
+    let df =
+        df_derive::dataframe::ToDataFrameVec::to_dataframe(builtin_trait_only.as_slice()).unwrap();
     assert_eq!(df.shape(), (1, 1));
 
     let builtin_pair = [BuiltinTraitAndColumnar { id: 2 }];

@@ -50,27 +50,29 @@ pub use df_derive_macros::ToDataFrame;
 pub mod prelude {
     pub use crate::ToDataFrame;
     pub use crate::dataframe::{
-        Columnar, Decimal128Encode, RowBatch, ToDataFrame, ToDataFrame as ToDataFrameTrait,
-        ToDataFrameVec,
+        Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait, ToDataFrameVec,
     };
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use crate::ToDataFrame;
 
-    struct WrongLenBatch<'a, T>(&'a [T]);
+    struct CountedRows<'a, T> {
+        rows: &'a [T],
+        into_iter_calls: &'a Cell<usize>,
+    }
 
-    impl<T> crate::dataframe::RowBatch<T> for WrongLenBatch<'_, T> {
-        fn len(&self) -> usize {
-            self.0.len() + 1
-        }
+    impl<'a, T> IntoIterator for CountedRows<'a, T> {
+        type Item = &'a T;
+        type IntoIter = std::slice::Iter<'a, T>;
 
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            self.0.iter()
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_iter_calls
+                .set(self.into_iter_calls.get().saturating_add(1));
+            self.rows.iter()
         }
     }
 
@@ -105,25 +107,30 @@ mod tests {
         assert_eq!(batch.shape(), (2, 2));
 
         let refs: Vec<&SelfCrateRow> = rows.iter().collect();
-        let borrowed = SelfCrateRow::encode(refs.as_slice())?;
+        let borrowed = SelfCrateRow::encode(refs.iter().copied())?;
         assert!(batch.equals(&borrowed));
 
-        let wrong_len = WrongLenBatch(rows.as_slice());
-        let error = SelfCrateRow::encode(&wrong_len).unwrap_err();
-        match error {
-            polars::prelude::PolarsError::ShapeMismatch(message) => {
-                assert!(message.contains("height"), "{message}");
-            }
-            other => panic!("expected ShapeMismatch, got {other}"),
-        }
+        let into_iter_calls = Cell::new(0);
+        let counted = SelfCrateRow::encode(CountedRows {
+            rows: rows.as_slice(),
+            into_iter_calls: &into_iter_calls,
+        })?;
+        assert!(batch.equals(&counted));
+        assert_eq!(into_iter_calls.get(), 1);
+
+        let filtered = SelfCrateRow::encode(rows.iter().filter(|row| row.id == 2))?;
+        assert_eq!(filtered.shape(), (1, 2));
+        assert_eq!(filtered.column("id")?.u32()?.get(0), Some(2));
 
         let no_empty_rows: &[EmptyRow] = &[];
         assert_eq!(EmptyRow::encode(no_empty_rows)?.shape(), (0, 0));
         assert_eq!(EmptyRow::encode(&[EmptyRow {}][..])?.shape(), (1, 0));
-        assert_eq!(
-            EmptyRow::encode(&[EmptyRow {}, EmptyRow {}, EmptyRow {}][..])?.shape(),
-            (3, 0),
-        );
+        let empty_rows = [EmptyRow {}, EmptyRow {}, EmptyRow {}];
+        let filtered_empty_rows = empty_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| (index != 1).then_some(row));
+        assert_eq!(EmptyRow::encode(filtered_empty_rows)?.shape(), (2, 0));
 
         let units = [(), (), (), ()];
         assert_eq!(

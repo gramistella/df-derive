@@ -146,10 +146,12 @@ measure(Approach::DfDerive, rows, || {
 ```
 
 `Columnar::encode` is the single runtime primitive. It accepts any
-`RowBatch<ShowcaseRow>`; the runtime provides the direct `[ShowcaseRow]` and
-borrowed `[&ShowcaseRow]` batch forms. The derive emits that implementation,
-and the blanket `ToDataFrame` implementation derives single-row, empty-frame,
-and `SchemaRef` behavior from it.
+`IntoIterator<Item = &ShowcaseRow>`, including slices and one-shot iterator
+adapters, and consumes that input exactly once. Generated implementations
+currently stabilize the borrowed rows once in a `Vec<&ShowcaseRow>` for their
+shape-dependent column-building passes. The blanket `ToDataFrame`
+implementation derives single-row, empty-frame, and `SchemaRef` behavior from
+that primitive.
 
 The user-facing form is the same conversion through the slice extension:
 

@@ -5,7 +5,7 @@
 //!   field is decoded by calling `payload.to_dataframe()` once per item and
 //!   extracting `AnyValues` into per-column accumulators.
 //! - `_bulk`: the macro-generated path that collects nested row references
-//!   into one `RowBatch` encoding call, validates it against a typed empty
+//!   into one iterator encoding call, validates it against a typed empty
 //!   encoding, then prefix-renames the resulting columns onto the parent
 //!   `DataFrame`.
 
@@ -18,7 +18,7 @@ mod bench_support;
 #[path = "../tests/support/local_runtime.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame};
+use crate::core::dataframe::{Columnar, ToDataFrame};
 
 const N_ROWS: usize = 100_000;
 
@@ -41,16 +41,17 @@ where
     payload: T,
 }
 
-// Local batch primitive so Wrapper<f64> can flatten via a single column.
+// Local iterator encoding primitive so Wrapper<f64> can flatten via a single column.
 // The runtime's blanket impl derives every ToDataFrame operation from this.
 impl Columnar for f64 {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
-        let values: Vec<Self> = rows.iter().copied().collect();
+        let values: Vec<Self> = rows.into_iter().copied().collect();
         DataFrame::new(
-            rows.len(),
+            values.len(),
             vec![Series::new("value".into(), &values).into()],
         )
     }

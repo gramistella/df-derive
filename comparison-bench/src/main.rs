@@ -901,7 +901,7 @@ fn render_report(showcase: &ShowcaseOutput, timings: &[BenchStats]) -> Result<St
     report.push_str("## API confirmation\n\n");
     report.push_str("- Public import: `use df_derive::prelude::*;`.\n");
     report.push_str("- Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must implement `Columnar`, normally by deriving `ToDataFrame`.\n");
-    report.push_str("- Runtime primitive: derived types implement only `Columnar::encode<B>(&B)` for `B: RowBatch<Self>`; the runtime supplies `RowBatch` for `[T]` and `[&T]`.\n");
+    report.push_str("- Runtime primitive: derived types implement only `Columnar::encode<'a, R>(R)` for `R: IntoIterator<Item = &'a Self>`; the input iterator is consumed exactly once.\n");
     report.push_str("- Blanket API: every `Columnar` type receives `ToDataFrame::{to_dataframe, empty_dataframe, schema}` (`schema()` returns `SchemaRef`), plus the `ToDataFrameVec` slice extension.\n");
     report.push_str("- Field attributes verified from the current README/docs: `skip`, `flatten`, `flatten(prefix = \"...\")`, `as_string`, `as_str`, `as_binary`, `decimal(precision = N, scale = S)`, and `time_unit = \"ms\" | \"us\" | \"ns\"`.\n");
     report.push_str("- Sources checked: [docs.rs `df-derive`](https://docs.rs/df-derive), [GitHub README](https://github.com/gramistella/df-derive), and the local README in this checkout.\n\n");

@@ -6,8 +6,8 @@
 // macro can be applied to a struct whose generic argument is not `Clone`.
 
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
-use df_derive::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
 
 // Nested-path payload: implements the sole batch primitive, deliberately NOT
 // `Clone`. Used as the generic argument for fields without a transform (which
@@ -18,12 +18,13 @@ struct NoClonePayload {
 }
 
 impl Columnar for NoClonePayload {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
-        let vals: Vec<i64> = rows.iter().map(|row| row.value).collect();
-        DataFrame::new(rows.len(), vec![Series::new("value".into(), &vals).into()])
+        let vals: Vec<i64> = rows.into_iter().map(|row| row.value).collect();
+        DataFrame::new(vals.len(), vec![Series::new("value".into(), &vals).into()])
     }
 }
 

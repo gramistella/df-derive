@@ -6,16 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **Breaking**: `Columnar::encode<B: RowBatch<Self> + ?Sized>` is now the
-  single generated runtime primitive. The two slice-specific columnar methods
-  and generated `ToDataFrame` implementations were removed.
-- **Breaking for custom runtimes**: runtimes must provide `RowBatch` beside
-  `Columnar` and blanket-implement `ToDataFrame` for `T: Columnar`.
+- **Breaking**: `Columnar::encode` now accepts any
+  `IntoIterator<Item = &Self>` and consumes that input exactly once. The
+  repeatable `RowBatch` abstraction was removed, along with its separate
+  reported length and repeated-traversal contract.
+- **Breaking for custom runtimes**: runtimes must provide the iterator-based
+  `Columnar` trait and blanket-implement `ToDataFrame` for `T: Columnar`.
   `ToDataFrame::{to_dataframe, empty_dataframe, schema}` now derive from
   `Columnar::encode`; `schema()` returns Polars `SchemaRef`.
 - Generic nested payload bounds now require only `Columnar`. A standalone
-  `columnar = "..."` runtime override is accepted and its sibling runtime
-  trait paths are inferred.
+  `columnar = "..."` runtime override is accepted and its sibling
+  `ToDataFrame` and decimal runtime trait paths are inferred.
 
 ### Fixed
 
@@ -23,22 +24,20 @@ All notable changes to this project will be documented in this file.
   by height, width, ordered column names, and dtypes before positional
   consumption, so extra, missing, reordered, mistyped, or wrong-height child
   output can no longer be silently accepted.
-- Generated frames now use the batch's declared row count with
-  `DataFrame::new(rows.len(), columns)`. A `RowBatch` whose reported length
-  disagrees with every emitted column is rejected instead of letting the first
-  column silently choose the frame height.
-- Generated `encode` batch-type and row-value identifiers are now freshened
-  against user type, const, and lifetime generics. Internal-looking generic
-  names and a const generic named `rows` no longer collide with generated
-  method parameters.
+- Generated frames derive their height from the rows actually yielded by the
+  caller. There is no separately reported batch length that can disagree with
+  the input iterator or emitted columns.
+- Generated `encode` iterator-type, lifetime, and row-value identifiers are
+  now freshened against user type, const, and lifetime generics.
+  Internal-looking generic names and a const generic named `rows` no longer
+  collide with generated method parameters.
 
 ### Performance
 
-- Direct and borrowed batches share one generated body. The runtime's fallback
-  `Vec<&T>` adapter is gone, and nested composition no longer depends on
-  autoderef keeping two copied bodies equivalent. Derived top-level encoders
-  already bypassed that fallback in 0.4.0, so this is a surface/code-size win
-  rather than a claimed hot-path speedup.
+- Direct, borrowed, and arbitrary iterator inputs share one generated body.
+  The input is consumed once into a `Vec<&T>` so the shape-dependent column
+  emitters can make their required passes without requiring a repeatable
+  caller-owned batch abstraction.
 - Empty structs and unit payloads use `DataFrame::empty_with_height` directly;
   the temporary null column and `drop_in_place` workaround are gone.
 - Nested validation reads ordered names and dtypes directly from child columns,

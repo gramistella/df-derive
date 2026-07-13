@@ -140,7 +140,7 @@ pub(super) fn nested_df_decl(
 ) -> TokenStream {
     let validate_nested_frame = idents::validate_nested_frame();
     quote! {
-        let #df = <#ty as #columnar_trait>::encode(#flat.as_slice())?;
+        let #df = <#ty as #columnar_trait>::encode(#flat.iter().copied())?;
         #validate_nested_frame(
             &#df,
             &#schema,

@@ -82,7 +82,8 @@ fn build_nested_emit(
     type_path: &TokenStream,
     rows: &Ident,
 ) -> ColumnEmit {
-    // The nested encoder paths run their own `for __df_derive_it in rows.iter()`
+    // The nested encoder paths run their own `for __df_derive_it in
+    // rows.iter().copied()`
     // loops to build their flat ref vec, so the access expression is
     // hard-rooted at the centralized populator-iter ident regardless of the
     // call site's outer-loop binding.
@@ -276,7 +277,7 @@ fn build_projected_standard_emit(
             quote! {
                 {
                     #(#decls)*
-                    for #it in #rows.iter() { #push }
+                    for #it in #rows.iter().copied() { #push }
                     let #series_local: #pp::Series = #series;
                     let #named = #series_local.with_name(#name.into());
                     #columns.push(#named.into());

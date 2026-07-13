@@ -25,48 +25,11 @@ mod row_traits {
 mod batch_traits {
     use super::*;
 
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     pub trait Columnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     pub trait MyToDataFrameVec {
@@ -100,7 +63,7 @@ mod decimal_traits {
 #[df_derive(
     columnar = "batch_traits::Columnar",
     decimal128_encode = "decimal_traits::MyDecimal128Encode",
-    trait = "row_traits::MyToDataFrame",
+    trait = "row_traits::MyToDataFrame"
 )]
 struct ReversedOverrides {
     #[df_derive(decimal(precision = 18, scale = 2))]

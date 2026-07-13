@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{Columnar, RowBatch};
+use df_derive::dataframe::Columnar;
 use polars::prelude::*;
 
 #[derive(Clone)]
@@ -41,10 +41,12 @@ fn empty_value_label_frame() -> PolarsResult<DataFrame> {
 }
 
 impl Columnar for BadHeightInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         if rows.is_empty() {
             return empty_value_frame();
         }
@@ -57,10 +59,12 @@ impl Columnar for BadHeightInner {
 }
 
 impl Columnar for ExtraColumnInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         if rows.is_empty() {
             return empty_value_frame();
         }
@@ -77,10 +81,12 @@ impl Columnar for ExtraColumnInner {
 }
 
 impl Columnar for MissingColumnInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         if rows.is_empty() {
             return empty_value_label_frame();
         }
@@ -90,10 +96,12 @@ impl Columnar for MissingColumnInner {
 }
 
 impl Columnar for ReorderedColumnsInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         if rows.is_empty() {
             return empty_value_label_frame();
         }
@@ -110,10 +118,12 @@ impl Columnar for ReorderedColumnsInner {
 }
 
 impl Columnar for BadDtypeInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         if rows.is_empty() {
             return empty_value_frame();
         }
@@ -123,10 +133,12 @@ impl Columnar for BadDtypeInner {
 }
 
 impl Columnar for ValidInner {
-    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
     where
-        B: RowBatch<Self> + ?Sized,
+        Self: 'a,
+        R: IntoIterator<Item = &'a Self>,
     {
+        let rows: Vec<&Self> = rows.into_iter().collect();
         let values: Vec<i64> = rows.iter().map(|row| row.value).collect();
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         DataFrame::new(

@@ -8,49 +8,12 @@ use df_derive::dataframe as paft_traits; // Alias for clarity
 mod my_traits {
     use super::*; // Access PolarsResult, etc.
 
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.
     pub trait Columnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     // This is our custom convenience trait, blanket-implemented from Columnar.
@@ -135,7 +98,9 @@ fn main() {
     println!("✅ Default path (single) implementation works.");
 
     // == TEST B: Verify the struct using the custom path ==
-    let custom_instance = CustomPath { name: "test".into() };
+    let custom_instance = CustomPath {
+        name: "test".into(),
+    };
     // The custom convenience trait is available through its Columnar blanket impl.
     let df_custom = my_traits::MyToDataFrame::to_dataframe(&custom_instance).unwrap();
     assert_eq!(df_custom.shape(), (1, 1));
@@ -144,7 +109,10 @@ fn main() {
 
     // This tests the auto-inferred `Columnar` trait path.
     use my_traits::MyToDataFrameVec;
-    let custom_vec = vec![CustomPath { name: "a".into() }, CustomPath { name: "b".into() }];
+    let custom_vec = vec![
+        CustomPath { name: "a".into() },
+        CustomPath { name: "b".into() },
+    ];
     let df_custom_vec = custom_vec.as_slice().to_dataframe().unwrap();
     assert_eq!(df_custom_vec.shape(), (2, 1));
     assert_eq!(df_custom_vec.get_column_names(), &["name"]);
@@ -157,7 +125,7 @@ fn main() {
     assert_eq!(df_explicit.shape(), (1, 1));
     assert_eq!(df_explicit.get_column_names(), &["value"]);
     println!("✅ Explicit path (single) implementation works.");
-    
+
     // This tests the explicitly provided `Columnar` trait path.
     let explicit_vec = vec![ExplicitPath { value: 1.0 }, ExplicitPath { value: 2.0 }];
     let df_explicit_vec = explicit_vec.as_slice().to_dataframe().unwrap();
@@ -183,7 +151,10 @@ fn main() {
 
     let empty_nested = <CustomOuter as my_traits::MyToDataFrame>::empty_dataframe().unwrap();
     assert_eq!(empty_nested.shape(), (0, 2));
-    assert_eq!(empty_nested.get_column_names(), &["inner.value", "inners.value"]);
+    assert_eq!(
+        empty_nested.get_column_names(),
+        &["inner.value", "inners.value"]
+    );
 
     let nested_instance = CustomOuter {
         inner: CustomInner { value: 1 },
@@ -191,7 +162,10 @@ fn main() {
     };
     let nested_df = my_traits::MyToDataFrame::to_dataframe(&nested_instance).unwrap();
     assert_eq!(nested_df.shape(), (1, 2));
-    assert_eq!(nested_df.get_column_names(), &["inner.value", "inners.value"]);
+    assert_eq!(
+        nested_df.get_column_names(),
+        &["inner.value", "inners.value"]
+    );
     println!("✅ Custom path nested schema/empty implementation works.");
 
     println!("\n✅ Side-by-side test successful!");

@@ -139,48 +139,11 @@ pub mod dataframe {
         pub use pa as polars_arrow;
     }
 
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     pub trait Columnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     pub trait ToDataFrame: Columnar {
@@ -219,54 +182,13 @@ pub mod dataframe {
 "#
 }
 
-fn row_batch_runtime_source() -> &'static str {
-    r#"
-    pub trait RowBatch<T: ?Sized> {
-        fn len(&self) -> usize;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-"#
-}
-
 fn runtime_traits_source() -> &'static str {
     r#"
     pub trait Columnar: Sized {
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     pub trait ToDataFrame: Columnar {
@@ -316,7 +238,6 @@ pub mod dataframe {
         pub use polars_arrow;
     }
 "#,
-        row_batch_runtime_source(),
         runtime_traits_source(),
         "}\n",
     ]
@@ -329,7 +250,6 @@ fn explicit_runtime_module_source() -> String {
 mod runtime {
     use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 "#,
-        row_batch_runtime_source(),
         runtime_traits_source(),
         "}\n",
     ]
@@ -349,7 +269,6 @@ mod core {
             pub use pa as polars_arrow;
         }
 "#,
-        row_batch_runtime_source(),
         runtime_traits_source(),
         "    }\n}\n",
     ]

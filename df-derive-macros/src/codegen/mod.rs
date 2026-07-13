@@ -57,7 +57,6 @@ mod tests {
             traits: config::RuntimeTraitPaths {
                 to_dataframe: syn::parse_quote!(crate::dataframe::ToDataFrame),
                 columnar: syn::parse_quote!(crate::dataframe::Columnar),
-                row_batch: syn::parse_quote!(crate::dataframe::RowBatch),
                 decimal128_encode: syn::parse_quote!(crate::dataframe::Decimal128Encode),
             },
             external_paths: external_paths::default_runtime_paths(&dataframe_mod),
@@ -163,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_frames_use_the_declared_batch_height() {
+    fn generated_frames_use_the_yielded_row_count() {
         let empty_ir = StructIR {
             name: format_ident!("EmptyRow"),
             generics: syn::Generics::default(),

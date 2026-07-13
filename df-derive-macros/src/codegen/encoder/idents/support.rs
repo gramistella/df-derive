@@ -1,3 +1,4 @@
+use proc_macro2::Span;
 use quote::format_ident;
 use syn::{GenericParam, Generics, Ident};
 
@@ -9,8 +10,13 @@ pub(in crate::codegen) fn populator_iter() -> Ident {
     format_ident!("__df_derive_it")
 }
 
-pub(in crate::codegen) fn row_batch_param(generics: &Generics) -> Ident {
-    fresh_generic_ident(generics, "__DfDeriveBatch")
+pub(in crate::codegen) fn row_iter_param(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__DfDeriveRows")
+}
+
+pub(in crate::codegen) fn row_lifetime(generics: &Generics) -> syn::Lifetime {
+    let ident = fresh_generic_ident(generics, "__df_derive_row");
+    syn::Lifetime::new(&format!("'{ident}"), Span::call_site())
 }
 
 pub(in crate::codegen) fn rows_param(generics: &Generics) -> Ident {
@@ -84,10 +90,11 @@ mod tests {
     #[test]
     fn encode_parameters_are_fresh_against_user_generics() {
         let generics: Generics = syn::parse_quote!(
-            <__DfDeriveBatch, const __DfDeriveBatch_1: usize, const rows: usize>
+            <'__df_derive_row, __DfDeriveRows, const __DfDeriveRows_1: usize, const rows: usize>
         );
 
-        assert_eq!(row_batch_param(&generics), "__DfDeriveBatch_2");
+        assert_eq!(row_iter_param(&generics), "__DfDeriveRows_2");
+        assert_eq!(row_lifetime(&generics).to_string(), "'__df_derive_row_1");
         assert_eq!(rows_param(&generics), "rows_1");
     }
 }

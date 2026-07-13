@@ -299,7 +299,7 @@ fn ctb_leaf_scan_depth0(
     if option_layers == 0 {
         let value_ref = ctb_depth0_ref_expr(access, access_chain);
         quote! {
-            for #it in #rows.iter() {
+            for #it in #rows.iter().copied() {
                 #flat.push(#value_ref);
             }
         }
@@ -310,7 +310,7 @@ fn ctb_leaf_scan_depth0(
         let match_expr = ctb_depth0_match_expr(access, access_chain, option_layers);
         let flat_idx = idx_size_len_expr(flat, pp);
         quote! {
-            for #it in #rows.iter() {
+            for #it in #rows.iter().copied() {
                 match #match_expr {
                     ::std::option::Option::Some(#v) => {
                         #positions.push(::std::option::Option::Some(

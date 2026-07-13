@@ -9,8 +9,6 @@
 //!
 //! The [`dataframe`] module exposes:
 //!
-//! - [`dataframe::RowBatch`] — the borrowed-row abstraction accepted by the
-//!   encoder.
 //! - [`dataframe::Columnar`] — the single batch-encoding primitive populated
 //!   by the derive.
 //! - [`dataframe::ToDataFrame`] — the per-instance and schema API derived
@@ -80,65 +78,6 @@ pub mod dataframe {
         pub use polars_arrow;
     }
 
-    /// Borrowed rows accepted by [`Columnar::encode`].
-    ///
-    /// Implementations may project rows from another batch without allocating
-    /// an intermediate `Vec<&T>`. The runtime provides the two fundamental
-    /// representations: direct rows (`[T]`) and borrowed rows (`[&T]`).
-    ///
-    /// # Implementation contract
-    ///
-    /// [`RowBatch::len`] must equal the exact length reported by
-    /// [`RowBatch::iter`]. Repeated calls to `iter` must visit the same rows in
-    /// the same order. Generated encoders may traverse a batch more than once
-    /// and use `len` independently for capacities, offsets, validity, and
-    /// zero-column frame heights.
-    pub trait RowBatch<T: ?Sized> {
-        /// Number of rows in the batch.
-        fn len(&self) -> usize;
-
-        /// Whether the batch contains no rows.
-        #[inline]
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        /// Iterate over every row by reference.
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a;
-    }
-
-    impl<T> RowBatch<T> for [T] {
-        #[inline]
-        fn len(&self) -> usize {
-            <[T]>::len(self)
-        }
-
-        #[inline]
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[T]>::iter(self)
-        }
-    }
-
-    impl<T: ?Sized> RowBatch<T> for [&T] {
-        #[inline]
-        fn len(&self) -> usize {
-            <[&T]>::len(self)
-        }
-
-        #[inline]
-        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
-        where
-            T: 'a,
-        {
-            <[&T]>::iter(self).copied()
-        }
-    }
-
     /// Convenience API derived from the single [`Columnar::encode`] runtime
     /// primitive.
     pub trait ToDataFrame: Columnar {
@@ -170,18 +109,20 @@ pub mod dataframe {
     ///
     /// # Implementation contract
     ///
-    /// An implementation must return exactly `rows.len()` rows. Its complete
-    /// schema — width, ordered column names, and data types — must be identical
-    /// for every batch, including the empty batch used by
+    /// An implementation must consume the supplied iterator exactly once and
+    /// return one row for every yielded reference. Its complete schema —
+    /// width, ordered column names, and data types — must be identical for
+    /// every batch, including the empty batch used by
     /// [`ToDataFrame::schema`]. It must not return undeclared extra columns or
     /// omit declared columns. Derived parents validate these invariants before
     /// consuming a manually implemented nested encoder.
     pub trait Columnar: Sized {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized;
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>;
     }
 
     /// Extension trait enabling `.to_dataframe()` on slices (and `Vec` via auto-deref).
@@ -207,11 +148,12 @@ pub mod dataframe {
     // the batch height.
     impl Columnar for () {
         #[inline]
-        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
-            B: RowBatch<Self> + ?Sized,
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>,
         {
-            Ok(DataFrame::empty_with_height(rows.len()))
+            Ok(DataFrame::empty_with_height(rows.into_iter().count()))
         }
     }
 

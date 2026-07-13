@@ -64,6 +64,19 @@ mod custom_runtime {
 
     impl<T: MyColumnar> MyToDataFrame for T {}
 
+    #[derive(Clone)]
+    pub struct CustomDecimal(pub i128);
+
+    pub trait MyDecimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+
+    impl MyDecimal128Encode for CustomDecimal {
+        fn try_to_i128_mantissa(&self, _target_scale: u32) -> Option<i128> {
+            Some(self.0)
+        }
+    }
+
     pub trait ToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
     }
@@ -80,7 +93,8 @@ mod custom_runtime {
 
 mod columnar_only_runtime {
     pub use super::custom_runtime::{
-        MyColumnar as Columnar, MyToDataFrame as ToDataFrame, RowBatch,
+        MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
+        MyToDataFrame as ToDataFrame, RowBatch,
     };
 }
 
@@ -112,6 +126,8 @@ struct CustomTraitAndColumnar {
 #[df_derive(columnar = "columnar_only_runtime::Columnar")]
 struct CustomColumnarOnly {
     id: u32,
+    #[df_derive(decimal(precision = 18, scale = 2))]
+    amount: custom_runtime::CustomDecimal,
 }
 
 fn main() {
@@ -128,7 +144,10 @@ fn main() {
     let df = custom_runtime::ToDataFrameVec::to_dataframe(custom_pair.as_slice()).unwrap();
     assert_eq!(df.shape(), (1, 1));
 
-    let custom_columnar_only = CustomColumnarOnly { id: 4 };
+    let custom_columnar_only = CustomColumnarOnly {
+        id: 4,
+        amount: custom_runtime::CustomDecimal(4250),
+    };
     let df = columnar_only_runtime::ToDataFrame::to_dataframe(&custom_columnar_only).unwrap();
-    assert_eq!(df.shape(), (1, 1));
+    assert_eq!(df.shape(), (1, 2));
 }

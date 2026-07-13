@@ -89,11 +89,10 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         (None, None) => attrs::runtime_trait_path(&default_df_mod, "Columnar"),
     };
     let row_batch = attrs::rebase_last_segment(&columnar, "RowBatch");
-    let decimal128_encode = match (&attrs.decimal128_encode, &attrs.to_dataframe) {
-        (Some(override_), _) => override_.value.clone(),
-        (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Decimal128Encode"),
-        (None, None) => attrs::runtime_trait_path(&default_df_mod, "Decimal128Encode"),
-    };
+    let decimal128_encode = attrs.decimal128_encode.as_ref().map_or_else(
+        || attrs::rebase_last_segment(&columnar, "Decimal128Encode"),
+        |override_| override_.value.clone(),
+    );
     let external_paths = explicit_default_dataframe_mod.as_ref().map_or_else(
         || {
             if uses_default_dataframe_runtime {
@@ -117,4 +116,32 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         },
         external_paths,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+
+    use super::*;
+
+    #[test]
+    fn standalone_columnar_override_selects_sibling_decimal_trait() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[df_derive(columnar = "custom_runtime::Columnar")]
+            struct Row {
+                value: CustomDecimal,
+            }
+        };
+
+        let config = build_macro_config(&input).expect("runtime override should parse");
+
+        assert_eq!(
+            config
+                .traits
+                .decimal128_encode
+                .to_token_stream()
+                .to_string(),
+            "custom_runtime :: Decimal128Encode",
+        );
+    }
 }

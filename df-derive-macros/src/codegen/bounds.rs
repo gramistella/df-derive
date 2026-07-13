@@ -63,8 +63,8 @@ fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
 
 /// Build `impl_generics`, `ty_generics`, and `where_clause` token streams
 /// suitable for splicing into an `impl` header. Generic bounds are driven by
-/// each parameter's role: direct generic dataframe payloads need
-/// `ToDataFrame` + `Columnar`, decimal backends need `Decimal128Encode`, generic `as_str`
+/// each parameter's role: direct generic dataframe payloads need `Columnar`,
+/// decimal backends need `Decimal128Encode`, generic `as_str`
 /// leaves need `AsRef<str>`, generic `as_string` leaves need `Display`, and
 /// concrete conversion/nested types receive exact `where` predicates.
 pub(in crate::codegen) fn impl_parts_with_bounds(
@@ -74,11 +74,8 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let mut generics = ir.generics.clone();
     let reqs = collect_generic_requirements(ir);
 
-    let to_df_trait = &config.traits.to_dataframe;
     let columnar_trait = &config.traits.columnar;
     let decimal_trait = &config.traits.decimal128_encode;
-    let to_df_bound: syn::TypeParamBound =
-        syn::parse2(quote! { #to_df_trait }).expect("trait path should parse as bound");
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
     let decimal_bound: syn::TypeParamBound =
@@ -88,14 +85,13 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let display_bound: syn::TypeParamBound =
         syn::parse2(quote! { ::core::fmt::Display }).expect("Display should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
-    // `Columnar::columnar_from_refs`, and every primitive-vec branch in the
+    // `Columnar::encode`, and every primitive-vec branch in the
     // encoder IR borrows from the for-loop binding directly. A user with a
-    // non-`Clone` payload (e.g. `T: ToDataFrame + Columnar` only) can derive
+    // non-`Clone` payload (e.g. `T: Columnar` only) can derive
     // `ToDataFrame` on a struct holding `T` without that bound leaking from
     // the macro.
     for tp in generics.type_params_mut() {
         if contains_ident(&reqs.nested_params, &tp.ident) {
-            tp.bounds.push(to_df_bound.clone());
             tp.bounds.push(columnar_bound.clone());
         }
 
@@ -122,10 +118,6 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
         for ty in &reqs.nested_types {
             let nested_ty = quote! { #ty };
 
-            where_clause_mut.predicates.push(
-                syn::parse2(quote! { #nested_ty: #to_df_trait })
-                    .expect("nested ToDataFrame where predicate should parse"),
-            );
             where_clause_mut.predicates.push(
                 syn::parse2(quote! { #nested_ty: #columnar_trait })
                     .expect("nested Columnar where predicate should parse"),

@@ -1,42 +1,81 @@
 use df_derive::ToDataFrame;
-use polars::prelude::{DataFrame, DataType, PolarsResult};
+use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 use rust_decimal::Decimal;
 
 mod row_traits {
     use super::*;
 
-    pub trait MyToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    pub trait MyToDataFrame: super::batch_traits::Columnar {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
+        }
+
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
     }
+
+    impl<T: super::batch_traits::Columnar> MyToDataFrame for T {}
 }
 
 mod batch_traits {
     use super::*;
 
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+    pub trait RowBatch<T: ?Sized> {
+        fn len(&self) -> usize;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
         }
 
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
+    }
+
+    impl<T> RowBatch<T> for [T] {
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
+    }
+
+    pub trait Columnar: Sized {
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
     }
 
     pub trait MyToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
     }
 
-    impl<T> MyToDataFrameVec for [T]
-    where
-        T: Columnar + super::row_traits::MyToDataFrame,
-    {
+    impl<T: Columnar> MyToDataFrameVec for [T] {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as super::row_traits::MyToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as Columnar>::encode(self)
         }
     }
 }

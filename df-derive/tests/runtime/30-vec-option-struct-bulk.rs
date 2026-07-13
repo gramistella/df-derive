@@ -3,16 +3,15 @@
 // outer list itself stays non-null even for empty Vecs.
 //
 // The bulk emitter for this shape gathers `&Inner` references for each
-// `Some(v)` element, calls `Inner::columnar_from_refs` once on the gathered
+// `Some(v)` element, calls `Inner::encode` once on the gathered borrowed
 // slice, then expands each inner schema column via `Series::take(&IdxCa)`
 // over a per-element position vector. A regression that flipped the
 // per-element bit logic (treating `None` as `Some` or vice versa), or that
 // swapped `validity = None` for the outer list, would either drop nulls or
 // wreck offsets — both surface here as failed `AnyValue::Null` assertions.
 //
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// Call the single `Columnar::encode` primitive directly so this regression
+// stays scoped to the batch encoder rather than its public convenience APIs.
 
 use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
@@ -64,7 +63,7 @@ fn runtime_semantics() {
 // correct typed schema. The bulk emitter never enters its scan loop.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 0);
     assert_inner_columns_typed(&df, 0);
 }
@@ -79,7 +78,7 @@ fn test_all_some_but_empty_vec() {
             payload: Vec::new(),
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
 
@@ -118,7 +117,7 @@ fn test_all_none_elements() {
     ];
     let expected_lens = [3usize, 1, 2];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 3);
     assert_inner_columns_typed(&df, 3);
 
@@ -216,7 +215,7 @@ fn test_mixed_some_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 6);
     assert_inner_columns_typed(&df, 6);
 

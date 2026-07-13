@@ -25,17 +25,19 @@ pub(super) struct LeafArm {
     pub series: TokenStream,
 }
 
-pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream) -> TokenStream {
+pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
+    let rows = ctx.base.rows;
     quote! {
         let mut #buf: ::std::vec::Vec<#elem> =
-            ::std::vec::Vec::with_capacity(items.len());
+            ::std::vec::Vec::with_capacity(#rows.len());
     }
 }
 
-pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
+pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
+    let rows = ctx.base.rows;
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap =
-            #pa_root::bitmap::MutableBitmap::with_capacity(items.len());
+            #pa_root::bitmap::MutableBitmap::with_capacity(#rows.len());
     }
 }
 
@@ -59,17 +61,23 @@ pub(super) fn row_idx_decl(ident: &syn::Ident) -> TokenStream {
     quote! { let mut #ident: usize = 0; }
 }
 
-pub(super) fn mbva_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
+pub(super) fn mbva_decl(buf: &syn::Ident, pa_root: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
+    let rows = ctx.base.rows;
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<str> =
-            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(items.len());
+            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#rows.len());
     }
 }
 
-pub(super) fn mbva_bytes_decl(buf: &syn::Ident, pa_root: &TokenStream) -> TokenStream {
+pub(super) fn mbva_bytes_decl(
+    buf: &syn::Ident,
+    pa_root: &TokenStream,
+    ctx: &LeafCtx<'_>,
+) -> TokenStream {
+    let rows = ctx.base.rows;
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
-            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(items.len());
+            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#rows.len());
     }
 }
 
@@ -137,7 +145,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
                 #pp::IntoSeries::into_series(#chunked::from_vec(#name.into(), #buf))
             };
             LeafArm {
-                decls: vec![vec_decl(&buf, native)],
+                decls: vec![vec_decl(&buf, native, ctx)],
                 push: bare_push,
                 series: bare_series,
             }
@@ -168,7 +176,10 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
                 #pp::IntoSeries::into_series(#chunked::with_chunk(#name.into(), arr))
             }};
             LeafArm {
-                decls: vec![vec_decl(&buf, native), mb_decl(&validity, pa_root)],
+                decls: vec![
+                    vec_decl(&buf, native, ctx),
+                    mb_decl(&validity, pa_root, ctx),
+                ],
                 push: option_push,
                 series: option_series,
             }
@@ -185,13 +196,14 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
+    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
             let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
             let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
             LeafArm {
-                decls: vec![mbva_decl(&buf, pa_root)],
+                decls: vec![mbva_decl(&buf, pa_root, ctx)],
                 push: bare_push,
                 series: bare_series,
             }
@@ -218,8 +230,8 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             );
             LeafArm {
                 decls: vec![
-                    mbva_decl(&buf, pa_root),
-                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    mbva_decl(&buf, pa_root, ctx),
+                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -238,6 +250,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
+    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
@@ -245,7 +258,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             let bare_push = quote! { #buf.push_value_ignore_validity(#bytes); };
             let bare_series = binary_chunked_series(name, &quote! { #buf.freeze() }, pp);
             LeafArm {
-                decls: vec![mbva_bytes_decl(&buf, pa_root)],
+                decls: vec![mbva_bytes_decl(&buf, pa_root, ctx)],
                 push: bare_push,
                 series: bare_series,
             }
@@ -274,8 +287,8 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             );
             LeafArm {
                 decls: vec![
-                    mbva_bytes_decl(&buf, pa_root),
-                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    mbva_bytes_decl(&buf, pa_root, ctx),
+                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -298,13 +311,14 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
+    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
             let bare_push = quote! { #buf.push({ #access }); };
             let bare_series = named_from_buf(name, &buf, pp);
             LeafArm {
-                decls: vec![vec_decl(&buf, &quote! { bool })],
+                decls: vec![vec_decl(&buf, &quote! { bool }, ctx)],
                 push: bare_push,
                 series: bare_series,
             }
@@ -331,8 +345,8 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }};
             LeafArm {
                 decls: vec![
-                    mb_decl_filled(&buf, &quote! { items.len() }, false, pa_root),
-                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    mb_decl_filled(&buf, &quote! { #rows.len() }, false, pa_root),
+                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -402,7 +416,7 @@ pub(super) fn decimal_leaf(
                 #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
             }};
             LeafArm {
-                decls: vec![vec_decl(&buf, &quote! { i128 })],
+                decls: vec![vec_decl(&buf, &quote! { i128 }, ctx)],
                 push,
                 series: bare_series,
             }
@@ -416,7 +430,7 @@ pub(super) fn decimal_leaf(
                 #pp::IntoSeries::into_series(ca.into_decimal_unchecked(#p, #s))
             }};
             LeafArm {
-                decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i128> })],
+                decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<i128> }, ctx)],
                 push,
                 series: option_series,
             }
@@ -482,12 +496,16 @@ fn mapped_cast_leaf(
     }};
     match arm {
         LeafArmKind::Bare => LeafArm {
-            decls: vec![vec_decl(&buf, native)],
+            decls: vec![vec_decl(&buf, native, ctx)],
             push,
             series: series_finish,
         },
         LeafArmKind::Option { .. } => LeafArm {
-            decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<#native> })],
+            decls: vec![vec_decl(
+                &buf,
+                &quote! { ::std::option::Option<#native> },
+                ctx,
+            )],
             push,
             series: series_finish,
         },
@@ -504,6 +522,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
+    let rows = ctx.base.rows;
     let scratch_decl =
         quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); };
 
@@ -525,7 +544,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             };
             let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
             LeafArm {
-                decls: vec![mbva_decl(&buf, pa_root), scratch_decl],
+                decls: vec![mbva_decl(&buf, pa_root, ctx), scratch_decl],
                 push: bare_push,
                 series: bare_series,
             }
@@ -561,9 +580,9 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             );
             LeafArm {
                 decls: vec![
-                    mbva_decl(&buf, pa_root),
+                    mbva_decl(&buf, pa_root, ctx),
                     scratch_decl,
-                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,
@@ -582,13 +601,14 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
+    let rows = ctx.base.rows;
     match arm {
         LeafArmKind::Bare => {
             let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
             let bare_push = quote! { #buf.push_value_ignore_validity(#bare_value); };
             let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
             LeafArm {
-                decls: vec![mbva_decl(&buf, pa_root)],
+                decls: vec![mbva_decl(&buf, pa_root, ctx)],
                 push: bare_push,
                 series: bare_series,
             }
@@ -617,8 +637,8 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             );
             LeafArm {
                 decls: vec![
-                    mbva_decl(&buf, pa_root),
-                    mb_decl_filled(&validity, &quote! { items.len() }, true, pa_root),
+                    mbva_decl(&buf, pa_root, ctx),
+                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
                     row_idx_decl(&row_idx),
                 ],
                 push: option_push,

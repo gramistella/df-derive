@@ -24,8 +24,8 @@ fn raw_identifier_prefixes_do_not_leak_into_column_names() {
 
     let schema_names: Vec<String> = Row::schema()
         .unwrap()
-        .into_iter()
-        .map(|(name, _)| name)
+        .iter()
+        .map(|(name, _)| name.as_str().to_owned())
         .collect();
     assert_eq!(
         schema_names,

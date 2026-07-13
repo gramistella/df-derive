@@ -17,7 +17,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     // Show schema to demonstrate column naming
     let schema = <SimpleTuple as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: field_0 (Int32), field_1 (String), field_2 (Float64)):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

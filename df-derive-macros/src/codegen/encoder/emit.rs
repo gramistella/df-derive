@@ -7,7 +7,7 @@
 //! a bare nested struct or a single/multi-`Option<Nested>` — and routes it
 //! through the same scan-and-materialize machinery the depth-N path uses,
 //! degenerating the list-array stack to a direct Series clone (`layers
-//! is_empty`) and using `items.len()` rather than the precount `total` for
+//! is_empty`) and using `rows.len()` rather than the precount `total` for
 //! the all-absent arm length (precount has no leaves to count at depth 0).
 //!
 use proc_macro2::TokenStream;
@@ -190,6 +190,7 @@ fn ctb_materialize(
     paths: &ExternalPaths,
 ) -> TokenStream {
     let CollectThenBulk {
+        rows,
         ty,
         columnar_trait,
         to_df_trait,
@@ -202,11 +203,11 @@ fn ctb_materialize(
     let total = idents::nested_total(idx);
 
     let (nested_wrapper, positions, total_len) = match wrapper {
-        WrapperShape::Leaf(LeafShape::Bare) => (NestedWrapper::None, None, quote! { items.len() }),
+        WrapperShape::Leaf(LeafShape::Bare) => (NestedWrapper::None, None, quote! { #rows.len() }),
         WrapperShape::Leaf(LeafShape::Optional { .. }) => (
             NestedWrapper::None,
             Some(&positions),
-            quote! { items.len() },
+            quote! { #rows.len() },
         ),
         WrapperShape::Vec(shape) => (
             NestedWrapper::List {
@@ -245,9 +246,11 @@ fn pep_emit(
     total: &syn::Ident,
     pa_root: &TokenStream,
     pp: &TokenStream,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let leaf_bind = idents::leaf_value();
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
+        rows,
         shape,
         access,
         layers,
@@ -287,13 +290,14 @@ fn ctb_leaf_scan_depth0(
     option_layers: usize,
     access_chain: &AccessChain,
     pp: &TokenStream,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let it = idents::populator_iter();
     let v = idents::leaf_value();
     if option_layers == 0 {
         let value_ref = ctb_depth0_ref_expr(access, access_chain);
         quote! {
-            for #it in items {
+            for #it in #rows.iter() {
                 #flat.push(#value_ref);
             }
         }
@@ -304,7 +308,7 @@ fn ctb_leaf_scan_depth0(
         let match_expr = ctb_depth0_match_expr(access, access_chain, option_layers);
         let flat_idx = idx_size_len_expr(flat, pp);
         quote! {
-            for #it in items {
+            for #it in #rows.iter() {
                 match #match_expr {
                     ::std::option::Option::Some(#v) => {
                         #positions.push(::std::option::Option::Some(
@@ -336,17 +340,18 @@ fn ctb_emit(
     let flat = idents::nested_flat(ctb.idx);
     let positions = idents::nested_positions(ctb.idx);
     let ty = ctb.ty;
+    let rows = ctb.rows;
 
     let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
         WrapperShape::Leaf(LeafShape::Bare) => {
             let empty_access = AccessChain::empty();
-            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp);
+            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp, rows);
             (
                 TokenStream::new(),
                 scan,
                 TokenStream::new(),
                 TokenStream::new(),
-                quote! { items.len() },
+                quote! { #rows.len() },
             )
         }
         WrapperShape::Leaf(LeafShape::Optional {
@@ -360,17 +365,19 @@ fn ctb_emit(
                 option_layers.get(),
                 access_chain,
                 pp,
+                rows,
             );
             (
                 TokenStream::new(),
                 scan,
                 TokenStream::new(),
                 TokenStream::new(),
-                quote! { items.len() },
+                quote! { #rows.len() },
             )
         }
         WrapperShape::Vec(shape) => {
             let emitter = ShapeEmitter::nested(ShapeEmitterParts {
+                rows,
                 shape,
                 access,
                 layers,
@@ -437,6 +444,7 @@ pub(super) fn vec_emit_pep(
     idx: usize,
     shape: &VecLayers,
     paths: &ExternalPaths,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
@@ -457,6 +465,7 @@ pub(super) fn vec_emit_pep(
         &total,
         pa_root,
         pp,
+        rows,
     )
 }
 

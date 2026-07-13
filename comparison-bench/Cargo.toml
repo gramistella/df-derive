@@ -10,8 +10,8 @@ publish = false
 anyhow = "1.0"
 arrow = { version = "57", default-features = false, features = ["ffi", "ipc"] }
 chrono = { version = "0.4", features = ["serde"] }
-df-derive = "0.3"
-polars = { version = "0.53", default-features = false, features = [
+df-derive = { version = "0.4", path = "../df-derive" }
+polars = { version = "0.54", default-features = false, features = [
     "fmt",
     "ipc_streaming",
     "timezones",
@@ -27,7 +27,7 @@ polars = { version = "0.53", default-features = false, features = [
     "dtype-u16",
     "dtype-u128",
 ] }
-polars-arrow = "0.53"
+polars-arrow = "0.54"
 polars-row-derive = "0.1"
 rust_decimal = { version = "1.42", default-features = false, features = ["std", "serde"] }
 serde = { version = "1.0", features = ["derive"] }

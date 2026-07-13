@@ -68,22 +68,14 @@ fn row_one() -> Row {
     }
 }
 
-fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
+fn schema_dtype(schema: &Schema, col: &str) -> DataType {
     schema
-        .iter()
-        .find(|(name, _)| name == col)
-        .map(|(_, dtype)| dtype.clone())
+        .get(col)
+        .cloned()
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 
-fn dataframe_schema(df: &DataFrame) -> Vec<(String, DataType)> {
-    df.schema()
-        .iter()
-        .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-        .collect()
-}
-
-fn assert_schema(schema: &[(String, DataType)]) {
+fn assert_schema(schema: &Schema) {
     let expected = [
         ("scalar", DataType::Int32),
         ("opt_scalar", DataType::Int32),
@@ -181,12 +173,12 @@ fn mixed_wrapper_shape_row_schema_and_values() {
 
     let empty = Row::empty_dataframe().unwrap();
     assert_eq!(empty.shape(), (0, 17));
-    assert_schema(&dataframe_schema(&empty));
+    assert_schema(empty.schema());
 
     let rows = vec![row_zero(), row_one()];
     let df = rows.as_slice().to_dataframe().unwrap();
     assert_eq!(df.shape(), (2, 17));
-    assert_schema(&dataframe_schema(&df));
+    assert_schema(df.schema());
 
     assert_i32(&df, "scalar", 0, 1);
     assert_i32(&df, "opt_scalar", 0, 2);

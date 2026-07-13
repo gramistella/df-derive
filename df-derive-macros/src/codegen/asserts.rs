@@ -8,7 +8,6 @@ use super::type_deps::{GenericContext, push_unique_type, type_depends_on_generic
 
 pub fn generate_eager_asserts(
     ir: &StructIR,
-    to_dataframe_trait: &syn::Path,
     columnar_trait: &syn::Path,
     decimal128_encode_trait: &syn::Path,
 ) -> TokenStream {
@@ -40,7 +39,7 @@ pub fn generate_eager_asserts(
         let assert_nested_traits = idents::nested_traits_assert_helper();
         quote! {
             const fn #assert_nested_traits<
-                __DfDeriveT: #to_dataframe_trait + #columnar_trait
+                __DfDeriveT: #columnar_trait
             >() {}
 
             #(

@@ -42,7 +42,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     // Show schema to demonstrate string data types
     let schema = <WithEnums as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns use DataType::String or List<String>):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

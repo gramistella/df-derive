@@ -133,14 +133,20 @@ pub(super) fn nested_materialize_dispatch(
 
 pub(super) fn nested_df_decl(
     df: &syn::Ident,
+    schema: &syn::Ident,
     ty: &TokenStream,
     columnar_trait: &syn::Path,
     flat: &syn::Ident,
 ) -> TokenStream {
     let validate_nested_frame = idents::validate_nested_frame();
     quote! {
-        let #df = <#ty as #columnar_trait>::columnar_from_refs(&#flat)?;
-        #validate_nested_frame(&#df, #flat.len(), ::core::any::type_name::<#ty>())?;
+        let #df = <#ty as #columnar_trait>::encode(#flat.as_slice())?;
+        #validate_nested_frame(
+            &#df,
+            &#schema,
+            #flat.len(),
+            ::core::any::type_name::<#ty>(),
+        )?;
     }
 }
 
@@ -162,41 +168,34 @@ pub(super) fn nested_take_decl(
 pub(super) struct NestedColumnIdents<'a> {
     pub df: &'a syn::Ident,
     pub take: &'a syn::Ident,
-    pub col_name: &'a syn::Ident,
-    pub dtype: &'a syn::Ident,
+    pub index: &'a syn::Ident,
     pub inner_full: &'a syn::Ident,
 }
 
 pub(super) fn build_inner_col_direct(ids: NestedColumnIdents<'_>) -> TokenStream {
-    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
         df,
-        col_name,
-        dtype,
+        index,
         inner_full,
         ..
     } = ids;
     quote! {{
-        let #inner_full = #df.column(#col_name)?.as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
+        let #inner_full = #df.columns()[#index].as_materialized_series();
         #inner_full.clone()
     }}
 }
 
 pub(super) fn build_inner_col_take(ids: NestedColumnIdents<'_>) -> TokenStream {
-    let validate_nested_column_dtype = idents::validate_nested_column_dtype();
     let NestedColumnIdents {
         df,
         take,
-        col_name,
-        dtype,
+        index,
         inner_full,
     } = ids;
     quote! {{
         let #inner_full = #df
-            .column(#col_name)?
+            .columns()[#index]
             .as_materialized_series();
-        #validate_nested_column_dtype(#inner_full, #col_name, #dtype)?;
         #inner_full.take(&#take)?
     }}
 }
@@ -261,17 +260,17 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
     let df = idents::nested_df(ctx.field_idx);
+    let schema = idents::nested_schema(ctx.field_idx);
     let take = idents::nested_take(ctx.field_idx);
     let columns = idents::columns();
-    let col_name = idents::nested_col_name();
+    let index = idents::nested_col_index();
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
 
     let column_idents = NestedColumnIdents {
         df: &df,
         take: &take,
-        col_name: &col_name,
-        dtype: &dtype,
+        index: &index,
         inner_full: &inner_full,
     };
     let inner_col_direct = build_inner_col_direct(column_idents);
@@ -285,44 +284,23 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
     let series_all_absent =
         wrap_nested_column(&ctx.wrapper, &inner_col_all_absent, &dtype, pp, pa_root);
 
-    let consume_direct = consume_nested_columns(
-        &columns,
-        ctx.column_prefix,
-        ctx.name_policy,
-        ctx.to_df_trait,
-        ctx.ty,
-        &series_direct,
-        pp,
-    );
-    let consume_take = consume_nested_columns(
-        &columns,
-        ctx.column_prefix,
-        ctx.name_policy,
-        ctx.to_df_trait,
-        ctx.ty,
-        &series_take,
-        pp,
-    );
-    let consume_empty = consume_nested_columns(
-        &columns,
-        ctx.column_prefix,
-        ctx.name_policy,
-        ctx.to_df_trait,
-        ctx.ty,
-        &series_empty,
-        pp,
-    );
-    let consume_all_absent = consume_nested_columns(
-        &columns,
-        ctx.column_prefix,
-        ctx.name_policy,
-        ctx.to_df_trait,
-        ctx.ty,
-        &series_all_absent,
-        pp,
-    );
+    let consume = |series| {
+        consume_nested_columns(
+            &columns,
+            ctx.column_prefix,
+            ctx.name_policy,
+            &schema,
+            &index,
+            series,
+            pp,
+        )
+    };
+    let consume_direct = consume(&series_direct);
+    let consume_take = consume(&series_take);
+    let consume_empty = consume(&series_empty);
+    let consume_all_absent = consume(&series_all_absent);
 
-    let df_decl = nested_df_decl(&df, ctx.ty, ctx.columnar_trait, ctx.flat);
+    let df_decl = nested_df_decl(&df, &schema, ctx.ty, ctx.columnar_trait, ctx.flat);
     let take_decl = ctx.positions.map_or_else(TokenStream::new, |positions| {
         nested_take_decl(&take, positions, pp)
     });
@@ -345,7 +323,7 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
         ),
     };
 
-    nested_materialize_dispatch(
+    let dispatch = nested_materialize_dispatch(
         kind,
         ctx.flat,
         &ctx.total_len,
@@ -359,15 +337,22 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
             consume_empty,
             consume_all_absent,
         },
-    )
+    );
+
+    let to_df_trait = ctx.to_df_trait;
+    let ty = ctx.ty;
+    quote! {
+        let #schema = <#ty as #to_df_trait>::schema()?;
+        #dispatch
+    }
 }
 
 pub(super) fn consume_nested_columns(
     columns: &syn::Ident,
     parent_name: &str,
     name_policy: &NestedNamePolicy,
-    to_df_trait: &syn::Path,
-    ty: &TokenStream,
+    schema: &syn::Ident,
+    index: &syn::Ident,
     series_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -382,11 +367,9 @@ pub(super) fn consume_nested_columns(
         &quote! { #col_name },
     );
     quote! {
-        for (#col_name, #dtype) in
-            <#ty as #to_df_trait>::schema()?
-        {
+        for (#index, (#col_name, #dtype)) in #schema.iter().enumerate() {
             let #col_name: &str = #col_name.as_str();
-            let #dtype: &#pp::DataType = &#dtype;
+            let #dtype: &#pp::DataType = #dtype;
             {
                 let #prefixed = #output_name;
                 let #inner: #pp::Series = #series_expr;

@@ -10,9 +10,8 @@
 // file pins the strict semantics: `None` ⇒ `AnyValue::Null`,
 // `Some(vec![])` ⇒ `AnyValue::List(empty)`.
 //
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// Call the single `Columnar::encode` primitive directly so this regression
+// stays scoped to the batch encoder rather than its public convenience APIs.
 
 use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
@@ -69,7 +68,7 @@ fn test_all_none() {
         })
         .collect();
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 
@@ -124,7 +123,7 @@ fn test_mixed_some_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 
@@ -189,7 +188,7 @@ fn test_some_empty_vs_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 

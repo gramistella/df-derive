@@ -9,34 +9,23 @@ use df_derive::ToDataFrame;
 use polars::prelude::*;
 #[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
 
-// Nested-path payload: implements `ToDataFrame` + `Columnar`, deliberately
-// NOT `Clone`. Used as the generic argument for fields without a transform
-// (which route through the nested-struct encoder path).
+// Nested-path payload: implements the sole batch primitive, deliberately NOT
+// `Clone`. Used as the generic argument for fields without a transform (which
+// route through the nested-struct encoder path).
 #[derive(Debug)]
 struct NoClonePayload {
     value: i64,
 }
 
-impl ToDataFrame for NoClonePayload {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &[self.value]).into()])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("value".into(), &DataType::Int64).into(),
-        ])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("value".to_string(), DataType::Int64)])
-    }
-}
-
 impl Columnar for NoClonePayload {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let vals: Vec<i64> = items.iter().map(|i| i.value).collect();
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &vals).into()])
+    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    where
+        B: RowBatch<Self> + ?Sized,
+    {
+        let vals: Vec<i64> = rows.iter().map(|row| row.value).collect();
+        DataFrame::new(rows.len(), vec![Series::new("value".into(), &vals).into()])
     }
 }
 
@@ -52,29 +41,6 @@ struct NoCloneTag {
 impl AsRef<str> for NoCloneTag {
     fn as_ref(&self) -> &str {
         &self.label
-    }
-}
-
-impl ToDataFrame for NoCloneTag {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new("label".into(), &[self.label.as_str()]).into(),
-        ])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("label".into(), &DataType::String).into(),
-        ])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("label".to_string(), DataType::String)])
-    }
-}
-
-impl Columnar for NoCloneTag {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        DataFrame::new_infer_height(vec![Series::new("label".into(), &labels).into()])
     }
 }
 
@@ -144,18 +110,21 @@ fn test_nested_path_no_clone() {
 
     let df = h.to_dataframe().unwrap();
     assert_eq!(df.shape().0, 1);
-    assert_eq!(df.column("id").unwrap().get(0).unwrap(), AnyValue::UInt32(1));
+    assert_eq!(
+        df.column("id").unwrap().get(0).unwrap(),
+        AnyValue::UInt32(1)
+    );
     assert_eq!(
         df.column("payload.value").unwrap().get(0).unwrap(),
         AnyValue::Int64(10)
     );
 
-    // Slice path goes through Columnar::columnar_from_refs.
+    // Slice conversion routes through the same batch primitive.
     let items = vec![h];
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape().0, 1);
 
-    // Empty slice round-trips through empty_dataframe.
+    // Empty slices use the same typed batch encoder.
     let empty: &[NestedHolder<NoClonePayload>] = &[];
     let _ = empty.to_dataframe().unwrap();
 }

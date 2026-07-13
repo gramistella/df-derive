@@ -17,7 +17,7 @@ use super::{BaseCtx, Encoder, LeafCtx, access_chain_to_ref};
 /// Strategy per leaf-kind:
 ///
 /// - **`as_str` borrow path**: the leaf's owning buffer is
-///   `Vec<Option<&str>>` borrowing from `items`. Using a per-row local would
+///   `Vec<Option<&str>>` borrowing from `rows`. Using a per-row local would
 ///   discard the borrow at row end, so we collapse the access expression all
 ///   the way to `Option<&str>` (one shared `as_ref().and_then(...).map(...)`
 ///   chain) and push it directly. Borrows from the field, lives for the
@@ -58,6 +58,7 @@ pub(super) fn wrap_option_access_chain_primitive(
     let new_ctx = LeafCtx {
         base: BaseCtx {
             access: &local_access,
+            rows: ctx.base.rows,
             idx: ctx.base.idx,
             name: ctx.base.name,
         },
@@ -109,7 +110,7 @@ fn wrap_option_access_chain_as_str(
     let push = quote! { #buf.push(#value); };
     let finish_series = named_from_buf(name, &buf, ctx.paths.prelude());
     Encoder::Leaf {
-        decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> })],
+        decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> }, ctx)],
         push,
         series: finish_series,
     }

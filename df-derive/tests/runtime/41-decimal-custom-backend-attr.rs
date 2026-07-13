@@ -1,4 +1,4 @@
-use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
@@ -31,26 +31,6 @@ impl Decimal128Encode for MoneyAmount {
                 Some(self.mantissa / pow)
             }
         }
-    }
-}
-
-impl ToDataFrame for MoneyAmount {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
-    }
-
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
-    }
-
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(Vec::new())
-    }
-}
-
-impl Columnar for MoneyAmount {
-    fn columnar_from_refs(_items: &[&Self]) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
     }
 }
 
@@ -118,6 +98,13 @@ fn assert_precision_error(result: PolarsResult<DataFrame>, ctx: &str) {
     }
 }
 
+fn schema_fields(schema: &SchemaRef) -> Vec<(String, DataType)> {
+    schema
+        .iter()
+        .map(|(name, dtype)| (name.as_str().to_owned(), dtype.clone()))
+        .collect()
+}
+
 #[test]
 fn runtime_semantics() {
     let row = CustomDecimalRow {
@@ -127,7 +114,7 @@ fn runtime_semantics() {
         nullable_history: vec![Some(MoneyAmount::new(9, 2)), None],
     };
 
-    let schema = CustomDecimalRow::schema().unwrap();
+    let schema = schema_fields(&CustomDecimalRow::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -187,7 +174,7 @@ fn runtime_semantics() {
         amount: MoneyAmount::new(123, 1),
     };
     assert_eq!(
-        GenericDecimalRow::<MoneyAmount>::schema().unwrap(),
+        schema_fields(&GenericDecimalRow::<MoneyAmount>::schema().unwrap()),
         vec![("amount".into(), DataType::Decimal(12, 2))]
     );
     let generic_df = generic.to_dataframe().unwrap();

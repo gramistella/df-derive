@@ -59,7 +59,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     println!(
         "\nSchema (columns include: symbol, quotes.ts, quotes.open, quotes.high, ... (each a List)):"
     );
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

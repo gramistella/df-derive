@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use polars::prelude::{DataFrame, DataType, PolarsResult};
+use polars::prelude::{DataFrame, DataType, PolarsResult, SchemaRef};
 
 // == SETUP 1: Use the shared `common` module for default traits ==
 #[path = "../common.rs"]
@@ -10,40 +10,79 @@ use common::dataframe as paft_traits; // Alias for clarity
 mod my_traits {
     use super::*; // Access PolarsResult, etc.
 
-    // This is our "custom" trait.
-    pub trait MyToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    pub trait RowBatch<T: ?Sized> {
+        fn len(&self) -> usize;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
+    }
+
+    impl<T> RowBatch<T> for [T] {
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
     }
 
     /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.
     pub trait Columnar: Sized {
-        /// # Errors
-        /// Returns an error if `DataFrame` construction fails.
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-        /// # Errors
-        /// Returns an error if `DataFrame` construction fails.
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
     }
 
-    // Extension trait for slices of types implementing our custom traits.
+    // This is our custom convenience trait, blanket-implemented from Columnar.
+    pub trait MyToDataFrame: Columnar {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
+        }
+
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
+    }
+
+    impl<T: Columnar> MyToDataFrame for T {}
+
+    // Extension trait for slices of types implementing our custom runtime.
     pub trait MyToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
     }
 
     impl<T> MyToDataFrameVec for [T]
     where
-        T: Columnar + MyToDataFrame,
+        T: Columnar,
     {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as MyToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as Columnar>::encode(self)
         }
     }
 }
@@ -90,7 +129,8 @@ fn main() {
 
     // == TEST A: Verify the struct using the default path ==
     let default_instance = DefaultPath { id: 1 };
-    // This line ONLY compiles if `impl paft_traits::ToDataFrame for DefaultPath` was generated.
+    // This compiles only when the derive generated the runtime's `Columnar` impl,
+    // which supplies `ToDataFrame` through its blanket implementation.
     let df_default = paft_traits::ToDataFrame::to_dataframe(&default_instance).unwrap();
     assert_eq!(df_default.shape(), (1, 1));
     assert_eq!(df_default.get_column_names(), &["id"]);
@@ -98,7 +138,7 @@ fn main() {
 
     // == TEST B: Verify the struct using the custom path ==
     let custom_instance = CustomPath { name: "test".into() };
-    // This line ONLY compiles if `impl my_traits::MyToDataFrame for CustomPath` was generated.
+    // The custom convenience trait is available through its Columnar blanket impl.
     let df_custom = my_traits::MyToDataFrame::to_dataframe(&custom_instance).unwrap();
     assert_eq!(df_custom.shape(), (1, 1));
     assert_eq!(df_custom.get_column_names(), &["name"]);
@@ -114,7 +154,7 @@ fn main() {
 
     // == TEST C: Verify the struct using explicit custom paths ==
     let explicit_instance = ExplicitPath { value: 3.14 };
-    // This line ONLY compiles if `impl my_traits::MyToDataFrame for ExplicitPath` was generated.
+    // The explicit Columnar path supplies the convenience API through the blanket impl.
     let df_explicit = my_traits::MyToDataFrame::to_dataframe(&explicit_instance).unwrap();
     assert_eq!(df_explicit.shape(), (1, 1));
     assert_eq!(df_explicit.get_column_names(), &["value"]);
@@ -127,13 +167,21 @@ fn main() {
     assert_eq!(df_explicit_vec.get_column_names(), &["value"]);
     println!("✅ Explicit path (columnar) implementation works.");
 
-    // == TEST D: Verify nested schema/empty generation uses the explicit trait path ==
+    // == TEST D: Verify nested schema/empty encoding uses the explicit runtime path ==
     let nested_schema = <CustomOuter as my_traits::MyToDataFrame>::schema().unwrap();
     assert_eq!(nested_schema.len(), 2);
-    assert_eq!(nested_schema[0].0, "inner.value");
-    assert_eq!(nested_schema[0].1, DataType::Int32);
-    assert_eq!(nested_schema[1].0, "inners.value");
-    assert_eq!(nested_schema[1].1, DataType::List(Box::new(DataType::Int32)));
+    assert_eq!(
+        nested_schema
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["inner.value", "inners.value"],
+    );
+    assert_eq!(nested_schema.get("inner.value"), Some(&DataType::Int32));
+    assert_eq!(
+        nested_schema.get("inners.value"),
+        Some(&DataType::List(Box::new(DataType::Int32))),
+    );
 
     let empty_nested = <CustomOuter as my_traits::MyToDataFrame>::empty_dataframe().unwrap();
     assert_eq!(empty_nested.shape(), (0, 2));

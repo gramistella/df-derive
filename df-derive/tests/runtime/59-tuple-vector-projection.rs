@@ -66,22 +66,14 @@ fn row_one() -> Row {
     }
 }
 
-fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
+fn schema_dtype(schema: &Schema, col: &str) -> DataType {
     schema
-        .iter()
-        .find(|(name, _)| name == col)
-        .map(|(_, dtype)| dtype.clone())
+        .get(col)
+        .cloned()
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 
-fn dataframe_schema(df: &DataFrame) -> Vec<(String, DataType)> {
-    df.schema()
-        .iter()
-        .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-        .collect()
-}
-
-fn assert_schema(schema: &[(String, DataType)]) {
+fn assert_schema(schema: &Schema) {
     let list_u32 = || DataType::List(Box::new(DataType::UInt32));
     let list_string = || DataType::List(Box::new(DataType::String));
     let list_list_u32 = || DataType::List(Box::new(list_u32()));
@@ -162,12 +154,12 @@ fn tuple_vector_projection_schema_and_values() {
 
     let empty = Row::empty_dataframe().unwrap();
     assert_eq!(empty.shape(), (0, 14));
-    assert_schema(&dataframe_schema(&empty));
+    assert_schema(empty.schema());
 
     let rows = vec![row_zero(), row_one()];
     let df = rows.as_slice().to_dataframe().unwrap();
     assert_eq!(df.shape(), (2, 14));
-    assert_schema(&dataframe_schema(&df));
+    assert_schema(df.schema());
 
     assert_eq!(
         u32_list(df.column("a.field_0").unwrap().get(0).unwrap()),

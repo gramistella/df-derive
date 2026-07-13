@@ -233,7 +233,7 @@ fn main() -> Result<()> {
 
 fn smoke() -> Result<()> {
     let native = generate_showcase_rows(8);
-    let df_derive = <ShowcaseRow as Columnar>::columnar_to_dataframe(&native)?;
+    let df_derive = <ShowcaseRow as Columnar>::encode(native.as_slice())?;
     let manual = manual_polars_to_dataframe(&native)?;
     ensure_same_frame("manual", &df_derive, &manual)?;
 
@@ -249,7 +249,7 @@ fn smoke() -> Result<()> {
     ensure_same_frame("polars-row-derive", &df_derive, &row_derive)?;
 
     let flat_rows = generate_flat_row_derive_rows(8);
-    let flat_df_derive = <RowDeriveFlat as Columnar>::columnar_to_dataframe(&flat_rows)?;
+    let flat_df_derive = <RowDeriveFlat as Columnar>::encode(flat_rows.as_slice())?;
     let flat_row_derive = flat_row_derive_to_dataframe(&flat_rows)?;
     ensure_same_frame(
         "polars-row-derive flat row",
@@ -315,7 +315,7 @@ fn showcase_output() -> Result<ShowcaseOutput> {
     let rows = generate_showcase_rows(6);
     let schema = ShowcaseRow::schema()
         .context("df-derive schema")?
-        .into_iter()
+        .iter()
         .map(|(name, dtype)| format!("{name}: {dtype:?}"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -335,7 +335,7 @@ fn run_benchmarks() -> Result<Vec<BenchStats>> {
 
         let native_rows = generate_showcase_rows(rows);
         stats.push(measure(Approach::DfDerive, rows, || {
-            <ShowcaseRow as Columnar>::columnar_to_dataframe(black_box(native_rows.as_slice()))
+            <ShowcaseRow as Columnar>::encode(black_box(native_rows.as_slice()))
         })?);
         stats.push(measure(Approach::ManualPolars, rows, || {
             manual_polars_to_dataframe(black_box(native_rows.as_slice()))
@@ -360,7 +360,7 @@ fn run_benchmarks() -> Result<Vec<BenchStats>> {
 
         let flat_df_rows = generate_flat_df_rows(rows);
         stats.push(measure(Approach::FlatDfDerive, rows, || {
-            <RowDeriveFlat as Columnar>::columnar_to_dataframe(black_box(flat_df_rows.as_slice()))
+            <RowDeriveFlat as Columnar>::encode(black_box(flat_df_rows.as_slice()))
         })?);
         drop(flat_df_rows);
 
@@ -600,7 +600,7 @@ fn manual_polars_to_dataframe(items: &[ShowcaseRow]) -> PolarsResult<DataFrame> 
         items.iter().map(|row| row.fingerprint.as_slice()),
     );
 
-    DataFrame::new_infer_height(vec![
+    DataFrame::new(items.len(), vec![
         Series::new("id".into(), &ids).into(),
         Series::new("symbol".into(), &symbols).into(),
         Series::new("notional".into(), &notionals).into(),
@@ -757,7 +757,7 @@ fn arrow_record_batch_to_polars_ffi(
             Series::try_from((&polars_field, polars_array)).map(Column::from)
         })
         .collect::<PolarsResult<Vec<_>>>()?;
-    DataFrame::new_infer_height(columns)
+    DataFrame::new(batch.num_rows(), columns)
 }
 
 fn arrow_field_to_polars(
@@ -900,8 +900,9 @@ fn render_report(showcase: &ShowcaseOutput, timings: &[BenchStats]) -> Result<St
 
     report.push_str("## API confirmation\n\n");
     report.push_str("- Public import: `use df_derive::prelude::*;`.\n");
-    report.push_str("- Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must also derive it.\n");
-    report.push_str("- Runtime API: `to_dataframe(&self)`, `empty_dataframe()`, `schema()`, `Columnar::columnar_to_dataframe(&items)`, `Columnar::columnar_from_refs(&refs)`, plus the `ToDataFrameVec` blanket extension so `slice.to_dataframe()` works.\n");
+    report.push_str("- Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must implement `Columnar`, normally by deriving `ToDataFrame`.\n");
+    report.push_str("- Runtime primitive: derived types implement only `Columnar::encode<B>(&B)` for `B: RowBatch<Self>`; the runtime supplies `RowBatch` for `[T]` and `[&T]`.\n");
+    report.push_str("- Blanket API: every `Columnar` type receives `ToDataFrame::{to_dataframe, empty_dataframe, schema}` (`schema()` returns `SchemaRef`), plus the `ToDataFrameVec` slice extension.\n");
     report.push_str("- Field attributes verified from the current README/docs: `skip`, `flatten`, `flatten(prefix = \"...\")`, `as_string`, `as_str`, `as_binary`, `decimal(precision = N, scale = S)`, and `time_unit = \"ms\" | \"us\" | \"ns\"`.\n");
     report.push_str("- Sources checked: [docs.rs `df-derive`](https://docs.rs/df-derive), [GitHub README](https://github.com/gramistella/df-derive), and the local README in this checkout.\n\n");
 
@@ -925,7 +926,7 @@ fn render_report(showcase: &ShowcaseOutput, timings: &[BenchStats]) -> Result<St
     report.push_str("```rust\n");
     report.push_str("let df = rows.as_slice().to_dataframe()?;\n");
     report.push_str("// or, explicitly:\n");
-    report.push_str("let df = <ShowcaseRow as Columnar>::columnar_to_dataframe(&rows)?;\n");
+    report.push_str("let df = <ShowcaseRow as Columnar>::encode(rows.as_slice())?;\n");
     report.push_str("```\n\n");
 
     report.push_str("### hand-written Polars\n\n");
@@ -1143,7 +1144,7 @@ let fingerprint = BinaryChunked::from_iter_values(
 )
 .into_series();
 
-let df = DataFrame::new_infer_height(vec![
+let df = DataFrame::new(rows.len(), vec![
     Series::new("id".into(), &ids).into(),
     Series::new("symbol".into(), &symbols).into(),
     price.into(),
@@ -1234,8 +1235,7 @@ struct RowDeriveFlat {
     risk_hedged: bool,
 }
 
-let df_derive_df =
-    <RowDeriveFlat as Columnar>::columnar_to_dataframe(flat_rows.as_slice())?;
+let df_derive_df = <RowDeriveFlat as Columnar>::encode(flat_rows.as_slice())?;
 let row_derive_df = flat_rows.into_iter().to_dataframe()?;"#;
 
 #[cfg(test)]

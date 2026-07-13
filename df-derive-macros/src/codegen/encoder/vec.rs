@@ -363,7 +363,14 @@ fn vec_encoder(
 ) -> Encoder {
     let series_local = vec_encoder_series_local(ctx.base.idx);
     let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
-    let decl = vec_emit_pep(&pep, ctx.base.access, ctx.base.idx, shape, ctx.paths);
+    let decl = vec_emit_pep(
+        &pep,
+        ctx.base.access,
+        ctx.base.idx,
+        shape,
+        ctx.paths,
+        ctx.base.rows,
+    );
     let name = ctx.base.name;
     let named = idents::field_named_series();
     let columns = idents::columns();
@@ -419,7 +426,7 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         let pp = ctx.paths.prelude();
         let series_local = vec_encoder_series_local(ctx.base.idx);
         let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
-        let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp);
+        let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp, ctx.base.rows);
         let name = ctx.base.name;
         let named = idents::field_named_series();
         let columns = idents::columns();
@@ -442,6 +449,7 @@ fn bool_bare_depth1_body(
     leaf_dtype: &TokenStream,
     pa_root: &TokenStream,
     pp: &TokenStream,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let inner_offsets = idents::bool_inner_offsets();
     let total_leaves = idents::total_leaves();
@@ -455,15 +463,15 @@ fn bool_bare_depth1_body(
     let offset = list_offset_i64_expr(&quote! { #flat.len() }, pp);
     quote! {
         let mut #total_leaves: usize = 0;
-        for #it in items {
+        for #it in #rows.iter() {
             #total_leaves += (&(#access)).len();
         }
         let mut #flat: ::std::vec::Vec<bool> =
             ::std::vec::Vec::with_capacity(#total_leaves);
         let mut #inner_offsets: ::std::vec::Vec<i64> =
-            ::std::vec::Vec::with_capacity(items.len() + 1);
+            ::std::vec::Vec::with_capacity(#rows.len() + 1);
         #inner_offsets.push(0);
-        for #it in items {
+        for #it in #rows.iter() {
             #flat.extend((&(#access)).iter().copied());
             let #offset_ident: i64 = #offset;
             #inner_offsets.push(#offset_ident);

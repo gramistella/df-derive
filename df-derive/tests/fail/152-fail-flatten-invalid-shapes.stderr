@@ -1,39 +1,39 @@
-error: field `primitive` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `primitive` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:10:5
    |
 10 | /     #[df_derive(flatten)]
 11 | |     primitive: i32,
    | |__________________^
 
-error: field `optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:16:5
    |
 16 | /     #[df_derive(flatten)]
 17 | |     optional: Option<Inner>,
    | |___________________________^
 
-error: field `boxed_optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `boxed_optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:22:5
    |
 22 | /     #[df_derive(flatten)]
 23 | |     boxed_optional: Box<Option<Inner>>,
    | |______________________________________^
 
-error: field `optional_boxed` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `optional_boxed` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:28:5
    |
 28 | /     #[df_derive(flatten)]
 29 | |     optional_boxed: Option<Box<Inner>>,
    | |______________________________________^
 
-error: field `vector` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `vector` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:34:5
    |
 34 | /     #[df_derive(flatten)]
 35 | |     vector: Vec<Inner>,
    | |______________________^
 
-error: field `tuple` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
+error: field `tuple` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
   --> tests/fail/152-fail-flatten-invalid-shapes.rs:40:5
    |
 40 | /     #[df_derive(flatten)]

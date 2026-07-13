@@ -1,8 +1,11 @@
+#![allow(non_upper_case_globals)]
+
 use df_derive::ToDataFrame;
 use polars::prelude::*;
+use std::marker::PhantomData;
 #[path = "../local_runtime.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
@@ -45,6 +48,23 @@ where
     a: A,
     b: B,
     name: String,
+}
+
+// The derive's method-level batch parameter must be fresh against every
+// user-declared generic, including consecutive internal-looking names.
+#[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
+struct BatchParamNameCollision<
+    __DfDeriveBatch,
+    const __DfDeriveBatch_1: usize,
+    const rows: usize,
+> {
+    id: u32,
+    values: Vec<bool>,
+    label: Option<String>,
+    nested: MetaStruct,
+    #[df_derive(skip)]
+    marker: PhantomData<([__DfDeriveBatch; __DfDeriveBatch_1], [(); rows])>,
 }
 
 // Generic field wrapped in Option
@@ -141,26 +161,24 @@ where
     listed: Vec<InnerGeneric<M>>,
 }
 
-// Local impls of ToDataFrame/Columnar for f64 so generic instantiation with a
-// primitive can flatten via a single column. Implementing on a foreign primitive
-// is allowed because the trait is defined in this test crate.
-impl ToDataFrame for f64 {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &[*self]).into()])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new_empty("value".into(), &DataType::Float64).into()])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("value".to_string(), DataType::Float64)])
+// Local batch encoder for f64 so generic instantiation with a primitive can
+// flatten via a single column. Implementing a local trait for a foreign
+// primitive is allowed in this fixture runtime.
+impl Columnar for f64 {
+    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    where
+        B: RowBatch<Self> + ?Sized,
+    {
+        let values: Vec<Self> = rows.iter().copied().collect();
+        DataFrame::new(rows.len(), vec![Series::new("value".into(), &values).into()])
     }
 }
 
-impl Columnar for f64 {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let owned: Vec<Self> = items.iter().map(|&&x| x).collect();
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &owned).into()])
-    }
+fn schema_fields(schema: &SchemaRef) -> Vec<(String, DataType)> {
+    schema
+        .iter()
+        .map(|(name, dtype)| (name.as_str().to_owned(), dtype.clone()))
+        .collect()
 }
 
 fn main() {
@@ -169,6 +187,7 @@ fn main() {
     test_unit_instantiation();
     test_default_type_parameter();
     test_multiple_generics();
+    test_batch_param_name_collision();
     test_option_wrapped_generic();
     test_vec_wrapped_generic();
     test_doubly_wrapped_generic();
@@ -177,13 +196,32 @@ fn main() {
     println!("All generics tests passed!");
 }
 
+fn test_batch_param_name_collision() {
+    let row = BatchParamNameCollision::<u8, 2, 3> {
+        id: 7,
+        values: vec![true, false],
+        label: Some("collision-safe".into()),
+        nested: MetaStruct {
+            timestamp: 11,
+            note: "nested".into(),
+        },
+        marker: PhantomData,
+    };
+    let df = row.to_dataframe().unwrap();
+    assert_eq!(df.shape(), (1, 5));
+    assert_eq!(df.column("id").unwrap().u32().unwrap().get(0), Some(7));
+}
+
 fn test_primitive_instantiation() {
     println!("Testing primitive instantiation (Wrapper<f64>)...");
 
-    let w: Wrapper<f64> = Wrapper { id: 1, payload: 3.5 };
+    let w: Wrapper<f64> = Wrapper {
+        id: 1,
+        payload: 3.5,
+    };
 
     // schema/columns: id (u32) + payload.value (f64)
-    let schema = Wrapper::<f64>::schema().unwrap();
+    let schema = schema_fields(&Wrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -207,9 +245,18 @@ fn test_primitive_instantiation() {
     assert_eq!(empty.shape(), (0, 2));
 
     let items = vec![
-        Wrapper { id: 1, payload: 1.0 },
-        Wrapper { id: 2, payload: 2.0 },
-        Wrapper { id: 3, payload: 3.0 },
+        Wrapper {
+            id: 1,
+            payload: 1.0,
+        },
+        Wrapper {
+            id: 2,
+            payload: 2.0,
+        },
+        Wrapper {
+            id: 3,
+            payload: 3.0,
+        },
     ];
     let batch_df = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch_df.shape(), (3, 2));
@@ -222,7 +269,7 @@ fn test_primitive_instantiation() {
         AnyValue::Float64(3.0)
     );
 
-    // Empty slice should round-trip through ToDataFrameVec to empty_dataframe.
+    // Empty slice conversion uses the same typed batch encoder.
     let empty_slice: &[Wrapper<f64>] = &[];
     let empty_batch = empty_slice.to_dataframe().unwrap();
     assert_eq!(empty_batch.shape(), (0, 2));
@@ -239,7 +286,7 @@ fn test_nested_struct_instantiation() {
         },
     };
 
-    let schema = Wrapper::<MetaStruct>::schema().unwrap();
+    let schema = schema_fields(&Wrapper::<MetaStruct>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -282,7 +329,11 @@ fn test_nested_struct_instantiation() {
     let batch_df = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch_df.shape(), (2, 3));
     assert_eq!(
-        batch_df.column("payload.timestamp").unwrap().get(1).unwrap(),
+        batch_df
+            .column("payload.timestamp")
+            .unwrap()
+            .get(1)
+            .unwrap(),
         AnyValue::Int64(20)
     );
     assert_eq!(
@@ -296,7 +347,7 @@ fn test_unit_instantiation() {
 
     let w: Wrapper<()> = Wrapper { id: 7, payload: () };
 
-    let schema = Wrapper::<()>::schema().unwrap();
+    let schema = schema_fields(&Wrapper::<()>::schema().unwrap());
     assert_eq!(schema, vec![("id".into(), DataType::UInt32)]);
 
     let df = w.to_dataframe().unwrap();
@@ -310,9 +361,7 @@ fn test_unit_instantiation() {
     let empty = Wrapper::<()>::empty_dataframe().unwrap();
     assert_eq!(empty.shape(), (0, 1));
 
-    let items: Vec<Wrapper<()>> = (0..5)
-        .map(|i| Wrapper { id: i, payload: () })
-        .collect();
+    let items: Vec<Wrapper<()>> = (0..5).map(|i| Wrapper { id: i, payload: () }).collect();
     let batch_df = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch_df.shape(), (5, 1));
     assert_eq!(
@@ -327,7 +376,7 @@ fn test_default_type_parameter() {
     // Without specifying M, it defaults to ().
     let dm = DefaultMeta { val: 99, meta: () };
 
-    let schema = DefaultMeta::<()>::schema().unwrap();
+    let schema = schema_fields(&DefaultMeta::<()>::schema().unwrap());
     assert_eq!(schema, vec![("val".into(), DataType::Int32)]);
 
     let df = dm.to_dataframe().unwrap();
@@ -381,7 +430,7 @@ fn test_multiple_generics() {
         name: "row".to_string(),
     };
 
-    let schema = Multi::<MetaStruct, ()>::schema().unwrap();
+    let schema = schema_fields(&Multi::<MetaStruct, ()>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -451,7 +500,7 @@ fn test_multiple_generics() {
         name: "pair".to_string(),
     };
 
-    let schema_pair = Multi::<MetaStruct, MetaStruct>::schema().unwrap();
+    let schema_pair = schema_fields(&Multi::<MetaStruct, MetaStruct>::schema().unwrap());
     assert_eq!(
         schema_pair,
         vec![
@@ -475,7 +524,7 @@ fn test_option_wrapped_generic() {
     println!("Testing Option<T> for generic T...");
 
     // Option<f64>: scalar primitive payload, optional.
-    let schema = OptWrapper::<f64>::schema().unwrap();
+    let schema = schema_fields(&OptWrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -488,7 +537,10 @@ fn test_option_wrapped_generic() {
         id: 1,
         payload: Some(3.5_f64),
     };
-    let none_w: OptWrapper<f64> = OptWrapper { id: 2, payload: None };
+    let none_w: OptWrapper<f64> = OptWrapper {
+        id: 2,
+        payload: None,
+    };
 
     let df_some = some_w.to_dataframe().unwrap();
     assert_eq!(df_some.shape(), (1, 2));
@@ -535,7 +587,7 @@ fn test_option_wrapped_generic() {
     );
 
     // Option<MetaStruct>: nested struct payload, optional.
-    let schema_meta = OptWrapper::<MetaStruct>::schema().unwrap();
+    let schema_meta = schema_fields(&OptWrapper::<MetaStruct>::schema().unwrap());
     assert_eq!(
         schema_meta,
         vec![
@@ -596,7 +648,7 @@ fn test_vec_wrapped_generic() {
     println!("Testing Vec<T> for generic T...");
 
     // Vec<f64>: list of primitive payload.
-    let schema = VecWrapper::<f64>::schema().unwrap();
+    let schema = schema_fields(&VecWrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -647,7 +699,7 @@ fn test_vec_wrapped_generic() {
     }
 
     // Vec<MetaStruct>: list of nested struct.
-    let schema_meta = VecWrapper::<MetaStruct>::schema().unwrap();
+    let schema_meta = schema_fields(&VecWrapper::<MetaStruct>::schema().unwrap());
     assert_eq!(
         schema_meta,
         vec![
@@ -719,7 +771,7 @@ fn test_doubly_wrapped_generic() {
     // and None should produce the right schema and null behavior — Some(None)
     // and None are indistinguishable in the resulting DataFrame (both yield a
     // single null AnyValue), which is the documented contract.
-    let schema = OptOptWrapper::<f64>::schema().unwrap();
+    let schema = schema_fields(&OptOptWrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema,
         vec![
@@ -762,7 +814,7 @@ fn test_depth2_combos() {
     println!("Testing Option<Vec<T>> / Vec<Option<T>> / Vec<Vec<T>> for generic T...");
 
     // Option<Vec<T>> with T = f64.
-    let schema_ov = OptVecWrapper::<f64>::schema().unwrap();
+    let schema_ov = schema_fields(&OptVecWrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema_ov,
         vec![
@@ -778,7 +830,10 @@ fn test_depth2_combos() {
             id: 1,
             payload: Some(vec![1.0_f64, 2.0]),
         },
-        OptVecWrapper { id: 2, payload: None },
+        OptVecWrapper {
+            id: 2,
+            payload: None,
+        },
         OptVecWrapper {
             id: 3,
             payload: Some(vec![]),
@@ -802,7 +857,7 @@ fn test_depth2_combos() {
     }
 
     // Vec<Option<T>> with T = f64.
-    let schema_vo = VecOptWrapper::<f64>::schema().unwrap();
+    let schema_vo = schema_fields(&VecOptWrapper::<f64>::schema().unwrap());
     assert_eq!(
         schema_vo,
         vec![
@@ -834,9 +889,9 @@ fn test_depth2_combos() {
         panic!("expected List for Vec<Option<T>>");
     }
 
-    // Vec<Vec<T>> with T = f64. The schema generator wraps once per `Vec`
-    // layer, so the declared dtype matches the runtime List<List<...>>.
-    let schema_vv = VecVecWrapper::<f64>::schema().unwrap();
+    // Vec<Vec<T>> with T = f64. The encoder wraps once per `Vec` layer, so
+    // the empty and populated dtypes are both List<List<...>>.
+    let schema_vv = schema_fields(&VecVecWrapper::<f64>::schema().unwrap());
     assert_eq!(schema_vv.len(), 2);
     assert_eq!(schema_vv[0], ("id".into(), DataType::UInt32));
     assert_eq!(
@@ -892,7 +947,7 @@ fn test_propagated_type_parameter() {
         ],
     };
 
-    let schema = OuterPropagating::<f64>::schema().unwrap();
+    let schema = schema_fields(&OuterPropagating::<f64>::schema().unwrap());
     let names: Vec<&str> = schema.iter().map(|(n, _)| n.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"direct.label"));

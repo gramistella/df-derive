@@ -8,12 +8,6 @@ mod custom_runtime {
 }
 
 #[derive(ToDataFrame)]
-#[df_derive(columnar = "core::dataframe::Columnar")]
-struct ColumnarOnly {
-    id: u32,
-}
-
-#[derive(ToDataFrame)]
 #[df_derive(
     trait = "df_derive::dataframe::ToDataFrame",
     columnar = "core::dataframe::Columnar"

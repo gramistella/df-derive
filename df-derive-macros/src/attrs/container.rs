@@ -33,8 +33,8 @@ fn parse_trait_path_attr(
 }
 
 /// Clone `path` and replace the last segment's identifier with `name`,
-/// preserving the original span. Used to derive sibling trait paths
-/// (`Columnar`, `Decimal128Encode`) from a user-supplied `ToDataFrame` path.
+/// preserving the original span. Used to derive sibling runtime trait paths
+/// from whichever runtime trait the user selected explicitly.
 pub fn rebase_last_segment(path: &syn::Path, name: &str) -> syn::Path {
     let mut new_path = path.clone();
     if let Some(last_segment) = new_path.segments.last_mut() {
@@ -68,15 +68,6 @@ fn set_runtime_override(
     Ok(())
 }
 
-fn reject_columnar_without_trait(columnar_span: Span) -> syn::Error {
-    syn::Error::new(
-        columnar_span,
-        "`columnar = \"...\"` requires `trait = \"...\"`; overriding only \
-         `Columnar` would generate mixed `ToDataFrame`/`Columnar` impls \
-         that do not satisfy either runtime's trait pair",
-    )
-}
-
 fn mixed_builtin_runtime_error(
     trait_override: &RuntimeOverridePath,
     columnar_override: &RuntimeOverridePath,
@@ -84,8 +75,8 @@ fn mixed_builtin_runtime_error(
     let mut error = syn::Error::new(
         columnar_override.span,
         "`trait` and `columnar` overrides cannot mix the built-in dataframe \
-         runtime with a custom runtime; use the matching built-in `Columnar` \
-         path or provide a fully custom `trait` + `columnar` pair",
+         runtime with a custom runtime; `Columnar::encode` and the blanket \
+         `ToDataFrame` schema API must come from one compatible runtime",
     );
     error.combine(syn::Error::new(
         trait_override.span,
@@ -222,19 +213,23 @@ pub fn explicit_builtin_default_dataframe_mod(
     to_df_trait_path: Option<&RuntimeOverridePath>,
     columnar_trait_path: Option<&RuntimeOverridePath>,
 ) -> Option<syn::Path> {
-    let to_df_module = trait_module_path(&to_df_trait_path?.value, "ToDataFrame")?;
-    if !is_builtin_default_dataframe_mod(&to_df_module) {
+    let selected_module = if let Some(columnar) = columnar_trait_path {
+        trait_module_path(&columnar.value, "Columnar")?
+    } else {
+        trait_module_path(&to_df_trait_path?.value, "ToDataFrame")?
+    };
+    if !is_builtin_default_dataframe_mod(&selected_module) {
         return None;
     }
 
-    if let Some(columnar) = columnar_trait_path {
-        let columnar_module = trait_module_path(&columnar.value, "Columnar")?;
-        if !path_segments_equal(&to_df_module, &columnar_module) {
+    if let Some(to_dataframe) = to_df_trait_path {
+        let to_df_module = trait_module_path(&to_dataframe.value, "ToDataFrame")?;
+        if !path_segments_equal(&selected_module, &to_df_module) {
             return None;
         }
     }
 
-    Some(to_df_module)
+    Some(selected_module)
 }
 
 pub fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
@@ -267,9 +262,6 @@ pub fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs>
         }
     }
 
-    if let (Some(columnar), None) = (&columnar, &to_dataframe) {
-        return Err(reject_columnar_without_trait(columnar.span));
-    }
     if let Some(err) = mixed_builtin_runtime_override(to_dataframe.as_ref(), columnar.as_ref()) {
         return Err(err);
     }

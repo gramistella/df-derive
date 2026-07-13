@@ -26,15 +26,18 @@ struct DoublyOptional {
 }
 
 fn main() {
-    let expected_schema = vec![
-        ("nested_int".to_string(), DataType::Int32),
-        ("nested_string".to_string(), DataType::String),
+    let expected_schema: Schema = [
+        ("nested_int", DataType::Int32),
+        ("nested_string", DataType::String),
         (
-            "nested_decimal".to_string(),
+            "nested_decimal",
             DataType::Decimal(10, 2),
         ),
-    ];
-    assert_eq!(DoublyOptional::schema().unwrap(), expected_schema);
+    ]
+    .into_iter()
+    .map(|(name, dtype)| (name.into(), dtype))
+    .collect();
+    assert_eq!(DoublyOptional::schema().unwrap().as_ref(), &expected_schema);
 
     let items = vec![
         DoublyOptional {

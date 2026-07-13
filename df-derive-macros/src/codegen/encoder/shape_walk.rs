@@ -59,6 +59,7 @@ fn projected_layer_bind(
 }
 
 pub(super) struct ShapeScan<'shape, 'body> {
+    pub rows: &'shape syn::Ident,
     pub shape: &'shape VecLayers,
     pub access: &'shape TokenStream,
     pub layers: &'shape [LayerIdents],
@@ -77,8 +78,9 @@ impl ShapeScan<'_, '_> {
         };
         let body = self.build_layer(0, &layer0_iter_src);
         let it = idents::populator_iter();
+        let rows = self.rows;
         quote! {
-            for #it in items {
+            for #it in #rows.iter() {
                 #body
             }
         }
@@ -164,6 +166,7 @@ impl ShapeScan<'_, '_> {
 }
 
 pub(super) struct ShapePrecount<'a> {
+    pub rows: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
@@ -186,10 +189,11 @@ impl ShapePrecount<'_> {
             .iter()
             .map(|c| quote! { let mut #c: usize = 0; });
         let it = idents::populator_iter();
+        let rows = self.rows;
         quote! {
             let mut #total: usize = 0;
             #(#counter_decls)*
-            for #it in items {
+            for #it in #rows.iter() {
                 #body
             }
         }
@@ -255,6 +259,7 @@ impl ShapePrecount<'_> {
 }
 
 pub(super) struct ShapeEmitter<'a> {
+    pub rows: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
@@ -269,6 +274,7 @@ pub(super) struct ShapeEmitter<'a> {
 
 #[derive(Clone, Copy)]
 pub(super) struct ShapeEmitterParts<'a> {
+    pub rows: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
@@ -281,6 +287,7 @@ pub(super) struct ShapeEmitterParts<'a> {
 impl<'a> ShapeEmitter<'a> {
     pub(super) const fn vec(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
+            rows: parts.rows,
             shape: parts.shape,
             access: parts.access,
             layers: parts.layers,
@@ -296,6 +303,7 @@ impl<'a> ShapeEmitter<'a> {
 
     pub(super) const fn nested(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
+            rows: parts.rows,
             shape: parts.shape,
             access: parts.access,
             layers: parts.layers,
@@ -314,6 +322,7 @@ impl<'a> ShapeEmitter<'a> {
         projection: Option<LayerProjection<'a>>,
     ) -> Self {
         Self {
+            rows: parts.rows,
             shape: parts.shape,
             access: parts.access,
             layers: parts.layers,
@@ -329,6 +338,7 @@ impl<'a> ShapeEmitter<'a> {
 
     pub(super) fn precount(&self) -> TokenStream {
         ShapePrecount {
+            rows: self.rows,
             shape: self.shape,
             access: self.access,
             layers: self.layers,
@@ -346,6 +356,7 @@ impl<'a> ShapeEmitter<'a> {
         leaf_offsets_post_push: &'body TokenStream,
     ) -> TokenStream {
         ShapeScan {
+            rows: self.rows,
             shape: self.shape,
             access: self.access,
             layers: self.layers,
@@ -552,7 +563,8 @@ fn shape_offsets_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     for (i, layer) in emitter.layers.iter().enumerate() {
         let offsets = &layer.offsets;
         let cap = if i == 0 {
-            quote! { items.len() + 1 }
+            let rows = emitter.rows;
+            quote! { #rows.len() + 1 }
         } else {
             let counter = emitter.counter_for_depth(i - 1);
             quote! { #counter + 1 }
@@ -574,7 +586,8 @@ fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
         }
         let validity = &layer.validity_mb;
         let cap = if i == 0 {
-            quote! { items.len() }
+            let rows = emitter.rows;
+            quote! { #rows.len() }
         } else {
             let counter = emitter.counter_for_depth(i - 1);
             quote! { #counter }

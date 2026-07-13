@@ -22,15 +22,14 @@ struct Row {
     tuple_list: Vec<(u64, Option<String>)>,
 }
 
-fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
+fn schema_dtype(schema: &Schema, col: &str) -> DataType {
     schema
-        .iter()
-        .find(|(name, _)| name == col)
-        .map(|(_, dtype)| dtype.clone())
+        .get(col)
+        .cloned()
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 
-fn assert_schema(schema: &[(String, DataType)]) {
+fn assert_schema(schema: &Schema) {
     let expected = [
         ("id", DataType::UInt64),
         ("maybe_id", DataType::UInt64),
@@ -198,23 +197,11 @@ fn mixed_row_shapes_keep_schema_and_values() {
 
     let empty = Row::empty_dataframe().unwrap();
     assert_eq!(empty.shape(), (0, 15));
-    assert_schema(
-        &empty
-            .schema()
-            .iter()
-            .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-            .collect::<Vec<_>>(),
-    );
+    assert_schema(empty.schema());
 
     let single = row_zero().to_dataframe().unwrap();
     assert_eq!(single.shape(), (1, 15));
-    assert_schema(
-        &single
-            .schema()
-            .iter()
-            .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-            .collect::<Vec<_>>(),
-    );
+    assert_schema(single.schema());
     assert_u64(&single, "id", 0, 1);
     assert_u64(&single, "maybe_id", 0, 2);
     assert_u64_list(&single, "ids", 0, &[Some(10), Some(11)]);

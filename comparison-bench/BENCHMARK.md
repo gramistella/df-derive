@@ -1,5 +1,10 @@
 # df-derive head-to-head
 
+> **Historical report:** these measurements were captured with df-derive
+> 0.3.1 and Polars 0.53. The report is retained as the published measurement
+> artifact; it is not a benchmark of the current df-derive 0.4 / Polars 0.54
+> dependency set.
+
 ## Environment
 
 - Date: Mon Jun  1 20:10:02 UTC 2026
@@ -14,8 +19,9 @@
 ## API confirmation
 
 - Public import: `use df_derive::prelude::*;`.
-- Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must also derive it.
-- Runtime API: `to_dataframe(&self)`, `empty_dataframe()`, `schema()`, `Columnar::columnar_to_dataframe(&items)`, `Columnar::columnar_from_refs(&refs)`, plus the `ToDataFrameVec` blanket extension so `slice.to_dataframe()` works.
+- Derive: `#[derive(ToDataFrame)]` on structs and tuple structs. Nested custom structs must implement `Columnar`, normally by deriving `ToDataFrame`.
+- Runtime primitive: derived types implement only `Columnar::encode<B>(&B)` for `B: RowBatch<Self>`; the runtime supplies `RowBatch` for `[T]` and `[&T]`.
+- Blanket API: every `Columnar` type receives `ToDataFrame::{to_dataframe, empty_dataframe, schema}` (`schema()` returns `SchemaRef`), plus the `ToDataFrameVec` slice extension.
 - Field attributes verified from the current README/docs: `skip`, `flatten`, `flatten(prefix = "...")`, `as_string`, `as_str`, `as_binary`, `decimal(precision = N, scale = S)`, and `time_unit = "ms" | "us" | "ns"`.
 - Sources checked: [docs.rs `df-derive`](https://docs.rs/df-derive), [GitHub README](https://github.com/gramistella/df-derive), and the local README in this checkout.
 
@@ -125,7 +131,7 @@ The whole batch conversion is the derived columnar path:
 ```rust
 let df = rows.as_slice().to_dataframe()?;
 // or, explicitly:
-let df = <ShowcaseRow as Columnar>::columnar_to_dataframe(&rows)?;
+let df = <ShowcaseRow as Columnar>::encode(rows.as_slice())?;
 ```
 
 ### hand-written Polars
@@ -151,7 +157,7 @@ let fingerprint = BinaryChunked::from_iter_values(
 )
 .into_series();
 
-let df = DataFrame::new_infer_height(vec![
+let df = DataFrame::new(rows.len(), vec![
     Series::new("id".into(), &ids).into(),
     Series::new("symbol".into(), &symbols).into(),
     price.into(),
@@ -262,8 +268,7 @@ struct RowDeriveFlat {
     risk_hedged: bool,
 }
 
-let df_derive_df =
-    <RowDeriveFlat as Columnar>::columnar_to_dataframe(flat_rows.as_slice())?;
+let df_derive_df = <RowDeriveFlat as Columnar>::encode(flat_rows.as_slice())?;
 let row_derive_df = flat_rows.into_iter().to_dataframe()?;
 ```
 

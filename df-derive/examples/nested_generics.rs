@@ -9,21 +9,20 @@
 //! (2) those instantiations compose under wrapper layers when nested into
 //! another derive.
 //!
-//! The macro injects `T: ToDataFrame + Columnar` bounds on every type
-//! parameter (no `Clone` — bulk emitters borrow from `&T`), so any concrete
-//! instantiation must be derivable. Using already-derived nested structs as
-//! the type arguments is the idiomatic fit; using primitives requires
-//! providing manual `ToDataFrame + Columnar` impls for those primitives,
-//! which the existing `quickstart` example does not do because it isn't
-//! generic.
+//! The macro injects a `T: Columnar` bound on every type parameter (no
+//! `Clone` — batch emitters borrow from `&T`), so any concrete instantiation
+//! must be encodable. The runtime then supplies `ToDataFrame` uniformly
+//! through its blanket implementation. Using already-derived nested structs
+//! as the type arguments is the idiomatic fit; using primitives requires a
+//! manual `Columnar::encode` implementation for those primitives.
 //!
 //! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe::ToDataFrameVec as _;
 
-// Two concrete payloads to instantiate the generic with. Both derive
-// `ToDataFrame`, which the macro requires for any concrete `T`.
+// Two concrete payloads to instantiate the generic with. Both derives emit
+// `Columnar::encode`, satisfying the bound for any concrete `T`.
 #[derive(ToDataFrame, Clone)]
 struct IntPayload {
     timestamp: i64,
@@ -36,9 +35,9 @@ struct StringPayload {
     note: String,
 }
 
-// Generic carrier struct. The macro injects `T: ToDataFrame + Columnar` on
-// its impl blocks; `#[derive(Clone)]` adds its own `T: Clone` bound. So
-// `Generic<P>` derives transparently for any `P` that satisfies all three.
+// Generic carrier struct. The macro injects `T: Columnar` on its impl;
+// `#[derive(Clone)]` adds its own `T: Clone` bound. `ToDataFrame` then comes
+// from the runtime blanket implementation.
 #[derive(ToDataFrame, Clone)]
 struct Generic<T> {
     value: T,
@@ -102,7 +101,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let schema = <Outer as df_derive::dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (generic instantiations flatten with dot notation):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

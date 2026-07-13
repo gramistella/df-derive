@@ -2,9 +2,9 @@
 //
 // `[]`, `[Option]`, and `[Vec]` shapes around a nested struct are served by
 // the bulk encoder fast paths. `Option<Option<Inner>>` falls through to the
-// per-row push pipeline, which is the only path that exercises the trait
-// `to_dataframe()` indirection across struct boundaries for a concrete inner
-// struct, so the shape is worth a dedicated regression test. The generic
+// row-wise collection pipeline, exercising nested batch encoding across a
+// concrete struct boundary, so the shape is worth a dedicated regression
+// test. The generic
 // equivalent already lives in `20-generics.rs` (`OptOptWrapper<T>`); this
 // file is the non-generic mirror.
 //
@@ -31,12 +31,17 @@ struct OptOptInner {
 }
 
 fn main() {
-    let expected_schema = vec![
+    let expected_schema: Vec<(String, DataType)> = vec![
         ("id".into(), DataType::UInt32),
         ("payload.value".into(), DataType::Float64),
         ("payload.label".into(), DataType::String),
     ];
-    assert_eq!(OptOptInner::schema().unwrap(), expected_schema);
+    let actual_schema: Vec<(String, DataType)> = OptOptInner::schema()
+        .unwrap()
+        .iter()
+        .map(|(name, dtype)| (name.as_str().to_owned(), dtype.clone()))
+        .collect();
+    assert_eq!(actual_schema, expected_schema);
 
     let items = vec![
         OptOptInner {
@@ -58,7 +63,10 @@ fn main() {
 
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape(), (3, 3));
-    assert_eq!(batch.get_column_names(), vec!["id", "payload.value", "payload.label"]);
+    assert_eq!(
+        batch.get_column_names(),
+        vec!["id", "payload.value", "payload.label"]
+    );
 
     assert_eq!(
         batch.column("id").unwrap().get(0).unwrap(),
@@ -87,8 +95,7 @@ fn main() {
         ));
     }
 
-    // Single-row API exercises the same on-leaf path through
-    // `to_dataframe(&self) -> Columnar::columnar_from_refs(&[self])`.
+    // Single-row conversion exercises the same encoder with a one-row batch.
     let single = OptOptInner {
         id: 42,
         payload: Some(Some(Inner {
@@ -108,8 +115,8 @@ fn main() {
     let empty_via_slice = <[OptOptInner] as ToDataFrameVec>::to_dataframe(&[]).unwrap();
     assert_eq!(empty_via_slice.shape(), (0, 3));
 
-    let empty_via_columnar = <OptOptInner as Columnar>::columnar_to_dataframe(&[]).unwrap();
-    assert_eq!(empty_via_columnar.shape(), (0, 3));
+    let empty_via_encode = <OptOptInner as Columnar>::encode(&[] as &[OptOptInner]).unwrap();
+    assert_eq!(empty_via_encode.shape(), (0, 3));
 
     let empty_direct = OptOptInner::empty_dataframe().unwrap();
     assert_eq!(empty_direct.shape(), (0, 3));

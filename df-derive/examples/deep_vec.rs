@@ -40,7 +40,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let schema = <Tensor as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (each Vec layer becomes a List wrap):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

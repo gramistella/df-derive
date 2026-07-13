@@ -28,7 +28,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     // Show schema to demonstrate data types
     let schema = <TxRecord as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, None)):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

@@ -21,6 +21,7 @@ pub(in crate::codegen) fn build_projected_vec_primitive(
     leaf: crate::ir::PrimitiveLeaf<'_>,
     idx: usize,
     config: &MacroConfig,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
@@ -34,6 +35,7 @@ pub(in crate::codegen) fn build_projected_vec_primitive(
         idx,
         column.name(),
         config,
+        rows,
     )
 }
 
@@ -42,6 +44,7 @@ pub(in crate::codegen) fn build_projected_vec_nested(
     type_path: &TokenStream,
     idx: usize,
     config: &MacroConfig,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
@@ -55,6 +58,7 @@ pub(in crate::codegen) fn build_projected_vec_nested(
         idx,
         column.name(),
         config,
+        rows,
     )
 }
 
@@ -227,6 +231,7 @@ fn emit_projected_vec_primitive(
     idx: usize,
     column_name: &str,
     config: &MacroConfig,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
@@ -242,6 +247,7 @@ fn emit_projected_vec_primitive(
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
             access: &dummy_access,
+            rows,
             idx,
             name: column_name,
         },
@@ -253,6 +259,7 @@ fn emit_projected_vec_primitive(
 
     let emitter = ShapeEmitter::tuple(
         ShapeEmitterParts {
+            rows,
             shape,
             access: parent_access,
             layers: &layers,
@@ -310,6 +317,7 @@ fn emit_projected_vec_nested(
     idx: usize,
     column_name: &str,
     config: &MacroConfig,
+    rows: &syn::Ident,
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
@@ -321,6 +329,7 @@ fn emit_projected_vec_nested(
     let layer_counters = projected_layer_counters(idx, shape.depth());
     let emitter = ShapeEmitter::tuple(
         ShapeEmitterParts {
+            rows,
             shape,
             access: parent_access,
             layers: &layers,

@@ -42,7 +42,7 @@ fn reject_invalid_flatten_field(
         format!(
             "field `{field_display_name}` has `flatten`, but flatten is only supported for \
              bare nested row fields after transparent pointer peeling. Use a concrete \
-             struct or generic row payload that implements `ToDataFrame + Columnar`; \
+             struct or generic row payload that implements `Columnar`; \
              nullable, list, tuple, primitive, and conversion-shaped fields must remain \
              prefixed."
         ),

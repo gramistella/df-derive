@@ -66,16 +66,17 @@ fn main() -> polars::prelude::PolarsResult<()> {
 ```
 
 The default runtime API is available as `df_derive::dataframe::*`. The prelude
-exports the derive macro plus `ToDataFrame`, `Columnar`, `ToDataFrameVec`, and
-`Decimal128Encode`; it also exports the trait as `ToDataFrameTrait` for code
-that wants an unambiguous type-namespace alias.
+exports the derive macro plus `RowBatch`, `ToDataFrame`, `Columnar`,
+`ToDataFrameVec`, and `Decimal128Encode`; it also exports the trait as
+`ToDataFrameTrait` for code that wants an unambiguous type-namespace alias.
 
 ## Benchmarks
 
 A reproducible head-to-head benchmark comparing `df-derive` with hand-written
 Polars, `serde_arrow`, and `polars-row-derive` lives in
-[comparison-bench/README.md](comparison-bench/README.md). The latest generated
-report is [comparison-bench/BENCHMARK.md](comparison-bench/BENCHMARK.md).
+[comparison-bench/README.md](comparison-bench/README.md). Its historical
+df-derive 0.3.1 / Polars 0.53 report is
+[comparison-bench/BENCHMARK.md](comparison-bench/BENCHMARK.md).
 
 ## Crate Layout
 
@@ -84,8 +85,8 @@ This repository uses a serde-like three-crate architecture:
 - `df-derive`: the normal facade crate. It re-exports the derive macro from
   `df-derive-macros` and the runtime API from `df-derive-core`.
 - `df-derive-core`: a normal library crate that owns the shared
-  `dataframe::{ToDataFrame, Columnar, ToDataFrameVec, Decimal128Encode}` trait
-  identity, the `()` impls, and the optional reference
+  `dataframe::{RowBatch, ToDataFrame, Columnar, ToDataFrameVec,
+  Decimal128Encode}` trait identity, the `()` columnar impl, and the optional reference
   `Decimal128Encode for rust_decimal::Decimal` impl.
 - `df-derive-macros`: the proc-macro implementation. Power users can depend
   on this directly and target `df-derive-core`, `paft`, or a custom runtime.
@@ -96,19 +97,30 @@ facade/default runtime.
 
 ## Generated API
 
-For each struct or tuple struct `T`, the macro generates:
+For each struct or tuple struct `T`, the macro generates exactly one runtime
+operation:
 
-- `impl ToDataFrame for T`
-  - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
-  - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-  - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
-- `impl Columnar for T`
-  - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
-  - `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`
+```rust,ignore
+impl Columnar for T {
+    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    where
+        B: RowBatch<Self> + ?Sized;
+}
+```
 
-The direct `&[Self]` method is generated so top-level slice conversion does
-not allocate a temporary `Vec<&Self>`. The borrowed `&[&Self]` method remains
-for nested and generic composition.
+The runtime blanket-implements `ToDataFrame` for every `T: Columnar`.
+`to_dataframe()` encodes a one-row slice, `empty_dataframe()` encodes an empty
+slice, and `schema()` returns the `SchemaRef` of that real typed empty output.
+Slices of values and slices of references both implement `RowBatch`, so the
+same generated body handles top-level and nested composition without a
+temporary `Vec<&Self>` adapter.
+
+Manual `RowBatch` implementations must report the same length as their exact
+iterator and return the same rows in the same order on repeated traversals.
+Manual `Columnar` implementations must return exactly that many rows and keep
+their complete schema — width, ordered names, and dtypes — identical for empty
+and populated batches. Derived parents validate this contract before consuming
+a manual nested encoder.
 
 ## Representative Generated Code
 
@@ -118,50 +130,26 @@ shortened with imports, rustc's `vec!` expansion is omitted, and
 compiler-generated helper blocks are removed.
 
 ```rust,ignore
-use df_derive::dataframe::{Columnar, ToDataFrame};
+use df_derive::dataframe::{Columnar, RowBatch};
 use df_derive::dataframe::__private::{
     polars::prelude::{
-        Column, DataFrame, DataType, Float64Chunked, IntoSeries, PolarsResult,
-        Series, StringChunked, UInt64Chunked,
+        Column, DataFrame, Float64Chunked, IntoSeries, PolarsResult,
+        StringChunked, UInt64Chunked,
     },
     polars_arrow::array::MutableBinaryViewArray,
 };
 
 #[automatically_derived]
-impl ToDataFrame for Trade {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        <Self as Columnar>::columnar_from_refs(&[self])
-    }
-
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("symbol".into(), &DataType::String).into(),
-            Series::new_empty("price".into(), &DataType::Float64).into(),
-            Series::new_empty("size".into(), &DataType::UInt64).into(),
-        ])
-    }
-
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![
-            ("symbol".to_owned(), DataType::String),
-            ("price".to_owned(), DataType::Float64),
-            ("size".to_owned(), DataType::UInt64),
-        ])
-    }
-}
-
-#[automatically_derived]
 impl Columnar for Trade {
-    fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-        if items.is_empty() {
-            return <Self as ToDataFrame>::empty_dataframe();
-        }
+    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    where
+        B: RowBatch<Self> + ?Sized,
+    {
+        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(rows.len());
+        let mut price = Vec::<f64>::with_capacity(rows.len());
+        let mut size = Vec::<u64>::with_capacity(rows.len());
 
-        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(items.len());
-        let mut price = Vec::<f64>::with_capacity(items.len());
-        let mut size = Vec::<u64>::with_capacity(items.len());
-
-        for item in items {
+        for item in rows.iter() {
             symbol.push_value_ignore_validity(item.symbol.as_str());
             price.push(item.price);
             size.push(item.size);
@@ -181,39 +169,7 @@ impl Columnar for Trade {
         let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
         columns.push(s.into());
 
-        DataFrame::new_infer_height(columns)
-    }
-
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        if items.is_empty() {
-            return <Self as ToDataFrame>::empty_dataframe();
-        }
-
-        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(items.len());
-        let mut price = Vec::<f64>::with_capacity(items.len());
-        let mut size = Vec::<u64>::with_capacity(items.len());
-
-        for item in items {
-            symbol.push_value_ignore_validity(item.symbol.as_str());
-            price.push(item.price);
-            size.push(item.size);
-        }
-
-        let mut columns = Vec::<Column>::new();
-
-        let s = IntoSeries::into_series(StringChunked::with_chunk(
-            "symbol".into(),
-            symbol.freeze(),
-        ));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(Float64Chunked::from_vec("price".into(), price));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
-        columns.push(s.into());
-
-        DataFrame::new_infer_height(columns)
+        DataFrame::new(rows.len(), columns)
     }
 }
 ```
@@ -237,7 +193,7 @@ Container and wrapper support:
 - **Empty structs**: an instance produces shape `(1, 0)` and an empty slice
   produces shape `(0, 0)`.
 - **Generics**: generic structs are supported; the macro injects the
-  necessary `ToDataFrame + Columnar` bounds, plus `Decimal128Encode` for
+  necessary `Columnar` bounds, plus `Decimal128Encode` for
   generic parameters annotated with `decimal(...)`.
 - **Transparent pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, borrowed references
   `&T`, and `Cow<'_, T>` with a sized inner peel transparently and preserve
@@ -375,12 +331,17 @@ struct when you need an attributed field. Nested tuples inside an outer
   `Vec<T>` when you need a list representation.
 - Sequence collections such as `VecDeque<T>` and `LinkedList<T>` are not
   supported; use `Vec<T>` instead.
-- All nested custom structs must also derive `ToDataFrame`.
+- All nested custom structs must implement `Columnar`, normally by also
+  deriving `ToDataFrame`.
 - Obvious direct self-recursive nested fields using `Self`, the bare deriving
   type name, `self::Type`, or `crate::Type` are rejected after transparent
   wrapper peeling, including shapes such as `Node`, `Box<Node>`,
   `Option<Box<Node>>`, and tuple fields containing the same. Use identifier
   fields or a separate flat representation for recursive data structures.
+- Recursive nested row schemas are unsupported, including qualified or
+  mutually recursive cycles hidden behind pointer wrappers. Schema discovery
+  encodes an empty child batch, so a recursive schema has no terminating
+  child. Use identifiers or a separate acyclic tabular representation.
 - Consecutive `Option` layers above a `Vec` collapse to one list-level
   validity bit, so `None` and `Some(None)` are indistinguishable in the
   resulting list column.
@@ -403,9 +364,10 @@ struct Row {
 }
 ```
 
-If only `trait = "x::ToDataFrame"` is provided, the macro infers
-`x::Columnar` and `x::Decimal128Encode` unless those paths are explicitly
-overridden.
+If only `trait = "x::ToDataFrame"` is provided, the macro infers the sibling
+`x::Columnar`, `x::RowBatch`, and `x::Decimal128Encode` paths. A standalone
+`columnar = "x::Columnar"` override is also supported; the macro infers its
+sibling `ToDataFrame`, `RowBatch`, and `Decimal128Encode` paths.
 
 Explicit paths to the built-in facade/core runtimes,
 `df_derive::dataframe::ToDataFrame` or
@@ -414,9 +376,6 @@ use the default-runtime dependency roots from that same `dataframe` module's
 hidden `__private` re-exports. They do not require a direct `polars-arrow`
 dependency just because the trait path was written explicitly.
 
-`columnar = "..."` must be paired with `trait = "..."`; a standalone
-`Columnar` override would create mixed runtime impls that are incompatible
-with both runtimes' `ToDataFrameVec` extension traits.
 Explicit `trait` + `columnar` pairs also cannot mix the built-in
 `df_derive`/`df_derive_core` dataframe runtime with a custom runtime. Use the
 matching built-in `Columnar` path, omit `columnar` so it is inferred from the
@@ -479,28 +438,69 @@ selected with `#[df_derive(trait = "...")]` must name a compatible direct
 `polars` dependency. They also need a compatible direct `polars-arrow`
 dependency when the derived fields use shapes that require generated Arrow
 array builders, such as list, nullable primitive, string, or binary columns.
-Scalar-only numeric/bool derives do not need `polars-arrow`. The minimum trait
-surface is:
+Scalar-only numeric/bool derives do not need `polars-arrow`. The minimum
+runtime surface is:
 
 ```rust
 mod runtime {
     pub mod dataframe {
-        use polars::prelude::{DataFrame, DataType, PolarsResult};
+        use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
-        pub trait ToDataFrame {
-            fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-            fn empty_dataframe() -> PolarsResult<DataFrame>;
-            fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+        pub trait RowBatch<T: ?Sized> {
+            fn len(&self) -> usize;
+            fn is_empty(&self) -> bool { self.len() == 0 }
+            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+            where
+                T: 'a;
+        }
+
+        impl<T> RowBatch<T> for [T] {
+            fn len(&self) -> usize {
+                <[T]>::len(self)
+            }
+
+            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+            where
+                T: 'a,
+            {
+                <[T]>::iter(self)
+            }
+        }
+
+        impl<T: ?Sized> RowBatch<T> for [&T] {
+            fn len(&self) -> usize {
+                <[&T]>::len(self)
+            }
+
+            fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+            where
+                T: 'a,
+            {
+                <[&T]>::iter(self).copied()
+            }
         }
 
         pub trait Columnar: Sized {
-            fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-                let refs: Vec<&Self> = items.iter().collect();
-                Self::columnar_from_refs(&refs)
+            fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+            where
+                B: RowBatch<Self> + ?Sized;
+        }
+
+        pub trait ToDataFrame: Columnar {
+            fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+                Self::encode(std::slice::from_ref(self))
             }
 
-            fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+            fn empty_dataframe() -> PolarsResult<DataFrame> {
+                Self::encode(&[] as &[Self])
+            }
+
+            fn schema() -> PolarsResult<SchemaRef> {
+                Ok(Self::empty_dataframe()?.schema().clone())
+            }
         }
+
+        impl<T: Columnar> ToDataFrame for T {}
 
         pub trait Decimal128Encode {
             fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
@@ -508,6 +508,11 @@ mod runtime {
     }
 }
 ```
+
+The `RowBatch` and `Columnar` contracts are the same as for the default
+runtime: `len()` must match the exact iterator, iteration must be repeatable,
+and `encode` must preserve row count plus the complete ordered schema across
+empty and populated batches.
 
 ## Decimal Backends
 
@@ -581,9 +586,9 @@ has no inherent runtime performance penalty. The macro generates the hot
 column-building code at the impl site either way; the runtime path only
 selects which trait receives the impl.
 
-The generated `columnar_to_dataframe(&[Self])` path avoids the old top-level
-`Vec<&Self>` allocation. Nested and generic emitters still use
-`columnar_from_refs(&[&Self])` so borrowed composition remains clone-free.
+The generated `Columnar::encode` body accepts both `[Self]` and `[&Self]`
+through `RowBatch`. Top-level conversion has no temporary reference-vector
+adapter, while nested and generic composition remains borrowed and clone-free.
 
 The generated hot path is shape-dependent. Primitive scalar fields are
 populated in one row loop. Nested fields collect references and call the

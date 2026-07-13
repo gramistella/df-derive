@@ -13,7 +13,9 @@ cargo run -p df-derive --example <example_name>
 ## Available Examples
 
 ### `quickstart.rs`
-Basic usage example showing how to derive `ToDataFrame` on a simple struct and convert both single values and slices to DataFrames.
+Basic usage showing how the derive emits the single `Columnar::encode`
+primitive while blanket `ToDataFrame` APIs convert both single values and
+slices to DataFrames.
 
 ```bash
 cargo run -p df-derive --example quickstart
@@ -55,7 +57,10 @@ cargo run -p df-derive --example as_string
 ```
 
 ### `generics.rs`
-Demonstrates generic struct support added in v0.3.0: type-parametric structs, default type parameters, multiple generics, the unit type `()` as a zero-column payload, and depth-1 wrappers (`Option<T>` / `Vec<T>`) over a generic parameter.
+Demonstrates generic struct support: type-parametric structs, default type
+parameters, multiple generics, the unit type `()` as a zero-column payload,
+and depth-1 wrappers (`Option<T>` / `Vec<T>`) over a generic parameter. Generic
+parameters require `Columnar`; blanket `ToDataFrame` follows automatically.
 
 ```bash
 cargo run -p df-derive --example generics
@@ -92,7 +97,11 @@ cargo run -p df-derive --example nested_generics
 ## What Each Example Shows
 
 - **DataFrame output**: The actual Polars DataFrame structure
-- **Schema information**: Column names and data types
+- **Schema information**: Ordered column names and data types through Polars
+  `SchemaRef`
 - **Different use cases**: From simple structs to complex nested data with lists
 
-The examples use the default `df-derive` facade runtime unless they are demonstrating a custom-runtime pattern.
+The examples use the default `df-derive` facade runtime. Its single batch
+primitive is `Columnar::encode`, parameterized by `RowBatch`; `ToDataFrame`
+and its `SchemaRef`-returning `schema()` method are blanket-derived from that
+encoder.

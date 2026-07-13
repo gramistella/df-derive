@@ -87,11 +87,10 @@ fn nz_usize(v: usize) -> NonZeroUsize {
     NonZeroUsize::new(v).unwrap()
 }
 
-fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
+fn schema_dtype(schema: &Schema, col: &str) -> DataType {
     schema
-        .iter()
-        .find(|(name, _)| name == col)
-        .map(|(_, dtype)| dtype.clone())
+        .get(col)
+        .cloned()
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 

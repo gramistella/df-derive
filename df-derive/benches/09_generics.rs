@@ -4,9 +4,10 @@
 //! - `_per_row`: hand-rolled mirror of the original codegen, where the generic
 //!   field is decoded by calling `payload.to_dataframe()` once per item and
 //!   extracting `AnyValues` into per-column accumulators.
-//! - `_bulk`: the macro-generated path that collects `Vec<T>` once and calls
-//!   `T::columnar_to_dataframe(&slice)` exactly once, then prefix-renames the
-//!   resulting columns onto the parent `DataFrame`.
+//! - `_bulk`: the macro-generated path that collects nested row references
+//!   into one `RowBatch` encoding call, validates it against a typed empty
+//!   encoding, then prefix-renames the resulting columns onto the parent
+//!   `DataFrame`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
@@ -17,7 +18,7 @@ mod bench_support;
 #[path = "../tests/local_runtime.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::{Columnar, ToDataFrame};
+use crate::core::dataframe::{Columnar, RowBatch, ToDataFrame};
 
 const N_ROWS: usize = 100_000;
 
@@ -40,25 +41,18 @@ where
     payload: T,
 }
 
-// Local trait impls so Wrapper<f64> can flatten via a single column.
-impl ToDataFrame for f64 {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &[*self]).into()])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("value".into(), &DataType::Float64).into(),
-        ])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("value".to_string(), DataType::Float64)])
-    }
-}
-
+// Local batch primitive so Wrapper<f64> can flatten via a single column.
+// The runtime's blanket impl derives every ToDataFrame operation from this.
 impl Columnar for f64 {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let owned: Vec<Self> = items.iter().map(|&&x| x).collect();
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &owned).into()])
+    fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+    where
+        B: RowBatch<Self> + ?Sized,
+    {
+        let values: Vec<Self> = rows.iter().copied().collect();
+        DataFrame::new(
+            rows.len(),
+            vec![Series::new("value".into(), &values).into()],
+        )
     }
 }
 
@@ -68,7 +62,7 @@ impl Columnar for f64 {
 // rewrite — it builds N tiny DataFrames per call.
 fn wrapper_per_row<T>(items: &[Wrapper<T>]) -> PolarsResult<DataFrame>
 where
-    T: Clone + ToDataFrame + Columnar,
+    T: Clone + Columnar,
 {
     if items.is_empty() {
         return <Wrapper<T> as ToDataFrame>::empty_dataframe();
@@ -107,7 +101,7 @@ where
         columns.push(s.into());
     }
 
-    DataFrame::new_infer_height(columns)
+    DataFrame::new(items.len(), columns)
 }
 
 // Wrappers used to A/B benchmark the new Option<T> and Vec<T> bulk overrides.
@@ -131,12 +125,12 @@ where
     payload: Vec<T>,
 }
 
-// Hand-rolled per-row equivalent of `OptWrap<T>::columnar_to_dataframe` —
+// Hand-rolled per-row equivalent of `OptWrap<T>::encode` —
 // mirrors the previous generic-leaf codegen that built one tmp DataFrame per
 // item and pushed an `AnyValue::Null` for every `None`.
 fn opt_wrap_per_row<T>(items: &[OptWrap<T>]) -> PolarsResult<DataFrame>
 where
-    T: Clone + ToDataFrame + Columnar,
+    T: Clone + Columnar,
 {
     if items.is_empty() {
         return <OptWrap<T> as ToDataFrame>::empty_dataframe();
@@ -174,16 +168,16 @@ where
         let prefixed = format!("payload.{col_name}");
         columns.push(Series::new(prefixed.as_str().into(), &payload_cols[j]).into());
     }
-    DataFrame::new_infer_height(columns)
+    DataFrame::new(items.len(), columns)
 }
 
-// Hand-rolled per-row equivalent of `VecWrap<T>::columnar_to_dataframe` —
+// Hand-rolled per-row equivalent of `VecWrap<T>::encode` —
 // mirrors the previous generic-vec codegen that called `to_dataframe` on
 // every element of every parent row's `Vec<T>` and stitched per-row inner
 // lists together.
 fn vec_wrap_per_row<T>(items: &[VecWrap<T>]) -> PolarsResult<DataFrame>
 where
-    T: Clone + ToDataFrame + Columnar,
+    T: Clone + Columnar,
 {
     if items.is_empty() {
         return <VecWrap<T> as ToDataFrame>::empty_dataframe();
@@ -222,7 +216,7 @@ where
         let prefixed = format!("payload.{col_name}");
         columns.push(Series::new(prefixed.as_str().into(), &payload_rows[j]).into());
     }
-    DataFrame::new_infer_height(columns)
+    DataFrame::new(items.len(), columns)
 }
 
 fn generate_with_unit() -> Vec<Wrapper<()>> {
@@ -306,9 +300,8 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("generics_unit_bulk", |b| {
         b.iter(|| {
-            let df =
-                <Wrapper<()> as Columnar>::columnar_to_dataframe(std::hint::black_box(&unit_data))
-                    .unwrap();
+            let df = <Wrapper<()> as Columnar>::encode(std::hint::black_box(unit_data.as_slice()))
+                .unwrap();
             std::hint::black_box(df)
         });
     });
@@ -322,9 +315,8 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("generics_primitive_bulk", |b| {
         b.iter(|| {
-            let df =
-                <Wrapper<f64> as Columnar>::columnar_to_dataframe(std::hint::black_box(&prim_data))
-                    .unwrap();
+            let df = <Wrapper<f64> as Columnar>::encode(std::hint::black_box(prim_data.as_slice()))
+                .unwrap();
             std::hint::black_box(df)
         });
     });
@@ -338,10 +330,9 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("generics_struct_bulk", |b| {
         b.iter(|| {
-            let df = <Wrapper<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(
-                &struct_data,
-            ))
-            .unwrap();
+            let df =
+                <Wrapper<Meta> as Columnar>::encode(std::hint::black_box(struct_data.as_slice()))
+                    .unwrap();
             std::hint::black_box(df)
         });
     });
@@ -356,9 +347,8 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("opt_struct_bulk", |b| {
         b.iter(|| {
-            let df =
-                <OptWrap<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(&opt_data))
-                    .unwrap();
+            let df = <OptWrap<Meta> as Columnar>::encode(std::hint::black_box(opt_data.as_slice()))
+                .unwrap();
             std::hint::black_box(df)
         });
     });
@@ -373,9 +363,8 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("vec_struct_bulk", |b| {
         b.iter(|| {
-            let df =
-                <VecWrap<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(&vec_data))
-                    .unwrap();
+            let df = <VecWrap<Meta> as Columnar>::encode(std::hint::black_box(vec_data.as_slice()))
+                .unwrap();
             std::hint::black_box(df)
         });
     });

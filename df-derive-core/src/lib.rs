@@ -9,16 +9,21 @@
 //!
 //! The [`dataframe`] module exposes:
 //!
-//! - [`dataframe::ToDataFrame`] — the per-instance API the derive populates.
-//! - [`dataframe::Columnar`] — the columnar batch API the derive populates.
+//! - [`dataframe::RowBatch`] — the borrowed-row abstraction accepted by the
+//!   encoder.
+//! - [`dataframe::Columnar`] — the single batch-encoding primitive populated
+//!   by the derive.
+//! - [`dataframe::ToDataFrame`] — the per-instance and schema API derived
+//!   uniformly from `Columnar`.
 //! - [`dataframe::ToDataFrameVec`] — the slice extension trait that routes
-//!   `[T]::to_dataframe()` through `Columnar` or `empty_dataframe`.
+//!   `[T]::to_dataframe()` through `Columnar::encode`.
 //! - [`dataframe::Decimal128Encode`] — the contract for encoding a decimal
 //!   value as an `i128` mantissa rescaled to a target scale. The reference
 //!   `rust_decimal::Decimal` impl is gated behind the `rust_decimal`
 //!   feature (enabled by default).
-//! - `impl ToDataFrame for ()` and `impl Columnar for ()` — the zero-column
-//!   payload behavior used by generic `Wrapper<()>` shapes.
+//! - `impl Columnar for ()` — the zero-column payload behavior used by
+//!   generic `Wrapper<()>` shapes. The blanket implementation supplies
+//!   `ToDataFrame`.
 //!
 //! # When to use this crate
 //!
@@ -62,7 +67,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
+    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
     #[cfg(feature = "rust_decimal")]
     const DECIMAL128_MAX_SCALE: u32 = 38;
@@ -75,32 +80,111 @@ pub mod dataframe {
         pub use polars_arrow;
     }
 
-    pub trait ToDataFrame {
-        /// # Errors
-        /// Returns an error if `DataFrame` construction fails.
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        /// # Errors
-        /// Returns an error if `DataFrame` construction fails.
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        /// # Errors
-        /// Returns an error if schema generation fails.
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    /// Borrowed rows accepted by [`Columnar::encode`].
+    ///
+    /// Implementations may project rows from another batch without allocating
+    /// an intermediate `Vec<&T>`. The runtime provides the two fundamental
+    /// representations: direct rows (`[T]`) and borrowed rows (`[&T]`).
+    ///
+    /// # Implementation contract
+    ///
+    /// [`RowBatch::len`] must equal the exact length reported by
+    /// [`RowBatch::iter`]. Repeated calls to `iter` must visit the same rows in
+    /// the same order. Generated encoders may traverse a batch more than once
+    /// and use `len` independently for capacities, offsets, validity, and
+    /// zero-column frame heights.
+    pub trait RowBatch<T: ?Sized> {
+        /// Number of rows in the batch.
+        fn len(&self) -> usize;
+
+        /// Whether the batch contains no rows.
+        #[inline]
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        /// Iterate over every row by reference.
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
     }
 
-    /// Columnar batch trait implemented by the derive macro.
+    impl<T> RowBatch<T> for [T] {
+        #[inline]
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        #[inline]
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        #[inline]
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        #[inline]
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
+    }
+
+    /// Convenience API derived from the single [`Columnar::encode`] runtime
+    /// primitive.
+    pub trait ToDataFrame: Columnar {
+        /// # Errors
+        /// Returns an error if `DataFrame` construction fails.
+        #[inline]
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
+        }
+
+        /// # Errors
+        /// Returns an error if `DataFrame` construction fails.
+        #[inline]
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        /// # Errors
+        /// Returns an error if schema generation fails.
+        #[inline]
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
+    }
+
+    impl<T: Columnar> ToDataFrame for T {}
+
+    /// Single columnar batch primitive implemented by the derive macro.
+    ///
+    /// # Implementation contract
+    ///
+    /// An implementation must return exactly `rows.len()` rows. Its complete
+    /// schema — width, ordered column names, and data types — must be identical
+    /// for every batch, including the empty batch used by
+    /// [`ToDataFrame::schema`]. It must not return undeclared extra columns or
+    /// omit declared columns. Derived parents validate these invariants before
+    /// consuming a manually implemented nested encoder.
     pub trait Columnar: Sized {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-        /// # Errors
-        /// Returns an error if `DataFrame` construction fails.
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
     }
 
-    /// Extension trait enabling `.to_dataframe()` on slices (and `Vec` via auto-deref)
+    /// Extension trait enabling `.to_dataframe()` on slices (and `Vec` via auto-deref).
     pub trait ToDataFrameVec {
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
@@ -109,51 +193,25 @@ pub mod dataframe {
 
     impl<T> ToDataFrameVec for [T]
     where
-        T: Columnar + ToDataFrame,
+        T: Columnar,
     {
+        #[inline]
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as Columnar>::encode(self)
         }
-    }
-
-    fn zero_column_dataframe_with_height(n: usize) -> PolarsResult<DataFrame> {
-        let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
-            .extend_constant(AnyValue::Null, n)?;
-        let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-        df.drop_in_place("_dummy")?;
-        Ok(df)
     }
 
     // Unit-type support for generic payloads such as `Wrapper<()>`. Direct
     // derived fields of type `()` are rejected by df-derive, but a generic
-    // field instantiated as `()` contributes zero columns. The
-    // `to_dataframe` / `columnar_to_dataframe` paths must still produce a
-    // DataFrame with the correct row count, so we use a temporary dummy
-    // column that is dropped immediately after construction.
-    impl ToDataFrame for () {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(1)
-        }
-
-        fn empty_dataframe() -> PolarsResult<DataFrame> {
-            DataFrame::new_infer_height(vec![])
-        }
-
-        fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-            Ok(Vec::new())
-        }
-    }
-
+    // field instantiated as `()` contributes zero columns while preserving
+    // the batch height.
     impl Columnar for () {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
+        #[inline]
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized,
+        {
+            Ok(DataFrame::empty_with_height(rows.len()))
         }
     }
 

@@ -64,16 +64,20 @@ fn assert_list_u128(df: &DataFrame, col: &str, row: usize, expected: &[Option<u1
 
 fn main() {
     let bare_schema = Int128Bare::schema().unwrap();
+    let expected_bare: Schema = [
+        ("signed", DataType::Int128),
+        ("unsigned", DataType::UInt128),
+        ("maybe_signed", DataType::Int128),
+        ("maybe_unsigned", DataType::UInt128),
+        ("pair.field_0", DataType::Int128),
+        ("pair.field_1", DataType::UInt128),
+    ]
+    .into_iter()
+    .map(|(name, dtype)| (name.into(), dtype))
+    .collect();
     assert_eq!(
-        bare_schema,
-        vec![
-            ("signed".to_string(), DataType::Int128),
-            ("unsigned".to_string(), DataType::UInt128),
-            ("maybe_signed".to_string(), DataType::Int128),
-            ("maybe_unsigned".to_string(), DataType::UInt128),
-            ("pair.field_0".to_string(), DataType::Int128),
-            ("pair.field_1".to_string(), DataType::UInt128),
-        ]
+        bare_schema.as_ref(),
+        &expected_bare,
     );
 
     let big_signed = i128::MIN + 123_456_789;
@@ -128,26 +132,30 @@ fn main() {
     );
 
     let vec_schema = Int128Vecs::schema().unwrap();
+    let expected_vec: Schema = [
+        (
+            "signed_items",
+            DataType::List(Box::new(DataType::Int128)),
+        ),
+        (
+            "nullable_signed_items",
+            DataType::List(Box::new(DataType::Int128)),
+        ),
+        (
+            "nested_unsigned_items",
+            DataType::List(Box::new(DataType::List(Box::new(DataType::UInt128)))),
+        ),
+        (
+            "unsigned_items",
+            DataType::List(Box::new(DataType::UInt128)),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, dtype)| (name.into(), dtype))
+    .collect();
     assert_eq!(
-        vec_schema,
-        vec![
-            (
-                "signed_items".to_string(),
-                DataType::List(Box::new(DataType::Int128)),
-            ),
-            (
-                "nullable_signed_items".to_string(),
-                DataType::List(Box::new(DataType::Int128)),
-            ),
-            (
-                "nested_unsigned_items".to_string(),
-                DataType::List(Box::new(DataType::List(Box::new(DataType::UInt128)))),
-            ),
-            (
-                "unsigned_items".to_string(),
-                DataType::List(Box::new(DataType::UInt128)),
-            ),
-        ]
+        vec_schema.as_ref(),
+        &expected_vec,
     );
 
     let vec_rows = vec![

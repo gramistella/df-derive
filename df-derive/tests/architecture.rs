@@ -131,7 +131,7 @@ fn paft_like_runtime_lib() -> &'static str {
 pub use df_derive_macros::ToDataFrame;
 
 pub mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
+    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
     #[doc(hidden)]
     pub mod __private {
@@ -139,20 +139,65 @@ pub mod dataframe {
         pub use pa as polars_arrow;
     }
 
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    pub trait RowBatch<T: ?Sized> {
+        fn len(&self) -> usize;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
+    }
+
+    impl<T> RowBatch<T> for [T] {
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
     }
 
     pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
+    }
+
+    pub trait ToDataFrame: Columnar {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
         }
 
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
     }
+
+    impl<T: Columnar> ToDataFrame for T {}
 
     pub trait ToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
@@ -160,13 +205,10 @@ pub mod dataframe {
 
     impl<T> ToDataFrameVec for [T]
     where
-        T: Columnar + ToDataFrame,
+        T: Columnar,
     {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as Columnar>::encode(self)
         }
     }
 
@@ -175,6 +217,143 @@ pub mod dataframe {
     }
 }
 "#
+}
+
+fn row_batch_runtime_source() -> &'static str {
+    r#"
+    pub trait RowBatch<T: ?Sized> {
+        fn len(&self) -> usize;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
+    }
+
+    impl<T> RowBatch<T> for [T] {
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
+    }
+"#
+}
+
+fn runtime_traits_source() -> &'static str {
+    r#"
+    pub trait Columnar: Sized {
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
+    }
+
+    pub trait ToDataFrame: Columnar {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
+        }
+
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
+    }
+
+    impl<T: Columnar> ToDataFrame for T {}
+
+    pub trait ToDataFrameVec {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
+    }
+
+    impl<T> ToDataFrameVec for [T]
+    where
+        T: Columnar,
+    {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            <T as Columnar>::encode(self)
+        }
+    }
+
+    pub trait Decimal128Encode {
+        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
+    }
+"#
+}
+
+fn paft_utils_runtime_lib() -> String {
+    [
+        r#"
+pub mod dataframe {
+    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+
+    #[doc(hidden)]
+    pub mod __private {
+        pub use polars;
+        pub use polars_arrow;
+    }
+"#,
+        row_batch_runtime_source(),
+        runtime_traits_source(),
+        "}\n",
+    ]
+    .concat()
+}
+
+fn explicit_runtime_module_source() -> String {
+    [
+        r#"
+mod runtime {
+    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+"#,
+        row_batch_runtime_source(),
+        runtime_traits_source(),
+        "}\n",
+    ]
+    .concat()
+}
+
+fn local_runtime_module_source() -> String {
+    [
+        r#"
+mod core {
+    pub mod dataframe {
+        use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+
+        #[doc(hidden)]
+        pub mod __private {
+            pub use polars;
+            pub use pa as polars_arrow;
+        }
+"#,
+        row_batch_runtime_source(),
+        runtime_traits_source(),
+        "    }\n}\n",
+    ]
+    .concat()
 }
 
 fn polars_deps() -> &'static str {
@@ -565,6 +744,8 @@ paft-utils = {{ path = "paft-utils" }}
         polars_deps(),
     );
 
+    let paft_utils_runtime = paft_utils_runtime_lib();
+
     check_fixture_with_files(
         "macros-direct-paft-utils",
         &manifest,
@@ -604,55 +785,7 @@ polars = { version = "0.54", default-features = false }
 polars-arrow = { version = "0.54", default-features = false }
 "#,
             ),
-            (
-                "paft-utils/src/lib.rs",
-                r#"
-pub mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    #[doc(hidden)]
-    pub mod __private {
-        pub use polars;
-        pub use polars_arrow;
-    }
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as Columnar>::columnar_to_dataframe(self)
-        }
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-"#,
-            ),
+            ("paft-utils/src/lib.rs", paft_utils_runtime.as_str()),
         ],
     );
 }
@@ -907,14 +1040,17 @@ struct Row {
 fn main() -> PolarsResult<()> {
     let schema = Row::schema()?;
     assert_eq!(
-        schema,
+        schema
+            .iter()
+            .map(|(name, dtype)| (name.as_str(), dtype.clone()))
+            .collect::<Vec<_>>(),
         vec![
-            ("i8_v".to_string(), DataType::Int8),
-            ("i16_v".to_string(), DataType::Int16),
-            ("i128_v".to_string(), DataType::Int128),
-            ("u8_v".to_string(), DataType::UInt8),
-            ("u16_v".to_string(), DataType::UInt16),
-            ("u128_v".to_string(), DataType::UInt128),
+            ("i8_v", DataType::Int8),
+            ("i16_v", DataType::Int16),
+            ("i128_v", DataType::Int128),
+            ("u8_v", DataType::UInt8),
+            ("u16_v", DataType::UInt16),
+            ("u128_v", DataType::UInt128),
         ]
     );
 
@@ -1018,35 +1154,13 @@ df-derive-macros = {{ path = "{}" }}
         polars_deps(),
     );
 
-    check_fixture(
-        "explicit-scalar-custom-runtime-no-arrow",
-        &manifest,
+    let runtime = explicit_runtime_module_source();
+    let main_rs = [
         r#"
 use df_derive_macros::ToDataFrame;
-
-mod runtime {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-
+"#,
+        runtime.as_str(),
+        r#"
 #[derive(ToDataFrame)]
 #[df_derive(
     trait = "crate::runtime::ToDataFrame",
@@ -1068,11 +1182,18 @@ fn main() -> polars::prelude::PolarsResult<()> {
     let single = runtime::ToDataFrame::to_dataframe(&rows[0])?;
     assert_eq!(single.shape(), (1, 4));
 
-    let batch = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    let batch = runtime::Columnar::encode(rows.as_slice())?;
     assert_eq!(batch.shape(), (2, 4));
     Ok(())
 }
 "#,
+    ]
+    .concat();
+
+    check_fixture(
+        "explicit-scalar-custom-runtime-no-arrow",
+        &manifest,
+        &main_rs,
     );
 }
 
@@ -1098,37 +1219,15 @@ rust_decimal = "1.42"
         toml_path(&root.join("df-derive-macros")),
     );
 
-    check_fixture(
-        "explicit-custom-runtime-decimal-tuple",
-        &manifest,
+    let runtime = explicit_runtime_module_source();
+    let main_rs = [
         r#"
 use df_derive_macros::ToDataFrame;
 use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
 use rust_decimal::Decimal;
-
-mod runtime {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-
+"#,
+        runtime.as_str(),
+        r#"
 impl runtime::Decimal128Encode for Decimal {
     fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
         let source_scale = self.scale();
@@ -1156,7 +1255,7 @@ fn main() -> PolarsResult<()> {
         },
         Row { maybe: None },
     ];
-    let df = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    let df = runtime::Columnar::encode(rows.as_slice())?;
     assert_eq!(df.shape(), (2, 1));
     assert_eq!(df.column("maybe.field_0")?.dtype(), &DataType::Decimal(38, 10));
     assert_eq!(
@@ -1167,7 +1266,10 @@ fn main() -> PolarsResult<()> {
     Ok(())
 }
 "#,
-    );
+    ]
+    .concat();
+
+    check_fixture("explicit-custom-runtime-decimal-tuple", &manifest, &main_rs);
 }
 
 #[test]
@@ -1191,44 +1293,14 @@ pa = {{ package = "polars-arrow", version = "0.54" }}
         toml_path(&root.join("df-derive-macros")),
     );
 
-    check_fixture(
-        "local-fallback",
-        &manifest,
+    let runtime = local_runtime_module_source();
+    let main_rs = [
         r#"
 use df_derive_macros::ToDataFrame;
 use crate::core::dataframe::ToDataFrame as _;
-
-mod core {
-    pub mod dataframe {
-        use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-        #[doc(hidden)]
-        pub mod __private {
-            pub use polars;
-            pub use pa as polars_arrow;
-        }
-
-        pub trait ToDataFrame {
-            fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-            fn empty_dataframe() -> PolarsResult<DataFrame>;
-            fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-        }
-
-        pub trait Columnar: Sized {
-            fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-                let refs: Vec<&Self> = items.iter().collect();
-                Self::columnar_from_refs(&refs)
-            }
-
-            fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-        }
-
-        pub trait Decimal128Encode {
-            fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-        }
-    }
-}
-
+"#,
+        runtime.as_str(),
+        r#"
 #[derive(ToDataFrame)]
 struct Local {
     id: u32,
@@ -1241,5 +1313,8 @@ fn main() -> polars::prelude::PolarsResult<()> {
     Ok(())
 }
 "#,
-    );
+    ]
+    .concat();
+
+    check_fixture("local-fallback", &manifest, &main_rs);
 }

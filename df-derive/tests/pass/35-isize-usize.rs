@@ -34,14 +34,18 @@ struct IsizeUsizeVecs {
 fn main() {
     // --- bare and Option shapes ---
     let bare_schema = IsizeUsizeBare::schema().unwrap();
+    let expected_bare: Schema = [
+        ("a", DataType::Int64),
+        ("b", DataType::UInt64),
+        ("c", DataType::Int64),
+        ("d", DataType::UInt64),
+    ]
+    .into_iter()
+    .map(|(name, dtype)| (name.into(), dtype))
+    .collect();
     assert_eq!(
-        bare_schema,
-        vec![
-            ("a".to_string(), DataType::Int64),
-            ("b".to_string(), DataType::UInt64),
-            ("c".to_string(), DataType::Int64),
-            ("d".to_string(), DataType::UInt64),
-        ]
+        bare_schema.as_ref(),
+        &expected_bare,
     );
 
     let bare_items = vec![
@@ -104,14 +108,18 @@ fn main() {
     let int64_list = DataType::List(Box::new(DataType::Int64));
     let uint64_list = DataType::List(Box::new(DataType::UInt64));
     let int64_list2 = DataType::List(Box::new(DataType::List(Box::new(DataType::Int64))));
+    let expected_vec: Schema = [
+        ("e", int64_list.clone()),
+        ("f", int64_list.clone()),
+        ("g", int64_list2),
+        ("h", uint64_list),
+    ]
+    .into_iter()
+    .map(|(name, dtype)| (name.into(), dtype))
+    .collect();
     assert_eq!(
-        vec_schema,
-        vec![
-            ("e".to_string(), int64_list.clone()),
-            ("f".to_string(), int64_list.clone()),
-            ("g".to_string(), int64_list2),
-            ("h".to_string(), uint64_list),
-        ]
+        vec_schema.as_ref(),
+        &expected_vec,
     );
 
     let vec_items = vec![

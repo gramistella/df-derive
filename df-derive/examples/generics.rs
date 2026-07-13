@@ -1,10 +1,10 @@
 //! Generic structs (v0.3.0).
 //!
 //! `#[derive(ToDataFrame)]` accepts type parameters, default type parameters,
-//! and multiple generics. The macro injects `ToDataFrame + Columnar`
-//! bounds on every type parameter, so any concrete instantiation must satisfy
-//! those traits. The unit type `()` can be used as a payload to contribute
-//! zero columns.
+//! and multiple generics. The macro injects a `Columnar` bound on every type
+//! parameter, so any concrete instantiation must provide the single batch
+//! encoder. The runtime's blanket implementation then supplies `ToDataFrame`.
+//! The unit type `()` can be used as a payload to contribute zero columns.
 //!
 //! Uses the default `df-derive` facade runtime, including the unit-payload impls.
 
@@ -18,8 +18,8 @@ struct Meta {
 }
 
 // No explicit `T: Clone` bounds below — `#[derive(Clone)]` adds its own, and
-// the derive macro auto-injects `ToDataFrame + Columnar` on every type
-// parameter for the impl blocks it generates.
+// the derive macro auto-injects `Columnar` on every type parameter for the
+// encoder impl it generates. `ToDataFrame` follows from the runtime blanket.
 
 #[derive(ToDataFrame, Clone)]
 struct Wrapper<T> {
@@ -100,8 +100,8 @@ fn main() -> polars::prelude::PolarsResult<()> {
         default_meta.to_dataframe()?
     );
 
-    // 3. Multiple generic parameters. Each parameter gets the standard bound
-    //    set (`ToDataFrame + Columnar`) injected by the macro.
+    // 3. Multiple generic parameters. Each parameter gets the `Columnar`
+    //    bound injected by the macro.
     let pair = Pair {
         name: "trade-1".into(),
         left: Meta {

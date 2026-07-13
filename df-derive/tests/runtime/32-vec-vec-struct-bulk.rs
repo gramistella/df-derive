@@ -4,7 +4,7 @@
 // nested struct's columns.
 //
 // The bulk emitter for this shape flattens leaves into a single contiguous
-// slice, calls `Inner::columnar_from_refs` exactly once, then stacks two
+// slice, calls `Inner::encode` exactly once, then stacks two
 // `LargeListArray`s (inner-list + outer-list) per inner schema column. A
 // regression in the offset bookkeeping would either drop leaves,
 // mis-partition them between inner lists, or shift them into the wrong
@@ -12,12 +12,11 @@
 // list lengths.
 //
 // Schema parity: the declared schema and the runtime Series both carry
-// `List<List<inner_dtype>>` — the schema generator wraps once per `Vec`
-// wrapper depth (see also the assertion in `tests/pass/20-generics.rs`).
+// `List<List<inner_dtype>>` — the encoder wraps once per `Vec` depth (see
+// also the assertion in `tests/pass/20-generics.rs`).
 //
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// Call the single `Columnar::encode` primitive directly so this regression
+// stays scoped to the batch encoder rather than its public convenience APIs.
 
 use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
@@ -36,9 +35,8 @@ struct Outer {
     payload: Vec<Vec<Inner>>,
 }
 
-// Both the populated path (bulk emitter wraps twice) and the empty-parent
-// path (column dtype from `empty_dataframe()` which uses the schema-derived
-// dtype) carry `List<List<leaf>>`.
+// Both populated and empty batches run through the same encoder and carry
+// `List<List<leaf>>`.
 fn nested_list_dtype_for_field_a() -> DataType {
     DataType::List(Box::new(DataType::List(Box::new(DataType::Int64))))
 }
@@ -82,14 +80,11 @@ fn runtime_semantics() {
     test_mixed_shapes();
 }
 
-// Zero parents: the columnar path returns an empty DataFrame with the
-// correct typed schema. The bulk emitter never enters its scan loop —
-// `columnar_from_refs` short-circuits to `empty_dataframe()`, whose
-// dtype comes from `Outer::schema()` (single `List<leaf>` wrap, since
-// the schema generator only wraps once for `has_vec`).
+// Zero parents: the encoder returns an empty DataFrame with the same typed
+// schema as populated output, without entering its scan loop.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 0);
     assert_inner_columns_empty_path(&df, 0);
 }
@@ -104,7 +99,7 @@ fn test_all_outer_empty() {
             payload: Vec::new(),
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_populated(&df, 4);
 
@@ -142,7 +137,7 @@ fn test_outer_with_empty_inner_vecs() {
     ];
     let expected_inner_lens = [2usize, 1, 3];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 3);
     assert_inner_columns_populated(&df, 3);
 
@@ -232,7 +227,7 @@ fn test_all_populated() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 2);
     assert_inner_columns_populated(&df, 2);
 
@@ -315,7 +310,7 @@ fn test_mixed_shapes() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 6);
     assert_inner_columns_populated(&df, 6);
 

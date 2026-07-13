@@ -23,7 +23,7 @@ struct GenericOuter<T> {
 
 fn main() {
     let schema = GenericOuter::<Inner>::schema().unwrap();
-    let names: Vec<_> = schema.into_iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = schema.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
         vec![

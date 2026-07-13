@@ -196,12 +196,9 @@ fn main() {
     println!("\n✅ #[df_derive(as_str)] attribute test completed successfully!");
 }
 
-// Generic-leaf `as_str`: the macro injects `T: ToDataFrame + Columnar`
-// on every type parameter (struct-level — see `impl_parts_with_bounds`), so a
-// generic field with `as_str` requires `T` to satisfy those *plus* `AsRef<str>`
-// from the const-fn assert. The test's `LabelStr` derives `ToDataFrame` to
-// supply the framework bounds and impls `AsRef<str>` for the borrowing path.
-#[derive(ToDataFrame, Clone)]
+// Generic-leaf `as_str` needs only `AsRef<str>`; it is not a nested row and
+// therefore does not acquire a `Columnar` bound.
+#[derive(Clone)]
 struct LabelStr {
     label: String,
 }

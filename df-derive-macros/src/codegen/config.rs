@@ -13,6 +13,9 @@ pub struct RuntimeTraitPaths {
     pub to_dataframe: syn::Path,
     /// Fully-qualified path to the `Columnar` trait.
     pub columnar: syn::Path,
+    /// Fully-qualified path to the `RowBatch` trait used by
+    /// `Columnar::encode`.
+    pub row_batch: syn::Path,
     /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
     /// fields.
     pub decimal128_encode: syn::Path,
@@ -75,15 +78,17 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         attrs.to_dataframe.as_ref(),
         attrs.columnar.as_ref(),
     );
-    let to_dataframe = attrs.to_dataframe.as_ref().map_or_else(
-        || attrs::runtime_trait_path(&default_df_mod, "ToDataFrame"),
-        |override_| override_.value.clone(),
-    );
+    let to_dataframe = match (&attrs.to_dataframe, &attrs.columnar) {
+        (Some(override_), _) => override_.value.clone(),
+        (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "ToDataFrame"),
+        (None, None) => attrs::runtime_trait_path(&default_df_mod, "ToDataFrame"),
+    };
     let columnar = match (&attrs.columnar, &attrs.to_dataframe) {
         (Some(override_), _) => override_.value.clone(),
         (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Columnar"),
         (None, None) => attrs::runtime_trait_path(&default_df_mod, "Columnar"),
     };
+    let row_batch = attrs::rebase_last_segment(&columnar, "RowBatch");
     let decimal128_encode = match (&attrs.decimal128_encode, &attrs.to_dataframe) {
         (Some(override_), _) => override_.value.clone(),
         (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Decimal128Encode"),
@@ -107,6 +112,7 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         traits: RuntimeTraitPaths {
             to_dataframe,
             columnar,
+            row_batch,
             decimal128_encode,
         },
         external_paths,

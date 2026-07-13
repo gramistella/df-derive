@@ -6,7 +6,7 @@
 //! through a single [`CollectThenBulk`] leaf and the unified emitter
 //! [`super::emit::vec_emit_ctb`]. The depth-0 (`Leaf`) shape is the
 //! degenerate case of the depth-N walker: no list-array wrap, the
-//! all-absent arm uses `items.len()` instead of the precount `total`,
+//! all-absent arm uses `rows.len()` instead of the precount `total`,
 //! and the per-row scan body matches each row's optional access directly
 //! rather than iterating an inner Vec.
 //!
@@ -32,7 +32,7 @@ use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// type-as-path expression and the fully-qualified trait paths used in UFCS
-/// calls (`<#ty as #columnar_trait>::columnar_from_refs`,
+/// calls (`<#ty as #columnar_trait>::encode`,
 /// `<#ty as #to_df_trait>::schema`).
 pub struct NestedLeafCtx<'a> {
     pub base: BaseCtx<'a>,
@@ -46,6 +46,7 @@ pub struct NestedLeafCtx<'a> {
 impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
     fn from(ctx: &NestedLeafCtx<'a>) -> Self {
         Self {
+            rows: ctx.base.rows,
             ty: ctx.ty,
             columnar_trait: ctx.columnar_trait,
             to_df_trait: ctx.to_df_trait,

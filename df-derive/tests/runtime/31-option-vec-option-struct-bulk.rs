@@ -14,9 +14,8 @@
 // `total == 0`, `flat.is_empty() && total > 0`, `flat.len() == total`,
 // and the mixed `IdxCa` + `take` branch.
 //
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// Call the single `Columnar::encode` primitive directly so this regression
+// stays scoped to the batch encoder rather than its public convenience APIs.
 
 use crate::core::dataframe::Columnar;
 use df_derive::ToDataFrame;
@@ -69,7 +68,7 @@ fn runtime_semantics() {
 // correct typed schema. The bulk emitter never enters its scan loop.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 0);
     assert_inner_columns_typed(&df, 0);
 }
@@ -85,7 +84,7 @@ fn test_all_none_outer() {
             payload: None,
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
 
@@ -114,7 +113,7 @@ fn test_all_some_empty_outer() {
             payload: Some(Vec::new()),
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
 
@@ -154,7 +153,7 @@ fn test_all_some_inner_all_none() {
     ];
     let expected_lens = [3usize, 1, 2];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 3);
     assert_inner_columns_typed(&df, 3);
 
@@ -259,7 +258,7 @@ fn test_mixed_all_branches() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as Columnar>::encode(rows.as_slice()).unwrap();
     assert_eq!(df.height(), 7);
     assert_inner_columns_typed(&df, 7);
 

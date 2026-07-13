@@ -51,7 +51,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let schema = <User as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (profile fields are flattened with dot notation):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

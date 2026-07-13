@@ -93,29 +93,50 @@ fn polars_str_path_mantissa(d: Decimal, precision: usize, scale: usize) -> i128 
 
 fn main() {
     let row = Row {
-        price: Decimal::new(12345, 2),                            // 123.45 → scale 4 → 1234500
-        fee: Decimal::new(98765, 4),                              // 9.8765 → scale 2 → 988
-        bonus: Some(Decimal::new(1, 18)),                         // 0.000000000000000001 → scale 6 → 0
-        direct: Decimal::new(42, 6),                              // 0.000042 → scale 6 → 42
+        price: Decimal::new(12345, 2),    // 123.45 → scale 4 → 1234500
+        fee: Decimal::new(98765, 4),      // 9.8765 → scale 2 → 988
+        bonus: Some(Decimal::new(1, 18)), // 0.000000000000000001 → scale 6 → 0
+        direct: Decimal::new(42, 6),      // 0.000042 → scale 6 → 42
         history: vec![Decimal::new(1, 3), Decimal::new(7000, 6)], // [0.001, 0.007] → scale 3 → [1, 7]
         nullable_history: vec![Some(Decimal::new(2, 3)), None, Some(Decimal::new(0, 0))],
     };
 
-    // Single-row materialization (delegates to `Columnar::columnar_from_refs`).
+    // Single-row materialization uses the batch encoder with one row.
     let df = row.to_dataframe().unwrap();
     assert_eq!(df.height(), 1);
 
-    assert_eq!(df.column("price").unwrap().dtype(), &DataType::Decimal(12, 4));
-    assert_eq!(decimal_mantissa(df.column("price").unwrap().get(0).unwrap()), Some(1_234_500));
+    assert_eq!(
+        df.column("price").unwrap().dtype(),
+        &DataType::Decimal(12, 4)
+    );
+    assert_eq!(
+        decimal_mantissa(df.column("price").unwrap().get(0).unwrap()),
+        Some(1_234_500)
+    );
 
     assert_eq!(df.column("fee").unwrap().dtype(), &DataType::Decimal(10, 2));
-    assert_eq!(decimal_mantissa(df.column("fee").unwrap().get(0).unwrap()), Some(988));
+    assert_eq!(
+        decimal_mantissa(df.column("fee").unwrap().get(0).unwrap()),
+        Some(988)
+    );
 
-    assert_eq!(df.column("bonus").unwrap().dtype(), &DataType::Decimal(18, 6));
-    assert_eq!(decimal_mantissa(df.column("bonus").unwrap().get(0).unwrap()), Some(0));
+    assert_eq!(
+        df.column("bonus").unwrap().dtype(),
+        &DataType::Decimal(18, 6)
+    );
+    assert_eq!(
+        decimal_mantissa(df.column("bonus").unwrap().get(0).unwrap()),
+        Some(0)
+    );
 
-    assert_eq!(df.column("direct").unwrap().dtype(), &DataType::Decimal(18, 6));
-    assert_eq!(decimal_mantissa(df.column("direct").unwrap().get(0).unwrap()), Some(42));
+    assert_eq!(
+        df.column("direct").unwrap().dtype(),
+        &DataType::Decimal(18, 6)
+    );
+    assert_eq!(
+        decimal_mantissa(df.column("direct").unwrap().get(0).unwrap()),
+        Some(42)
+    );
 
     assert_eq!(
         df.column("history").unwrap().dtype(),
@@ -131,14 +152,23 @@ fn main() {
     let batch = vec![row.clone(), row.clone(), row.clone()];
     let df_batch = batch.as_slice().to_dataframe().unwrap();
     assert_eq!(df_batch.height(), 3);
-    assert_eq!(df_batch.column("price").unwrap().dtype(), &DataType::Decimal(12, 4));
+    assert_eq!(
+        df_batch.column("price").unwrap().dtype(),
+        &DataType::Decimal(12, 4)
+    );
     for i in 0..3 {
         assert_eq!(
             decimal_mantissa(df_batch.column("price").unwrap().get(i).unwrap()),
             Some(1_234_500)
         );
-        assert_eq!(decimal_mantissa(df_batch.column("fee").unwrap().get(i).unwrap()), Some(988));
-        assert_eq!(decimal_mantissa(df_batch.column("direct").unwrap().get(i).unwrap()), Some(42));
+        assert_eq!(
+            decimal_mantissa(df_batch.column("fee").unwrap().get(i).unwrap()),
+            Some(988)
+        );
+        assert_eq!(
+            decimal_mantissa(df_batch.column("direct").unwrap().get(i).unwrap()),
+            Some(42)
+        );
     }
 
     // None bonus → ensure the optional finisher preserves nulls in batch.
@@ -156,10 +186,10 @@ fn main() {
     // digit is exactly 5 and the rounding direction depends on the parity of
     // the truncated quotient.
     let edge = EdgeRow {
-        half_to_even_up: Decimal::new(98755, 4),     // 9.8755 → 9.876 (q=9875 odd → +1)
-        half_to_even_stay: Decimal::new(98745, 4),   // 9.8745 → 9.874 (q=9874 even → stay)
+        half_to_even_up: Decimal::new(98755, 4), // 9.8755 → 9.876 (q=9875 odd → +1)
+        half_to_even_stay: Decimal::new(98745, 4), // 9.8745 → 9.874 (q=9874 even → stay)
         half_to_even_up_low: Decimal::new(98735, 4), // 9.8735 → 9.874 (q=9873 odd → +1)
-        negative_round_up: Decimal::new(-98765, 4),  // -9.8765 → -9.88 (magnitude > half)
+        negative_round_up: Decimal::new(-98765, 4), // -9.8765 → -9.88 (magnitude > half)
         negative_half_to_even: Decimal::new(-98755, 4), // -9.8755 → -9.876 (q=9875 odd → +1)
     };
 
@@ -173,7 +203,13 @@ fn main() {
         Some(9874)
     );
     assert_eq!(
-        decimal_mantissa(df_edge.column("half_to_even_up_low").unwrap().get(0).unwrap()),
+        decimal_mantissa(
+            df_edge
+                .column("half_to_even_up_low")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
         Some(9874)
     );
     assert_eq!(
@@ -181,7 +217,13 @@ fn main() {
         Some(-988)
     );
     assert_eq!(
-        decimal_mantissa(df_edge.column("negative_half_to_even").unwrap().get(0).unwrap()),
+        decimal_mantissa(
+            df_edge
+                .column("negative_half_to_even")
+                .unwrap()
+                .get(0)
+                .unwrap()
+        ),
         Some(-9876)
     );
 
@@ -190,19 +232,23 @@ fn main() {
     // exactly: any drift would mean the new codegen rounds differently than
     // the historical `to_string + cast` path it replaced.
     let cross_check_cases: &[(Decimal, usize, usize)] = &[
-        (Decimal::new(98765, 4), 10, 2),     // 9.8765 → scale 2
-        (Decimal::new(98755, 4), 10, 3),     // 9.8755 → scale 3 (half-tie up)
-        (Decimal::new(98745, 4), 10, 3),     // 9.8745 → scale 3 (half-tie stay)
-        (Decimal::new(98735, 4), 10, 3),     // 9.8735 → scale 3 (half-tie up)
-        (Decimal::new(-98765, 4), 10, 2),    // negative round up
-        (Decimal::new(-98755, 4), 10, 3),    // negative half-tie up
-        (Decimal::new(123456, 5), 12, 3),    // 1.23456 → scale 3 (round-down, r > half)
-        (Decimal::new(123451, 5), 12, 3),    // 1.23451 → scale 3 (round-down, r < half)
-        (Decimal::new(1, 28), 38, 6), // tiny value: scale-down to 0
+        (Decimal::new(98765, 4), 10, 2),  // 9.8765 → scale 2
+        (Decimal::new(98755, 4), 10, 3),  // 9.8755 → scale 3 (half-tie up)
+        (Decimal::new(98745, 4), 10, 3),  // 9.8745 → scale 3 (half-tie stay)
+        (Decimal::new(98735, 4), 10, 3),  // 9.8735 → scale 3 (half-tie up)
+        (Decimal::new(-98765, 4), 10, 2), // negative round up
+        (Decimal::new(-98755, 4), 10, 3), // negative half-tie up
+        (Decimal::new(123456, 5), 12, 3), // 1.23456 → scale 3 (round-down, r > half)
+        (Decimal::new(123451, 5), 12, 3), // 1.23451 → scale 3 (round-down, r < half)
+        (Decimal::new(1, 28), 38, 6),     // tiny value: scale-down to 0
         // Largest 28-digit unsigned mantissa rust_decimal can hold; routed
         // through `Decimal::from_i128_with_scale` because `Decimal::new`
         // takes `i64`.
-        (Decimal::from_i128_with_scale(99_999_999_999_999_999_999_999_999i128, 28), 38, 0),
+        (
+            Decimal::from_i128_with_scale(99_999_999_999_999_999_999_999_999i128, 28),
+            38,
+            0,
+        ),
     ];
 
     #[derive(ToDataFrame, Clone)]

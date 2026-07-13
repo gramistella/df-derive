@@ -35,7 +35,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     // Show schema to demonstrate column naming
     let schema = <Person as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (columns: name, age, address.street, address.city, address.zip):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

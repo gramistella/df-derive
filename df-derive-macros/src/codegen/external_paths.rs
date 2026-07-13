@@ -141,28 +141,3 @@ pub(in crate::codegen) fn wrap_list_layers_compile_time(
     }
     dt
 }
-
-/// Emit a runtime `for _ in 0..layers` loop that wraps a runtime `DataType`
-/// variable in `layers` `List<>` envelopes. Returns an empty token stream
-/// when `layers == 0` so the caller does not emit `for _ in 0..0`, which
-/// trips `clippy::reversed_empty_ranges` inside the user's expanded code.
-/// Used by the nested schema/empty-frame helpers, where the wrap count is
-/// compile-time known but the inner dtype comes from a runtime
-/// `T::schema()?` iteration.
-pub(super) fn wrap_list_layers_runtime(
-    pp: &TokenStream,
-    var: &syn::Ident,
-    layers: usize,
-) -> TokenStream {
-    if layers == 0 {
-        TokenStream::new()
-    } else {
-        quote! {
-            for _ in 0..#layers {
-                #var = #pp::DataType::List(
-                    ::std::boxed::Box::new(#var),
-                );
-            }
-        }
-    }
-}

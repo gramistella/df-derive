@@ -50,7 +50,8 @@ pub use df_derive_macros::ToDataFrame;
 pub mod prelude {
     pub use crate::ToDataFrame;
     pub use crate::dataframe::{
-        Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait, ToDataFrameVec,
+        Columnar, Decimal128Encode, RowBatch, ToDataFrame, ToDataFrame as ToDataFrameTrait,
+        ToDataFrameVec,
     };
 }
 
@@ -58,15 +59,33 @@ pub mod prelude {
 mod tests {
     use crate::ToDataFrame;
 
+    struct WrongLenBatch<'a, T>(&'a [T]);
+
+    impl<T> crate::dataframe::RowBatch<T> for WrongLenBatch<'_, T> {
+        fn len(&self) -> usize {
+            self.0.len() + 1
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            self.0.iter()
+        }
+    }
+
     #[derive(ToDataFrame)]
     struct SelfCrateRow {
         id: u32,
         label: String,
     }
 
+    #[derive(Clone, Copy, ToDataFrame)]
+    struct EmptyRow {}
+
     #[test]
     fn derive_uses_facade_runtime_inside_facade_crate() -> polars::prelude::PolarsResult<()> {
-        use crate::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
+        use crate::dataframe::{Columnar as _, ToDataFrame as _, ToDataFrameVec as _};
 
         let row = SelfCrateRow {
             id: 1,
@@ -84,6 +103,36 @@ mod tests {
         ];
         let batch = rows.as_slice().to_dataframe()?;
         assert_eq!(batch.shape(), (2, 2));
+
+        let refs: Vec<&SelfCrateRow> = rows.iter().collect();
+        let borrowed = SelfCrateRow::encode(refs.as_slice())?;
+        assert!(batch.equals(&borrowed));
+
+        let wrong_len = WrongLenBatch(rows.as_slice());
+        let error = SelfCrateRow::encode(&wrong_len).unwrap_err();
+        match error {
+            polars::prelude::PolarsError::ShapeMismatch(message) => {
+                assert!(message.contains("height"), "{message}");
+            }
+            other => panic!("expected ShapeMismatch, got {other}"),
+        }
+
+        let no_empty_rows: &[EmptyRow] = &[];
+        assert_eq!(EmptyRow::encode(no_empty_rows)?.shape(), (0, 0));
+        assert_eq!(EmptyRow::encode(&[EmptyRow {}][..])?.shape(), (1, 0));
+        assert_eq!(
+            EmptyRow::encode(&[EmptyRow {}, EmptyRow {}, EmptyRow {}][..])?.shape(),
+            (3, 0),
+        );
+
+        let units = [(), (), (), ()];
+        assert_eq!(
+            <() as crate::dataframe::Columnar>::encode(units.as_slice())?.shape(),
+            (4, 0),
+        );
+
+        let empty = SelfCrateRow::empty_dataframe()?;
+        assert_eq!(SelfCrateRow::schema()?.as_ref(), empty.schema().as_ref());
 
         Ok(())
     }

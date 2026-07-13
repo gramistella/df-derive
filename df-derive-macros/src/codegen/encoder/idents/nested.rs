@@ -21,6 +21,10 @@ pub(in crate::codegen) fn nested_df(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_df_{}", idx)
 }
 
+pub(in crate::codegen) fn nested_schema(idx: usize) -> Ident {
+    format_ident!("__df_derive_gen_schema_{}", idx)
+}
+
 pub(in crate::codegen) fn nested_take(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_take_{}", idx)
 }
@@ -35,6 +39,10 @@ pub(in crate::codegen) fn nested_prefixed_name() -> Ident {
 
 pub(in crate::codegen) fn nested_col_name() -> Ident {
     format_ident!("__df_derive_col_name")
+}
+
+pub(in crate::codegen) fn nested_col_index() -> Ident {
+    format_ident!("__df_derive_col_index")
 }
 
 pub(in crate::codegen) fn nested_col_dtype() -> Ident {

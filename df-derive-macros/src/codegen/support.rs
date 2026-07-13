@@ -110,13 +110,13 @@ pub(in crate::codegen) fn generate_support(ir: &StructIR, config: &MacroConfig) 
 
     let nested_validation_helpers = if needs_nested_validation(ir) {
         let validate_nested_frame = encoder::idents::validate_nested_frame();
-        let validate_nested_column_dtype = encoder::idents::validate_nested_column_dtype();
 
         quote! {
             #[inline(always)]
             #[allow(non_snake_case, clippy::inline_always)]
             fn #validate_nested_frame(
                 df: &#pp::DataFrame,
+                expected_schema: &#pp::SchemaRef,
                 expected_height: usize,
                 type_name: &str,
             ) -> #pp::PolarsResult<()> {
@@ -124,31 +124,48 @@ pub(in crate::codegen) fn generate_support(ir: &StructIR, config: &MacroConfig) 
                 if actual_height != expected_height {
                     return ::std::result::Result::Err(#pp::polars_err!(
                         ComputeError:
-                        "df-derive: nested Columnar::columnar_from_refs for {} returned height {}, expected {}",
+                        "df-derive: nested Columnar::encode for {} returned height {}, expected {}",
                         type_name,
                         actual_height,
                         expected_height,
                     ));
                 }
-                ::std::result::Result::Ok(())
-            }
-
-            #[inline(always)]
-            #[allow(non_snake_case, clippy::inline_always)]
-            fn #validate_nested_column_dtype(
-                series: &#pp::Series,
-                column_name: &str,
-                declared_dtype: &#pp::DataType,
-            ) -> #pp::PolarsResult<()> {
-                let actual_dtype = series.dtype();
-                if actual_dtype != declared_dtype {
+                let actual_columns = df.columns();
+                if actual_columns.len() != expected_schema.len() {
                     return ::std::result::Result::Err(#pp::polars_err!(
                         ComputeError:
-                        "df-derive: nested column `{}` dtype mismatch: actual dtype {:?}, declared schema dtype {:?}",
-                        column_name,
-                        actual_dtype,
-                        declared_dtype,
+                        "df-derive: nested Columnar::encode for {} returned schema width {}, expected {}",
+                        type_name,
+                        actual_columns.len(),
+                        expected_schema.len(),
                     ));
+                }
+                for (index, (actual_column, (expected_name, expected_dtype))) in
+                    actual_columns.iter().zip(expected_schema.iter()).enumerate()
+                {
+                    let actual_name = actual_column.name();
+                    let actual_dtype = actual_column.dtype();
+                    if actual_name != expected_name {
+                        return ::std::result::Result::Err(#pp::polars_err!(
+                            ComputeError:
+                            "df-derive: nested Columnar::encode for {} returned column `{}` at index {}, expected `{}`",
+                            type_name,
+                            actual_name,
+                            index,
+                            expected_name,
+                        ));
+                    }
+                    if actual_dtype != expected_dtype {
+                        return ::std::result::Result::Err(#pp::polars_err!(
+                            ComputeError:
+                            "df-derive: nested Columnar::encode for {} returned dtype {:?} for column `{}` at index {}, expected {:?}",
+                            type_name,
+                            actual_dtype,
+                            actual_name,
+                            index,
+                            expected_dtype,
+                        ));
+                    }
                 }
                 ::std::result::Result::Ok(())
             }

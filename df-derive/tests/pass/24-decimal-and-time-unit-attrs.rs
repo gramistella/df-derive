@@ -43,11 +43,10 @@ fn dtype(df: &DataFrame, col: &str) -> DataType {
     df.column(col).unwrap().dtype().clone()
 }
 
-fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
+fn schema_dtype(schema: &Schema, col: &str) -> DataType {
     schema
-        .iter()
-        .find(|(n, _)| n == col)
-        .map(|(_, dt)| dt.clone())
+        .get(col)
+        .cloned()
         .unwrap_or_else(|| panic!("column {col} missing from schema"))
 }
 

@@ -1,23 +1,68 @@
 use df_derive::ToDataFrame;
-use polars::prelude::{DataFrame, DataType, PolarsResult};
+use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
 mod custom_runtime {
     use super::*;
 
-    pub trait MyToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
+    pub trait RowBatch<T: ?Sized> {
+        fn len(&self) -> usize;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a;
+    }
+
+    impl<T> RowBatch<T> for [T] {
+        fn len(&self) -> usize {
+            <[T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[T]>::iter(self)
+        }
+    }
+
+    impl<T: ?Sized> RowBatch<T> for [&T] {
+        fn len(&self) -> usize {
+            <[&T]>::len(self)
+        }
+
+        fn iter<'a>(&'a self) -> impl ExactSizeIterator<Item = &'a T> + 'a
+        where
+            T: 'a,
+        {
+            <[&T]>::iter(self).copied()
+        }
     }
 
     pub trait MyColumnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+        fn encode<B>(rows: &B) -> PolarsResult<DataFrame>
+        where
+            B: RowBatch<Self> + ?Sized;
+    }
+
+    pub trait MyToDataFrame: MyColumnar {
+        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
+            Self::encode(std::slice::from_ref(self))
         }
 
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
+        fn empty_dataframe() -> PolarsResult<DataFrame> {
+            Self::encode(&[] as &[Self])
+        }
+
+        fn schema() -> PolarsResult<SchemaRef> {
+            Ok(Self::empty_dataframe()?.schema().clone())
+        }
     }
+
+    impl<T: MyColumnar> MyToDataFrame for T {}
 
     pub trait ToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
@@ -25,15 +70,18 @@ mod custom_runtime {
 
     impl<T> ToDataFrameVec for [T]
     where
-        T: MyColumnar + MyToDataFrame,
+        T: MyColumnar,
     {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as MyToDataFrame>::empty_dataframe();
-            }
-            <T as MyColumnar>::columnar_to_dataframe(self)
+            <T as MyColumnar>::encode(self)
         }
     }
+}
+
+mod columnar_only_runtime {
+    pub use super::custom_runtime::{
+        MyColumnar as Columnar, MyToDataFrame as ToDataFrame, RowBatch,
+    };
 }
 
 #[derive(ToDataFrame)]
@@ -60,6 +108,12 @@ struct CustomTraitAndColumnar {
     id: u32,
 }
 
+#[derive(ToDataFrame)]
+#[df_derive(columnar = "columnar_only_runtime::Columnar")]
+struct CustomColumnarOnly {
+    id: u32,
+}
+
 fn main() {
     let builtin_trait_only = [BuiltinTraitOnly { id: 1 }];
     let df = df_derive::dataframe::ToDataFrameVec::to_dataframe(builtin_trait_only.as_slice())
@@ -72,5 +126,9 @@ fn main() {
 
     let custom_pair = [CustomTraitAndColumnar { id: 3 }];
     let df = custom_runtime::ToDataFrameVec::to_dataframe(custom_pair.as_slice()).unwrap();
+    assert_eq!(df.shape(), (1, 1));
+
+    let custom_columnar_only = CustomColumnarOnly { id: 4 };
+    let df = columnar_only_runtime::ToDataFrame::to_dataframe(&custom_columnar_only).unwrap();
     assert_eq!(df.shape(), (1, 1));
 }

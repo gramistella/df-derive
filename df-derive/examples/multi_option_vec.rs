@@ -72,7 +72,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     let schema = <Sample as dataframe::ToDataFrame>::schema()?;
     println!("\nSchema (consecutive Options collapse to one list-level validity bit):");
-    for (name, dtype) in schema {
+    for (name, dtype) in schema.iter() {
         println!("  {name}: {dtype:?}");
     }
 

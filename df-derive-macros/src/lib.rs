@@ -9,7 +9,7 @@
 //! Explicit paths to the built-in `df_derive::dataframe::ToDataFrame` or
 //! `df_derive_core::dataframe::ToDataFrame` runtimes are treated as the
 //! default runtime and still use the runtime's hidden dependency re-exports.
-//! `columnar = "..."` may be provided alongside `trait = "..."`, and
+//! `columnar = "..."` may select the runtime alone or alongside `trait = "..."`, and
 //! `decimal128_encode = "..."` may override decimal dispatch. Built-in
 //! dataframe runtime paths cannot be mixed with custom `columnar` paths.
 //! Without runtime overrides, discovery tries `df-derive`, `df-derive-core`,
@@ -30,16 +30,10 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// What this macro generates (paths configurable via `#[df_derive(...)]`):
 ///
-/// - An implementation of `ToDataFrame` for the annotated type `T` providing:
-///   - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
-///   - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-///   - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
-/// - An implementation of `Columnar` for `T` providing
-///   `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>` and
-///   `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`.
-///   The direct slice method avoids the trait default's temporary ref-vector
-///   allocation on top-level batch conversion; the borrowed method remains
-///   available for nested and generic composition.
+/// - An implementation of `Columnar` for the annotated type `T` providing the
+///   single generic `encode<B: RowBatch<Self> + ?Sized>(&B)` batch primitive.
+///   The runtime's blanket `ToDataFrame` implementation derives single-row,
+///   empty-frame, and schema behavior from that operation.
 ///
 /// Supported shapes and types:
 ///
@@ -66,11 +60,11 @@ use syn::{DeriveInput, parse_macro_input};
 /// Attributes:
 ///
 /// - Container-level: `#[df_derive(trait = "path::ToDataFrame")]` to set the `ToDataFrame` trait
-///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing the last
-///   path segment with `Columnar` / `Decimal128Encode`. Optionally, set them explicitly with
-///   `#[df_derive(columnar = "path::Columnar")]` and
-///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. A `columnar` override
-///   must be paired with `trait` to avoid mixed-runtime impls. `decimal128_encode` is the
+///   path; the `Columnar`, `RowBatch`, and `Decimal128Encode` paths are inferred by replacing
+///   the last path segment. Optionally, set `Columnar` explicitly with
+///   `#[df_derive(columnar = "path::Columnar")]` (its sibling `RowBatch` and, when
+///   `trait` is omitted, sibling `ToDataFrame` paths are inferred) and
+///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. `decimal128_encode` is the
 ///   dispatch point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal
 ///   backends — see "Custom decimal backends" in the README for the trait contract. Explicit
 ///   paths to `df_derive::dataframe::ToDataFrame` or
@@ -128,18 +122,19 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// - Enums are not supported for derive.
 /// - Generic structs are supported; the macro adds bounds only for the roles a
-///   generic parameter actually plays (`ToDataFrame + Columnar` for nested
+///   generic parameter actually plays (`Columnar` for nested
 ///   dataframe payloads, `AsRef<str>` for generic `as_str`, and
 ///   `Decimal128Encode` for generic decimal backends). The unit type `()` is a
 ///   valid generic payload (zero columns); direct `field: ()` fields are
 ///   rejected.
-/// - All nested custom structs must also derive `ToDataFrame`.
+/// - All nested custom structs must implement `Columnar`, normally by deriving
+///   `ToDataFrame`.
 /// - Obvious direct self-recursive nested fields using `Self`, the bare
 ///   deriving struct name, `self::Type`, or `crate::Type` are rejected after
 ///   transparent wrapper peeling, including `Box<T>`/`Option<Box<T>>` forms
 ///   and tuple fields containing the same.
 /// - Empty structs: `to_dataframe` yields a single-row, zero-column `DataFrame`; the columnar path
-///   yields a zero-column `DataFrame` with `items.len()` rows.
+///   yields a zero-column `DataFrame` with `rows.len()` rows.
 #[proc_macro_derive(ToDataFrame, attributes(df_derive))]
 pub fn to_dataframe_derive(input: TokenStream) -> TokenStream {
     // Parse the input tokens into a syntax tree

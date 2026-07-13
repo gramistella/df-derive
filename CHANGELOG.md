@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-07-13
+
+### Changed
+
+- **Breaking**: `Columnar::encode<B: RowBatch<Self> + ?Sized>` is now the
+  single generated runtime primitive. The two slice-specific columnar methods
+  and generated `ToDataFrame` implementations were removed.
+- **Breaking for custom runtimes**: runtimes must provide `RowBatch` beside
+  `Columnar` and blanket-implement `ToDataFrame` for `T: Columnar`.
+  `ToDataFrame::{to_dataframe, empty_dataframe, schema}` now derive from
+  `Columnar::encode`; `schema()` returns Polars `SchemaRef`.
+- Generic nested payload bounds now require only `Columnar`. A standalone
+  `columnar = "..."` runtime override is accepted and its sibling runtime
+  trait paths are inferred.
+
+### Fixed
+
+- Nested manual encoders are validated against their typed empty-batch schema
+  by height, width, ordered column names, and dtypes before positional
+  consumption, so extra, missing, reordered, mistyped, or wrong-height child
+  output can no longer be silently accepted.
+- Generated frames now use the batch's declared row count with
+  `DataFrame::new(rows.len(), columns)`. A `RowBatch` whose reported length
+  disagrees with every emitted column is rejected instead of letting the first
+  column silently choose the frame height.
+- Generated `encode` batch-type and row-value identifiers are now freshened
+  against user type, const, and lifetime generics. Internal-looking generic
+  names and a const generic named `rows` no longer collide with generated
+  method parameters.
+
+### Performance
+
+- Direct and borrowed batches share one generated body. The runtime's fallback
+  `Vec<&T>` adapter is gone, and nested composition no longer depends on
+  autoderef keeping two copied bodies equivalent. Derived top-level encoders
+  already bypassed that fallback in 0.4.0, so this is a surface/code-size win
+  rather than a claimed hot-path speedup.
+- Empty structs and unit payloads use `DataFrame::empty_with_height` directly;
+  the temporary null column and `drop_in_place` workaround are gone.
+- Nested validation reads ordered names and dtypes directly from child columns,
+  avoiding an extra materialized `DataFrame::schema()` and repeated name
+  lookups.
+- A release `cargo expand` comparison of the representative nested example
+  shows one generated `encode` method per derived type. The 0.4.0 expansion
+  emitted five methods per type, including two complete encoding bodies plus
+  separate empty-frame and schema construction paths.
+
 ## [0.4.0] - 2026-06-29
 
 ### Changed
@@ -212,6 +259,7 @@ Yanked due to polars breaking change, use 0.2.0 instead.
 
 - Initial public release.
 
+[0.5.0]: https://github.com/gramistella/df-derive/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gramistella/df-derive/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/gramistella/df-derive/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gramistella/df-derive/compare/v0.2.0...v0.3.0

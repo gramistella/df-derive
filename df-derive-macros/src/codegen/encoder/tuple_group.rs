@@ -49,7 +49,7 @@ pub(in crate::codegen) struct TupleFieldEmitParams<'a> {
 }
 
 // Below this width, avoiding an internal row-reference buffer is cheaper than
-// replaying the input once per scalar column. At and above it, one giant
+// replaying the input once per safe scalar column. At and above it, one giant
 // row-wise push loop creates enough live buffer state to lose decisively to
 // narrow column-at-a-time loops. Criterion 22 and the matching Gungraun guard
 // own this execution-policy boundary.
@@ -93,6 +93,20 @@ enum InputAccess {
     Optional(TokenStream),
 }
 
+/// A tuple projection rooted directly in the generated source-row binding.
+/// Unlike `InputAccess`, this never refers to locals scoped to the fused row
+/// push, so it remains valid inside a later replay loop.
+struct ReplayTupleAccess(TokenStream);
+
+struct ReplayedPrimitive {
+    decls: Vec<TokenStream>,
+    push: TokenStream,
+    series: TokenStream,
+    name: String,
+}
+
+const REPLAY_LANE_MAX_TERMINALS: usize = 8;
+
 impl InputAccess {
     const fn expr(&self) -> &TokenStream {
         match self {
@@ -108,8 +122,12 @@ impl InputAccess {
 struct TupleBuilder<'a> {
     config: &'a MacroConfig,
     ident_scope: GeneratedIdentScope<'a>,
+    row: &'a syn::Ident,
+    replay_rows: &'a syn::Ident,
     row_capacity: &'a syn::Ident,
     sink: &'a syn::Ident,
+    replay_static_terminals: bool,
+    requires_replay: bool,
     next_terminal: usize,
     next_group: usize,
     terminal_start: usize,
@@ -117,16 +135,53 @@ struct TupleBuilder<'a> {
     decls: Vec<TokenStream>,
     freezes: Vec<TokenStream>,
     builders: Vec<TokenStream>,
+    replay_lane: Vec<ReplayedPrimitive>,
 }
 
 impl TupleBuilder<'_> {
+    fn try_collect_replayed_primitive(
+        &mut self,
+        leaf: crate::ir::PrimitiveLeaf<'_>,
+        wrapper: &WrapperShape,
+        replay_input: Option<&ReplayTupleAccess>,
+        idx: usize,
+        name: &str,
+    ) -> Option<TokenStream> {
+        if !self.replay_static_terminals || !leaf.is_deferred_safe() {
+            return None;
+        }
+        let (Some(replay_input), WrapperShape::Leaf(_)) = (replay_input, wrapper) else {
+            return None;
+        };
+        let input_rows_exact = idents::input_rows_exact(self.ident_scope);
+        let ctx = LeafCtx {
+            base: BaseCtx {
+                access: &replay_input.0,
+                row_capacity: self.row_capacity,
+                sink: self.sink,
+                idx,
+                name,
+            },
+            cardinality: LeafCardinality::InputRows,
+            ident_scope: self.ident_scope,
+            input_rows_exact: &input_rows_exact,
+            decimal128_encode_trait: &self.config.runtime.decimal128_encode,
+            paths: &self.config.external_paths,
+        };
+        let encoder = build_encoder_with_option_receiver(leaf, wrapper, &ctx, None);
+        self.collect_replayed_primitive(encoder, name);
+        Some(TokenStream::new())
+    }
+
     fn build_group(
         &mut self,
         wrapper: &WrapperShape,
         elements: &NonEmpty<TupleNode>,
         input: InputAccess,
+        replay_input: Option<ReplayTupleAccess>,
         prefix: &SharedListStack,
     ) -> TokenStream {
+        self.flush_replay_lane();
         let group_idx = self.next_group;
         self.next_group += 1;
         let input_optional = input.is_optional();
@@ -141,6 +196,9 @@ impl TupleBuilder<'_> {
             }
         };
         let effective_wrapper = inherit_parent_option(wrapper, input_optional);
+        let replay_input = wrapper_is_bare_leaf(&effective_wrapper)
+            .then_some(replay_input)
+            .flatten();
         let body = match &effective_wrapper {
             WrapperShape::Leaf(shape) => {
                 let input_expr = input.expr();
@@ -157,16 +215,21 @@ impl TupleBuilder<'_> {
                         InputAccess::Required(quote! { #tuple_value }),
                     )
                 };
-                let children = self.build_children(elements, &tuple, prefix);
-                quote! {
-                    let #tuple_value = #resolved;
-                    #children
+                let children = self.build_children(elements, &tuple, replay_input.as_ref(), prefix);
+                if children.is_empty() {
+                    TokenStream::new()
+                } else {
+                    quote! {
+                        let #tuple_value = #resolved;
+                        #children
+                    }
                 }
             }
             WrapperShape::Vec(shape) => {
                 self.build_vec_group(group_idx, shape, elements, &input, prefix)
             }
         };
+        self.flush_replay_lane();
         quote! {
             #input_decl
             #body
@@ -221,7 +284,7 @@ impl TupleBuilder<'_> {
         } else {
             InputAccess::Required(access_chain_to_ref(&quote! { #item }, &shape.inner_access).expr)
         };
-        let children = self.build_children(elements, &tuple, &child_prefix);
+        let children = self.build_children(elements, &tuple, None, &child_prefix);
         let leaf_body = |vec_bind: &TokenStream| {
             quote! {
                 for #item in #vec_bind.iter() {
@@ -237,17 +300,29 @@ impl TupleBuilder<'_> {
         &mut self,
         elements: &NonEmpty<TupleNode>,
         tuple: &InputAccess,
+        replay_tuple: Option<&ReplayTupleAccess>,
         prefix: &SharedListStack,
     ) -> TokenStream {
         let mut pushes = Vec::with_capacity(elements.len());
         for node in elements.iter() {
             let input = project_child(self.ident_scope, tuple, node.step());
+            let replay_child =
+                replay_tuple.map(|tuple| project_required_child(&tuple.0, node.step()));
             let push = match node.kind() {
                 TupleNodeKind::Leaf(common) => {
-                    self.build_terminal(common, node.wrapper_shape(), &input, prefix)
+                    let replay_input = replay_child.map(ReplayTupleAccess);
+                    self.build_terminal(
+                        common,
+                        node.wrapper_shape(),
+                        &input,
+                        replay_input.as_ref(),
+                        prefix,
+                    )
                 }
                 TupleNodeKind::Tuple(children) => {
-                    self.build_group(node.wrapper_shape(), children, input, prefix)
+                    let replay_input =
+                        replay_child.map(|child| ReplayTupleAccess(quote! { &(#child) }));
+                    self.build_group(node.wrapper_shape(), children, input, replay_input, prefix)
                 }
             };
             pushes.push(push);
@@ -260,6 +335,7 @@ impl TupleBuilder<'_> {
         common: &ColumnCommon,
         wrapper: &WrapperShape,
         input: &InputAccess,
+        replay_input: Option<&ReplayTupleAccess>,
         prefix: &SharedListStack,
     ) -> TokenStream {
         let idx = self.next_terminal;
@@ -270,6 +346,16 @@ impl TupleBuilder<'_> {
 
         match common.leaf_spec().route() {
             TerminalLeafRoute::Primitive(leaf) => {
+                if let Some(push) = self.try_collect_replayed_primitive(
+                    leaf,
+                    &effective_wrapper,
+                    replay_input,
+                    idx,
+                    common.name(),
+                ) {
+                    return push;
+                }
+                self.flush_replay_lane();
                 let copied_access = (input_optional
                     && leaf.is_copy()
                     && matches!(wrapper, WrapperShape::Leaf(shape) if shape.is_bare()))
@@ -307,6 +393,7 @@ impl TupleBuilder<'_> {
                 self.collect_primitive(encoder, common.name(), idx, prefix)
             }
             TerminalLeafRoute::Nested(nested) => {
+                self.flush_replay_lane();
                 let ty = nested_type_path(nested);
                 let name_policy = NestedNamePolicy::Field;
                 let ctx = NestedLeafCtx {
@@ -395,6 +482,60 @@ impl TupleBuilder<'_> {
         }
     }
 
+    fn collect_replayed_primitive(&mut self, encoder: Encoder, name: &str) {
+        let Encoder::Leaf {
+            decls,
+            push,
+            series,
+        } = encoder
+        else {
+            unreachable!("a replayed static tuple terminal always has a scalar encoder");
+        };
+        self.requires_replay = true;
+        self.replay_lane.push(ReplayedPrimitive {
+            decls,
+            push,
+            series,
+            name: name.to_owned(),
+        });
+        if self.replay_lane.len() == REPLAY_LANE_MAX_TERMINALS {
+            self.flush_replay_lane();
+        }
+    }
+
+    fn flush_replay_lane(&mut self) {
+        if self.replay_lane.is_empty() {
+            return;
+        }
+
+        let row = self.row;
+        let rows = self.replay_rows;
+        let sink = self.sink;
+        let output_series = idents::tuple_output_series(self.ident_scope);
+        let output_named = idents::tuple_output_named(self.ident_scope);
+        let mut declarations = Vec::new();
+        let mut pushes = Vec::new();
+        let mut outputs = Vec::new();
+        for terminal in ::core::mem::take(&mut self.replay_lane) {
+            declarations.extend(terminal.decls);
+            pushes.push(terminal.push);
+            let series = terminal.series;
+            let name = syn::LitStr::new(&terminal.name, proc_macro2::Span::call_site());
+            outputs.push(quote! {{
+                let #output_series = #series;
+                let #output_named = #output_series.with_name(#name.into());
+                #sink.push(#output_named.into())?;
+            }});
+        }
+        self.builders.push(quote! {{
+            #(#declarations)*
+            for #row in #rows.iter().copied() {
+                #(#pushes)*
+            }
+            #(#outputs)*
+        }});
+    }
+
     fn collect_lifecycle(&mut self, lifecycle: EncodeLifecycle) -> TokenStream {
         self.decls.extend(lifecycle.decls);
         self.builders.extend(lifecycle.builders);
@@ -437,179 +578,63 @@ impl TupleBuilder<'_> {
     }
 }
 
-struct ReplayedTupleBuilder<'a> {
-    config: &'a MacroConfig,
-    ident_scope: GeneratedIdentScope<'a>,
-    row: &'a syn::Ident,
-    replay_rows: &'a syn::Ident,
-    row_capacity: &'a syn::Ident,
-    sink: &'a syn::Ident,
-    next_terminal: usize,
-    builders: Vec<TokenStream>,
-}
-
-impl ReplayedTupleBuilder<'_> {
-    fn build_children(&mut self, elements: &NonEmpty<TupleNode>, tuple: &TokenStream) {
-        for node in elements.iter() {
-            let child = project_required_child(tuple, node.step());
-            match node.kind() {
-                TupleNodeKind::Leaf(common) => {
-                    self.build_terminal(common, node.wrapper_shape(), &child);
-                }
-                TupleNodeKind::Tuple(children) => {
-                    self.build_children(children, &quote! { &(#child) });
-                }
-            }
-        }
-    }
-
-    fn build_terminal(
-        &mut self,
-        common: &ColumnCommon,
-        wrapper: &WrapperShape,
-        access: &TokenStream,
-    ) {
-        let idx = self.next_terminal;
-        self.next_terminal += 1;
-        let TerminalLeafRoute::Primitive(leaf) = common.leaf_spec().route() else {
-            unreachable!("replayed tuple plans contain only primitive leaves");
-        };
-        let input_rows_exact = idents::input_rows_exact(self.ident_scope);
-        let ctx = LeafCtx {
-            base: BaseCtx {
-                access,
-                row_capacity: self.row_capacity,
-                sink: self.sink,
-                idx,
-                name: common.name(),
-            },
-            cardinality: LeafCardinality::InputRows,
-            ident_scope: self.ident_scope,
-            input_rows_exact: &input_rows_exact,
-            decimal128_encode_trait: &self.config.runtime.decimal128_encode,
-            paths: &self.config.external_paths,
-        };
-        let Encoder::Leaf {
-            decls,
-            push,
-            series,
-        } = build_encoder_with_option_receiver(leaf, wrapper, &ctx, None)
-        else {
-            unreachable!("a replayable primitive leaf always has a scalar encoder");
-        };
-        let row = self.row;
-        let rows = self.replay_rows;
-        let sink = self.sink;
-        let name = common.name();
-        let output_series = idents::tuple_output_series(self.ident_scope);
-        let output_named = idents::tuple_output_named(self.ident_scope);
-        self.builders.push(quote! {{
-            #(#decls)*
-            for #row in #rows.iter().copied() {
-                #push
-            }
-            let #output_series = #series;
-            let #output_named = #output_series.with_name(#name.into());
-            #sink.push(#output_named.into())?;
-        }});
-    }
-}
-
 const fn wrapper_is_bare_leaf(wrapper: &WrapperShape) -> bool {
     matches!(wrapper, WrapperShape::Leaf(shape) if shape.is_bare())
 }
 
-fn node_is_replayable(node: &TupleNode) -> bool {
-    match node.kind() {
-        TupleNodeKind::Leaf(common) => {
-            matches!(node.wrapper_shape(), WrapperShape::Leaf(_))
-                && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(_))
-        }
-        TupleNodeKind::Tuple(elements) => {
-            wrapper_is_bare_leaf(node.wrapper_shape()) && elements.iter().all(node_is_replayable)
-        }
-    }
+const fn terminal_is_replayable(node: &TupleNode, common: &ColumnCommon) -> bool {
+    matches!(node.wrapper_shape(), WrapperShape::Leaf(_))
+        && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(leaf) if leaf.is_deferred_safe())
 }
 
 pub(in crate::codegen) fn replayable_tuple_terminal_count(field: &TupleField) -> Option<usize> {
-    (wrapper_is_bare_leaf(field.wrapper_shape()) && field.elements().iter().all(node_is_replayable))
-        .then(|| tuple_terminal_count(field.elements()))
+    if !wrapper_is_bare_leaf(field.wrapper_shape()) {
+        return None;
+    }
+    let count = replayable_terminal_count(field.elements());
+    (count > 0).then_some(count)
 }
 
-fn tuple_terminal_count(elements: &NonEmpty<TupleNode>) -> usize {
+fn replayable_terminal_count(elements: &NonEmpty<TupleNode>) -> usize {
     elements
         .iter()
         .map(|node| match node.kind() {
-            TupleNodeKind::Leaf(_) => 1,
-            TupleNodeKind::Tuple(children) => tuple_terminal_count(children),
+            TupleNodeKind::Leaf(common) => usize::from(terminal_is_replayable(node, common)),
+            TupleNodeKind::Tuple(children) if wrapper_is_bare_leaf(node.wrapper_shape()) => {
+                replayable_terminal_count(children)
+            }
+            TupleNodeKind::Tuple(_) => 0,
         })
         .sum()
-}
-
-fn tuple_group_count(elements: &NonEmpty<TupleNode>) -> usize {
-    1 + elements
-        .iter()
-        .map(|node| match node.kind() {
-            TupleNodeKind::Leaf(_) => 0,
-            TupleNodeKind::Tuple(children) => tuple_group_count(children),
-        })
-        .sum::<usize>()
-}
-
-fn build_replayed_tuple_field_emit(
-    field: &TupleField,
-    params: TupleFieldEmitParams<'_>,
-) -> TupleFieldEmit {
-    let root = crate::codegen::source_access::field_source_access(field.source(), params.row);
-    let mut builder = ReplayedTupleBuilder {
-        config: params.config,
-        ident_scope: params.ident_scope,
-        row: params.row,
-        replay_rows: params.replay_rows,
-        row_capacity: params.row_capacity,
-        sink: params.sink,
-        next_terminal: params.terminal_start,
-        builders: Vec::new(),
-    };
-    builder.build_children(field.elements(), &quote! { &(#root) });
-    let terminal_count = builder.next_terminal - params.terminal_start;
-    debug_assert_eq!(terminal_count, tuple_terminal_count(field.elements()));
-    TupleFieldEmit {
-        lifecycle: EncodeLifecycle {
-            decls: Vec::new(),
-            push: TokenStream::new(),
-            builders: builder.builders,
-        },
-        requires_replay: true,
-        terminal_count,
-        group_count: tuple_group_count(field.elements()),
-    }
 }
 
 pub(in crate::codegen) fn build_tuple_field_emit(
     field: &TupleField,
     params: TupleFieldEmitParams<'_>,
 ) -> TupleFieldEmit {
-    if params.replay_static_tuples && replayable_tuple_terminal_count(field).is_some() {
-        return build_replayed_tuple_field_emit(field, params);
-    }
     let TupleFieldEmitParams {
         config,
         ident_scope,
         terminal_start,
         group_start,
         row,
-        replay_rows: _,
-        replay_static_tuples: _,
+        replay_rows,
+        replay_static_tuples,
         row_capacity,
         sink,
     } = params;
     let root = crate::codegen::source_access::field_source_access(field.source(), row);
+    let replay_root = (replay_static_tuples && wrapper_is_bare_leaf(field.wrapper_shape()))
+        .then(|| ReplayTupleAccess(quote! { &(#root) }));
     let mut builder = TupleBuilder {
         config,
         ident_scope,
+        row,
+        replay_rows,
         row_capacity,
         sink,
+        replay_static_terminals: replay_static_tuples,
+        requires_replay: false,
         next_terminal: terminal_start,
         next_group: group_start,
         terminal_start,
@@ -617,13 +642,16 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         decls: Vec::new(),
         freezes: Vec::new(),
         builders: Vec::new(),
+        replay_lane: Vec::new(),
     };
     let push = builder.build_group(
         field.wrapper_shape(),
         field.elements(),
         InputAccess::Required(root),
+        replay_root,
         &SharedListStack::empty(),
     );
+    debug_assert!(builder.replay_lane.is_empty());
     let freezes = &builder.freezes;
     let freeze = quote! { #(#freezes)* };
     builder.builders.insert(0, freeze);
@@ -634,7 +662,7 @@ pub(in crate::codegen) fn build_tuple_field_emit(
             push,
             builders: builder.builders,
         },
-        requires_replay: false,
+        requires_replay: builder.requires_replay,
         terminal_count: builder.next_terminal - builder.terminal_start,
         group_count: builder.next_group - builder.group_start,
     }

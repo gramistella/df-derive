@@ -94,6 +94,9 @@ mod explicit_schema_composition;
 #[path = "runtime/62-wrapped-nested-tuples.rs"]
 mod wrapped_nested_tuples;
 
+#[path = "runtime/64-wide-tuple-error-consumption.rs"]
+mod wide_tuple_error_consumption;
+
 #[path = "runtime/65-misreported-size-hint.rs"]
 mod misreported_size_hint;
 

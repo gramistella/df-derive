@@ -7,6 +7,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
+use rust_decimal::Decimal;
 
 #[path = "support/mod.rs"]
 mod bench_support;
@@ -72,6 +73,17 @@ struct TupleEightByFour {
 }
 
 #[derive(ToDataFrame, Clone)]
+#[allow(clippy::type_complexity)]
+struct MixedTupleThirtyTwo {
+    values: (
+        (Decimal, i64, i64, i64, i64, i64, i64, i64),
+        (i64, i64, i64, i64, i64, i64, i64, i64),
+        (i64, i64, i64, i64, i64, i64, i64, i64),
+        (i64, i64, i64, i64, i64, i64, i64, i64),
+    ),
+}
+
+#[derive(ToDataFrame, Clone)]
 struct NestedEightByFour {
     n0: Quad,
     n1: Quad,
@@ -102,6 +114,19 @@ fn tuple_quad(row: usize, base: i64) -> (i64, i64, i64, i64) {
         row_value(row, base + 1),
         row_value(row, base + 2),
         row_value(row, base + 3),
+    )
+}
+
+fn tuple_octet(row: usize, base: i64) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
+    (
+        row_value(row, base),
+        row_value(row, base + 1),
+        row_value(row, base + 2),
+        row_value(row, base + 3),
+        row_value(row, base + 4),
+        row_value(row, base + 5),
+        row_value(row, base + 6),
+        row_value(row, base + 7),
     )
 }
 
@@ -156,6 +181,27 @@ fn tuple_row(row: usize) -> TupleEightByFour {
     }
 }
 
+fn mixed_tuple_row(row: usize) -> MixedTupleThirtyTwo {
+    let first = tuple_octet(row, 0);
+    MixedTupleThirtyTwo {
+        values: (
+            (
+                Decimal::from(row_value(row, 0)),
+                first.1,
+                first.2,
+                first.3,
+                first.4,
+                first.5,
+                first.6,
+                first.7,
+            ),
+            tuple_octet(row, 8),
+            tuple_octet(row, 16),
+            tuple_octet(row, 24),
+        ),
+    }
+}
+
 fn nested_row(row: usize) -> NestedEightByFour {
     NestedEightByFour {
         n0: quad(row, 0),
@@ -177,6 +223,10 @@ fn make_tuple_heavy() -> Vec<TupleEightByFour> {
     (0..N_ROWS).map(tuple_row).collect()
 }
 
+fn make_mixed_tuple_heavy() -> Vec<MixedTupleThirtyTwo> {
+    (0..N_ROWS).map(mixed_tuple_row).collect()
+}
+
 fn make_nested_heavy() -> Vec<NestedEightByFour> {
     (0..N_ROWS).map(nested_row).collect()
 }
@@ -184,6 +234,7 @@ fn make_nested_heavy() -> Vec<NestedEightByFour> {
 fn bench_cost_model_passes(c: &mut Criterion) {
     let flat = make_flat();
     let tuple_heavy = make_tuple_heavy();
+    let mixed_tuple_heavy = make_mixed_tuple_heavy();
     let nested_heavy = make_nested_heavy();
 
     let mut group = c.benchmark_group("cost_model_passes");
@@ -192,6 +243,13 @@ fn bench_cost_model_passes(c: &mut Criterion) {
     });
     group.bench_function("tuple_8x4_scalar_elements", |b| {
         b.iter(|| std::hint::black_box(&tuple_heavy).to_dataframe().unwrap());
+    });
+    group.bench_function("tuple_mixed_1_decimal_31_scalar_elements", |b| {
+        b.iter(|| {
+            std::hint::black_box(&mixed_tuple_heavy)
+                .to_dataframe()
+                .unwrap()
+        });
     });
     group.bench_function("nested_8x4_scalar_fields", |b| {
         b.iter(|| std::hint::black_box(&nested_heavy).to_dataframe().unwrap());

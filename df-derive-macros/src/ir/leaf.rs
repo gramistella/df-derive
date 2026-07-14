@@ -210,6 +210,34 @@ impl PrimitiveLeaf<'_> {
                 | Self::Duration { .. }
         )
     }
+
+    /// Whether leaf evaluation is concrete, infallible, and free of
+    /// user-defined calls, so codegen may move it after the source-row pass.
+    pub const fn is_deferred_safe(self) -> bool {
+        match self {
+            Self::Numeric(_)
+            | Self::String
+            | Self::Bool
+            | Self::Binary
+            | Self::NaiveDate
+            | Self::NaiveTime
+            | Self::DateTime(DateTimeUnit::Milliseconds | DateTimeUnit::Microseconds)
+            | Self::NaiveDateTime(DateTimeUnit::Milliseconds | DateTimeUnit::Microseconds)
+            | Self::Duration {
+                unit: DateTimeUnit::Milliseconds,
+                source: DurationSource::Chrono,
+            } => true,
+            Self::AsStr(base) => matches!(
+                base,
+                StringyBase::String | StringyBase::BorrowedStr | StringyBase::CowStr
+            ),
+            Self::DateTime(DateTimeUnit::Nanoseconds)
+            | Self::NaiveDateTime(DateTimeUnit::Nanoseconds)
+            | Self::Duration { .. }
+            | Self::Decimal { .. }
+            | Self::AsString => false,
+        }
+    }
 }
 
 /// Borrowed view of a multi-column nested leaf.

@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_static_tuples_replay_narrow_column_loops() {
+    fn wide_static_tuples_replay_bounded_sibling_lanes() {
         let narrow = generated(&syn::parse_quote! {
             struct NarrowTuple {
                 values: (i64, i64, i64, i64, i64, i64, i64, i64),
@@ -267,6 +267,27 @@ mod tests {
                 t7: (Option<i64>, i64, i64, i64),
             }
         });
+        let mixed = generated(&syn::parse_quote! {
+            struct MixedWideTuple {
+                values: (
+                    Decimal,
+                    i64, i64, i64, i64,
+                    i64, i64, i64, i64,
+                    i64, i64, i64, i64,
+                    i64, i64, i64, i64,
+                ),
+            }
+        });
+        let mixed_structural = generated(&syn::parse_quote! {
+            struct MixedStructuralTuple {
+                values: (
+                    (i64, i64, i64, i64, i64, i64, i64, i64),
+                    Option<(i64, i64)>,
+                    Vec<(i64, i64)>,
+                    (i64, i64, i64, i64, i64, i64, i64, i64),
+                ),
+            }
+        });
 
         let generics = syn::Generics::default();
         let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
@@ -279,8 +300,8 @@ mod tests {
         assert_eq!(
             wide.matches(&format!("in {replay_rows} . iter () . copied ()"))
                 .count(),
-            32,
-            "every wide-tuple terminal must have one scoped column loop: {wide}",
+            8,
+            "each four-terminal sibling group must share one replay lane: {wide}",
         );
         assert_eq!(
             wide.matches(&format!("{replay_rows} . push ({row})"))
@@ -295,6 +316,40 @@ mod tests {
             "replayed columns must allocate from the exact buffered length: {wide}",
         );
         assert!(!wide.contains("Iterator :: collect"), "{wide}");
+
+        assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
+        assert_eq!(
+            mixed
+                .matches(&format!("in {replay_rows} . iter () . copied ()"))
+                .count(),
+            2,
+            "the sixteen infallible mixed-tuple terminals should use two lanes: {mixed}",
+        );
+        assert_eq!(
+            mixed
+                .matches(&format!("{replay_rows} . push ({row})"))
+                .count(),
+            1,
+            "the mixed tuple must still buffer the source once: {mixed}",
+        );
+        assert!(
+            mixed.contains("try_to_i128_mantissa"),
+            "the Decimal terminal must remain on its fallible path: {mixed}",
+        );
+        assert_eq!(
+            mixed_structural
+                .matches(&format!("in {replay_rows} . iter () . copied ()"))
+                .count(),
+            2,
+            "only the two row-aligned scalar sibling groups should replay: {mixed_structural}",
+        );
+        assert_eq!(
+            mixed_structural
+                .matches(&format!("{replay_rows} . push ({row})"))
+                .count(),
+            1,
+            "structural siblings must share the one source buffer: {mixed_structural}",
+        );
     }
 
     #[test]

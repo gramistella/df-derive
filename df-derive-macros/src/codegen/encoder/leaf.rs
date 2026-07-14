@@ -63,12 +63,10 @@ fn optional_view_validity_decl(
     }
 }
 
-/// Exact row-aligned iterators update prefilled validity in place. Inexact
-/// iterators and flattened leaves append because their final length is not
-/// known from the source row count.
+/// Row-aligned leaves update prefilled validity in place, growing when a
+/// source iterator understates its exact size hint. Dynamic leaves append.
 fn update_optional_view_validity(
     cardinality: LeafCardinality,
-    input_rows_exact: &syn::Ident,
     validity: &syn::Ident,
     values: &syn::Ident,
     valid: bool,
@@ -76,18 +74,17 @@ fn update_optional_view_validity(
     match cardinality {
         LeafCardinality::InputRows if valid => {
             quote! {
-                if !#input_rows_exact {
+                if #values.len() == #validity.len() {
                     #validity.push(true);
                 }
             }
         }
         LeafCardinality::InputRows => {
             quote! {
-                if #input_rows_exact {
-                    #validity.set(#values.len(), false);
-                } else {
-                    #validity.push(false);
+                if #values.len() == #validity.len() {
+                    #validity.push(true);
                 }
+                #validity.set(#values.len(), false);
             }
         }
         LeafCardinality::Dynamic => quote! { #validity.push(#valid); },
@@ -241,20 +238,8 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         }
         LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
-            let valid = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                true,
-            );
-            let null = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                false,
-            );
+            let valid = update_optional_view_validity(ctx.cardinality, &validity, &buf, true);
+            let null = update_optional_view_validity(ctx.cardinality, &validity, &buf, false);
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
@@ -268,11 +253,15 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 }
             };
             let valid_opt = validity_into_option(&validity, pa_root);
-            let option_series = string_chunked_series(
+            let series = string_chunked_series(
                 name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
+            let option_series = quote! {{
+                #validity.resize(#buf.len(), true);
+                #series
+            }};
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
@@ -309,20 +298,8 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             let v = idents::leaf_value();
             let empty = quote! { &[][..] };
             let bytes = bytes_ref_expr(&quote! { #v });
-            let valid = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                true,
-            );
-            let null = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                false,
-            );
+            let valid = update_optional_view_validity(ctx.cardinality, &validity, &buf, true);
+            let null = update_optional_view_validity(ctx.cardinality, &validity, &buf, false);
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
@@ -336,11 +313,15 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 }
             };
             let valid_opt = validity_into_option(&validity, pa_root);
-            let option_series = binary_chunked_series(
+            let series = binary_chunked_series(
                 name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
+            let option_series = quote! {{
+                #validity.resize(#buf.len(), true);
+                #series
+            }};
             LeafArm {
                 decls: vec![
                     mbva_bytes_decl(&buf, pa_root, ctx),
@@ -363,7 +344,7 @@ fn bool_option_parts(
     validity: &syn::Ident,
     access: &TokenStream,
     pa_root: &TokenStream,
-) -> (Vec<TokenStream>, TokenStream) {
+) -> (Vec<TokenStream>, TokenStream, TokenStream) {
     match ctx.cardinality {
         LeafCardinality::InputRows => {
             let row_capacity = ctx.base.row_capacity;
@@ -390,31 +371,24 @@ fn bool_option_parts(
                     quote! { let mut #row_idx: usize = 0; },
                 ],
                 quote! {
+                    if #row_idx == #buf.len() {
+                        #buf.push(false);
+                        #validity.push(true);
+                    }
                     match (#access) {
                         ::std::option::Option::Some(true) => {
-                            if #input_rows_exact {
-                                #buf.set(#row_idx, true);
-                            } else {
-                                #buf.push(true);
-                                #validity.push(true);
-                            }
+                            #buf.set(#row_idx, true);
                         }
-                        ::std::option::Option::Some(false) => {
-                            if !#input_rows_exact {
-                                #buf.push(false);
-                                #validity.push(true);
-                            }
-                        }
+                        ::std::option::Option::Some(false) => {}
                         ::std::option::Option::None => {
-                            if #input_rows_exact {
-                                #validity.set(#row_idx, false);
-                            } else {
-                                #buf.push(false);
-                                #validity.push(false);
-                            }
+                            #validity.set(#row_idx, false);
                         }
                     }
                     #row_idx += 1;
+                },
+                quote! {
+                    #buf.resize(#row_idx, false);
+                    #validity.resize(#row_idx, true);
                 },
             )
         }
@@ -436,6 +410,7 @@ fn bool_option_parts(
                     }
                 }
             },
+            TokenStream::new(),
         ),
     }
 }
@@ -460,9 +435,11 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }
         }
         LeafArmKind::Option { .. } => {
-            let (decls, option_push) = bool_option_parts(ctx, &buf, &validity, access, pa_root);
+            let (decls, option_push, finish) =
+                bool_option_parts(ctx, &buf, &validity, access, pa_root);
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = quote! {{
+                #finish
                 let arr = #pa_root::array::BooleanArray::new(
                     #pa_root::datatypes::ArrowDataType::Boolean,
                     ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#buf),
@@ -674,20 +651,8 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         }
         LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
-            let valid = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                true,
-            );
-            let null = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                false,
-            );
+            let valid = update_optional_view_validity(ctx.cardinality, &validity, &buf, true);
+            let null = update_optional_view_validity(ctx.cardinality, &validity, &buf, false);
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
@@ -710,11 +675,15 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 }
             };
             let valid_opt = validity_into_option(&validity, pa_root);
-            let option_series = string_chunked_series(
+            let series = string_chunked_series(
                 name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
+            let option_series = quote! {{
+                #validity.resize(#buf.len(), true);
+                #series
+            }};
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
@@ -751,20 +720,8 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             let v = idents::leaf_value();
             let option_value =
                 super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
-            let valid = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                true,
-            );
-            let null = update_optional_view_validity(
-                ctx.cardinality,
-                ctx.input_rows_exact,
-                &validity,
-                &buf,
-                false,
-            );
+            let valid = update_optional_view_validity(ctx.cardinality, &validity, &buf, true);
+            let null = update_optional_view_validity(ctx.cardinality, &validity, &buf, false);
             let option_push = quote! {
                 match #option_value {
                     ::std::option::Option::Some(#v) => {
@@ -778,11 +735,15 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
                 }
             };
             let valid_opt = validity_into_option(&validity, pa_root);
-            let option_series = string_chunked_series(
+            let series = string_chunked_series(
                 name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
+            let option_series = quote! {{
+                #validity.resize(#buf.len(), true);
+                #series
+            }};
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),

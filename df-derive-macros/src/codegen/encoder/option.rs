@@ -63,6 +63,9 @@ pub(super) fn wrap_option_access_chain_primitive(
             idx: ctx.base.idx,
             name: ctx.base.name,
         },
+        cardinality: ctx.cardinality,
+        ident_scope: ctx.ident_scope,
+        input_rows_exact: ctx.input_rows_exact,
         decimal128_encode_trait: ctx.decimal128_encode_trait,
         paths: ctx.paths,
     };

@@ -405,3 +405,25 @@ fn tuple_vector_projection_schema_and_values() {
     );
     assert_row_after_empty_boundary(&df);
 }
+
+#[test]
+fn all_empty_tuple_vectors_have_empty_child_storage() {
+    let rows = [row_one(), row_one(), row_one()];
+    let df = rows.as_slice().to_dataframe().unwrap();
+
+    for name in ["b.field_1", "d.field_1", "e.field_1", "g.field_1"] {
+        let list = df
+            .column(name)
+            .unwrap()
+            .as_materialized_series()
+            .list()
+            .unwrap();
+        assert_eq!(
+            list.downcast_iter()
+                .map(|array| array.values().len())
+                .sum::<usize>(),
+            0,
+            "{name} retained values below all-empty list offsets",
+        );
+    }
+}

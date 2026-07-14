@@ -3,6 +3,7 @@ use proc_macro2::TokenStream;
 use crate::codegen::external_paths::ExternalPaths;
 use crate::ir::{PrimitiveLeaf, WrapperShape};
 
+use super::idents::GeneratedIdentScope;
 use super::{leaf, option, vec};
 
 pub enum Encoder {
@@ -34,8 +35,22 @@ pub struct BaseCtx<'a> {
     pub name: &'a str,
 }
 
+/// Relates one primitive-leaf push to the source iterator.
+///
+/// Only row-aligned leaves may seed validity from an exact iterator size
+/// hint. Leaves below a list traversal have an independent flattened length
+/// and must grow validity as values are observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeafCardinality {
+    InputRows,
+    Dynamic,
+}
+
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
+    pub cardinality: LeafCardinality,
+    pub ident_scope: GeneratedIdentScope<'a>,
+    pub input_rows_exact: &'a syn::Ident,
     pub decimal128_encode_trait: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }

@@ -23,8 +23,9 @@ use super::shape_walk::{
     shape_freeze_validity_bitmaps, shape_layer_wraps_clone,
 };
 use super::{
-    BaseCtx, EncodeLifecycle, Encoder, LeafCtx, NestedLeafCtx, access_chain_to_option_ref,
-    access_chain_to_ref, build_encoder_with_option_receiver, struct_type_tokens,
+    BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, NestedLeafCtx,
+    access_chain_to_option_ref, access_chain_to_ref, build_encoder_with_option_receiver,
+    struct_type_tokens,
 };
 
 pub(in crate::codegen) struct TupleFieldEmit {
@@ -70,6 +71,10 @@ impl SharedListStack {
             layers,
             inner_access: AccessChain::empty(),
         })
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.specs.is_empty()
     }
 }
 
@@ -260,6 +265,7 @@ impl TupleBuilder<'_> {
                     && matches!(wrapper, WrapperShape::Leaf(shape) if shape.is_bare()))
                 .then(|| quote! { (#input_expr).copied() });
                 let access = copied_access.as_ref().unwrap_or(input_expr);
+                let input_rows_exact = idents::input_rows_exact(self.ident_scope);
                 let ctx = LeafCtx {
                     base: BaseCtx {
                         access,
@@ -268,6 +274,15 @@ impl TupleBuilder<'_> {
                         idx,
                         name: common.name(),
                     },
+                    cardinality: if prefix.is_empty()
+                        && matches!(&effective_wrapper, WrapperShape::Leaf(_))
+                    {
+                        LeafCardinality::InputRows
+                    } else {
+                        LeafCardinality::Dynamic
+                    },
+                    ident_scope: self.ident_scope,
+                    input_rows_exact: &input_rows_exact,
                     decimal128_encode_trait: &self.config.runtime.decimal128_encode,
                     paths: &self.config.external_paths,
                 };

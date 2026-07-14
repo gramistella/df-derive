@@ -49,6 +49,9 @@ All notable changes to this project will be documented in this file.
 - Tuple siblings share source resolution and list traversal. Their offsets
   and validity buffers are built and frozen once per tuple group, then reused
   while assembling the terminal columns.
+- Exact-size inputs seed row-aligned optional string, binary, and boolean
+  validity once, while inexact iterators and list-flattened leaves retain
+  append-only buffers with their own observed cardinality.
 - Empty structs and unit payloads preserve height through the checked iterator
   boundary without a temporary null column or `drop_in_place` workaround.
 - Nested composition consumes validated child batch columns directly. It no

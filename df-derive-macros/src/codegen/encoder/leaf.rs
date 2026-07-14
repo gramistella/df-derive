@@ -8,8 +8,8 @@ use crate::ir::{DateTimeUnit, DurationSource, NumericKind, StringyBase};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::LeafCtx;
 use super::idents;
+use super::{LeafCardinality, LeafCtx};
 
 #[derive(Clone, Copy)]
 pub(super) enum LeafArmKind {
@@ -38,6 +38,59 @@ pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream, ctx: &LeafCtx<'
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap =
             #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity);
+    }
+}
+
+fn optional_view_validity_decl(
+    ident: &syn::Ident,
+    pa_root: &TokenStream,
+    ctx: &LeafCtx<'_>,
+) -> TokenStream {
+    match ctx.cardinality {
+        LeafCardinality::InputRows => {
+            let row_capacity = ctx.base.row_capacity;
+            let input_rows_exact = ctx.input_rows_exact;
+            quote! {
+                let mut #ident: #pa_root::bitmap::MutableBitmap =
+                    if #input_rows_exact {
+                        #pa_root::bitmap::MutableBitmap::from_len_set(#row_capacity)
+                    } else {
+                        #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity)
+                    };
+            }
+        }
+        LeafCardinality::Dynamic => mb_decl(ident, pa_root, ctx),
+    }
+}
+
+/// Exact row-aligned iterators update prefilled validity in place. Inexact
+/// iterators and flattened leaves append because their final length is not
+/// known from the source row count.
+fn update_optional_view_validity(
+    cardinality: LeafCardinality,
+    input_rows_exact: &syn::Ident,
+    validity: &syn::Ident,
+    values: &syn::Ident,
+    valid: bool,
+) -> TokenStream {
+    match cardinality {
+        LeafCardinality::InputRows if valid => {
+            quote! {
+                if !#input_rows_exact {
+                    #validity.push(true);
+                }
+            }
+        }
+        LeafCardinality::InputRows => {
+            quote! {
+                if #input_rows_exact {
+                    #validity.set(#values.len(), false);
+                } else {
+                    #validity.push(false);
+                }
+            }
+        }
+        LeafCardinality::Dynamic => quote! { #validity.push(#valid); },
     }
 }
 
@@ -188,15 +241,29 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         }
         LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
+            let valid = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                true,
+            );
+            let null = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                false,
+            );
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
+                        #valid
                         #buf.push_value_ignore_validity(#v.as_str());
-                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
+                        #null
                         #buf.push_value_ignore_validity("");
-                        #validity.push(false);
                     }
                 }
             };
@@ -209,7 +276,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
-                    mb_decl(&validity, pa_root, ctx),
+                    optional_view_validity_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -242,15 +309,29 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             let v = idents::leaf_value();
             let empty = quote! { &[][..] };
             let bytes = bytes_ref_expr(&quote! { #v });
+            let valid = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                true,
+            );
+            let null = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                false,
+            );
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
+                        #valid
                         #buf.push_value_ignore_validity(#bytes);
-                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
+                        #null
                         #buf.push_value_ignore_validity(#empty);
-                        #validity.push(false);
                     }
                 }
             };
@@ -263,7 +344,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_bytes_decl(&buf, pa_root, ctx),
-                    mb_decl(&validity, pa_root, ctx),
+                    optional_view_validity_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -274,6 +355,89 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
 
 fn bytes_ref_expr(binding: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     quote! { ::core::convert::AsRef::<[u8]>::as_ref(#binding) }
+}
+
+fn bool_option_parts(
+    ctx: &LeafCtx<'_>,
+    buf: &syn::Ident,
+    validity: &syn::Ident,
+    access: &TokenStream,
+    pa_root: &TokenStream,
+) -> (Vec<TokenStream>, TokenStream) {
+    match ctx.cardinality {
+        LeafCardinality::InputRows => {
+            let row_capacity = ctx.base.row_capacity;
+            let input_rows_exact = ctx.input_rows_exact;
+            let row_idx = idents::primitive_row_idx(ctx.ident_scope, ctx.base.idx);
+            (
+                vec![
+                    quote! {
+                        let mut #buf: #pa_root::bitmap::MutableBitmap =
+                            if #input_rows_exact {
+                                #pa_root::bitmap::MutableBitmap::from_len_zeroed(#row_capacity)
+                            } else {
+                                #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity)
+                            };
+                    },
+                    quote! {
+                        let mut #validity: #pa_root::bitmap::MutableBitmap =
+                            if #input_rows_exact {
+                                #pa_root::bitmap::MutableBitmap::from_len_set(#row_capacity)
+                            } else {
+                                #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity)
+                            };
+                    },
+                    quote! { let mut #row_idx: usize = 0; },
+                ],
+                quote! {
+                    match (#access) {
+                        ::std::option::Option::Some(true) => {
+                            if #input_rows_exact {
+                                #buf.set(#row_idx, true);
+                            } else {
+                                #buf.push(true);
+                                #validity.push(true);
+                            }
+                        }
+                        ::std::option::Option::Some(false) => {
+                            if !#input_rows_exact {
+                                #buf.push(false);
+                                #validity.push(true);
+                            }
+                        }
+                        ::std::option::Option::None => {
+                            if #input_rows_exact {
+                                #validity.set(#row_idx, false);
+                            } else {
+                                #buf.push(false);
+                                #validity.push(false);
+                            }
+                        }
+                    }
+                    #row_idx += 1;
+                },
+            )
+        }
+        LeafCardinality::Dynamic => (
+            vec![mb_decl(buf, pa_root, ctx), mb_decl(validity, pa_root, ctx)],
+            quote! {
+                match (#access) {
+                    ::std::option::Option::Some(true) => {
+                        #buf.push(true);
+                        #validity.push(true);
+                    }
+                    ::std::option::Option::Some(false) => {
+                        #buf.push(false);
+                        #validity.push(true);
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push(false);
+                        #validity.push(false);
+                    }
+                }
+            },
+        ),
+    }
 }
 
 /// `bool` option arms use a values bitmap plus a validity bitmap.
@@ -296,22 +460,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }
         }
         LeafArmKind::Option { .. } => {
-            let option_push = quote! {
-                match (#access) {
-                    ::std::option::Option::Some(true) => {
-                        #buf.push(true);
-                        #validity.push(true);
-                    }
-                    ::std::option::Option::Some(false) => {
-                        #buf.push(false);
-                        #validity.push(true);
-                    }
-                    ::std::option::Option::None => {
-                        #buf.push(false);
-                        #validity.push(false);
-                    }
-                }
-            };
+            let (decls, option_push) = bool_option_parts(ctx, &buf, &validity, access, pa_root);
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = quote! {{
                 let arr = #pa_root::array::BooleanArray::new(
@@ -324,10 +473,7 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 )
             }};
             LeafArm {
-                decls: vec![
-                    mb_decl(&buf, pa_root, ctx),
-                    mb_decl(&validity, pa_root, ctx),
-                ],
+                decls,
                 push: option_push,
                 series: option_series,
             }
@@ -528,6 +674,20 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         }
         LeafArmKind::Option { .. } => {
             let v = idents::leaf_value();
+            let valid = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                true,
+            );
+            let null = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                false,
+            );
             let option_push = quote! {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
@@ -540,12 +700,12 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                                 __df_fmt_err,
                             )
                         })?;
+                        #valid
                         #buf.push_value_ignore_validity(#scratch.as_str());
-                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
+                        #null
                         #buf.push_value_ignore_validity("");
-                        #validity.push(false);
                     }
                 }
             };
@@ -559,7 +719,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
                     scratch_decl,
-                    mb_decl(&validity, pa_root, ctx),
+                    optional_view_validity_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -591,15 +751,29 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             let v = idents::leaf_value();
             let option_value =
                 super::stringy_value_expr(base, access, super::StringyExprKind::OptionDeref);
+            let valid = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                true,
+            );
+            let null = update_optional_view_validity(
+                ctx.cardinality,
+                ctx.input_rows_exact,
+                &validity,
+                &buf,
+                false,
+            );
             let option_push = quote! {
                 match #option_value {
                     ::std::option::Option::Some(#v) => {
+                        #valid
                         #buf.push_value_ignore_validity(#v);
-                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
+                        #null
                         #buf.push_value_ignore_validity("");
-                        #validity.push(false);
                     }
                 }
             };
@@ -612,7 +786,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
-                    mb_decl(&validity, pa_root, ctx),
+                    optional_view_validity_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,

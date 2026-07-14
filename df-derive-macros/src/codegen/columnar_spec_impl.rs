@@ -56,6 +56,9 @@ fn encode_columns_method_body(
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
 ) -> TokenStream {
+    let ident_scope = idents::GeneratedIdentScope::new(&ir.generics);
+    let row_upper_bound = idents::row_upper_bound(ident_scope);
+    let input_rows_exact = idents::input_rows_exact(ident_scope);
     let EncodeParts {
         decls,
         pushes,
@@ -63,8 +66,11 @@ fn encode_columns_method_body(
     } = prepare_encode_parts(ir, config, it_ident, row_capacity, sink);
 
     quote! {
-        let #row_capacity: usize =
-            ::core::iter::Iterator::size_hint(&*#rows).0;
+        let (#row_capacity, #row_upper_bound) =
+            ::core::iter::Iterator::size_hint(&*#rows);
+        let #input_rows_exact: bool =
+            #row_upper_bound == ::std::option::Option::Some(#row_capacity);
+        let _ = #input_rows_exact;
         #(#decls)*
         for #it_ident in #rows.by_ref() {
             #(#pushes)*

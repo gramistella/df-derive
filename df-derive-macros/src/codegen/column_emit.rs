@@ -1,12 +1,15 @@
 //! Per-field encoder dispatch.
 
-use crate::ir::{FieldColumn, FieldPlan, NestedLeaf, PrimitiveLeaf, TerminalLeafRoute};
+use crate::ir::{
+    FieldColumn, FieldPlan, NestedLeaf, PrimitiveLeaf, TerminalLeafRoute, WrapperShape,
+};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
 use super::encoder::{
-    self, BaseCtx, EncodeLifecycle, Encoder, LeafCtx, NestedLeafCtx, idents, struct_type_tokens,
+    self, BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, NestedLeafCtx, idents,
+    struct_type_tokens,
 };
 
 pub(in crate::codegen) struct FieldEmit {
@@ -159,6 +162,7 @@ fn build_primitive_emit(
 ) -> EncodeLifecycle {
     let name = column.name();
     let access = super::source_access::field_column_access(column, row);
+    let input_rows_exact = idents::input_rows_exact(ident_scope);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
             access: &access,
@@ -167,6 +171,12 @@ fn build_primitive_emit(
             idx,
             name,
         },
+        cardinality: match column.wrapper_shape() {
+            WrapperShape::Leaf(_) => LeafCardinality::InputRows,
+            WrapperShape::Vec(_) => LeafCardinality::Dynamic,
+        },
+        ident_scope,
+        input_rows_exact: &input_rows_exact,
         decimal128_encode_trait: &config.runtime.decimal128_encode,
         paths: &config.external_paths,
     };

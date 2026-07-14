@@ -82,6 +82,12 @@ mod tests {
         label: String,
     }
 
+    #[derive(ToDataFrame)]
+    struct OptionalStringRow {
+        label: Option<String>,
+        flag: Option<bool>,
+    }
+
     #[derive(Clone, Copy, ToDataFrame)]
     struct EmptyRow {}
 
@@ -121,6 +127,30 @@ mod tests {
         let filtered = SelfCrateRow::encode(rows.iter().filter(|row| row.id == 2))?;
         assert_eq!(filtered.shape(), (1, 2));
         assert_eq!(filtered.column("id")?.u32()?.get(0), Some(2));
+
+        let optional_rows = [
+            OptionalStringRow {
+                label: Some("first".to_owned()),
+                flag: Some(true),
+            },
+            OptionalStringRow {
+                label: None,
+                flag: None,
+            },
+            OptionalStringRow {
+                label: Some("third".to_owned()),
+                flag: Some(false),
+            },
+        ];
+        let exact_optional = OptionalStringRow::encode(&optional_rows)?;
+        let zero_lower_bound = OptionalStringRow::encode(optional_rows.iter().filter(|_| true))?;
+        assert!(exact_optional.equals_missing(&zero_lower_bound));
+
+        let positive_underestimate =
+            ::core::iter::once(&optional_rows[0]).chain(optional_rows[1..].iter().filter(|_| true));
+        assert_eq!(positive_underestimate.size_hint(), (1, Some(3)));
+        let positive_underestimate = OptionalStringRow::encode(positive_underestimate)?;
+        assert!(exact_optional.equals_missing(&positive_underestimate));
 
         let no_empty_rows: &[EmptyRow] = &[];
         assert_eq!(EmptyRow::encode(no_empty_rows)?.shape(), (0, 0));

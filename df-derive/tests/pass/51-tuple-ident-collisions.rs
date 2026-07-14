@@ -26,4 +26,9 @@ struct TupleIdentCollisions<
     values: Option<Vec<Option<(Option<(i32, String)>, bool)>>>,
 }
 
+#[derive(ToDataFrame)]
+struct PrimitiveIdentCollisions<const __df_derive_ri_0: usize> {
+    flag: Option<bool>,
+}
+
 fn main() {}

@@ -66,6 +66,14 @@ pub(in crate::codegen) fn row_capacity(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_row_capacity")
 }
 
+pub(in crate::codegen) fn row_upper_bound(scope: GeneratedIdentScope<'_>) -> Ident {
+    scope.fresh("__df_derive_row_upper_bound")
+}
+
+pub(in crate::codegen) fn input_rows_exact(scope: GeneratedIdentScope<'_>) -> Ident {
+    scope.fresh("__df_derive_input_rows_exact")
+}
+
 fn fresh_generic_ident(generics: &Generics, base: &str) -> Ident {
     let mut suffix = 0_usize;
     loop {
@@ -133,13 +141,29 @@ mod tests {
     #[test]
     fn encode_parameters_are_fresh_against_user_generics() {
         let generics: Generics = syn::parse_quote!(
-            <'__df_derive_row, __DfDeriveRows, const __DfDeriveRows_1: usize, const rows: usize, const __df_derive_sink: usize>
+            <
+                '__df_derive_row,
+                __DfDeriveRows,
+                const __DfDeriveRows_1: usize,
+                const rows: usize,
+                const __df_derive_sink: usize,
+                const __df_derive_row_upper_bound: usize,
+                const __df_derive_input_rows_exact: usize,
+            >
         );
 
         assert_eq!(row_iter_param(&generics), "__DfDeriveRows_2");
         assert_eq!(row_lifetime(&generics).to_string(), "'__df_derive_row_1");
         assert_eq!(rows_param(&generics), "rows_1");
         assert_eq!(row_capacity(&generics), "__df_derive_row_capacity");
+        assert_eq!(
+            row_upper_bound(GeneratedIdentScope::new(&generics)),
+            "__df_derive_row_upper_bound_1"
+        );
+        assert_eq!(
+            input_rows_exact(GeneratedIdentScope::new(&generics)),
+            "__df_derive_input_rows_exact_1"
+        );
         assert_eq!(column_sink_param(&generics), "__df_derive_sink_1");
     }
 

@@ -32,6 +32,18 @@ struct VecOptDecimal {
 }
 
 #[derive(ToDataFrame, Clone)]
+struct VecI32 {
+    id: u64,
+    items: Vec<i32>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct VecOptI32 {
+    id: u64,
+    items: Vec<Option<i32>>,
+}
+
+#[derive(ToDataFrame, Clone)]
 struct VecVecI32 {
     id: u64,
     items: Vec<Vec<i32>>,
@@ -115,6 +127,34 @@ fn generate_vec_opt_decimal() -> Vec<VecOptDecimal> {
                         None
                     } else {
                         Some(Decimal::new(i64::try_from(i * 1000 + k).unwrap(), 4))
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_i32() -> Vec<VecI32> {
+    (0..N_ROWS)
+        .map(|i| VecI32 {
+            id: i as u64,
+            items: (0..(i % 7 + 3))
+                .map(|k| i32::try_from(i).unwrap() * 10 + i32::try_from(k).unwrap())
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_opt_i32() -> Vec<VecOptI32> {
+    (0..N_ROWS)
+        .map(|i| VecOptI32 {
+            id: i as u64,
+            items: (0..(i % 7 + 3))
+                .map(|k| {
+                    if (i + k) % 5 == 0 {
+                        None
+                    } else {
+                        Some(i32::try_from(i).unwrap() * 10 + i32::try_from(k).unwrap())
                     }
                 })
                 .collect(),
@@ -256,6 +296,26 @@ fn benchmark_vec_opt_decimal(c: &mut Criterion) {
     });
 }
 
+fn benchmark_vec_i32(c: &mut Criterion) {
+    let data = generate_vec_i32();
+    c.bench_function("vec_i32", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+}
+
+fn benchmark_vec_opt_i32(c: &mut Criterion) {
+    let data = generate_vec_opt_i32();
+    c.bench_function("vec_opt_i32", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&data).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+}
+
 fn benchmark_vec_vec_i32(c: &mut Criterion) {
     let data = generate_vec_vec_i32();
     c.bench_function("vec_vec_i32", |b| {
@@ -323,6 +383,8 @@ criterion_group! {
         benchmark_vec_opt_string,
         benchmark_vec_opt_datetime,
         benchmark_vec_opt_decimal,
+        benchmark_vec_i32,
+        benchmark_vec_opt_i32,
         benchmark_vec_vec_i32,
         benchmark_vec_vec_opt_i32,
         benchmark_vec_vec_string,

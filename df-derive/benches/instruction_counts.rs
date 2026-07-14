@@ -140,6 +140,18 @@ struct VecOptBoolRow {
 }
 
 #[derive(ToDataFrame)]
+struct VecI32Row {
+    id: u64,
+    items: Vec<i32>,
+}
+
+#[derive(ToDataFrame)]
+struct VecOptI32Row {
+    id: u64,
+    items: Vec<Option<i32>>,
+}
+
+#[derive(ToDataFrame)]
 struct VecVecBoolRow {
     id: u64,
     items: Vec<Vec<bool>>,
@@ -400,6 +412,34 @@ fn generate_vec_opt_bool_rows() -> Vec<VecOptBoolRow> {
         .collect()
 }
 
+fn generate_vec_i32_rows() -> Vec<VecI32Row> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecI32Row {
+            id: i as u64,
+            items: (0..(i % 7 + 3))
+                .map(|k| i32::try_from(i * 10 + k).unwrap())
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_opt_i32_rows() -> Vec<VecOptI32Row> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecOptI32Row {
+            id: i as u64,
+            items: (0..(i % 7 + 3))
+                .map(|k| {
+                    if (i + k) % 5 == 0 {
+                        None
+                    } else {
+                        Some(i32::try_from(i * 10 + k).unwrap())
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn generate_vec_vec_bool_rows() -> Vec<VecVecBoolRow> {
     (0..N_NUMERIC_ROWS)
         .map(|i| VecVecBoolRow {
@@ -542,6 +582,18 @@ fn bench_vec_opt_bool(rows: Vec<VecOptBoolRow>) -> (usize, usize) {
 }
 
 #[library_benchmark]
+#[bench::vec_i32(generate_vec_i32_rows())]
+fn bench_vec_i32(rows: Vec<VecI32Row>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::vec_opt_i32(generate_vec_opt_i32_rows())]
+fn bench_vec_opt_i32(rows: Vec<VecOptI32Row>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
 #[bench::vec_vec_bool(generate_vec_vec_bool_rows())]
 fn bench_vec_vec_bool(rows: Vec<VecVecBoolRow>) -> (usize, usize) {
     convert_rows(rows)
@@ -583,6 +635,8 @@ library_benchmark_group!(
     benchmarks = [
         bench_vec_bool,
         bench_vec_opt_bool,
+        bench_vec_i32,
+        bench_vec_opt_i32,
         bench_vec_vec_bool,
         bench_vec_vec_i32,
         bench_vec_vec_opt_i32

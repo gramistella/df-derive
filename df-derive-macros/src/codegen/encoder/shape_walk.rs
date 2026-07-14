@@ -2,7 +2,7 @@
 //!
 //! Dtype/array compatibility is owned here: leaf encoders may create Arrow
 //! arrays and logical Polars dtypes, but `shape_assemble_list_stack` is the
-//! only boundary that pairs them into list Series construction.
+//! only boundary that pairs them through Polars' checked Series constructor.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -418,12 +418,12 @@ pub(super) fn shape_assemble_list_stack(
         depth.saturating_sub(1),
     );
     let outer = arr_id_for_layer(0);
-    let assemble_helper = idents::assemble_helper();
     quote! {
         #(#block)*
-        #assemble_helper(
-            #outer,
-            #helper_logical,
+        #pp::Series::from_chunk_and_dtype(
+            "".into(),
+            ::std::boxed::Box::new(#outer) as #pp::ArrayRef,
+            &#pp::DataType::List(::std::boxed::Box::new(#helper_logical)),
         )?
     }
 }

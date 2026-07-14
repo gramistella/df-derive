@@ -48,6 +48,8 @@ All notable changes to this project will be documented in this file.
   generics.
 - A standalone `columnar = "..."` override now selects that runtime's sibling
   `Decimal128Encode` path instead of the default runtime's decimal trait.
+- Generated list encoders now use Polars' checked Arrow-to-Series boundary
+  instead of emitting an unchecked Series constructor.
 
 ### Performance
 

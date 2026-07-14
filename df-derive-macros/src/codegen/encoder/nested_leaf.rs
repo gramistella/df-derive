@@ -9,11 +9,11 @@
 //! per-row scan body matches each row's optional access directly
 //! rather than iterating an inner Vec.
 //!
-//! The invariant: every `LargeListArray::new` routes through the in-scope free
-//! helper `__df_derive_assemble_list_series_unchecked` (defined at the top of
-//! each derive's `const _: () = { ... };` scope), keeping `unsafe` out of any
-//! `Self`-bearing impl method so `clippy::unsafe_derive_deserialize` stays
-//! silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
+//! The invariant: every `LargeListArray::new` reaches Polars'
+//! `Series::from_chunk_and_dtype`, whose release-mode physical-dtype check
+//! guards its internal constructor. Generated code contains no unsafe list
+//! assembly, including for downstream
+//! `#[derive(ToDataFrame, Deserialize)]` types.
 //!
 //! Every shape produces an [`super::ctx::EncodeLifecycle`] because the inner
 //! checked batch carries one column per inner schema entry of `T`. Its

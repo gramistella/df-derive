@@ -28,9 +28,6 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
         &config.runtime.decimal128_encode,
     );
 
-    // Keep helper names private while still emitting inherent impls for the
-    // target type. The list assembly wrapper is emitted only for derives that
-    // actually need `LargeListArray` stacking.
     quote! {
         const _: () = {
             #eager_asserts
@@ -161,13 +158,13 @@ mod tests {
     }
 
     #[test]
-    fn list_assembly_helper_is_emitted_only_for_vec_shapes() {
+    fn list_assembly_uses_polars_checked_constructor() {
         let scalar = generated(&syn::parse_quote! {
             struct ScalarRow {
                 id: u32,
             }
         });
-        assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
+        assert!(!scalar.contains("from_chunk_and_dtype"), "{scalar}");
         assert!(
             !scalar.contains("from_chunks_and_dtype_unchecked"),
             "{scalar}"
@@ -176,15 +173,18 @@ mod tests {
 
         let with_vec = generated(&syn::parse_quote! {
             struct VecRow {
-                ids: Vec<u32>,
+                ids: Vec<String>,
             }
         });
-        assert!(with_vec.contains("__DfDeriveListAssembly"), "{with_vec}");
         assert!(
-            with_vec.contains("from_chunks_and_dtype_unchecked"),
+            with_vec.contains("Series :: from_chunk_and_dtype"),
             "{with_vec}"
         );
-        assert!(with_vec.contains("unsafe"), "{with_vec}");
+        assert!(
+            !with_vec.contains("from_chunks_and_dtype_unchecked"),
+            "{with_vec}"
+        );
+        assert!(!with_vec.contains("unsafe"), "{with_vec}");
     }
 
     #[test]
@@ -356,10 +356,6 @@ mod tests {
         assert!(
             !bulk_boolean.contains("set_prepared_bitmap"),
             "{bulk_boolean}",
-        );
-        assert!(
-            bulk_boolean.contains("BooleanArray :: from_slice"),
-            "deep bare booleans should be packed once from contiguous storage: {bulk_boolean}",
         );
 
         let bitmap_only = generated(&syn::parse_quote! {

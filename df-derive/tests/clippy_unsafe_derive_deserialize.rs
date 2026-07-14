@@ -1,22 +1,19 @@
 // Regression: `#[derive(ToDataFrame)]` paired with `#[derive(Deserialize)]`
 // must not trip `clippy::unsafe_derive_deserialize`.
 //
-// Earlier versions of the macro emitted `unsafe { Series::from_chunks_and_dtype_unchecked(..) }`
-// directly inside the `ColumnarSpec::encode_columns` impl method on the
-// user's struct. Clippy walks impl blocks of `Deserialize`-able types
-// looking for `unsafe`, and that placement caused the lint to fire on every
-// `Decimal`-bearing struct downstream that paired
-// `#[derive(ToDataFrame, Deserialize)]`. The fix hoists the `unsafe` call
-// into a free helper function emitted at the top of the per-derive
-// `const _: () = { ... };` scope; the lint now finds no `unsafe` inside the
-// user type's impls.
+// Earlier versions of the macro emitted unsafe list assembly inside the
+// `ColumnarSpec::encode_columns` impl method on the user's struct. Clippy
+// walks impl blocks of `Deserialize`-able types looking for `unsafe`, and
+// that placement caused the lint to fire on downstream types. Generated list
+// assembly now uses Polars' safe, dtype-checked constructor and contains no
+// unsafe block.
 //
 // This file is compiled directly by `cargo build`/`cargo clippy` (not via
 // `trybuild`), so the file-level `#![deny(...)]` actually fires under
 // `cargo clippy` — `just lint` will fail if the macro ever inlines the
 // `unsafe` back into an impl method on `Self`.
 //
-// Both bulk-emit shapes that use the unsafe call are exercised:
+// Both bulk-emit shapes that need checked list assembly are exercised:
 // - `Vec<DerivedStruct>` (the `gen_bulk_vec` path)
 // - `Option<Vec<DerivedStruct>>` (the `gen_bulk_option_vec` path)
 // — paired with a `Decimal` field, the shape that surfaced the original

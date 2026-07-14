@@ -59,16 +59,6 @@ impl FieldPlan {
         self.visit_terminal_columns(&mut |_| count += 1);
         count
     }
-
-    pub fn has_vec_shape(&self) -> bool {
-        match self {
-            Self::Column(column) => column.wrapper_shape.vec_depth() > 0,
-            Self::Tuple(tuple) => {
-                tuple.wrapper_shape.vec_depth() > 0
-                    || tuple.elements.iter().any(TupleNode::has_vec_shape)
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -246,14 +236,6 @@ impl TupleNode {
                 }
             }
         }
-    }
-
-    fn has_vec_shape(&self) -> bool {
-        self.wrapper_shape.vec_depth() > 0
-            || match &self.kind {
-                TupleNodeKind::Leaf(_) => false,
-                TupleNodeKind::Tuple(elements) => elements.iter().any(Self::has_vec_shape),
-            }
     }
 }
 

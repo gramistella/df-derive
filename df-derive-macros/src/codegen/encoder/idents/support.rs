@@ -118,14 +118,6 @@ pub(in crate::codegen) fn schema_wrapped_dtype(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_wrapped")
 }
 
-pub(in crate::codegen) fn assemble_helper() -> Ident {
-    format_ident!("__df_derive_assemble_list_series_unchecked")
-}
-
-pub(in crate::codegen) fn list_assembly() -> Ident {
-    format_ident!("__DfDeriveListAssembly")
-}
-
 pub(in crate::codegen) fn push_reserved(scope: GeneratedIdentScope<'_>) -> Ident {
     scope.fresh("__df_derive_push_reserved")
 }

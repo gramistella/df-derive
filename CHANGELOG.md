@@ -54,9 +54,11 @@ All notable changes to this project will be documented in this file.
 - Derived types now contain one hidden `ColumnarSpec` implementation with one
   explicit schema builder and one column encoder. Runtime blanket
   implementations provide the public single-value, slice, and iterator APIs.
-- The caller's source iterator is traversed once. Shapes that need replay
-  share one buffered set of row references; safe terminal work may revisit
-  those references after the source iterator is exhausted.
+- The caller's source iterator is traversed once. Shapes that need replay may
+  share one buffered set of row references and use per-terminal leaf-segment
+  reference buffers; safe terminal work may revisit those references after
+  the source iterator is exhausted. Values are not cloned, but temporary
+  pointer storage scales with yielded rows or non-empty leaf segments.
 - Primitive lists use effect-aware schedules. Safe leaves choose exact-count
   deferred fills where profitable, bare deep boolean segments flatten
   contiguously and pack once, and fallible or user-defined leaves fill during
@@ -64,9 +66,9 @@ All notable changes to this project will be documented in this file.
 - Tuple siblings share source resolution, list traversal, offsets, and
   validity. Wide safe terminals replay in bounded lanes, while fallible
   terminals preserve source evaluation order.
-- Slice conversion uses its known row count directly. Concrete derived types
-  cache their `SchemaRef` in a `OnceLock`; generic schemas remain
-  monomorphization-dependent and are rebuilt.
+- `[T]::to_dataframe()` slice conversion uses its known row count directly.
+  Concrete derived types cache their `SchemaRef` in a `OnceLock`; generic
+  schemas remain monomorphization-dependent and are rebuilt.
 - Empty structs and unit payloads preserve height without a temporary null
   column. Nested composition consumes validated child columns without
   constructing and dismantling an intermediate child `DataFrame`.
@@ -81,7 +83,11 @@ All notable changes to this project will be documented in this file.
 
 ### Migration
 
-- Replace `T::columnar_to_dataframe(&rows)` with `T::encode(&rows)`.
+- Replace `T::columnar_to_dataframe(&rows)` with
+  `rows.as_slice().to_dataframe()` for a `Vec<T>` or
+  `rows.to_dataframe()` for an existing `&[T]`. These slice extensions use
+  the input's known row count directly; use `T::encode(...)` for general
+  iterators.
 - Replace `T::columnar_from_refs(&refs)` with
   `T::encode(refs.iter().copied())`.
 - Treat `T::schema()?` as a `SchemaRef` and use schema lookup or iteration

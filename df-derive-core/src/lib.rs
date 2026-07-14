@@ -14,7 +14,7 @@
 //! - [`dataframe::ToDataFrame`] — the per-instance and schema API supplied
 //!   uniformly from `Columnar`.
 //! - [`dataframe::ToDataFrameVec`] — the slice extension trait that routes
-//!   `[T]::to_dataframe()` through `Columnar::encode`.
+//!   `[T]::to_dataframe()` through the known-cardinality encoding path.
 //! - [`dataframe::Decimal128Encode`] — the contract for encoding a decimal
 //!   value as an `i128` mantissa rescaled to a target scale. The reference
 //!   `rust_decimal::Decimal` impl is gated behind the `rust_decimal`
@@ -254,9 +254,11 @@ pub mod dataframe {
     /// Low-level schema and column implementation surface populated by the
     /// derive macro.
     ///
-    /// Callers should use [`Columnar`]. Its blanket implementation owns the
-    /// input iterator, counts yielded rows, and validates this implementation's
-    /// output through [`ColumnSink`].
+    /// Callers should use [`Columnar::encode`] for iterator inputs or
+    /// [`ToDataFrameVec::to_dataframe`] for slices. The checked boundaries
+    /// determine actual height by counting yielded iterator rows or using the
+    /// slice cardinality, then validate this implementation's output through
+    /// [`ColumnSink`].
     ///
     /// # Implementor contract
     ///
@@ -332,7 +334,11 @@ pub mod dataframe {
             sink.finish(rows.len())
         }
 
-        /// Encodes references into a public `DataFrame`.
+        /// Encodes references from a general iterator into a public
+        /// `DataFrame`, counting the rows actually yielded.
+        ///
+        /// For a slice or `Vec<Self>`, prefer [`ToDataFrameVec::to_dataframe`]
+        /// so the known row count can be used directly.
         ///
         /// # Errors
         ///
@@ -379,7 +385,8 @@ pub mod dataframe {
 
     impl<T: Columnar> ToDataFrame for T {}
 
-    /// Extension trait enabling `.to_dataframe()` on slices (and `Vec` via auto-deref).
+    /// Extension trait enabling known-cardinality `.to_dataframe()` conversion
+    /// on slices (and `Vec` via auto-deref).
     pub trait ToDataFrameVec {
         /// # Errors
         /// Returns an error if schema composition, value encoding, or batch

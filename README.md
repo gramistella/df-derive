@@ -116,12 +116,13 @@ impl ColumnarSpec for T {
 
 `build_schema` composes names and dtypes directly; schema inspection no longer
 encodes an empty batch. `encode_columns` writes through a schema-bound sink.
-The runtime blanket `Columnar` implementation owns and counts the caller's
-one-shot iterator, then `ColumnSink` checks width, ordered names, dtypes, and
-every column height before producing an `EncodedBatch`. Public
-`Columnar::encode` constructs the outer `DataFrame`; nested encoders consume a
-child batch's validated columns directly without constructing and dismantling
-a child frame. `ToDataFrame` and the slice extension remain blanket APIs.
+The runtime blanket APIs own the caller's input: `Columnar::encode` counts rows
+from a general one-shot iterator, while the slice extension forwards the
+slice's known length directly. `ColumnSink` then checks width, ordered names,
+dtypes, and every column height before producing an `EncodedBatch`. Public
+conversion constructs the outer `DataFrame`; nested encoders consume a child
+batch's validated columns directly without constructing and dismantling a
+child frame. `ToDataFrame` and the slice extension remain blanket APIs.
 
 ## Representative Generated Code
 
@@ -558,9 +559,15 @@ selects which trait receives the impl.
 The public `Columnar::encode` boundary accepts slices,
 `refs.iter().copied()`, and arbitrary one-shot iterators. It counts the rows
 actually yielded and validates the generated `ColumnarSpec` output against its
-explicit schema before constructing the outer frame. The generated
-`encode_columns` body advances that iterator in exactly one outer row loop;
-scalar, list, nested, and tuple builders all participate in that pass.
+explicit schema before constructing the outer frame. For slices and `Vec<T>`,
+prefer `rows.as_slice().to_dataframe()`: the slice extension uses the known
+row count directly. Use `T::encode(...)` when the input is a general iterator.
+
+Generated code consumes the caller's source iterator once. For selected
+infallible primitive-list and wide scalar-tuple shapes, it may buffer row or
+leaf-segment references and replay them internally to allocate exact column
+storage and keep hot loops narrow. Fallible conversions and user-defined work
+remain in the source pass, so an error does not consume later rows.
 
 The generated hot path is shape-dependent. Primitive scalar fields share a
 row loop. Nested fields collect references and call the child's checked batch
@@ -568,6 +575,12 @@ encoder; the parent consumes validated columns directly, without allocating a
 temporary child `DataFrame`. Tuple siblings also share source resolution,
 list traversal, offsets, and validity before materializing their individual
 columns.
+
+Replay uses temporary references rather than cloning values. When selected,
+it may allocate one shared row-reference vector proportional to the number of
+yielded rows and per-terminal segment-reference vectors proportional to the
+number of non-empty leaf segments. Large one-shot iterators should account for
+that temporary pointer storage.
 
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted

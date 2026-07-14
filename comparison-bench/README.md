@@ -141,19 +141,19 @@ This is the direct derived columnar conversion from the original nested Rust mod
 let native_rows = generate_showcase_rows(rows);
 
 measure(Approach::DfDerive, rows, || {
-    <ShowcaseRow as Columnar>::encode(black_box(native_rows.as_slice()))
+    black_box(native_rows.as_slice()).to_dataframe()
 })?;
 ```
 
-`Columnar::encode` is the checked public batch entry point. The derive emits a
-hidden `ColumnarSpec` with explicit schema composition and column encoding;
-the blanket runtime owns the one-shot input iterator and validates its
-`ColumnSink` output before constructing the outer frame. Generated encoders
-advance borrowed rows in one outer loop shared by scalar, list, nested, and
-tuple builders. `ToDataFrame::schema()` uses the explicit schema path, not an
-empty encoding.
+The slice extension is the checked known-cardinality entry point. The derive
+emits a hidden `ColumnarSpec` with explicit schema composition and column
+encoding; the blanket runtime forwards the slice length and validates its
+`ColumnSink` output before constructing the outer frame. Generated code
+consumes the source slice iterator once, but selected infallible list and wide
+tuple shapes may replay buffered row or segment references internally.
+`ToDataFrame::schema()` uses the explicit schema path, not an empty encoding.
 
-The user-facing form is the same conversion through the slice extension:
+The measured path is the user-facing slice conversion:
 
 ```rust
 let df = rows.as_slice().to_dataframe()?;
@@ -325,7 +325,7 @@ The flat scalar path is a cleaner row-vs-columnar check. It excludes nested list
 
 ```rust
 measure(Approach::FlatDfDerive, rows, || {
-    <RowDeriveFlat as Columnar>::encode(black_box(flat_df_rows.as_slice()))
+    black_box(flat_df_rows.as_slice()).to_dataframe()
 })?;
 
 measure(Approach::FlatPolarsRowDerive, rows, || {

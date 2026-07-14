@@ -11,7 +11,12 @@ use rust_decimal::Decimal;
 
 #[path = "support/mod.rs"]
 mod bench_support;
+#[path = "support/tuple_replay_boundary.rs"]
+mod tuple_replay_boundary;
 use crate::bench_support::configure_criterion;
+use crate::tuple_replay_boundary::{
+    make_tuple_replay_boundary, make_tuple_replay_boundary_minus_one,
+};
 use df_derive::dataframe::ToDataFrameVec;
 
 const N_ROWS: usize = 100_000;
@@ -234,6 +239,8 @@ fn make_nested_heavy() -> Vec<NestedEightByFour> {
 fn bench_cost_model_passes(c: &mut Criterion) {
     let flat = make_flat();
     let tuple_heavy = make_tuple_heavy();
+    let tuple_replay_boundary_minus_one = make_tuple_replay_boundary_minus_one(N_ROWS);
+    let tuple_replay_boundary = make_tuple_replay_boundary(N_ROWS);
     let mixed_tuple_heavy = make_mixed_tuple_heavy();
     let nested_heavy = make_nested_heavy();
 
@@ -243,6 +250,20 @@ fn bench_cost_model_passes(c: &mut Criterion) {
     });
     group.bench_function("tuple_8x4_scalar_elements", |b| {
         b.iter(|| std::hint::black_box(&tuple_heavy).to_dataframe().unwrap());
+    });
+    group.bench_function("tuple_replay_boundary_minus_one", |b| {
+        b.iter(|| {
+            std::hint::black_box(&tuple_replay_boundary_minus_one)
+                .to_dataframe()
+                .unwrap()
+        });
+    });
+    group.bench_function("tuple_replay_boundary", |b| {
+        b.iter(|| {
+            std::hint::black_box(&tuple_replay_boundary)
+                .to_dataframe()
+                .unwrap()
+        });
     });
     group.bench_function("tuple_mixed_1_decimal_31_scalar_elements", |b| {
         b.iter(|| {

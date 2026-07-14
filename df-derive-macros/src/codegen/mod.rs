@@ -487,6 +487,52 @@ mod tests {
     }
 
     #[test]
+    fn static_tuple_replay_policy_boundary_and_lane_width_are_guarded() {
+        let boundary_minus_one = generated(&syn::parse_quote! {
+            struct TupleReplayBoundaryMinusOne {
+                scalar: i64,
+                values: (
+                    i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64,
+                ),
+            }
+        });
+        let boundary = generated(&syn::parse_quote! {
+            struct TupleReplayBoundary {
+                values: (
+                    i64, i64, i64, i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64, i64, i64, i64,
+                ),
+            }
+        });
+
+        let generics = syn::Generics::default();
+        let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let replay_rows = encoder::idents::replay_rows(ident_scope);
+        let row = encoder::idents::populator_iter();
+
+        assert!(
+            !boundary_minus_one.contains(&replay_rows.to_string()),
+            "fifteen tuple terminals must stay on the fused source pass: {boundary_minus_one}",
+        );
+        assert_eq!(
+            boundary
+                .matches(&format!("in {replay_rows} . iter () . copied ()"))
+                .count(),
+            2,
+            "sixteen consecutive terminals must replay in two eight-wide lanes: {boundary}",
+        );
+        assert_eq!(
+            boundary
+                .matches(&format!("{replay_rows} . push ({row})"))
+                .count(),
+            1,
+            "the boundary shape must buffer its source exactly once: {boundary}",
+        );
+    }
+
+    #[test]
     fn tuple_siblings_share_their_source_projection() {
         let bare = generated(&syn::parse_quote! {
             struct TupleScalars {

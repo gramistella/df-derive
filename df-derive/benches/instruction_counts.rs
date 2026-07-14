@@ -3,6 +3,13 @@ use std::hint::black_box;
 use df_derive::ToDataFrame;
 use gungraun::prelude::*;
 
+#[path = "support/tuple_replay_boundary.rs"]
+mod tuple_replay_boundary;
+
+use crate::tuple_replay_boundary::{
+    TupleReplayBoundary, TupleReplayBoundaryMinusOne, make_tuple_replay_boundary,
+    make_tuple_replay_boundary_minus_one,
+};
 use df_derive::dataframe::ToDataFrameVec;
 
 const N_NUMERIC_ROWS: usize = 10_000;
@@ -493,6 +500,18 @@ fn bench_tuple_scalar_grouped(rows: Vec<TupleScalarRow>) -> (usize, usize) {
 }
 
 #[library_benchmark]
+#[bench::tuple_replay_boundary_minus_one(make_tuple_replay_boundary_minus_one(N_NUMERIC_ROWS))]
+fn bench_tuple_replay_boundary_minus_one(rows: Vec<TupleReplayBoundaryMinusOne>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_replay_boundary(make_tuple_replay_boundary(N_NUMERIC_ROWS))]
+fn bench_tuple_replay_boundary(rows: Vec<TupleReplayBoundary>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
 #[bench::wide_tuple_scalar_replayed(generate_wide_tuple_scalar_rows())]
 fn bench_wide_tuple_scalar_replayed(rows: Vec<WideTupleScalarRow>) -> (usize, usize) {
     convert_rows(rows)
@@ -551,6 +570,8 @@ library_benchmark_group!(
         bench_as_binary_medium,
         bench_flat_scalar_control,
         bench_tuple_scalar_grouped,
+        bench_tuple_replay_boundary_minus_one,
+        bench_tuple_replay_boundary,
         bench_wide_tuple_scalar_replayed,
         bench_nested_struct_list_control,
         bench_tuple_list_grouped

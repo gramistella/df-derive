@@ -51,8 +51,9 @@ pub(in crate::codegen) struct TupleFieldEmitParams<'a> {
 // Below this width, avoiding an internal row-reference buffer is cheaper than
 // replaying the input once per safe scalar column. At and above it, one giant
 // row-wise push loop creates enough live buffer state to lose decisively to
-// narrow column-at-a-time loops. Criterion 22 and the matching Gungraun guard
-// own this execution-policy boundary.
+// narrow column-at-a-time loops. The `tuple_replay_boundary_minus_one` and
+// `tuple_replay_boundary` Criterion/Gungraun cases own this policy boundary;
+// the matching codegen test pins the exact branch.
 pub(in crate::codegen) const REPLAY_STATIC_TUPLE_MIN_TERMINALS: usize = 16;
 
 #[derive(Clone)]
@@ -105,6 +106,8 @@ struct ReplayedPrimitive {
     name: String,
 }
 
+// The flat sixteen-terminal boundary benchmark distinguishes this cap from
+// four-wide and sixteen-wide replay, while the codegen test pins two lanes.
 const REPLAY_LANE_MAX_TERMINALS: usize = 8;
 
 impl InputAccess {

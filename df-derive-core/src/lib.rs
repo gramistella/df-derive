@@ -314,6 +314,24 @@ pub mod dataframe {
             sink.finish(rows.yielded)
         }
 
+        /// Encodes a slice without counting rows that already have a known
+        /// cardinality.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if schema construction, value encoding, or batch
+        /// validation fails.
+        #[doc(hidden)]
+        fn encode_slice(rows: &[Self]) -> PolarsResult<EncodedBatch> {
+            let schema = <Self as ColumnarSpec>::build_schema()?;
+            let mut sink = ColumnSink::new(schema, std::any::type_name::<Self>());
+            let mut row_iter = rows.iter();
+
+            <Self as ColumnarSpec>::encode_columns(&mut row_iter, &mut sink)?;
+
+            sink.finish(rows.len())
+        }
+
         /// Encodes references into a public `DataFrame`.
         ///
         /// # Errors
@@ -340,7 +358,7 @@ pub mod dataframe {
         /// validation fails.
         #[inline]
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            Self::encode(std::slice::from_ref(self))
+            Ok(Self::encode_slice(std::slice::from_ref(self))?.into_dataframe())
         }
 
         /// # Errors
@@ -348,7 +366,7 @@ pub mod dataframe {
         /// fails.
         #[inline]
         fn empty_dataframe() -> PolarsResult<DataFrame> {
-            Self::encode(&[] as &[Self])
+            Ok(Self::encode_slice(&[])?.into_dataframe())
         }
 
         /// # Errors
@@ -375,7 +393,7 @@ pub mod dataframe {
     {
         #[inline]
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            <T as Columnar>::encode(self)
+            Ok(<T as Columnar>::encode_slice(self)?.into_dataframe())
         }
     }
 

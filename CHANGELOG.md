@@ -2,63 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5.0] - 2026-07-13
+## [0.5.0] - Unreleased
+
+### Added
+
+- Wrapped nested tuple fields now compose through `Option`, `Vec`, transparent
+  pointer, and nested-tuple layers instead of being rejected during terminal
+  column projection.
 
 ### Changed
 
-- **Breaking**: `Columnar::encode` now accepts any
-  `IntoIterator<Item = &Self>` and consumes that input exactly once. The
-  repeatable `RowBatch` abstraction was removed, along with its separate
-  reported length and repeated-traversal contract.
-- **Breaking for custom runtimes**: the derive now implements hidden
-  `ColumnarSpec::{build_schema, encode_columns}`. Runtimes must provide
-  canonical sibling `ColumnarSpec` and `ColumnSink` items beside the selected
-  `Columnar` path, a private-field `EncodedBatch`, and checked blanket
-  `Columnar`/`ToDataFrame` implementations.
-- `ToDataFrame::schema()` now composes and returns a Polars `SchemaRef`
-  directly through `ColumnarSpec::build_schema`; it no longer discovers the
-  schema by encoding an empty batch.
+- **Breaking**: `Columnar::columnar_to_dataframe(&[Self])` and
+  `Columnar::columnar_from_refs(&[&Self])` were replaced by
+  `Columnar::encode`, which accepts any `IntoIterator<Item = &Self>`.
+  Borrowed slices, reference collections, filtered inputs, and other one-shot
+  iterators now share the same checked encoding boundary.
+- **Breaking**: `ToDataFrame::schema()` now returns a Polars `SchemaRef`
+  composed directly from the derived type instead of
+  `Vec<(String, DataType)>`.
+- **Breaking for manual and custom runtimes**: the derive now implements only
+  hidden `ColumnarSpec::{build_schema, encode_columns}`. The selected runtime
+  must provide compatible sibling `ColumnarSpec` and `ColumnSink` items, a
+  checked batch boundary exposing its validated columns, and blanket
+  `Columnar` and `ToDataFrame` implementations.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling
-  `ColumnarSpec`, `ColumnSink`, and decimal runtime paths are inferred.
-- Tuple fields retain their hierarchy through execution planning. Wrapped
-  nested tuples now compose through `Option` and `Vec` layers instead of
-  being rejected during terminal-column projection.
+  `ColumnarSpec`, `ColumnSink`, and `Decimal128Encode` paths are inferred.
+- Tuple fields retain their hierarchy through execution planning rather than
+  being flattened into projection-specific terminal-column variants.
 
 ### Fixed
 
-- Every generated or manual `ColumnarSpec` writes through a schema-bound
-  `ColumnSink`. Width, ordered names, dtypes, and actual yielded height are
-  checked before output becomes an `EncodedBatch`, including at the top level.
-- Generated frames derive their height from the rows actually yielded by the
-  caller. There is no separately reported batch length that can disagree with
-  the input iterator or emitted columns.
-- Generated `encode_columns` parameters and explicit-schema locals are now
-  freshened against user type, const, and lifetime generics. Internal-looking
-  generic names no longer collide with generated method parameters or nested
-  schema composition bindings.
+- The schema-bound `ColumnSink` validates column count, order, names, dtypes,
+  and actual height for both generated and manual nested encoders before a
+  batch can cross the public `DataFrame` boundary.
+- Generated frame height now comes from the rows actually yielded by the
+  caller. Iterator `size_hint()` values are allocation hints only; inaccurate
+  exact-looking hints no longer misalign optional string, binary, or boolean
+  validity buffers.
+- Fallible primitive conversions and user-defined display or decimal work
+  remain in source-row order, so an error from those operations does not
+  evaluate or consume later input rows.
+- Generated method parameters, schema locals, replay bindings, and deep
+  tuple/list helpers are freshened against user type, const, and lifetime
+  generics.
+- A standalone `columnar = "..."` override now selects that runtime's sibling
+  `Decimal128Encode` path instead of the default runtime's decimal trait.
 
 ### Performance
 
-- Direct, borrowed, and arbitrary iterator inputs share one generated body
-  and exactly one outer row loop. Scalar, list, nested, and tuple builders
-  all consume that pass without first collecting the input into `Vec<&T>`.
-- Every list column now builds its values, validity, and offsets during that
-  input pass. The separate leaf-counting traversal and its generated counters
-  were removed.
-- Tuple siblings share source resolution and list traversal. Their offsets
-  and validity buffers are built and frozen once per tuple group, then reused
-  while assembling the terminal columns.
-- Exact-size inputs seed row-aligned optional string, binary, and boolean
-  validity once, while inexact iterators and list-flattened leaves retain
-  append-only buffers with their own observed cardinality.
-- Empty structs and unit payloads preserve height through the checked iterator
-  boundary without a temporary null column or `drop_in_place` workaround.
-- Nested composition consumes validated child batch columns directly. It no
-  longer creates a child `DataFrame` merely to validate and dismantle it.
-- Derived types now contain one hidden `ColumnarSpec` impl: explicit schema
-  composition plus one column encoder. Public frame APIs remain blanket
-  runtime methods rather than parallel generated encoding paths.
+- Derived types now contain one hidden `ColumnarSpec` implementation with one
+  explicit schema builder and one column encoder. Runtime blanket
+  implementations provide the public single-value, slice, and iterator APIs.
+- The caller's source iterator is traversed once. Shapes that need replay
+  share one buffered set of row references; safe terminal work may revisit
+  those references after the source iterator is exhausted.
+- Primitive lists use effect-aware schedules. Safe leaves choose exact-count
+  deferred fills where profitable, bare deep boolean segments flatten
+  contiguously and pack once, and fallible or user-defined leaves fill during
+  the source pass.
+- Tuple siblings share source resolution, list traversal, offsets, and
+  validity. Wide safe terminals replay in bounded lanes, while fallible
+  terminals preserve source evaluation order.
+- Slice conversion uses its known row count directly. Concrete derived types
+  cache their `SchemaRef` in a `OnceLock`; generic schemas remain
+  monomorphization-dependent and are rebuilt.
+- Empty structs and unit payloads preserve height without a temporary null
+  column. Nested composition consumes validated child columns without
+  constructing and dismantling an intermediate child `DataFrame`.
+- Against the released v0.4.0 tag in isolated Criterion runs, seven of nine
+  selected list benchmarks improved by approximately 3.2–24.9%; the other two
+  had overlapping confidence intervals. All-safe wide tuples improved by
+  49.6% and mixed Decimal tuples by 38.8%. No elapsed-time regression was
+  measured.
+- Nested `Vec<Vec<bool>>` improved by 14.9% in elapsed time while its Gungraun
+  instruction count remained 13.4% above v0.4.0; instruction-count parity is
+  therefore not claimed for that case.
+
+### Migration
+
+- Replace `T::columnar_to_dataframe(&rows)` with `T::encode(&rows)`.
+- Replace `T::columnar_from_refs(&refs)` with
+  `T::encode(refs.iter().copied())`.
+- Treat `T::schema()?` as a `SchemaRef` and use schema lookup or iteration
+  methods instead of destructuring a `Vec<(String, DataType)>`.
+- Default `value.to_dataframe()` and `slice.to_dataframe()` call sites are
+  unchanged. Manual and custom runtimes must move schema and column production
+  into `ColumnarSpec` and route output through their checked sink/batch
+  boundary.
 
 ## [0.4.0] - 2026-06-29
 

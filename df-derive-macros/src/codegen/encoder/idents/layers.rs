@@ -68,10 +68,6 @@ pub(in crate::codegen) fn vec_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_list_arr_{}", layer)
 }
 
-pub(in crate::codegen) fn vec_layer_total(layer: usize) -> Ident {
-    format_ident!("__df_derive_total_layer_{}", layer)
-}
-
 pub(in crate::codegen) const VEC_OUTER_SOME_PREFIX: &str = "__df_derive_some_";
 
 pub(in crate::codegen) fn nested_layer_offsets(idx: usize, layer: usize) -> Ident {
@@ -94,12 +90,7 @@ pub(in crate::codegen) fn nested_layer_bind(idx: usize, layer: usize) -> Ident {
     format_ident!("__df_derive_n_bind_{}_{}", idx, layer)
 }
 
-pub(in crate::codegen) fn nested_layer_total(layer: usize) -> Ident {
-    format_ident!("__df_derive_n_total_layer_{}", layer)
-}
-
 pub(in crate::codegen) const NESTED_OUTER_SOME_PREFIX: &str = "__df_derive_n_some_";
-pub(in crate::codegen) const NESTED_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_n_pre_some_";
 
 pub(in crate::codegen) fn nested_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_n_arr_{}", layer)
@@ -125,13 +116,8 @@ pub(in crate::codegen) fn tuple_layer_bind(field_idx: usize, layer: usize) -> Id
     format_ident!("__df_derive_t_bind_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn tuple_layer_total(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_total_{}_{}", field_idx, layer)
-}
-
 pub(in crate::codegen) fn tuple_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_t_arr_{}", layer)
 }
 
 pub(in crate::codegen) const TUPLE_OUTER_SOME_PREFIX: &str = "__df_derive_t_some_";
-pub(in crate::codegen) const TUPLE_PRE_OUTER_SOME_PREFIX: &str = "__df_derive_t_pre_some_";

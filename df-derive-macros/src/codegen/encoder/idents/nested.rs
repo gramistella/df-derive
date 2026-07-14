@@ -33,10 +33,6 @@ pub(in crate::codegen) fn nested_take(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_take_{}", idx)
 }
 
-pub(in crate::codegen) fn nested_total(idx: usize) -> Ident {
-    format_ident!("__df_derive_gen_total_{}", idx)
-}
-
 pub(in crate::codegen) fn nested_prefixed_name() -> Ident {
     format_ident!("__df_derive_prefixed")
 }

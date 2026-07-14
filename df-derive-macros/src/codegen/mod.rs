@@ -305,4 +305,49 @@ mod tests {
 
         assert!(!generated.contains(&empty_loop), "{generated}");
     }
+
+    #[test]
+    fn list_columns_have_no_separate_precount_walk() {
+        fn row_walks(input: syn::DeriveInput) -> usize {
+            let ir = crate::parser::parse_to_ir(&input).expect("input should lower to IR");
+            generate_code(&ir, &test_config())
+                .to_string()
+                .matches("in rows . iter () . copied ()")
+                .count()
+        }
+
+        assert_eq!(
+            row_walks(syn::parse_quote! {
+                struct PrimitiveLists {
+                    values: Vec<Vec<Option<u32>>>,
+                }
+            }),
+            1,
+        );
+        assert_eq!(
+            row_walks(syn::parse_quote! {
+                struct BooleanLists {
+                    values: Vec<bool>,
+                }
+            }),
+            1,
+        );
+        assert_eq!(
+            row_walks(syn::parse_quote! {
+                struct NestedLists {
+                    values: Vec<Inner>,
+                }
+            }),
+            1,
+        );
+        assert_eq!(
+            row_walks(syn::parse_quote! {
+                struct ProjectedLists {
+                    values: Vec<(u32, bool)>,
+                }
+            }),
+            2,
+            "each projected column should scan once until sibling traversal is grouped",
+        );
+    }
 }

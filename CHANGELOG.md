@@ -41,6 +41,9 @@ All notable changes to this project will be documented in this file.
   The input is consumed once into a `Vec<&T>` so the shape-dependent column
   emitters can make their required passes without requiring a repeatable
   caller-owned batch abstraction.
+- Every list column now builds its values, validity, and offsets in one scan
+  of the collected rows. The separate leaf-counting pass and its generated
+  counters were removed.
 - Empty structs and unit payloads preserve height through the checked iterator
   boundary without a temporary null column or `drop_in_place` workaround.
 - Nested composition consumes validated child batch columns directly. It no

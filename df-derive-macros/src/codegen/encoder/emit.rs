@@ -7,8 +7,7 @@
 //! a bare nested struct or a single/multi-`Option<Nested>` — and routes it
 //! through the same scan-and-materialize machinery the depth-N path uses,
 //! degenerating the list-array stack to a direct Series clone (`layers
-//! is_empty`) and using `rows.len()` rather than the precount `total` for
-//! the all-absent arm length (precount has no leaves to count at depth 0).
+//! is_empty`).
 //!
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -201,8 +200,6 @@ fn ctb_materialize(
     } = *ctb;
     let flat = idents::nested_flat(idx);
     let positions = idents::nested_positions(idx);
-    let total = idents::nested_total(idx);
-
     let (nested_wrapper, positions, total_len) = match wrapper {
         WrapperShape::Leaf(shape) if shape.is_bare() => {
             (NestedWrapper::None, None, quote! { #rows.len() })
@@ -219,7 +216,11 @@ fn ctb_materialize(
                 arr_id_for_layer: idents::nested_layer_list_arr,
             },
             shape.has_inner_option().then_some(&positions),
-            quote! { #total },
+            if shape.has_inner_option() {
+                quote! { #positions.len() }
+            } else {
+                quote! { #flat.len() }
+            },
         ),
     };
 
@@ -246,8 +247,6 @@ fn pep_emit(
     series_local: &syn::Ident,
     shape: &VecLayers,
     layers: &[LayerIdents],
-    layer_counters: &[syn::Ident],
-    total: &syn::Ident,
     pa_root: &TokenStream,
     pp: &TokenStream,
     rows: &syn::Ident,
@@ -258,12 +257,9 @@ fn pep_emit(
         shape,
         access,
         layers,
-        total_counter: total,
-        layer_counters,
         pp,
         pa_root,
     });
-    let precount = emitter.precount();
     let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
     let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
 
@@ -277,7 +273,6 @@ fn pep_emit(
     quote! {
         let #series_local: #pp::Series = {
             #extra_imports
-            #precount
             #storage_decls
             #offsets_decls
             #validity_decls
@@ -335,8 +330,6 @@ fn ctb_emit(
     access: &TokenStream,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
-    layer_counters: &[syn::Ident],
-    total: &syn::Ident,
     pa_root: &TokenStream,
     pp: &TokenStream,
     paths: &ExternalPaths,
@@ -346,12 +339,11 @@ fn ctb_emit(
     let ty = ctb.ty;
     let rows = ctb.rows;
 
-    let (precount, scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
+    let (scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
         WrapperShape::Leaf(shape) if shape.is_bare() => {
             let empty_access = AccessChain::empty();
             let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp, rows);
             (
-                TokenStream::new(),
                 scan,
                 TokenStream::new(),
                 TokenStream::new(),
@@ -370,7 +362,6 @@ fn ctb_emit(
                 rows,
             );
             (
-                TokenStream::new(),
                 scan,
                 TokenStream::new(),
                 TokenStream::new(),
@@ -383,12 +374,9 @@ fn ctb_emit(
                 shape,
                 access,
                 layers,
-                total_counter: total,
-                layer_counters,
                 pp,
                 pa_root,
             });
-            let precount = emitter.precount();
             let leaf_body = ctb_leaf_body(shape, &flat, &positions, pp);
             let leaf_offsets_post_push = if shape.has_inner_option() {
                 quote! { #positions.len() }
@@ -398,13 +386,7 @@ fn ctb_emit(
             let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
             let offsets_decls = emitter.offsets_decls();
             let validity_decls = emitter.validity_decls();
-            (
-                precount,
-                scan,
-                offsets_decls,
-                validity_decls,
-                quote! { #total },
-            )
+            (scan, offsets_decls, validity_decls, quote! { #rows.len() })
         }
     };
 
@@ -426,7 +408,6 @@ fn ctb_emit(
     let materialize = ctb_materialize(ctb, wrapper, layers, paths);
 
     quote! {{
-        #precount
         let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#flat_capacity);
         #positions_decl
         #offsets_decls
@@ -451,10 +432,6 @@ pub(super) fn vec_emit_pep(
     let pp = paths.prelude();
     let depth = shape.depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(None, i)).collect();
-    let total = idents::total_leaves();
-    let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
-        .map(idents::vec_layer_total)
-        .collect();
     let series_local = idents::vec_field_series(idx);
     pep_emit(
         pep,
@@ -462,8 +439,6 @@ pub(super) fn vec_emit_pep(
         &series_local,
         shape,
         &layers,
-        &layer_counters,
-        &total,
         pa_root,
         pp,
         rows,
@@ -484,19 +459,5 @@ pub(super) fn vec_emit_ctb(
     let pp = paths.prelude();
     let depth = wrapper.vec_depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(Some(idx), i)).collect();
-    let total = idents::nested_total(idx);
-    let layer_counters: Vec<syn::Ident> = (0..depth.saturating_sub(1))
-        .map(idents::nested_layer_total)
-        .collect();
-    ctb_emit(
-        ctb,
-        access,
-        wrapper,
-        &layers,
-        &layer_counters,
-        &total,
-        pa_root,
-        pp,
-        paths,
-    )
+    ctb_emit(ctb, access, wrapper, &layers, pa_root, pp, paths)
 }

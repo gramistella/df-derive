@@ -37,10 +37,6 @@ pub(in crate::codegen) fn leaf_arr() -> Ident {
     format_ident!("__df_derive_leaf_arr")
 }
 
-pub(in crate::codegen) fn total_leaves() -> Ident {
-    format_ident!("__df_derive_total_leaves")
-}
-
 pub(in crate::codegen) fn bool_values() -> Ident {
     format_ident!("__df_derive_values")
 }
@@ -63,10 +59,6 @@ pub(in crate::codegen) fn vec_flat() -> Ident {
 
 pub(in crate::codegen) fn vec_view_buf() -> Ident {
     format_ident!("__df_derive_view_buf")
-}
-
-pub(in crate::codegen) fn vec_leaf_idx() -> Ident {
-    format_ident!("__df_derive_leaf_idx")
 }
 
 pub(in crate::codegen) fn bitmap_builder() -> Ident {

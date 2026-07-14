@@ -9,7 +9,7 @@ use quote::quote;
 
 use super::emit::vec_emit_pep;
 use super::idents;
-use super::leaf::{LeafArm, LeafArmKind, mb_decl_filled, validity_into_option};
+use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
 use super::leaf_kind::PerElementPush;
 use super::{Encoder, LeafCtx, leaf, list_offset_i64_expr};
 
@@ -63,13 +63,15 @@ fn bool_leaf_array_tokens(
 fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
     let flat = idents::vec_flat();
     let view_buf = idents::vec_view_buf();
-    let leaf_idx = idents::vec_leaf_idx();
     match spec {
         VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
         VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
             quote! { #view_buf.len() }
         }
-        VecLeafSpec::Bool => quote! { #leaf_idx },
+        VecLeafSpec::Bool => {
+            let values = idents::bool_values();
+            quote! { #values.len() }
+        }
     }
 }
 
@@ -116,18 +118,16 @@ fn bool_bare_leaf_pieces(
 ) -> (TokenStream, TokenStream, TokenStream) {
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
-    let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
-    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false, pa_root);
+    let values_decl = quote! {
+        let mut #values_ident: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+    };
     let storage = quote! {
         #values_decl
-        let mut #leaf_idx: usize = 0;
     };
     let push = quote! {
-        if *#v {
-            #values_ident.set(#leaf_idx, true);
-        }
-        #leaf_idx += 1;
+        #values_ident.push(*#v);
     };
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, false, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
@@ -149,7 +149,10 @@ fn numeric_leaf_pieces(
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let storage = if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
+        let validity_decl = quote! {
+            let mut #validity: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+        };
         quote! {
             let mut #flat: ::std::vec::Vec<#native> =
                 ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
@@ -166,10 +169,11 @@ fn numeric_leaf_pieces(
             match #v {
                 ::std::option::Option::Some(#v) => {
                     #flat.push({ #value_expr });
+                    #validity.push(true);
                 }
                 ::std::option::Option::None => {
                     #flat.push(<#native as ::std::default::Default>::default());
-                    #validity.set(#flat.len() - 1, false);
+                    #validity.push(false);
                 }
             }
         }
@@ -206,7 +210,6 @@ fn string_like_leaf_pieces(
 ) -> (TokenStream, TokenStream, TokenStream) {
     let view_buf = idents::vec_view_buf();
     let validity = idents::bool_validity();
-    let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let mut storage_parts: Vec<TokenStream> = Vec::new();
@@ -218,10 +221,12 @@ fn string_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
+        let validity_decl = quote! {
+            let mut #validity: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+        };
         storage_parts.push(quote! {
             #validity_decl
-            let mut #leaf_idx: usize = 0;
         });
     }
     let storage = quote! { #(#storage_parts)* };
@@ -230,13 +235,13 @@ fn string_like_leaf_pieces(
             match #v {
                 ::std::option::Option::Some(#v) => {
                     #view_buf.push_value_ignore_validity({ #value_expr });
+                    #validity.push(true);
                 }
                 ::std::option::Option::None => {
                     #view_buf.push_value_ignore_validity("");
-                    #validity.set(#leaf_idx, false);
+                    #validity.push(false);
                 }
             }
-            #leaf_idx += 1;
         }
     } else {
         quote! {
@@ -266,7 +271,6 @@ fn binary_like_leaf_pieces(
 ) -> (TokenStream, TokenStream, TokenStream) {
     let view_buf = idents::vec_view_buf();
     let validity = idents::bool_validity();
-    let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let mut storage_parts: Vec<TokenStream> = Vec::new();
@@ -275,10 +279,12 @@ fn binary_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = mb_decl_filled(&validity, leaf_capacity_expr, true, pa_root);
+        let validity_decl = quote! {
+            let mut #validity: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+        };
         storage_parts.push(quote! {
             #validity_decl
-            let mut #leaf_idx: usize = 0;
         });
     }
     let storage = quote! { #(#storage_parts)* };
@@ -288,13 +294,13 @@ fn binary_like_leaf_pieces(
             match #v {
                 ::std::option::Option::Some(#v) => {
                     #view_buf.push_value_ignore_validity({ #value_expr });
+                    #validity.push(true);
                 }
                 ::std::option::Option::None => {
                     #view_buf.push_value_ignore_validity(#empty);
-                    #validity.set(#leaf_idx, false);
+                    #validity.push(false);
                 }
             }
-            #leaf_idx += 1;
         }
     } else {
         quote! {
@@ -322,26 +328,34 @@ fn bool_inner_option_leaf_pieces(
 ) -> (TokenStream, TokenStream, TokenStream) {
     let values_ident = idents::bool_values();
     let validity_ident = idents::bool_validity();
-    let leaf_idx = idents::vec_leaf_idx();
     let v = idents::leaf_value();
-    let values_decl = mb_decl_filled(&values_ident, leaf_capacity_expr, false, pa_root);
-    let validity_decl = mb_decl_filled(&validity_ident, leaf_capacity_expr, true, pa_root);
+    let values_decl = quote! {
+        let mut #values_ident: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+    };
+    let validity_decl = quote! {
+        let mut #validity_ident: #pa_root::bitmap::MutableBitmap =
+            #pa_root::bitmap::MutableBitmap::with_capacity(#leaf_capacity_expr);
+    };
     let storage = quote! {
         #values_decl
         #validity_decl
-        let mut #leaf_idx: usize = 0;
     };
     let push = quote! {
         match #v {
             ::std::option::Option::Some(true) => {
-                #values_ident.set(#leaf_idx, true);
+                #values_ident.push(true);
+                #validity_ident.push(true);
             }
-            ::std::option::Option::Some(false) => {}
+            ::std::option::Option::Some(false) => {
+                #values_ident.push(false);
+                #validity_ident.push(true);
+            }
             ::std::option::Option::None => {
-                #validity_ident.set(#leaf_idx, false);
+                #values_ident.push(false);
+                #validity_ident.push(false);
             }
         }
-        #leaf_idx += 1;
     };
     let leaf_arr_inner = bool_leaf_array_tokens(pa_root, true, &values_ident, &validity_ident);
     let leaf_arr = idents::leaf_arr();
@@ -391,8 +405,8 @@ fn lower_to_pep(
     leaf_dtype: &TokenStream,
 ) -> PerElementPush {
     let pa_root = ctx.paths.polars_arrow_root();
-    let total_leaves = idents::total_leaves();
-    let leaf_capacity_expr = quote! { #total_leaves };
+    let rows = ctx.base.rows;
+    let leaf_capacity_expr = quote! { #rows.len() };
     let (leaf_storage_decls, per_elem_push, leaf_arr_expr) =
         build_vec_leaf_pieces(spec, shape.has_inner_option(), &leaf_capacity_expr, pa_root);
     let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
@@ -452,7 +466,6 @@ fn bool_bare_depth1_body(
     rows: &syn::Ident,
 ) -> TokenStream {
     let inner_offsets = idents::bool_inner_offsets();
-    let total_leaves = idents::total_leaves();
     let it = idents::populator_iter();
     let leaf_arr = idents::leaf_arr();
     let flat = idents::vec_flat();
@@ -462,12 +475,8 @@ fn bool_bare_depth1_body(
     let offset_ident = idents::list_offset();
     let offset = list_offset_i64_expr(&quote! { #flat.len() }, pp);
     quote! {
-        let mut #total_leaves: usize = 0;
-        for #it in #rows.iter().copied() {
-            #total_leaves += (&(#access)).len();
-        }
         let mut #flat: ::std::vec::Vec<bool> =
-            ::std::vec::Vec::with_capacity(#total_leaves);
+            ::std::vec::Vec::with_capacity(#rows.len());
         let mut #inner_offsets: ::std::vec::Vec<i64> =
             ::std::vec::Vec::with_capacity(#rows.len() + 1);
         #inner_offsets.push(0);

@@ -240,10 +240,8 @@ fn emit_projected_vec_primitive(
     let series_local = idents::vec_field_series(idx);
     let named = idents::field_named_series();
     let leaf_arr = idents::leaf_arr();
-    let total_leaves = idents::total_leaves();
 
     let layers = projected_layer_idents(idx, shape.depth());
-    let layer_counters = projected_layer_counters(idx, shape.depth());
     let dummy_access = TokenStream::new();
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
@@ -265,14 +263,11 @@ fn emit_projected_vec_primitive(
             shape,
             access: parent_access,
             layers: &layers,
-            total_counter: &total_leaves,
-            layer_counters: &layer_counters,
             pp,
             pa_root,
         },
         Some(projection.projection),
     );
-    let precount = emitter.precount();
     let leaf_body = projected_scan_leaf_body(
         shape,
         &projection.projection,
@@ -297,7 +292,6 @@ fn emit_projected_vec_primitive(
         {
             let #series_local: #pp::Series = {
                 #extra_imports
-                #precount
                 #storage_decls
                 #offsets_decls
                 #validity_decls
@@ -324,26 +318,21 @@ fn emit_projected_vec_nested(
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
-    let total_leaves = idents::nested_total(idx);
     let flat = idents::nested_flat(idx);
     let positions = idents::nested_positions(idx);
 
     let layers = projected_layer_idents(idx, shape.depth());
-    let layer_counters = projected_layer_counters(idx, shape.depth());
     let emitter = ShapeEmitter::tuple(
         ShapeEmitterParts {
             rows,
             shape,
             access: parent_access,
             layers: &layers,
-            total_counter: &total_leaves,
-            layer_counters: &layer_counters,
             pp,
             pa_root,
         },
         Some(projection.projection),
     );
-    let precount = emitter.precount();
     let has_inner_option = shape.has_inner_option();
 
     let leaf_v = idents::leaf_value();
@@ -387,7 +376,7 @@ fn emit_projected_vec_nested(
     let positions_decl = if has_inner_option {
         quote! {
             let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
-                ::std::vec::Vec::with_capacity(#total_leaves);
+                ::std::vec::Vec::with_capacity(#rows.len());
         }
     } else {
         TokenStream::new()
@@ -401,7 +390,11 @@ fn emit_projected_vec_nested(
         name_policy: &NestedNamePolicy::Field,
         flat: &flat,
         positions: has_inner_option.then_some(&positions),
-        total_len: quote! { #total_leaves },
+        total_len: if has_inner_option {
+            quote! { #positions.len() }
+        } else {
+            quote! { #flat.len() }
+        },
         wrapper: NestedWrapper::List {
             shape,
             layers: &layers,
@@ -414,9 +407,8 @@ fn emit_projected_vec_nested(
 
     quote! {
         {
-            #precount
             let mut #flat: ::std::vec::Vec<&#type_path> =
-                ::std::vec::Vec::with_capacity(#total_leaves);
+                ::std::vec::Vec::with_capacity(#rows.len());
             #positions_decl
             #offsets_decls
             #validity_decls
@@ -429,12 +421,6 @@ fn emit_projected_vec_nested(
 fn projected_layer_idents(idx: usize, depth: usize) -> Vec<LayerIdents> {
     (0..depth)
         .map(|layer| LayerIdents::new(idents::LayerNamespace::Tuple { field_idx: idx }, layer))
-        .collect()
-}
-
-fn projected_layer_counters(idx: usize, depth: usize) -> Vec<syn::Ident> {
-    (0..depth.saturating_sub(1))
-        .map(|layer| idents::tuple_layer_total(idx, layer))
         .collect()
 }
 

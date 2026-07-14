@@ -116,7 +116,7 @@ fn build_nested_emit(
 }
 
 /// Build the columnar emit pieces for a primitive-routed column. `[Vec, ...]`
-/// shapes produce `Encoder::Multi` (the encoder packs precount, buffers,
+/// shapes produce `Encoder::Multi` (the encoder packs buffers, the one-pass
 /// fill loop, leaf array, list stacking, and the rename + push into one
 /// self-contained block). Bare and `[Option]` shapes produce `Encoder::Leaf`
 /// with decls + push + finisher split across the three slots.

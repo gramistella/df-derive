@@ -1,4 +1,4 @@
-//! Shared shape walkers for `Vec`-layer precount, scan, and list assembly.
+//! Shared shape walker for one-pass `Vec` scanning and list assembly.
 //!
 //! Dtype/array compatibility is owned here: leaf encoders may create Arrow
 //! arrays and logical Polars dtypes, but `shape_assemble_list_stack` is the
@@ -165,108 +165,12 @@ impl ShapeScan<'_, '_> {
     }
 }
 
-pub(super) struct ShapePrecount<'a> {
-    pub rows: &'a syn::Ident,
-    pub shape: &'a VecLayers,
-    pub access: &'a TokenStream,
-    pub layers: &'a [LayerIdents],
-    pub outer_some_prefix: &'a str,
-    pub total_counter: &'a syn::Ident,
-    pub layer_counters: &'a [syn::Ident],
-    pub projection: Option<LayerProjection<'a>>,
-}
-
-impl ShapePrecount<'_> {
-    pub(super) fn build(&self) -> TokenStream {
-        let layer0_iter_src = {
-            let access = self.access;
-            quote! { (&(#access)) }
-        };
-        let body = self.build_layer(0, &layer0_iter_src);
-        let total = self.total_counter;
-        let counter_decls = self
-            .layer_counters
-            .iter()
-            .map(|c| quote! { let mut #c: usize = 0; });
-        let it = idents::populator_iter();
-        let rows = self.rows;
-        quote! {
-            let mut #total: usize = 0;
-            #(#counter_decls)*
-            for #it in #rows.iter().copied() {
-                #body
-            }
-        }
-    }
-
-    fn build_iter(&self, cur: usize, vec_bind: &TokenStream) -> TokenStream {
-        let depth = self.shape.depth();
-        let total = self.total_counter;
-        if cur + 1 == depth {
-            quote! { #total += #vec_bind.len(); }
-        } else {
-            let inner_bind = &self.layers[cur + 1].bind;
-            let counter = &self.layer_counters[cur];
-            let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
-            self.projection
-                .as_ref()
-                .filter(|p| cur + 1 == p.layer)
-                .map_or_else(
-                    || {
-                        quote! {
-                            for #inner_bind in #vec_bind.iter() {
-                                #inner_layer_body
-                                #counter += 1;
-                            }
-                        }
-                    },
-                    |projection| {
-                        let item_bind =
-                            format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
-                        let projected = projected_layer_bind(
-                            &item_bind,
-                            projection,
-                            self.outer_some_prefix,
-                            cur,
-                        );
-                        quote! {
-                            for #item_bind in #vec_bind.iter() {
-                                let #inner_bind = #projected;
-                                #inner_layer_body
-                                #counter += 1;
-                            }
-                        }
-                    },
-                )
-        }
-    }
-
-    fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
-        let layer_access = access_chain_to_ref(bind, &self.shape.layers[cur].access);
-        if layer_access.has_option {
-            let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
-            let inner = self.build_iter(cur, &quote! { #inner_vec_bind });
-            let collapsed = layer_access.expr;
-            quote! {
-                if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
-                    #inner
-                }
-            }
-        } else {
-            self.build_iter(cur, &layer_access.expr)
-        }
-    }
-}
-
 pub(super) struct ShapeEmitter<'a> {
     pub rows: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
-    pub precount_outer_some_prefix: &'a str,
-    pub total_counter: &'a syn::Ident,
-    pub layer_counters: &'a [syn::Ident],
     pub pp: &'a TokenStream,
     pub pa_root: &'a TokenStream,
     pub projection: Option<LayerProjection<'a>>,
@@ -278,8 +182,6 @@ pub(super) struct ShapeEmitterParts<'a> {
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
-    pub total_counter: &'a syn::Ident,
-    pub layer_counters: &'a [syn::Ident],
     pub pp: &'a TokenStream,
     pub pa_root: &'a TokenStream,
 }
@@ -292,9 +194,6 @@ impl<'a> ShapeEmitter<'a> {
             access: parts.access,
             layers: parts.layers,
             outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
-            precount_outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
-            total_counter: parts.total_counter,
-            layer_counters: parts.layer_counters,
             pp: parts.pp,
             pa_root: parts.pa_root,
             projection: None,
@@ -308,9 +207,6 @@ impl<'a> ShapeEmitter<'a> {
             access: parts.access,
             layers: parts.layers,
             outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
-            precount_outer_some_prefix: idents::NESTED_PRE_OUTER_SOME_PREFIX,
-            total_counter: parts.total_counter,
-            layer_counters: parts.layer_counters,
             pp: parts.pp,
             pa_root: parts.pa_root,
             projection: None,
@@ -327,27 +223,10 @@ impl<'a> ShapeEmitter<'a> {
             access: parts.access,
             layers: parts.layers,
             outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
-            precount_outer_some_prefix: idents::TUPLE_PRE_OUTER_SOME_PREFIX,
-            total_counter: parts.total_counter,
-            layer_counters: parts.layer_counters,
             pp: parts.pp,
             pa_root: parts.pa_root,
             projection,
         }
-    }
-
-    pub(super) fn precount(&self) -> TokenStream {
-        ShapePrecount {
-            rows: self.rows,
-            shape: self.shape,
-            access: self.access,
-            layers: self.layers,
-            outer_some_prefix: self.precount_outer_some_prefix,
-            total_counter: self.total_counter,
-            layer_counters: self.layer_counters,
-            projection: self.projection,
-        }
-        .build()
     }
 
     pub(super) fn scan<'body>(
@@ -367,11 +246,6 @@ impl<'a> ShapeEmitter<'a> {
             projection: self.projection,
         }
         .build()
-    }
-
-    fn counter_for_depth(&self, depth: usize) -> TokenStream {
-        let counter = &self.layer_counters[depth];
-        quote! { #counter }
     }
 
     pub(super) fn offsets_decls(&self) -> TokenStream {
@@ -560,18 +434,12 @@ pub(super) fn shape_assemble_list_stack(
 
 fn shape_offsets_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::with_capacity(emitter.layers.len());
-    for (i, layer) in emitter.layers.iter().enumerate() {
+    for layer in emitter.layers {
         let offsets = &layer.offsets;
-        let cap = if i == 0 {
-            let rows = emitter.rows;
-            quote! { #rows.len() + 1 }
-        } else {
-            let counter = emitter.counter_for_depth(i - 1);
-            quote! { #counter + 1 }
-        };
+        let rows = emitter.rows;
         out.push(quote! {
             let mut #offsets: ::std::vec::Vec<i64> =
-                ::std::vec::Vec::with_capacity(#cap);
+                ::std::vec::Vec::with_capacity(#rows.len() + 1);
             #offsets.push(0);
         });
     }
@@ -585,17 +453,11 @@ fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
             continue;
         }
         let validity = &layer.validity_mb;
-        let cap = if i == 0 {
-            let rows = emitter.rows;
-            quote! { #rows.len() }
-        } else {
-            let counter = emitter.counter_for_depth(i - 1);
-            quote! { #counter }
-        };
+        let rows = emitter.rows;
         let pa_root = emitter.pa_root;
         out.push(quote! {
             let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#cap);
+                #pa_root::bitmap::MutableBitmap::with_capacity(#rows.len());
         });
     }
     quote! { #(#out)* }

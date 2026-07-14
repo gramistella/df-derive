@@ -75,8 +75,8 @@ fn mixed_builtin_runtime_error(
     let mut error = syn::Error::new(
         columnar_override.span,
         "`trait` and `columnar` overrides cannot mix the built-in dataframe \
-         runtime with a custom runtime; `Columnar::encode` and the blanket \
-         `ToDataFrame` schema API must come from one compatible runtime",
+         runtime with a custom runtime; `ColumnarSpec`, `ColumnSink`, and the \
+         blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime",
     );
     error.combine(syn::Error::new(
         trait_override.span,

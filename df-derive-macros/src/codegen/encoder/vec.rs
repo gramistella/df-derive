@@ -373,12 +373,12 @@ fn vec_encoder(
     );
     let name = ctx.base.name;
     let named = idents::field_named_series();
-    let columns = idents::columns();
+    let sink = ctx.base.sink;
     let columnar = quote! {
         {
             #decl
             let #named = #series_local.with_name(#name.into());
-            #columns.push(#named.into());
+            #sink.push(#named.into())?;
         }
     };
     Encoder::Multi { columnar }
@@ -429,13 +429,13 @@ fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
         let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp, ctx.base.rows);
         let name = ctx.base.name;
         let named = idents::field_named_series();
-        let columns = idents::columns();
+        let sink = ctx.base.sink;
         let decl = quote! { let #series_local: #pp::Series = { #body }; };
         let columnar = quote! {
             {
                 #decl
                 let #named = #series_local.with_name(#name.into());
-                #columns.push(#named.into());
+                #sink.push(#named.into())?;
             }
         };
         return Encoder::Multi { columnar };

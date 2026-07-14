@@ -1,15 +1,13 @@
 use df_derive::ToDataFrame;
 use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 
+#[path = "../support/local_runtime.rs"]
+mod runtime_support;
+
 mod custom_runtime {
     use super::*;
 
-    pub trait MyColumnar: Sized {
-        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
-        where
-            Self: 'a,
-            R: IntoIterator<Item = &'a Self>;
-    }
+    pub use super::runtime_support::dataframe::{ColumnSink, Columnar as MyColumnar, ColumnarSpec};
 
     pub trait MyToDataFrame: MyColumnar {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
@@ -21,7 +19,7 @@ mod custom_runtime {
         }
 
         fn schema() -> PolarsResult<SchemaRef> {
-            Ok(Self::empty_dataframe()?.schema().clone())
+            <Self as ColumnarSpec>::build_schema()
         }
     }
 
@@ -56,7 +54,7 @@ mod custom_runtime {
 
 mod columnar_only_runtime {
     pub use super::custom_runtime::{
-        MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
+        ColumnSink, ColumnarSpec, MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
         MyToDataFrame as ToDataFrame,
     };
 }
@@ -94,6 +92,8 @@ struct CustomColumnarOnly {
 }
 
 fn main() {
+    fn assert_columnar<T: columnar_only_runtime::Columnar>() {}
+
     let builtin_trait_only = [BuiltinTraitOnly { id: 1 }];
     let df =
         df_derive::dataframe::ToDataFrameVec::to_dataframe(builtin_trait_only.as_slice()).unwrap();
@@ -111,6 +111,7 @@ fn main() {
         id: 4,
         amount: custom_runtime::CustomDecimal(4250),
     };
+    assert_columnar::<CustomColumnarOnly>();
     let df = columnar_only_runtime::ToDataFrame::to_dataframe(&custom_columnar_only).unwrap();
     assert_eq!(df.shape(), (1, 2));
 }

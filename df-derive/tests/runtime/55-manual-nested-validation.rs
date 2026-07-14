@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use df_derive::dataframe::Columnar;
+use df_derive::dataframe::{ColumnSink, Columnar, ColumnarSpec};
 use polars::prelude::*;
 
 #[derive(Clone)]
@@ -18,136 +18,141 @@ struct ReorderedColumnsInner;
 struct BadDtypeInner;
 
 #[derive(Clone)]
+struct PartialConsumptionInner;
+
+#[derive(Clone)]
 struct ValidInner {
     value: i64,
     label: String,
 }
 
-fn empty_value_frame() -> PolarsResult<DataFrame> {
-    DataFrame::new(
-        0,
-        vec![Series::new_empty("value".into(), &DataType::Int64).into()],
-    )
+fn value_schema() -> PolarsResult<SchemaRef> {
+    Ok(std::sync::Arc::new(Schema::from_iter_check_duplicates([
+        ("value".into(), DataType::Int64),
+    ])?))
 }
 
-fn empty_value_label_frame() -> PolarsResult<DataFrame> {
-    DataFrame::new(
-        0,
-        vec![
-            Series::new_empty("value".into(), &DataType::Int64).into(),
-            Series::new_empty("label".into(), &DataType::String).into(),
-        ],
-    )
+fn value_label_schema() -> PolarsResult<SchemaRef> {
+    Ok(std::sync::Arc::new(Schema::from_iter_check_duplicates([
+        ("value".into(), DataType::Int64),
+        ("label".into(), DataType::String),
+    ])?))
 }
 
-impl Columnar for BadHeightInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for BadHeightInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
-        if rows.is_empty() {
-            return empty_value_frame();
-        }
+        let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = (0..=rows.len() as i64).collect();
-        DataFrame::new(
-            values.len(),
-            vec![Series::new("value".into(), values).into()],
-        )
+        sink.push(Series::new("value".into(), values).into())
     }
 }
 
-impl Columnar for ExtraColumnInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for ExtraColumnInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
-        if rows.is_empty() {
-            return empty_value_frame();
-        }
+        let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
         let extras = vec![2_i64; rows.len()];
-        DataFrame::new(
-            rows.len(),
-            vec![
-                Series::new("value".into(), values).into(),
-                Series::new("extra".into(), extras).into(),
-            ],
-        )
+        sink.push(Series::new("value".into(), values).into())?;
+        sink.push(Series::new("extra".into(), extras).into())
     }
 }
 
-impl Columnar for MissingColumnInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for MissingColumnInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_label_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
-        if rows.is_empty() {
-            return empty_value_label_frame();
-        }
+        let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
-        DataFrame::new(rows.len(), vec![Series::new("value".into(), values).into()])
+        sink.push(Series::new("value".into(), values).into())
     }
 }
 
-impl Columnar for ReorderedColumnsInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for ReorderedColumnsInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_label_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
-        if rows.is_empty() {
-            return empty_value_label_frame();
-        }
+        let rows: Vec<&Self> = rows.collect();
         let labels = vec![String::from("wrong-order"); rows.len()];
         let values = vec![1_i64; rows.len()];
-        DataFrame::new(
-            rows.len(),
-            vec![
-                Series::new("label".into(), labels).into(),
-                Series::new("value".into(), values).into(),
-            ],
-        )
+        sink.push(Series::new("label".into(), labels).into())?;
+        sink.push(Series::new("value".into(), values).into())
     }
 }
 
-impl Columnar for BadDtypeInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for BadDtypeInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
-        if rows.is_empty() {
-            return empty_value_frame();
-        }
+        let rows: Vec<&Self> = rows.collect();
         let values = vec![String::from("wrong-dtype"); rows.len()];
-        DataFrame::new(rows.len(), vec![Series::new("value".into(), values).into()])
+        sink.push(Series::new("value".into(), values).into())
     }
 }
 
-impl Columnar for ValidInner {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for PartialConsumptionInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let rows: Vec<&Self> = rows.into_iter().collect();
+        let values: Vec<i64> = rows.next().map(|_| 1).into_iter().collect();
+        sink.push(Series::new("value".into(), values).into())
+    }
+}
+
+impl ColumnarSpec for ValidInner {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        value_label_schema()
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
+    where
+        Self: 'a,
+        I: Iterator<Item = &'a Self>,
+    {
+        let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = rows.iter().map(|row| row.value).collect();
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
-        DataFrame::new(
-            rows.len(),
-            vec![
-                Series::new("value".into(), values).into(),
-                Series::new("label".into(), labels).into(),
-            ],
-        )
+        sink.push(Series::new("value".into(), values).into())?;
+        sink.push(Series::new("label".into(), labels).into())
     }
 }
 
@@ -192,15 +197,31 @@ where
     <TupleOuter<T> as Columnar>::encode(std::slice::from_ref(&row))
 }
 
+fn encode_tuple_many<T>(inners: Vec<T>) -> PolarsResult<DataFrame>
+where
+    T: Columnar,
+{
+    let row = TupleOuter {
+        payload: inners.into_iter().map(|inner| (inner,)).collect(),
+    };
+    <TupleOuter<T> as Columnar>::encode(std::slice::from_ref(&row))
+}
+
 #[test]
 fn runtime_semantics() {
-    for result in [encode_one(BadHeightInner), encode_tuple(BadHeightInner)] {
+    for result in [
+        BadHeightInner::encode([&BadHeightInner]),
+        encode_one(BadHeightInner),
+        encode_tuple(BadHeightInner),
+    ] {
         assert_compute_error_contains(result, "returned height");
     }
 
     for result in [
+        ExtraColumnInner::encode([&ExtraColumnInner]),
         encode_one(ExtraColumnInner),
         encode_tuple(ExtraColumnInner),
+        MissingColumnInner::encode([&MissingColumnInner]),
         encode_one(MissingColumnInner),
         encode_tuple(MissingColumnInner),
     ] {
@@ -208,14 +229,26 @@ fn runtime_semantics() {
     }
 
     for result in [
+        ReorderedColumnsInner::encode([&ReorderedColumnsInner]),
         encode_one(ReorderedColumnsInner),
         encode_tuple(ReorderedColumnsInner),
     ] {
         assert_compute_error_contains(result, "returned column");
     }
 
-    for result in [encode_one(BadDtypeInner), encode_tuple(BadDtypeInner)] {
+    for result in [
+        BadDtypeInner::encode([&BadDtypeInner]),
+        encode_one(BadDtypeInner),
+        encode_tuple(BadDtypeInner),
+    ] {
         assert_compute_error_contains(result, "returned dtype");
+    }
+
+    for result in [
+        PartialConsumptionInner::encode([&PartialConsumptionInner, &PartialConsumptionInner]),
+        encode_tuple_many(vec![PartialConsumptionInner, PartialConsumptionInner]),
+    ] {
+        assert_compute_error_contains(result, "returned height");
     }
 
     let direct = encode_one(ValidInner {

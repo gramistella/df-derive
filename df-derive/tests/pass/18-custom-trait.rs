@@ -1,6 +1,9 @@
 use df_derive::ToDataFrame;
 use polars::prelude::{DataFrame, DataType, PolarsResult, SchemaRef};
 
+#[path = "../support/local_runtime.rs"]
+mod custom_runtime_support;
+
 // == SETUP 1: Use the shared `common` module for default traits ==
 use df_derive::dataframe as paft_traits; // Alias for clarity
 
@@ -8,13 +11,7 @@ use df_derive::dataframe as paft_traits; // Alias for clarity
 mod my_traits {
     use super::*; // Access PolarsResult, etc.
 
-    /// Internal columnar trait mirrored from the main crate. Implemented by the derive macro.
-    pub trait Columnar: Sized {
-        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
-        where
-            Self: 'a,
-            R: IntoIterator<Item = &'a Self>;
-    }
+    pub use super::custom_runtime_support::dataframe::{ColumnSink, Columnar, ColumnarSpec};
 
     // This is our custom convenience trait, blanket-implemented from Columnar.
     pub trait MyToDataFrame: Columnar {
@@ -27,7 +24,7 @@ mod my_traits {
         }
 
         fn schema() -> PolarsResult<SchemaRef> {
-            Ok(Self::empty_dataframe()?.schema().clone())
+            <Self as ColumnarSpec>::build_schema()
         }
     }
 
@@ -90,8 +87,8 @@ fn main() {
 
     // == TEST A: Verify the struct using the default path ==
     let default_instance = DefaultPath { id: 1 };
-    // This compiles only when the derive generated the runtime's `Columnar` impl,
-    // which supplies `ToDataFrame` through its blanket implementation.
+    // This compiles only when the derive generated the runtime's `ColumnarSpec`
+    // impl, which supplies `Columnar` and `ToDataFrame` through blanket impls.
     let df_default = paft_traits::ToDataFrame::to_dataframe(&default_instance).unwrap();
     assert_eq!(df_default.shape(), (1, 1));
     assert_eq!(df_default.get_column_names(), &["id"]);

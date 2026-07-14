@@ -7,12 +7,16 @@ use crate::attrs;
 
 use super::external_paths;
 
-/// Runtime trait paths used by generated impls and helper calls.
-pub struct RuntimeTraitPaths {
-    /// Fully-qualified path to the `ToDataFrame` trait.
-    pub to_dataframe: syn::Path,
+/// Runtime trait and support-type paths used by generated code.
+pub struct RuntimeSurfacePaths {
     /// Fully-qualified path to the `Columnar` trait.
     pub columnar: syn::Path,
+    /// Fully-qualified path to the hidden `ColumnarSpec` trait implemented by
+    /// generated code.
+    pub columnar_spec: syn::Path,
+    /// Fully-qualified path to the hidden `ColumnSink` checked-composition
+    /// boundary used by generated `ColumnarSpec` implementations.
+    pub column_sink: syn::Path,
     /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
     /// fields.
     pub decimal128_encode: syn::Path,
@@ -21,8 +25,8 @@ pub struct RuntimeTraitPaths {
 /// Macro-wide configuration for generated code
 #[allow(clippy::struct_field_names)]
 pub struct MacroConfig {
-    /// Runtime trait paths used by generated code.
-    pub traits: RuntimeTraitPaths,
+    /// Runtime surface paths used by generated code.
+    pub runtime: RuntimeSurfacePaths,
     /// External runtime dependency roots (`polars::prelude`,
     /// `polars_arrow`) used by generated code.
     pub external_paths: external_paths::ExternalPaths,
@@ -75,16 +79,13 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         attrs.to_dataframe.as_ref(),
         attrs.columnar.as_ref(),
     );
-    let to_dataframe = match (&attrs.to_dataframe, &attrs.columnar) {
-        (Some(override_), _) => override_.value.clone(),
-        (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "ToDataFrame"),
-        (None, None) => attrs::runtime_trait_path(&default_df_mod, "ToDataFrame"),
-    };
     let columnar = match (&attrs.columnar, &attrs.to_dataframe) {
         (Some(override_), _) => override_.value.clone(),
         (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Columnar"),
         (None, None) => attrs::runtime_trait_path(&default_df_mod, "Columnar"),
     };
+    let columnar_spec = attrs::rebase_last_segment(&columnar, "ColumnarSpec");
+    let column_sink = attrs::rebase_last_segment(&columnar, "ColumnSink");
     let decimal128_encode = attrs.decimal128_encode.as_ref().map_or_else(
         || attrs::rebase_last_segment(&columnar, "Decimal128Encode"),
         |override_| override_.value.clone(),
@@ -104,9 +105,10 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
     );
 
     Ok(MacroConfig {
-        traits: RuntimeTraitPaths {
-            to_dataframe,
+        runtime: RuntimeSurfacePaths {
             columnar,
+            columnar_spec,
+            column_sink,
             decimal128_encode,
         },
         external_paths,
@@ -120,7 +122,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standalone_columnar_override_selects_sibling_decimal_trait() {
+    fn standalone_columnar_override_selects_sibling_runtime_items() {
         let input: DeriveInput = syn::parse_quote! {
             #[df_derive(columnar = "custom_runtime::Columnar")]
             struct Row {
@@ -131,8 +133,16 @@ mod tests {
         let config = build_macro_config(&input).expect("runtime override should parse");
 
         assert_eq!(
+            config.runtime.columnar_spec.to_token_stream().to_string(),
+            "custom_runtime :: ColumnarSpec",
+        );
+        assert_eq!(
+            config.runtime.column_sink.to_token_stream().to_string(),
+            "custom_runtime :: ColumnSink",
+        );
+        assert_eq!(
             config
-                .traits
+                .runtime
                 .decimal128_encode
                 .to_token_stream()
                 .to_string(),

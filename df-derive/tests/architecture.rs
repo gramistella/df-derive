@@ -1,6 +1,10 @@
 // Architecture fixtures embed small downstream crates as raw strings; keeping
 // those snippets readable is more useful than linting them as production code.
-#![allow(clippy::missing_const_for_fn, clippy::needless_raw_string_hashes)]
+#![allow(
+    clippy::missing_const_for_fn,
+    clippy::needless_raw_string_hashes,
+    clippy::too_many_lines
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,70 +130,200 @@ fn cargo_tree_fixture_with_files(
     String::from_utf8(output.stdout).expect("cargo tree stdout is valid UTF-8")
 }
 
-fn paft_like_runtime_lib() -> &'static str {
-    r#"
+fn paft_like_runtime_lib() -> String {
+    [
+        r#"
 pub use df_derive_macros::ToDataFrame;
 
 pub mod dataframe {
-    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+    use std::sync::Arc;
+
+    use polars::prelude::{
+        Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err,
+    };
 
     #[doc(hidden)]
     pub mod __private {
         pub use polars;
         pub use pa as polars_arrow;
     }
-
-    pub trait Columnar: Sized {
-        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
-        where
-            Self: 'a,
-            R: IntoIterator<Item = &'a Self>;
-    }
-
-    pub trait ToDataFrame: Columnar {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            Self::encode(std::slice::from_ref(self))
-        }
-
-        fn empty_dataframe() -> PolarsResult<DataFrame> {
-            Self::encode(&[] as &[Self])
-        }
-
-        fn schema() -> PolarsResult<SchemaRef> {
-            Ok(Self::empty_dataframe()?.schema().clone())
-        }
-    }
-
-    impl<T: Columnar> ToDataFrame for T {}
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            <T as Columnar>::encode(self)
-        }
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-"#
+"#,
+        runtime_traits_source(),
+        "}\n",
+    ]
+    .concat()
 }
 
 fn runtime_traits_source() -> &'static str {
     r#"
-    pub trait Columnar: Sized {
+    pub struct EncodedBatch {
+        height: usize,
+        columns: Vec<Column>,
+    }
+
+    impl EncodedBatch {
+        pub fn into_columns(self) -> Vec<Column> {
+            self.columns
+        }
+
+        fn into_dataframe(self) -> PolarsResult<DataFrame> {
+            DataFrame::new(self.height, self.columns)
+        }
+    }
+
+    pub struct ColumnSink {
+        schema: SchemaRef,
+        columns: Vec<Column>,
+        producer: &'static str,
+    }
+
+    impl ColumnSink {
+        fn new(schema: SchemaRef, producer: &'static str) -> Self {
+            let columns = Vec::with_capacity(schema.len());
+            Self {
+                schema,
+                columns,
+                producer,
+            }
+        }
+
+        pub fn push(&mut self, column: Column) -> PolarsResult<()> {
+            let index = self.columns.len();
+            let Some((expected_name, expected_dtype)) = self.schema.get_at_index(index) else {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned column `{}` at index {}, exceeding schema width {}",
+                    self.producer,
+                    column.name(),
+                    index,
+                    self.schema.len(),
+                ));
+            };
+
+            if column.name() != expected_name {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned column `{}` at index {}, expected `{}`",
+                    self.producer,
+                    column.name(),
+                    index,
+                    expected_name,
+                ));
+            }
+            if column.dtype() != expected_dtype {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned dtype {:?} for column `{}` at index {}, expected {:?}",
+                    self.producer,
+                    column.dtype(),
+                    column.name(),
+                    index,
+                    expected_dtype,
+                ));
+            }
+
+            self.columns.push(column);
+            Ok(())
+        }
+
+        fn finish(self, height: usize) -> PolarsResult<EncodedBatch> {
+            if self.columns.len() != self.schema.len() {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned schema width {}, expected {}",
+                    self.producer,
+                    self.columns.len(),
+                    self.schema.len(),
+                ));
+            }
+
+            for (index, column) in self.columns.iter().enumerate() {
+                if column.len() != height {
+                    return Err(polars_err!(
+                        ComputeError:
+                        "df-derive: ColumnarSpec for {} returned height {} for column `{}` at index {}, expected {}",
+                        self.producer,
+                        column.len(),
+                        column.name(),
+                        index,
+                        height,
+                    ));
+                }
+            }
+
+            Ok(EncodedBatch {
+                height,
+                columns: self.columns,
+            })
+        }
+    }
+
+    struct CountingIterator<I> {
+        inner: I,
+        yielded: usize,
+    }
+
+    impl<I> CountingIterator<I> {
+        fn new(inner: I) -> Self {
+            Self { inner, yielded: 0 }
+        }
+    }
+
+    impl<I> Iterator for CountingIterator<I>
+    where
+        I: Iterator,
+    {
+        type Item = I::Item;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let item = self.inner.next()?;
+            self.yielded += 1;
+            Some(item)
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    pub trait ColumnarSpec: Sized {
+        fn build_schema() -> PolarsResult<SchemaRef>;
+
+        fn encode_columns<'a, I>(
+            rows: &mut I,
+            sink: &mut ColumnSink,
+        ) -> PolarsResult<()>
+        where
+            Self: 'a,
+            I: Iterator<Item = &'a Self>;
+    }
+
+    pub trait Columnar: ColumnarSpec {
+        fn encode_batch<'a, R>(rows: R) -> PolarsResult<EncodedBatch>
+        where
+            Self: 'a,
+            R: IntoIterator<Item = &'a Self>,
+        {
+            let schema = <Self as ColumnarSpec>::build_schema()?;
+            let mut sink = ColumnSink::new(schema, std::any::type_name::<Self>());
+            let mut rows = CountingIterator::new(rows.into_iter());
+
+            <Self as ColumnarSpec>::encode_columns(&mut rows, &mut sink)?;
+            rows.by_ref().for_each(drop);
+
+            sink.finish(rows.yielded)
+        }
+
         fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
         where
             Self: 'a,
-            R: IntoIterator<Item = &'a Self>;
+            R: IntoIterator<Item = &'a Self>,
+        {
+            Self::encode_batch(rows)?.into_dataframe()
+        }
     }
+
+    impl<T: ColumnarSpec> Columnar for T {}
 
     pub trait ToDataFrame: Columnar {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
@@ -201,7 +335,7 @@ fn runtime_traits_source() -> &'static str {
         }
 
         fn schema() -> PolarsResult<SchemaRef> {
-            Ok(Self::empty_dataframe()?.schema().clone())
+            <Self as ColumnarSpec>::build_schema()
         }
     }
 
@@ -217,6 +351,23 @@ fn runtime_traits_source() -> &'static str {
     {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
             <T as Columnar>::encode(self)
+        }
+    }
+
+    impl ColumnarSpec for () {
+        fn build_schema() -> PolarsResult<SchemaRef> {
+            Ok(Arc::new(Schema::default()))
+        }
+
+        fn encode_columns<'a, I>(
+            _rows: &mut I,
+            _sink: &mut ColumnSink,
+        ) -> PolarsResult<()>
+        where
+            Self: 'a,
+            I: Iterator<Item = &'a Self>,
+        {
+            Ok(())
         }
     }
 
@@ -230,7 +381,11 @@ fn paft_utils_runtime_lib() -> String {
     [
         r#"
 pub mod dataframe {
-    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+    use std::sync::Arc;
+
+    use polars::prelude::{
+        Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err,
+    };
 
     #[doc(hidden)]
     pub mod __private {
@@ -248,7 +403,11 @@ fn explicit_runtime_module_source() -> String {
     [
         r#"
 mod runtime {
-    use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+    use std::sync::Arc;
+
+    use polars::prelude::{
+        Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err,
+    };
 "#,
         runtime_traits_source(),
         "}\n",
@@ -261,7 +420,11 @@ fn local_runtime_module_source() -> String {
         r#"
 mod core {
     pub mod dataframe {
-        use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+        use std::sync::Arc;
+
+        use polars::prelude::{
+            Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err,
+        };
 
         #[doc(hidden)]
         pub mod __private {
@@ -712,6 +875,7 @@ polars-arrow = { version = "0.54", default-features = false }
 #[test]
 fn paft_package_examples_use_library_runtime_path() {
     let root = repo_root();
+    let runtime = paft_like_runtime_lib();
     let manifest = format!(
         r#"
 [package]
@@ -738,7 +902,7 @@ name = "unannotated"
         &manifest,
         "fn main() {}",
         &[
-            ("src/lib.rs", paft_like_runtime_lib()),
+            ("src/lib.rs", runtime.as_str()),
             (
                 "examples/unannotated.rs",
                 r#"
@@ -765,6 +929,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 #[test]
 fn paft_utils_package_examples_use_library_runtime_path() {
     let root = repo_root();
+    let runtime = paft_like_runtime_lib();
     let manifest = format!(
         r#"
 [package]
@@ -791,7 +956,7 @@ name = "unannotated"
         &manifest,
         "fn main() {}",
         &[
-            ("src/lib.rs", paft_like_runtime_lib()),
+            ("src/lib.rs", runtime.as_str()),
             (
                 "examples/unannotated.rs",
                 r#"

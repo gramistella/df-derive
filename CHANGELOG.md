@@ -10,27 +10,30 @@ All notable changes to this project will be documented in this file.
   `IntoIterator<Item = &Self>` and consumes that input exactly once. The
   repeatable `RowBatch` abstraction was removed, along with its separate
   reported length and repeated-traversal contract.
-- **Breaking for custom runtimes**: runtimes must provide the iterator-based
-  `Columnar` trait and blanket-implement `ToDataFrame` for `T: Columnar`.
-  `ToDataFrame::{to_dataframe, empty_dataframe, schema}` now derive from
-  `Columnar::encode`; `schema()` returns Polars `SchemaRef`.
+- **Breaking for custom runtimes**: the derive now implements hidden
+  `ColumnarSpec::{build_schema, encode_columns}`. Runtimes must provide
+  canonical sibling `ColumnarSpec` and `ColumnSink` items beside the selected
+  `Columnar` path, a private-field `EncodedBatch`, and checked blanket
+  `Columnar`/`ToDataFrame` implementations.
+- `ToDataFrame::schema()` now composes and returns a Polars `SchemaRef`
+  directly through `ColumnarSpec::build_schema`; it no longer discovers the
+  schema by encoding an empty batch.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling
-  `ToDataFrame` and decimal runtime trait paths are inferred.
+  `ColumnarSpec`, `ColumnSink`, and decimal runtime paths are inferred.
 
 ### Fixed
 
-- Nested manual encoders are validated against their typed empty-batch schema
-  by height, width, ordered column names, and dtypes before positional
-  consumption, so extra, missing, reordered, mistyped, or wrong-height child
-  output can no longer be silently accepted.
+- Every generated or manual `ColumnarSpec` writes through a schema-bound
+  `ColumnSink`. Width, ordered names, dtypes, and actual yielded height are
+  checked before output becomes an `EncodedBatch`, including at the top level.
 - Generated frames derive their height from the rows actually yielded by the
   caller. There is no separately reported batch length that can disagree with
   the input iterator or emitted columns.
-- Generated `encode` iterator-type, lifetime, and row-value identifiers are
-  now freshened against user type, const, and lifetime generics.
-  Internal-looking generic names and a const generic named `rows` no longer
-  collide with generated method parameters.
+- Generated `encode_columns` parameters and explicit-schema locals are now
+  freshened against user type, const, and lifetime generics. Internal-looking
+  generic names no longer collide with generated method parameters or nested
+  schema composition bindings.
 
 ### Performance
 
@@ -38,15 +41,13 @@ All notable changes to this project will be documented in this file.
   The input is consumed once into a `Vec<&T>` so the shape-dependent column
   emitters can make their required passes without requiring a repeatable
   caller-owned batch abstraction.
-- Empty structs and unit payloads use `DataFrame::empty_with_height` directly;
-  the temporary null column and `drop_in_place` workaround are gone.
-- Nested validation reads ordered names and dtypes directly from child columns,
-  avoiding an extra materialized `DataFrame::schema()` and repeated name
-  lookups.
-- A release `cargo expand` comparison of the representative nested example
-  shows one generated `encode` method per derived type. The 0.4.0 expansion
-  emitted five methods per type, including two complete encoding bodies plus
-  separate empty-frame and schema construction paths.
+- Empty structs and unit payloads preserve height through the checked iterator
+  boundary without a temporary null column or `drop_in_place` workaround.
+- Nested composition consumes validated child batch columns directly. It no
+  longer creates a child `DataFrame` merely to validate and dismantle it.
+- Derived types now contain one hidden `ColumnarSpec` impl: explicit schema
+  composition plus one column encoder. Public frame APIs remain blanket
+  runtime methods rather than parallel generated encoding paths.
 
 ## [0.4.0] - 2026-06-29
 

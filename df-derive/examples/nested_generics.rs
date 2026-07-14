@@ -13,16 +13,18 @@
 //! `Clone` — batch emitters borrow from `&T`), so any concrete instantiation
 //! must be encodable. The runtime then supplies `ToDataFrame` uniformly
 //! through its blanket implementation. Using already-derived nested structs
-//! as the type arguments is the idiomatic fit; using primitives requires a
-//! manual `Columnar::encode` implementation for those primitives.
+//! as the type arguments is the idiomatic fit. A primitive can be carried in
+//! a local newtype that derives `ToDataFrame`; downstream crates cannot
+//! implement the default runtime's foreign hidden `ColumnarSpec` trait for a
+//! foreign primitive under Rust's orphan rules.
 //!
 //! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe::ToDataFrameVec as _;
 
-// Two concrete payloads to instantiate the generic with. Both derives emit
-// `Columnar::encode`, satisfying the bound for any concrete `T`.
+// Two concrete payloads to instantiate the generic with. Both derives emit a
+// `ColumnarSpec`; the runtime's blanket `Columnar` satisfies the bound.
 #[derive(ToDataFrame, Clone)]
 struct IntPayload {
     timestamp: i64,

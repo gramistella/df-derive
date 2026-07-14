@@ -12,6 +12,9 @@
 //! `columnar = "..."` may select the runtime alone or alongside `trait = "..."`, and
 //! `decimal128_encode = "..."` may override decimal dispatch. Built-in
 //! dataframe runtime paths cannot be mixed with custom `columnar` paths.
+//! Custom runtimes must expose canonical `ColumnarSpec` and `ColumnSink`
+//! siblings beside the selected `Columnar` path and provide the checked
+//! `EncodedBatch` returned by their blanket `Columnar` implementation.
 //! Without runtime overrides, discovery tries `df-derive`, `df-derive-core`,
 //! `paft-utils`, `paft`, then the `crate::core::dataframe` fallback.
 #![warn(missing_docs)]
@@ -30,11 +33,12 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// What this macro generates (paths configurable via `#[df_derive(...)]`):
 ///
-/// - An implementation of `Columnar` for the annotated type `T` providing the
-///   single generic `encode<'a, R>(R)` batch primitive for any
-///   `R: IntoIterator<Item = &'a Self>`. The iterator is consumed exactly
-///   once. The runtime's blanket `ToDataFrame` implementation derives
-///   single-row, empty-frame, and schema behavior from that operation.
+/// - A hidden `ColumnarSpec` implementation for the annotated type `T`.
+///   `build_schema` composes its ordered `SchemaRef` without encoding rows;
+///   `encode_columns` writes into a checked `ColumnSink`. The runtime's blanket
+///   `Columnar` owns and counts the caller's one-shot iterator, validates the
+///   resulting `EncodedBatch`, and constructs a `DataFrame` only at the public
+///   boundary. Blanket `ToDataFrame` supplies the convenience API.
 ///
 /// Supported shapes and types:
 ///
@@ -62,9 +66,11 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// - Container-level: `#[df_derive(trait = "path::ToDataFrame")]` to set the `ToDataFrame` trait
 ///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing
-///   the last path segment. Optionally, set `Columnar` explicitly with
-///   `#[df_derive(columnar = "path::Columnar")]` (when `trait` is omitted, its sibling
-///   `ToDataFrame` path is inferred) and
+///   the last path segment. The resolved `Columnar` module must also expose
+///   canonical sibling `ColumnarSpec` and `ColumnSink` items. Optionally, set
+///   `Columnar` explicitly with
+///   `#[df_derive(columnar = "path::Columnar")]`; its sibling `ColumnarSpec`,
+///   `ColumnSink`, and default decimal path are inferred. Use
 ///   `#[df_derive(decimal128_encode = "path::Decimal128Encode")]`. `decimal128_encode` is the
 ///   dispatch point for `rust_decimal::Decimal` / `bigdecimal::BigDecimal` / other decimal
 ///   backends — see "Custom decimal backends" in the README for the trait contract. Explicit
@@ -83,7 +89,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///   namespace. Flattening is limited to nested struct/generic row shapes
 ///   after transparent pointer peeling; `Option<T>` and `Vec<T>` stay on the
 ///   normal prefixed nested path. Flattened derives validate duplicate output
-///   names when building schema and `DataFrame`s.
+///   names during explicit schema construction; encoded columns are checked
+///   against that schema by the runtime sink.
 /// - Field-level: `#[df_derive(as_string)]` to stringify values via `Display` (e.g., enums) during
 ///   conversion, resulting in `DataType::String` or `List<String>`. Generated encoders reuse a
 ///   `String` scratch buffer per field; the column builder still copies the formatted bytes.

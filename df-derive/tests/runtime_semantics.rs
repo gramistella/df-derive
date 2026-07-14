@@ -87,3 +87,6 @@ mod tuple_vector_projection;
 
 #[path = "runtime/60-flatten-field.rs"]
 mod flatten_field;
+
+#[path = "runtime/61-explicit-schema-composition.rs"]
+mod explicit_schema_composition;

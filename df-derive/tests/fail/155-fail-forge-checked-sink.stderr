@@ -1,0 +1,10 @@
+error[E0624]: associated function `new` is private
+ --> tests/fail/155-fail-forge-checked-sink.rs:8:31
+  |
+8 |     let _forged = ColumnSink::new(schema, "forged");
+  |                               ^^^ private associated function
+  |
+ ::: $WORKSPACE/df-derive-core/src/lib.rs
+  |
+  |         fn new(schema: SchemaRef, producer: &'static str) -> Self {
+  |         --------------------------------------------------------- private associated function defined here

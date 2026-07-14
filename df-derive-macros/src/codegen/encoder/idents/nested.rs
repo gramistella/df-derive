@@ -17,8 +17,12 @@ pub(in crate::codegen) fn nested_positions(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_pos_{}", idx)
 }
 
-pub(in crate::codegen) fn nested_df(idx: usize) -> Ident {
-    format_ident!("__df_derive_gen_df_{}", idx)
+pub(in crate::codegen) fn nested_columns(idx: usize) -> Ident {
+    format_ident!("__df_derive_gen_columns_{}", idx)
+}
+
+pub(in crate::codegen) fn nested_column() -> Ident {
+    format_ident!("__df_derive_gen_column")
 }
 
 pub(in crate::codegen) fn nested_schema(idx: usize) -> Ident {
@@ -39,10 +43,6 @@ pub(in crate::codegen) fn nested_prefixed_name() -> Ident {
 
 pub(in crate::codegen) fn nested_col_name() -> Ident {
     format_ident!("__df_derive_col_name")
-}
-
-pub(in crate::codegen) fn nested_col_index() -> Ident {
-    format_ident!("__df_derive_col_index")
 }
 
 pub(in crate::codegen) fn nested_col_dtype() -> Ident {

@@ -2,8 +2,32 @@ use proc_macro2::Span;
 use quote::format_ident;
 use syn::{GenericParam, Generics, Ident};
 
-pub(in crate::codegen) fn columns() -> Ident {
-    format_ident!("__df_derive_columns")
+pub(in crate::codegen) fn column_sink_param(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_sink")
+}
+
+pub(in crate::codegen) fn schema_fields(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_schema_fields")
+}
+
+pub(in crate::codegen) fn schema_duplicate_name(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_duplicate_name")
+}
+
+pub(in crate::codegen) fn schema_nested_fields(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_nested_fields")
+}
+
+pub(in crate::codegen) fn schema_inner_name(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_inner_name")
+}
+
+pub(in crate::codegen) fn schema_inner_dtype(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_inner_dtype")
+}
+
+pub(in crate::codegen) fn schema_output_name(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_output_name")
 }
 
 pub(in crate::codegen) fn populator_iter() -> Ident {
@@ -47,20 +71,16 @@ pub(in crate::codegen) fn field_named_series() -> Ident {
     format_ident!("__df_derive_named")
 }
 
+pub(in crate::codegen) fn schema_wrapped_dtype(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_wrapped")
+}
+
 pub(in crate::codegen) fn assemble_helper() -> Ident {
     format_ident!("__df_derive_assemble_list_series_unchecked")
 }
 
 pub(in crate::codegen) fn list_assembly() -> Ident {
     format_ident!("__DfDeriveListAssembly")
-}
-
-pub(in crate::codegen) fn validate_nested_frame() -> Ident {
-    format_ident!("__df_derive_validate_nested_frame")
-}
-
-pub(in crate::codegen) fn validate_unique_column_names() -> Ident {
-    format_ident!("__df_derive_validate_unique_column_names")
 }
 
 pub(in crate::codegen) fn as_ref_str_assert_helper() -> Ident {
@@ -90,11 +110,41 @@ mod tests {
     #[test]
     fn encode_parameters_are_fresh_against_user_generics() {
         let generics: Generics = syn::parse_quote!(
-            <'__df_derive_row, __DfDeriveRows, const __DfDeriveRows_1: usize, const rows: usize>
+            <'__df_derive_row, __DfDeriveRows, const __DfDeriveRows_1: usize, const rows: usize, const __df_derive_sink: usize>
         );
 
         assert_eq!(row_iter_param(&generics), "__DfDeriveRows_2");
         assert_eq!(row_lifetime(&generics).to_string(), "'__df_derive_row_1");
         assert_eq!(rows_param(&generics), "rows_1");
+        assert_eq!(column_sink_param(&generics), "__df_derive_sink_1");
+    }
+
+    #[test]
+    fn schema_locals_are_fresh_against_user_const_generics() {
+        let generics: Generics = syn::parse_quote!(
+            <
+                const __df_derive_schema_fields: usize,
+                const __df_derive_duplicate_name: usize,
+                const __df_derive_nested_fields: usize,
+                const __df_derive_inner_name: usize,
+                const __df_derive_inner_dtype: usize,
+                const __df_derive_output_name: usize,
+                const __df_derive_wrapped: usize,
+            >
+        );
+
+        assert_eq!(schema_fields(&generics), "__df_derive_schema_fields_1");
+        assert_eq!(
+            schema_duplicate_name(&generics),
+            "__df_derive_duplicate_name_1"
+        );
+        assert_eq!(
+            schema_nested_fields(&generics),
+            "__df_derive_nested_fields_1"
+        );
+        assert_eq!(schema_inner_name(&generics), "__df_derive_inner_name_1");
+        assert_eq!(schema_inner_dtype(&generics), "__df_derive_inner_dtype_1");
+        assert_eq!(schema_output_name(&generics), "__df_derive_output_name_1");
+        assert_eq!(schema_wrapped_dtype(&generics), "__df_derive_wrapped_1");
     }
 }

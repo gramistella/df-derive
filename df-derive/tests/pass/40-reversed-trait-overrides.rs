@@ -2,6 +2,9 @@ use df_derive::ToDataFrame;
 use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
 use rust_decimal::Decimal;
 
+#[path = "../support/local_runtime.rs"]
+mod runtime_support;
+
 mod row_traits {
     use super::*;
 
@@ -15,7 +18,7 @@ mod row_traits {
         }
 
         fn schema() -> PolarsResult<SchemaRef> {
-            Ok(Self::empty_dataframe()?.schema().clone())
+            <Self as super::batch_traits::ColumnarSpec>::build_schema()
         }
     }
 
@@ -25,12 +28,7 @@ mod row_traits {
 mod batch_traits {
     use super::*;
 
-    pub trait Columnar: Sized {
-        fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
-        where
-            Self: 'a,
-            R: IntoIterator<Item = &'a Self>;
-    }
+    pub use super::runtime_support::dataframe::{ColumnSink, Columnar, ColumnarSpec};
 
     pub trait MyToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;

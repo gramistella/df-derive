@@ -5,7 +5,7 @@ use polars::prelude::*;
 use std::marker::PhantomData;
 #[path = "../support/local_runtime.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{ColumnSink, ColumnarSpec, ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
@@ -60,6 +60,7 @@ struct EncodeParamNameCollision<
     __DfDeriveRows,
     const __DfDeriveRows_1: usize,
     const rows: usize,
+    const __df_derive_sink: usize,
 > {
     id: u32,
     values: Vec<bool>,
@@ -70,6 +71,34 @@ struct EncodeParamNameCollision<
         &'__df_derive_row __DfDeriveRows,
         [__DfDeriveRows; __DfDeriveRows_1],
         [(); rows],
+        [(); __df_derive_sink],
+    )>,
+}
+
+// Schema composition locals must also be fresh against const generics. This
+// includes the names used while flattening the nested schema below.
+#[derive(ToDataFrame, Clone)]
+#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
+struct SchemaLocalNameCollision<
+    const __df_derive_schema_fields: usize,
+    const __df_derive_duplicate_name: usize,
+    const __df_derive_nested_fields: usize,
+    const __df_derive_inner_name: usize,
+    const __df_derive_inner_dtype: usize,
+    const __df_derive_output_name: usize,
+    const __df_derive_wrapped: usize,
+> {
+    id: u32,
+    nested: MetaStruct,
+    #[df_derive(skip)]
+    marker: PhantomData<(
+        [(); __df_derive_schema_fields],
+        [(); __df_derive_duplicate_name],
+        [(); __df_derive_nested_fields],
+        [(); __df_derive_inner_name],
+        [(); __df_derive_inner_dtype],
+        [(); __df_derive_output_name],
+        [(); __df_derive_wrapped],
     )>,
 }
 
@@ -167,20 +196,23 @@ where
     listed: Vec<InnerGeneric<M>>,
 }
 
-// Local batch encoder for f64 so generic instantiation with a primitive can
-// flatten via a single column. Implementing a local trait for a foreign
-// primitive is allowed in this fixture runtime.
-impl Columnar for f64 {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+// Local schema/column specification for f64 so generic instantiation with a
+// primitive can flatten via a single column. Implementing a local trait for a
+// foreign primitive is allowed in this fixture runtime.
+impl ColumnarSpec for f64 {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        Ok(std::sync::Arc::new(Schema::from_iter_check_duplicates([
+            ("value".into(), DataType::Float64),
+        ])?))
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let values: Vec<Self> = rows.into_iter().copied().collect();
-        DataFrame::new(
-            values.len(),
-            vec![Series::new("value".into(), &values).into()],
-        )
+        let values: Vec<Self> = rows.copied().collect();
+        sink.push(Series::new("value".into(), &values).into())
     }
 }
 
@@ -198,6 +230,7 @@ fn main() {
     test_default_type_parameter();
     test_multiple_generics();
     test_batch_param_name_collision();
+    test_schema_local_name_collision();
     test_option_wrapped_generic();
     test_vec_wrapped_generic();
     test_doubly_wrapped_generic();
@@ -206,8 +239,26 @@ fn main() {
     println!("All generics tests passed!");
 }
 
+fn test_schema_local_name_collision() {
+    let row = SchemaLocalNameCollision::<1, 2, 3, 4, 5, 6, 7> {
+        id: 9,
+        nested: MetaStruct {
+            timestamp: 12,
+            note: "fresh schema locals".into(),
+        },
+        marker: PhantomData,
+    };
+    let df = row.to_dataframe().unwrap();
+    assert_eq!(df.shape(), (1, 3));
+    assert_eq!(df.column("id").unwrap().u32().unwrap().get(0), Some(9));
+    assert_eq!(
+        df.column("nested.note").unwrap().str().unwrap().get(0),
+        Some("fresh schema locals")
+    );
+}
+
 fn test_batch_param_name_collision() {
-    let row = EncodeParamNameCollision::<'static, u8, 2, 3> {
+    let row = EncodeParamNameCollision::<'static, u8, 2, 3, 4> {
         id: 7,
         values: vec![true, false],
         label: Some("collision-safe".into()),
@@ -279,7 +330,7 @@ fn test_primitive_instantiation() {
         AnyValue::Float64(3.0)
     );
 
-    // Empty slice conversion uses the same typed batch encoder.
+    // Empty slice conversion uses the same checked batch boundary.
     let empty_slice: &[Wrapper<f64>] = &[];
     let empty_batch = empty_slice.to_dataframe().unwrap();
     assert_eq!(empty_batch.shape(), (0, 2));

@@ -13,9 +13,8 @@ cargo run -p df-derive --example <example_name>
 ## Available Examples
 
 ### `quickstart.rs`
-Basic usage showing how the derive emits the single `Columnar::encode`
-primitive while blanket `ToDataFrame` APIs convert both single values and
-slices to DataFrames.
+Basic usage showing how the hidden schema/column specification feeds the
+checked blanket `Columnar` and `ToDataFrame` APIs for single values and slices.
 
 ```bash
 cargo run -p df-derive --example quickstart
@@ -101,7 +100,7 @@ cargo run -p df-derive --example nested_generics
   `SchemaRef`
 - **Different use cases**: From simple structs to complex nested data with lists
 
-The examples use the default `df-derive` facade runtime. Its single batch
-primitive is `Columnar::encode`, which accepts any iterator of borrowed rows
-and consumes it exactly once; `ToDataFrame` and its `SchemaRef`-returning
-`schema()` method are blanket-derived from that encoder.
+The examples use the default facade runtime. The derive emits explicit schema
+composition plus a hidden column encoder; checked blanket `Columnar` consumes
+borrowed-row iterators, while `ToDataFrame::schema()` returns the explicit
+`SchemaRef` without running an empty encoding.

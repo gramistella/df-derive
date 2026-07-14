@@ -22,6 +22,7 @@ pub(in crate::codegen) fn build_projected_vec_primitive(
     idx: usize,
     config: &MacroConfig,
     rows: &syn::Ident,
+    sink: &syn::Ident,
 ) -> TokenStream {
     let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
@@ -36,6 +37,7 @@ pub(in crate::codegen) fn build_projected_vec_primitive(
         column.name(),
         config,
         rows,
+        sink,
     )
 }
 
@@ -45,6 +47,7 @@ pub(in crate::codegen) fn build_projected_vec_nested(
     idx: usize,
     config: &MacroConfig,
     rows: &syn::Ident,
+    sink: &syn::Ident,
 ) -> TokenStream {
     let shape = column.wrapper_shape();
     let parent_access = projected_parent_access(column);
@@ -59,6 +62,7 @@ pub(in crate::codegen) fn build_projected_vec_nested(
         column.name(),
         config,
         rows,
+        sink,
     )
 }
 
@@ -229,12 +233,12 @@ fn emit_projected_vec_primitive(
     column_name: &str,
     config: &MacroConfig,
     rows: &syn::Ident,
+    sink: &syn::Ident,
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
     let series_local = idents::vec_field_series(idx);
     let named = idents::field_named_series();
-    let columns = idents::columns();
     let leaf_arr = idents::leaf_arr();
     let total_leaves = idents::total_leaves();
 
@@ -245,10 +249,11 @@ fn emit_projected_vec_primitive(
         base: BaseCtx {
             access: &dummy_access,
             rows,
+            sink,
             idx,
             name: column_name,
         },
-        decimal128_encode_trait: &config.traits.decimal128_encode,
+        decimal128_encode_trait: &config.runtime.decimal128_encode,
         paths: &config.external_paths,
     };
     let pep = super::vec::pep_for_primitive_leaf(leaf, &leaf_ctx, shape);
@@ -300,7 +305,7 @@ fn emit_projected_vec_primitive(
                 #materialize
             };
             let #named = #series_local.with_name(#column_name.into());
-            #columns.push(#named.into());
+            #sink.push(#named.into())?;
         }
     }
 }
@@ -315,6 +320,7 @@ fn emit_projected_vec_nested(
     column_name: &str,
     config: &MacroConfig,
     rows: &syn::Ident,
+    sink: &syn::Ident,
 ) -> TokenStream {
     let pp = config.external_paths.prelude();
     let pa_root = config.external_paths.polars_arrow_root();
@@ -389,6 +395,7 @@ fn emit_projected_vec_nested(
 
     let dispatch = materialize_nested_columns(&NestedMaterializeCtx {
         field_idx: idx,
+        sink,
         ty: type_path,
         column_prefix: column_name,
         name_policy: &NestedNamePolicy::Field,
@@ -400,8 +407,8 @@ fn emit_projected_vec_nested(
             layers: &layers,
             arr_id_for_layer: idents::tuple_layer_list_arr,
         },
-        columnar_trait: &config.traits.columnar,
-        to_df_trait: &config.traits.to_dataframe,
+        columnar_trait: &config.runtime.columnar,
+        columnar_spec_trait: &config.runtime.columnar_spec,
         paths: &config.external_paths,
     });
 

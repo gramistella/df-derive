@@ -191,9 +191,10 @@ fn ctb_materialize(
 ) -> TokenStream {
     let CollectThenBulk {
         rows,
+        sink,
         ty,
         columnar_trait,
-        to_df_trait,
+        columnar_spec_trait,
         name,
         name_policy,
         idx,
@@ -224,6 +225,7 @@ fn ctb_materialize(
 
     materialize_nested_columns(&NestedMaterializeCtx {
         field_idx: idx,
+        sink,
         ty,
         column_prefix: name,
         name_policy,
@@ -232,7 +234,7 @@ fn ctb_materialize(
         total_len,
         wrapper: nested_wrapper,
         columnar_trait,
-        to_df_trait,
+        columnar_spec_trait,
         paths,
     })
 }

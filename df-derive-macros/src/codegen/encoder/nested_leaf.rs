@@ -17,9 +17,9 @@
 //! silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
 //!
 //! Every shape produces an `Encoder::Multi { columnar }` because the inner
-//! `DataFrame` carries one column per inner schema entry of `T`. The block
-//! pushes one Series per inner schema column onto the call site's `columns`
-//! vec, with the parent name prefixed onto each inner column name.
+//! checked batch carries one column per inner schema entry of `T`. The block
+//! renames each validated inner column for its parent path and writes it
+//! through the call site's `ColumnSink`.
 
 use crate::ir::NestedNamePolicy;
 use crate::ir::WrapperShape;
@@ -32,14 +32,14 @@ use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// type-as-path expression and the fully-qualified trait paths used in UFCS
-/// calls (`<#ty as #columnar_trait>::encode`,
-/// `<#ty as #to_df_trait>::schema`).
+/// calls (`<#ty as #columnar_trait>::encode_batch`,
+/// `<#ty as #columnar_spec_trait>::build_schema`).
 pub struct NestedLeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub name_policy: &'a NestedNamePolicy,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a syn::Path,
-    pub to_df_trait: &'a syn::Path,
+    pub columnar_spec_trait: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }
 
@@ -47,9 +47,10 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
     fn from(ctx: &NestedLeafCtx<'a>) -> Self {
         Self {
             rows: ctx.base.rows,
+            sink: ctx.base.sink,
             ty: ctx.ty,
             columnar_trait: ctx.columnar_trait,
-            to_df_trait: ctx.to_df_trait,
+            columnar_spec_trait: ctx.columnar_spec_trait,
             name: ctx.base.name,
             name_policy: ctx.name_policy,
             idx: ctx.base.idx,

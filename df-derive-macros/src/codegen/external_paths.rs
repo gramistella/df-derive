@@ -141,3 +141,27 @@ pub(in crate::codegen) fn wrap_list_layers_compile_time(
     }
     dt
 }
+
+/// Wrap a runtime `DataType` accumulator in `layers` `List` envelopes.
+///
+/// Nested schema composition receives its leaf dtype from another
+/// `ColumnarSpec` at runtime, while the enclosing list depth remains known to
+/// the derive. Suppress the loop entirely at depth zero so generated code does
+/// not trip `clippy::reversed_empty_ranges`.
+pub(super) fn wrap_list_layers_runtime(
+    pp: &TokenStream,
+    wrapped: &syn::Ident,
+    layers: usize,
+) -> TokenStream {
+    if layers == 0 {
+        TokenStream::new()
+    } else {
+        quote! {
+            for _ in 0..#layers {
+                #wrapped = #pp::DataType::List(
+                    ::std::boxed::Box::new(#wrapped),
+                );
+            }
+        }
+    }
+}

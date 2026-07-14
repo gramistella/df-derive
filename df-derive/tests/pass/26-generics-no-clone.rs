@@ -6,25 +6,31 @@
 // macro can be applied to a struct whose generic argument is not `Clone`.
 
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ColumnSink, ColumnarSpec, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
-// Nested-path payload: implements the sole batch primitive, deliberately NOT
-// `Clone`. Used as the generic argument for fields without a transform (which
-// route through the nested-struct encoder path).
+// Nested-path payload: implements the low-level schema/column specification,
+// deliberately NOT `Clone`. Used as the generic argument for fields without a
+// transform (which route through the nested-struct encoder path).
 #[derive(Debug)]
 struct NoClonePayload {
     value: i64,
 }
 
-impl Columnar for NoClonePayload {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for NoClonePayload {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        Ok(std::sync::Arc::new(Schema::from_iter_check_duplicates([
+            ("value".into(), DataType::Int64),
+        ])?))
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let vals: Vec<i64> = rows.into_iter().map(|row| row.value).collect();
-        DataFrame::new(vals.len(), vec![Series::new("value".into(), &vals).into()])
+        let vals: Vec<i64> = rows.map(|row| row.value).collect();
+        sink.push(Series::new("value".into(), &vals).into())
     }
 }
 
@@ -118,12 +124,12 @@ fn test_nested_path_no_clone() {
         AnyValue::Int64(10)
     );
 
-    // Slice conversion routes through the same batch primitive.
+    // Slice conversion routes through the checked batch boundary.
     let items = vec![h];
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape().0, 1);
 
-    // Empty slices use the same typed batch encoder.
+    // Empty slices use the same checked batch boundary.
     let empty: &[NestedHolder<NoClonePayload>] = &[];
     let _ = empty.to_dataframe().unwrap();
 }

@@ -59,6 +59,7 @@ pub(super) fn wrap_option_access_chain_primitive(
         base: BaseCtx {
             access: &local_access,
             rows: ctx.base.rows,
+            sink: ctx.base.sink,
             idx: ctx.base.idx,
             name: ctx.base.name,
         },

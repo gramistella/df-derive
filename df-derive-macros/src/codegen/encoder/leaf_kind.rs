@@ -1,7 +1,7 @@
 //! Leaf payloads for the depth-N `Vec`-bearing emitter.
 //!
 //! Primitive leaves use per-element push into typed storage. Nested struct and
-//! generic leaves collect references and materialize via `Columnar::encode`.
+//! generic leaves collect references and materialize via `Columnar::encode_batch`.
 
 use proc_macro2::TokenStream;
 
@@ -20,9 +20,10 @@ pub(super) struct PerElementPush {
 #[derive(Clone, Copy)]
 pub(super) struct CollectThenBulk<'a> {
     pub rows: &'a syn::Ident,
+    pub sink: &'a syn::Ident,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a syn::Path,
-    pub to_df_trait: &'a syn::Path,
+    pub columnar_spec_trait: &'a syn::Path,
     pub name: &'a str,
     pub name_policy: &'a NestedNamePolicy,
     pub idx: usize,

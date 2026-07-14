@@ -74,8 +74,8 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let mut generics = ir.generics.clone();
     let reqs = collect_generic_requirements(ir);
 
-    let columnar_trait = &config.traits.columnar;
-    let decimal_trait = &config.traits.decimal128_encode;
+    let columnar_trait = &config.runtime.columnar;
+    let decimal_trait = &config.runtime.decimal128_encode;
     let columnar_bound: syn::TypeParamBound =
         syn::parse2(quote! { #columnar_trait }).expect("trait path should parse as bound");
     let decimal_bound: syn::TypeParamBound =
@@ -85,7 +85,7 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let display_bound: syn::TypeParamBound =
         syn::parse2(quote! { ::core::fmt::Display }).expect("Display should parse as bound");
     // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
-    // `Columnar::encode`, and every primitive-vec branch in the
+    // `Columnar::encode_batch`, and every primitive-vec branch in the
     // encoder IR borrows from the for-loop binding directly. A user with a
     // non-`Clone` payload (e.g. `T: Columnar` only) can derive
     // `ToDataFrame` on a struct holding `T` without that bound leaking from

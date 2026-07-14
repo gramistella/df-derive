@@ -19,6 +19,7 @@ pub enum Encoder {
 pub struct BaseCtx<'a> {
     pub access: &'a TokenStream,
     pub rows: &'a syn::Ident,
+    pub sink: &'a syn::Ident,
     pub idx: usize,
     pub name: &'a str,
 }

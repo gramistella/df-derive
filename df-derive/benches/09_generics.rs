@@ -5,8 +5,8 @@
 //!   field is decoded by calling `payload.to_dataframe()` once per item and
 //!   extracting `AnyValues` into per-column accumulators.
 //! - `_bulk`: the macro-generated path that collects nested row references
-//!   into one iterator encoding call, validates it against a typed empty
-//!   encoding, then prefix-renames the resulting columns onto the parent
+//!   into one checked iterator encoding call, validates columns against the
+//!   explicit nested schema, then prefix-renames them onto the parent
 //!   `DataFrame`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -18,7 +18,7 @@ mod bench_support;
 #[path = "../tests/support/local_runtime.rs"]
 mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::{Columnar, ToDataFrame};
+use crate::core::dataframe::{ColumnSink, Columnar, ColumnarSpec, ToDataFrame};
 
 const N_ROWS: usize = 100_000;
 
@@ -41,19 +41,22 @@ where
     payload: T,
 }
 
-// Local iterator encoding primitive so Wrapper<f64> can flatten via a single column.
-// The runtime's blanket impl derives every ToDataFrame operation from this.
-impl Columnar for f64 {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+// Local schema/column specification so Wrapper<f64> can flatten via one column.
+// Runtime blanket impls supply Columnar and every ToDataFrame operation from it.
+impl ColumnarSpec for f64 {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        Ok(std::sync::Arc::new(Schema::from_iter_check_duplicates([
+            ("value".into(), DataType::Float64),
+        ])?))
+    }
+
+    fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        let values: Vec<Self> = rows.into_iter().copied().collect();
-        DataFrame::new(
-            values.len(),
-            vec![Series::new("value".into(), &values).into()],
-        )
+        let values: Vec<Self> = rows.copied().collect();
+        sink.push(Series::new("value".into(), &values).into())
     }
 }
 

@@ -42,17 +42,20 @@ pub fn build_column_emit(
     idx: usize,
     it_ident: &Ident,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     match column {
-        ColumnIR::Field(column) => build_field_column_emit(column, config, idx, it_ident, rows),
+        ColumnIR::Field(column) => {
+            build_field_column_emit(column, config, idx, it_ident, rows, sink)
+        }
         ColumnIR::TupleStatic(column) => {
-            build_tuple_static_emit(column, config, idx, it_ident, rows)
+            build_tuple_static_emit(column, config, idx, it_ident, rows, sink)
         }
         ColumnIR::TupleParentOption(column) => {
-            build_tuple_parent_option_emit(column, config, idx, it_ident, rows)
+            build_tuple_parent_option_emit(column, config, idx, it_ident, rows, sink)
         }
         ColumnIR::TupleParentVec(column) => {
-            build_parent_vec_projection_emit(column, config, idx, rows)
+            build_parent_vec_projection_emit(column, config, idx, rows, sink)
         }
     }
 }
@@ -63,14 +66,15 @@ fn build_field_column_emit(
     idx: usize,
     it_ident: &Ident,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     match column.leaf_spec().route() {
         TerminalLeafRoute::Nested(nested) => {
             let type_path = nested_type_path(nested);
-            build_nested_emit(column, config, idx, &type_path, rows)
+            build_nested_emit(column, config, idx, &type_path, rows, sink)
         }
         TerminalLeafRoute::Primitive(leaf) => {
-            build_primitive_emit(column, config, idx, it_ident, leaf, rows)
+            build_primitive_emit(column, config, idx, it_ident, leaf, rows, sink)
         }
     }
 }
@@ -81,6 +85,7 @@ fn build_nested_emit(
     idx: usize,
     type_path: &TokenStream,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     // The nested encoder paths run their own `for __df_derive_it in
     // rows.iter().copied()`
@@ -94,13 +99,14 @@ fn build_nested_emit(
         base: BaseCtx {
             access: &access,
             rows,
+            sink,
             idx,
             name,
         },
         name_policy: column.nested_name_policy(),
         ty: type_path,
-        columnar_trait: &config.traits.columnar,
-        to_df_trait: &config.traits.to_dataframe,
+        columnar_trait: &config.runtime.columnar,
+        columnar_spec_trait: &config.runtime.columnar_spec,
         paths: &config.external_paths,
     };
     let columnar = encoder::build_nested_encoder(column.wrapper_shape(), &ctx);
@@ -121,6 +127,7 @@ fn build_primitive_emit(
     it_ident: &Ident,
     leaf: PrimitiveLeaf<'_>,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     let name = column.name();
     let access = super::source_access::field_column_access(column, it_ident);
@@ -128,10 +135,11 @@ fn build_primitive_emit(
         base: BaseCtx {
             access: &access,
             rows,
+            sink,
             idx,
             name,
         },
-        decimal128_encode_trait: &config.traits.decimal128_encode,
+        decimal128_encode_trait: &config.runtime.decimal128_encode,
         paths: &config.external_paths,
     };
     let enc = encoder::build_encoder(leaf, column.wrapper_shape(), &leaf_ctx);
@@ -141,10 +149,9 @@ fn build_primitive_emit(
             push,
             series,
         } => {
-            let columns = idents::columns();
             let builder = quote! {{
                 let s = #series;
-                #columns.push(s.into());
+                #sink.push(s.into())?;
             }};
             ColumnEmit::RowWise {
                 decls,
@@ -163,14 +170,15 @@ fn build_parent_vec_projection_emit(
     config: &super::MacroConfig,
     idx: usize,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     let builder = match column.leaf_spec().route() {
         TerminalLeafRoute::Nested(nested) => {
             let type_path = nested_type_path(nested);
-            encoder::build_projected_vec_nested(column, &type_path, idx, config, rows)
+            encoder::build_projected_vec_nested(column, &type_path, idx, config, rows, sink)
         }
         TerminalLeafRoute::Primitive(leaf) => {
-            encoder::build_projected_vec_primitive(column, leaf, idx, config, rows)
+            encoder::build_projected_vec_primitive(column, leaf, idx, config, rows, sink)
         }
     };
     ColumnEmit::WholeColumn {
@@ -184,11 +192,13 @@ fn build_tuple_static_emit(
     idx: usize,
     it_ident: &Ident,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     let access = super::source_access::tuple_static_access(column, it_ident);
     let base = BaseCtx {
         access: &access,
         rows,
+        sink,
         idx,
         name: column.name(),
     };
@@ -207,12 +217,14 @@ fn build_tuple_parent_option_emit(
     idx: usize,
     it_ident: &Ident,
     rows: &Ident,
+    sink: &Ident,
 ) -> ColumnEmit {
     let access = super::source_access::tuple_parent_option_access(column, it_ident);
     let option_receiver = super::source_access::tuple_parent_option_some_receiver(column);
     let base = BaseCtx {
         access: &access,
         rows,
+        sink,
         idx,
         name: column.name(),
     };
@@ -233,29 +245,22 @@ fn build_projected_standard_emit(
     config: &super::MacroConfig,
 ) -> ColumnEmit {
     let pp = config.external_paths.prelude();
-    let name = base.name;
-    let idx = base.idx;
-    let rows = base.rows;
 
     if let TerminalLeafRoute::Nested(nested) = leaf_spec.route() {
         let type_path = nested_type_path(nested);
-        return build_nested_emit_with_access(
-            name,
-            wrapper_shape,
-            config,
-            idx,
-            &type_path,
-            base.access,
-            rows,
-        );
+        return build_nested_emit_with_access(wrapper_shape, config, &type_path, base);
     }
 
     let TerminalLeafRoute::Primitive(leaf) = leaf_spec.route() else {
         unreachable!("nested route returned above");
     };
+    let name = base.name;
+    let idx = base.idx;
+    let rows = base.rows;
+    let sink = base.sink;
     let leaf_ctx = LeafCtx {
         base,
-        decimal128_encode_trait: &config.traits.decimal128_encode,
+        decimal128_encode_trait: &config.runtime.decimal128_encode,
         paths: &config.external_paths,
     };
     let enc = encoder::build_encoder_with_option_receiver(
@@ -273,14 +278,13 @@ fn build_projected_standard_emit(
             let it = idents::populator_iter();
             let named = idents::field_named_series();
             let series_local = idents::vec_field_series(idx);
-            let columns = idents::columns();
             quote! {
                 {
                     #(#decls)*
                     for #it in #rows.iter().copied() { #push }
                     let #series_local: #pp::Series = #series;
                     let #named = #series_local.with_name(#name.into());
-                    #columns.push(#named.into());
+                    #sink.push(#named.into())?;
                 }
             }
         }
@@ -292,26 +296,18 @@ fn build_projected_standard_emit(
 }
 
 fn build_nested_emit_with_access(
-    name: &str,
     wrapper_shape: &WrapperShape,
     config: &super::MacroConfig,
-    idx: usize,
     type_path: &TokenStream,
-    access: &TokenStream,
-    rows: &Ident,
+    base: BaseCtx<'_>,
 ) -> ColumnEmit {
     let name_policy = crate::ir::NestedNamePolicy::Field;
     let ctx = NestedLeafCtx {
-        base: BaseCtx {
-            access,
-            rows,
-            idx,
-            name,
-        },
+        base,
         name_policy: &name_policy,
         ty: type_path,
-        columnar_trait: &config.traits.columnar,
-        to_df_trait: &config.traits.to_dataframe,
+        columnar_trait: &config.runtime.columnar,
+        columnar_spec_trait: &config.runtime.columnar_spec,
         paths: &config.external_paths,
     };
     ColumnEmit::WholeColumn {

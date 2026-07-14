@@ -84,9 +84,9 @@ This repository uses a serde-like three-crate architecture:
 
 - `df-derive`: the normal facade crate. It re-exports the derive macro from
   `df-derive-macros` and the runtime API from `df-derive-core`.
-- `df-derive-core`: a normal library crate that owns the shared
-  `dataframe::{ToDataFrame, Columnar, ToDataFrameVec, Decimal128Encode}` trait
-  identity, the `()` columnar impl, and the optional reference
+- `df-derive-core`: a normal library crate that owns the shared public runtime
+  traits, the hidden `ColumnarSpec`/checked `ColumnSink` composition boundary,
+  unit-payload support, and the optional reference
   `Decimal128Encode for rust_decimal::Decimal` impl.
 - `df-derive-macros`: the proc-macro implementation. Power users can depend
   on this directly and target `df-derive-core`, `paft`, or a custom runtime.
@@ -97,29 +97,31 @@ facade/default runtime.
 
 ## Generated API
 
-For each struct or tuple struct `T`, the macro generates exactly one runtime
-operation:
+For each struct or tuple struct `T`, the macro generates one hidden runtime
+implementation:
 
 ```rust,ignore
-impl Columnar for T {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for T {
+    fn build_schema() -> PolarsResult<SchemaRef>;
+
+    fn encode_columns<'a, I>(
+        rows: &mut I,
+        sink: &mut ColumnSink,
+    ) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>;
+        I: Iterator<Item = &'a Self>;
 }
 ```
 
-The runtime blanket-implements `ToDataFrame` for every `T: Columnar`.
-`to_dataframe()` encodes one row, `empty_dataframe()` encodes an empty
-iterator, and `schema()` returns the `SchemaRef` of that real typed empty
-output. Slices, iterator adapters, and custom one-shot iterators all use the
-same entry point; a slice of borrowed references is passed as
-`refs.iter().copied()`. The caller's iterator is consumed exactly once.
-
-Manual `Columnar` implementations must return exactly one DataFrame row for
-every yielded input row and keep their complete schema — width, ordered names,
-and dtypes — identical for empty and populated inputs. Derived parents validate
-this contract before consuming a manual nested encoder.
+`build_schema` composes names and dtypes directly; schema inspection no longer
+encodes an empty batch. `encode_columns` writes through a schema-bound sink.
+The runtime blanket `Columnar` implementation owns and counts the caller's
+one-shot iterator, then `ColumnSink` checks width, ordered names, dtypes, and
+every column height before producing an `EncodedBatch`. Public
+`Columnar::encode` constructs the outer `DataFrame`; nested encoders consume a
+child batch's validated columns directly without constructing and dismantling
+a child frame. `ToDataFrame` and the slice extension remain blanket APIs.
 
 ## Representative Generated Code
 
@@ -129,25 +131,37 @@ shortened with imports, rustc's `vec!` expansion is omitted, and
 compiler-generated helper blocks are removed.
 
 ```rust,ignore
-use df_derive::dataframe::Columnar;
+use df_derive::dataframe::{ColumnSink, ColumnarSpec};
 use df_derive::dataframe::__private::{
     polars::prelude::{
-        Column, DataFrame, Float64Chunked, IntoSeries, PolarsResult,
+        DataType, Float64Chunked, IntoSeries, PolarsResult, Schema, SchemaRef,
         StringChunked, UInt64Chunked,
     },
     polars_arrow::array::MutableBinaryViewArray,
 };
 
 #[automatically_derived]
-impl Columnar for Trade {
-    fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
+impl ColumnarSpec for Trade {
+    fn build_schema() -> PolarsResult<SchemaRef> {
+        let fields = [
+            ("symbol".into(), DataType::String),
+            ("price".into(), DataType::Float64),
+            ("size".into(), DataType::UInt64),
+        ];
+        Ok(std::sync::Arc::new(
+            Schema::from_iter_check_duplicates(fields)?,
+        ))
+    }
+
+    fn encode_columns<'a, I>(
+        rows: &mut I,
+        sink: &mut ColumnSink,
+    ) -> PolarsResult<()>
     where
         Self: 'a,
-        R: IntoIterator<Item = &'a Self>,
+        I: Iterator<Item = &'a Self>,
     {
-        // Consume an arbitrary input iterator once, then stabilize the
-        // borrowed rows for the shape-dependent column-building passes.
-        let rows = rows.into_iter().collect::<Vec<&Self>>();
+        let rows = rows.collect::<Vec<&Self>>();
         let mut symbol = MutableBinaryViewArray::<str>::with_capacity(rows.len());
         let mut price = Vec::<f64>::with_capacity(rows.len());
         let mut size = Vec::<u64>::with_capacity(rows.len());
@@ -158,21 +172,17 @@ impl Columnar for Trade {
             size.push(item.size);
         }
 
-        let mut columns = Vec::<Column>::new();
-
         let s = IntoSeries::into_series(StringChunked::with_chunk(
             "symbol".into(),
             symbol.freeze(),
         ));
-        columns.push(s.into());
+        sink.push(s.into())?;
 
         let s = IntoSeries::into_series(Float64Chunked::from_vec("price".into(), price));
-        columns.push(s.into());
+        sink.push(s.into())?;
 
         let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
-        columns.push(s.into());
-
-        DataFrame::new(rows.len(), columns)
+        sink.push(s.into())
     }
 }
 ```
@@ -342,9 +352,9 @@ struct when you need an attributed field. Nested tuples inside an outer
   `Option<Box<Node>>`, and tuple fields containing the same. Use identifier
   fields or a separate flat representation for recursive data structures.
 - Recursive nested row schemas are unsupported, including qualified or
-  mutually recursive cycles hidden behind pointer wrappers. Schema discovery
-  encodes an empty child batch, so a recursive schema has no terminating
-  child. Use identifiers or a separate acyclic tabular representation.
+  mutually recursive cycles hidden behind pointer wrappers. Explicit schema
+  composition still recurses through the nested type graph, so a cycle has no
+  terminating child. Use identifiers or a separate acyclic representation.
 - Consecutive `Option` layers above a `Vec` collapse to one list-level
   validity bit, so `None` and `Some(None)` are indistinguishable in the
   resulting list column.
@@ -368,9 +378,13 @@ struct Row {
 ```
 
 If only `trait = "x::ToDataFrame"` is provided, the macro infers the sibling
-`x::Columnar` and `x::Decimal128Encode` paths. A standalone
+`x::Columnar` and `x::Decimal128Encode` paths. From the resolved `Columnar`
+path it also requires canonical sibling `ColumnarSpec` and `ColumnSink` items.
+The checked runtime surface conventionally exposes `EncodedBatch` there too.
+A standalone
 `columnar = "x::Columnar"` override is also supported; the macro infers its
-sibling `ToDataFrame` and `Decimal128Encode` paths.
+sibling `ColumnarSpec`, `ColumnSink`, and `Decimal128Encode` paths. The
+runtime's blanket `ToDataFrame` API keeps its own trait identity.
 
 Explicit paths to the built-in facade/core runtimes,
 `df_derive::dataframe::ToDataFrame` or
@@ -441,48 +455,33 @@ selected with `#[df_derive(trait = "...")]` must name a compatible direct
 `polars` dependency. They also need a compatible direct `polars-arrow`
 dependency when the derived fields use shapes that require generated Arrow
 array builders, such as list, nullable primitive, string, or binary columns.
-Scalar-only numeric/bool derives do not need `polars-arrow`. The minimum
-runtime surface is:
+Scalar-only numeric/bool derives do not need `polars-arrow`.
+
+A custom trait identity must own its checked boundary: compatible
+`ColumnarSpec`, blanket `Columnar`, and `ToDataFrame` traits; a `ColumnSink`
+whose only generated-code operation is public `push`; and an `EncodedBatch`
+whose generated-code operation is public `into_columns`. Sink construction
+and finalization stay private to the blanket `Columnar` implementation, so a
+manual `ColumnarSpec` cannot swap in a sink bound to a different schema. The
+[compile-checked local runtime fixture](df-derive/tests/support/local_runtime.rs)
+is the complete reference implementation.
 
 ```rust
-mod runtime {
-    pub mod dataframe {
-        use polars::prelude::{DataFrame, PolarsResult, SchemaRef};
+mod runtime; // Implements the checked contract linked above.
 
-        pub trait Columnar: Sized {
-            fn encode<'a, R>(rows: R) -> PolarsResult<DataFrame>
-            where
-                Self: 'a,
-                R: IntoIterator<Item = &'a Self>;
-        }
+use df_derive::ToDataFrame;
 
-        pub trait ToDataFrame: Columnar {
-            fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-                Self::encode(std::iter::once(self))
-            }
-
-            fn empty_dataframe() -> PolarsResult<DataFrame> {
-                Self::encode(std::iter::empty::<&Self>())
-            }
-
-            fn schema() -> PolarsResult<SchemaRef> {
-                Ok(Self::empty_dataframe()?.schema().clone())
-            }
-        }
-
-        impl<T: Columnar> ToDataFrame for T {}
-
-        pub trait Decimal128Encode {
-            fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-        }
-    }
+#[derive(ToDataFrame)]
+#[df_derive(trait = "crate::runtime::dataframe::ToDataFrame")]
+struct Row {
+    id: u32,
+    values: Vec<String>,
 }
 ```
 
-The `Columnar` contract is the same as for the default runtime: `encode`
-consumes its input exactly once, preserves the number and order of yielded
-rows, and returns the same complete ordered schema for empty and populated
-inputs.
+The derive implements only `ColumnarSpec`. Keeping `Columnar`
+blanket-provided makes the checked sink boundary unoverrideable for every
+derived or manually specified encoder.
 
 ## Decimal Backends
 
@@ -556,20 +555,18 @@ has no inherent runtime performance penalty. The macro generates the hot
 column-building code at the impl site either way; the runtime path only
 selects which trait receives the impl.
 
-The generated `Columnar::encode` body accepts any iterator of `&Self`,
-including slices, `refs.iter().copied()` over borrowed-reference slices, and
-one-shot iterator adapters.
-It consumes the iterator exactly once into a `Vec<&Self>` that stabilizes the
-borrowed rows for the shape-dependent column-building passes. Values remain
-borrowed and clone-free; the temporary vector stores references only.
+The public `Columnar::encode` boundary accepts slices,
+`refs.iter().copied()`, and arbitrary one-shot iterators. It counts the rows
+actually yielded and validates the generated `ColumnarSpec` output against its
+explicit schema before constructing the outer frame. The current generated
+`encode_columns` body stabilizes borrowed rows once in a `Vec<&Self>` for its
+shape-dependent passes; values remain borrowed and clone-free.
 
-The generated hot path is shape-dependent. Primitive scalar fields are
-populated in one row loop. Nested fields collect references and call the
-nested type's columnar implementation, so each nested field may add a scan
-over the outer items. Tuple-typed fields are emitted per projection path, so
-tuple elements may each add their own scan; Vec-bearing tuple projections also
-scan the outer items to build offsets, validity, and leaf buffers. This cost
-model matters most for wide nested schemas and tuple-heavy shapes.
+The generated hot path is shape-dependent. Primitive scalar fields share a
+row loop. Nested fields collect references and call the child's checked batch
+encoder; the parent consumes validated columns directly, without allocating a
+temporary child `DataFrame`. Tuple/list traversal costs remain most visible in
+wide nested and tuple-heavy schemas.
 
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted

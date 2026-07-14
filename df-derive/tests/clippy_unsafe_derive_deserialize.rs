@@ -2,7 +2,7 @@
 // must not trip `clippy::unsafe_derive_deserialize`.
 //
 // Earlier versions of the macro emitted `unsafe { Series::from_chunks_and_dtype_unchecked(..) }`
-// directly inside the `Columnar::encode` impl method on the
+// directly inside the `ColumnarSpec::encode_columns` impl method on the
 // user's struct. Clippy walks impl blocks of `Deserialize`-able types
 // looking for `unsafe`, and that placement caused the lint to fire on every
 // `Decimal`-bearing struct downstream that paired

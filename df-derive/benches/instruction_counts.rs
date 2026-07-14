@@ -91,6 +91,18 @@ struct TupleScalarRow {
 }
 
 #[derive(ToDataFrame)]
+struct WideTupleScalarRow {
+    t0: (i64, i64, i64, i64),
+    t1: (i64, i64, i64, i64),
+    t2: (i64, i64, i64, i64),
+    t3: (i64, i64, i64, i64),
+    t4: (i64, i64, i64, i64),
+    t5: (i64, i64, i64, i64),
+    t6: (i64, i64, i64, i64),
+    t7: (i64, i64, i64, i64),
+}
+
+#[derive(ToDataFrame)]
 struct ListQuad {
     a: i64,
     b: i64,
@@ -267,6 +279,28 @@ fn generate_tuple_scalar_rows() -> Vec<TupleScalarRow> {
         .collect()
 }
 
+const fn scalar_quad(base: i64) -> (i64, i64, i64, i64) {
+    (base, base + 1, base + 2, base + 3)
+}
+
+fn generate_wide_tuple_scalar_rows() -> Vec<WideTupleScalarRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| {
+            let base = i64::try_from(i).unwrap() * 32;
+            WideTupleScalarRow {
+                t0: scalar_quad(base),
+                t1: scalar_quad(base + 4),
+                t2: scalar_quad(base + 8),
+                t3: scalar_quad(base + 12),
+                t4: scalar_quad(base + 16),
+                t5: scalar_quad(base + 20),
+                t6: scalar_quad(base + 24),
+                t7: scalar_quad(base + 28),
+            }
+        })
+        .collect()
+}
+
 fn list_value(row: usize, item: usize, lane: i64) -> i64 {
     i64::try_from(row).unwrap() * 100 + i64::try_from(item).unwrap() * 10 + lane
 }
@@ -352,6 +386,12 @@ fn bench_tuple_scalar_grouped(rows: Vec<TupleScalarRow>) -> (usize, usize) {
 }
 
 #[library_benchmark]
+#[bench::wide_tuple_scalar_replayed(generate_wide_tuple_scalar_rows())]
+fn bench_wide_tuple_scalar_replayed(rows: Vec<WideTupleScalarRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
 #[bench::nested_struct_list_control(generate_nested_struct_list_control())]
 fn bench_nested_struct_list_control(rows: Vec<NestedStructListControl>) -> (usize, usize) {
     convert_rows(rows)
@@ -374,6 +414,7 @@ library_benchmark_group!(
         bench_as_binary_medium,
         bench_flat_scalar_control,
         bench_tuple_scalar_grouped,
+        bench_wide_tuple_scalar_replayed,
         bench_nested_struct_list_control,
         bench_tuple_list_grouped
     ]

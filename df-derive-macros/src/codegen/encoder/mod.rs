@@ -22,7 +22,10 @@ mod wrapper_access;
 pub use ctx::{BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, build_encoder};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
 pub use stringy::struct_type_tokens;
-pub(in crate::codegen) use tuple_group::{TupleFieldEmitParams, build_tuple_field_emit};
+pub(in crate::codegen) use tuple_group::{
+    REPLAY_STATIC_TUPLE_MIN_TERMINALS, TupleFieldEmitParams, build_tuple_field_emit,
+    replayable_tuple_terminal_count,
+};
 
 pub(super) use ctx::build_encoder_with_option_receiver;
 pub(super) use stringy::{StringyExprKind, stringy_value_expr};

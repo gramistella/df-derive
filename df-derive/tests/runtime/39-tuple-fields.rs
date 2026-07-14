@@ -208,6 +208,18 @@ struct OptTupleWithRustDecimal {
     pair: Option<(rust_decimal::Decimal,)>,
 }
 
+// 31. Aggregate static tuple width reaches the column-replay policy boundary.
+#[derive(ToDataFrame, Clone)]
+struct WideStaticTuples<'a> {
+    head: i64,
+    t0: (i64, i64, i64, i64),
+    t1: (i64, i64, i64, i64),
+    items: Vec<i64>,
+    t2: (i64, i64, i64, i64),
+    t3: (Option<i64>, i64, i64, i64),
+    tail: &'a str,
+}
+
 #[derive(Clone)]
 struct MyDecimal(i128);
 
@@ -222,7 +234,7 @@ mod custom_decimal_tuple_backend {
 
     type Decimal = MyDecimal;
 
-    // 31. Parent Option tuple with a custom backend routed through the
+    // 32. Parent Option tuple with a custom backend routed through the
     // default Decimal128Encode trait. Tuple elements cannot carry field-level
     // decimal attrs, so the syntactic `Decimal` alias exercises the implicit
     // decimal backend path while the impl lives on the custom type.
@@ -1202,4 +1214,69 @@ fn runtime_semantics() {
     );
 
     println!("Tuple field tests passed");
+}
+
+#[test]
+fn wide_static_tuple_replay_preserves_column_order_and_values() {
+    let row = |base: i64, tail| WideStaticTuples {
+        head: base - 1,
+        t0: (base, base + 1, base + 2, base + 3),
+        t1: (base + 4, base + 5, base + 6, base + 7),
+        items: vec![base + 20, base + 21],
+        t2: (base + 8, base + 9, base + 10, base + 11),
+        t3: (
+            (base != 0).then_some(base + 12),
+            base + 13,
+            base + 14,
+            base + 15,
+        ),
+        tail,
+    };
+    let rows = [row(0, "row-0"), row(100, "row-100")];
+    let df = rows.as_slice().to_dataframe().unwrap();
+
+    assert_eq!(df.shape(), (2, 19));
+    assert_eq!(
+        df.get_column_names(),
+        [
+            "head",
+            "t0.field_0",
+            "t0.field_1",
+            "t0.field_2",
+            "t0.field_3",
+            "t1.field_0",
+            "t1.field_1",
+            "t1.field_2",
+            "t1.field_3",
+            "items",
+            "t2.field_0",
+            "t2.field_1",
+            "t2.field_2",
+            "t2.field_3",
+            "t3.field_0",
+            "t3.field_1",
+            "t3.field_2",
+            "t3.field_3",
+            "tail",
+        ],
+    );
+    assert_eq!(df.column("head").unwrap().i64().unwrap().get(1), Some(99),);
+    assert_eq!(
+        list_i64s(df.column("items").unwrap().get(1).unwrap()),
+        vec![Some(120), Some(121)],
+    );
+    assert_eq!(
+        df.column("tail").unwrap().str().unwrap().get(1),
+        Some("row-100"),
+    );
+    for tuple in 0..4 {
+        for lane in 0..4 {
+            let column = format!("t{tuple}.field_{lane}");
+            let values = df.column(&column).unwrap().i64().unwrap();
+            let offset = i64::from(tuple * 4 + lane);
+            let first = (tuple != 3 || lane != 0).then_some(offset);
+            assert_eq!(values.get(0), first, "{column}");
+            assert_eq!(values.get(1), Some(100 + offset), "{column}");
+        }
+    }
 }

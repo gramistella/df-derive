@@ -249,6 +249,55 @@ mod tests {
     }
 
     #[test]
+    fn wide_static_tuples_replay_narrow_column_loops() {
+        let narrow = generated(&syn::parse_quote! {
+            struct NarrowTuple {
+                values: (i64, i64, i64, i64, i64, i64, i64, i64),
+            }
+        });
+        let wide = generated(&syn::parse_quote! {
+            struct WideTuples {
+                t0: (i64, i64, i64, i64),
+                t1: (i64, i64, i64, i64),
+                t2: (i64, i64, i64, i64),
+                t3: (i64, i64, i64, i64),
+                t4: (i64, i64, i64, i64),
+                t5: (i64, i64, i64, i64),
+                t6: (i64, i64, i64, i64),
+                t7: (Option<i64>, i64, i64, i64),
+            }
+        });
+
+        let generics = syn::Generics::default();
+        let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let replay_rows = encoder::idents::replay_rows(ident_scope);
+        let row_capacity = encoder::idents::row_capacity(&generics);
+        let row = encoder::idents::populator_iter();
+
+        assert!(!narrow.contains(&replay_rows.to_string()), "{narrow}");
+        assert_eq!(wide.matches("in rows . by_ref ()").count(), 1, "{wide}");
+        assert_eq!(
+            wide.matches(&format!("in {replay_rows} . iter () . copied ()"))
+                .count(),
+            32,
+            "every wide-tuple terminal must have one scoped column loop: {wide}",
+        );
+        assert_eq!(
+            wide.matches(&format!("{replay_rows} . push ({row})"))
+                .count(),
+            1,
+            "the one-shot input must be buffered exactly once: {wide}",
+        );
+        assert!(
+            wide.contains(&format!(
+                "let {row_capacity} : usize = {replay_rows} . len ()"
+            )),
+            "replayed columns must allocate from the exact buffered length: {wide}",
+        );
+        assert!(!wide.contains("Iterator :: collect"), "{wide}");
+    }
+
+    #[test]
     fn tuple_siblings_share_their_source_projection() {
         let bare = generated(&syn::parse_quote! {
             struct TupleScalars {

@@ -16,6 +16,7 @@ pub(in crate::codegen) struct FieldEmit {
     pub decls: Vec<TokenStream>,
     pub push: TokenStream,
     pub builders: Vec<TokenStream>,
+    pub requires_replay: bool,
     pub terminal_count: usize,
     pub group_count: usize,
 }
@@ -27,6 +28,8 @@ pub(in crate::codegen) struct FieldEmitParams<'a> {
     pub terminal_start: usize,
     pub group_start: usize,
     pub row: &'a Ident,
+    pub replay_rows: &'a Ident,
+    pub replay_static_tuples: bool,
     pub row_capacity: &'a Ident,
     pub sink: &'a Ident,
 }
@@ -48,6 +51,8 @@ pub(in crate::codegen) fn build_field_emit(
         terminal_start,
         group_start,
         row,
+        replay_rows,
+        replay_static_tuples,
         row_capacity,
         sink,
     } = params;
@@ -66,6 +71,7 @@ pub(in crate::codegen) fn build_field_emit(
                 decls: lifecycle.decls,
                 push: lifecycle.push,
                 builders: lifecycle.builders,
+                requires_replay: false,
                 terminal_count: 1,
                 group_count: 0,
             }
@@ -79,6 +85,8 @@ pub(in crate::codegen) fn build_field_emit(
                     terminal_start,
                     group_start,
                     row,
+                    replay_rows,
+                    replay_static_tuples,
                     row_capacity,
                     sink,
                 },
@@ -87,6 +95,7 @@ pub(in crate::codegen) fn build_field_emit(
                 decls: tuple.lifecycle.decls,
                 push: tuple.lifecycle.push,
                 builders: tuple.lifecycle.builders,
+                requires_replay: tuple.requires_replay,
                 terminal_count: tuple.terminal_count,
                 group_count: tuple.group_count,
             }

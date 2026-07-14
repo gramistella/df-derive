@@ -30,6 +30,7 @@ use super::{
 
 pub(in crate::codegen) struct TupleFieldEmit {
     pub lifecycle: EncodeLifecycle,
+    pub requires_replay: bool,
     pub terminal_count: usize,
     pub group_count: usize,
 }
@@ -41,9 +42,18 @@ pub(in crate::codegen) struct TupleFieldEmitParams<'a> {
     pub terminal_start: usize,
     pub group_start: usize,
     pub row: &'a syn::Ident,
+    pub replay_rows: &'a syn::Ident,
+    pub replay_static_tuples: bool,
     pub row_capacity: &'a syn::Ident,
     pub sink: &'a syn::Ident,
 }
+
+// Below this width, avoiding an internal row-reference buffer is cheaper than
+// replaying the input once per scalar column. At and above it, one giant
+// row-wise push loop creates enough live buffer state to lose decisively to
+// narrow column-at-a-time loops. Criterion 22 and the matching Gungraun guard
+// own this execution-policy boundary.
+pub(in crate::codegen) const REPLAY_STATIC_TUPLE_MIN_TERMINALS: usize = 16;
 
 #[derive(Clone)]
 struct SharedListStack {
@@ -427,16 +437,170 @@ impl TupleBuilder<'_> {
     }
 }
 
+struct ReplayedTupleBuilder<'a> {
+    config: &'a MacroConfig,
+    ident_scope: GeneratedIdentScope<'a>,
+    row: &'a syn::Ident,
+    replay_rows: &'a syn::Ident,
+    row_capacity: &'a syn::Ident,
+    sink: &'a syn::Ident,
+    next_terminal: usize,
+    builders: Vec<TokenStream>,
+}
+
+impl ReplayedTupleBuilder<'_> {
+    fn build_children(&mut self, elements: &NonEmpty<TupleNode>, tuple: &TokenStream) {
+        for node in elements.iter() {
+            let child = project_required_child(tuple, node.step());
+            match node.kind() {
+                TupleNodeKind::Leaf(common) => {
+                    self.build_terminal(common, node.wrapper_shape(), &child);
+                }
+                TupleNodeKind::Tuple(children) => {
+                    self.build_children(children, &quote! { &(#child) });
+                }
+            }
+        }
+    }
+
+    fn build_terminal(
+        &mut self,
+        common: &ColumnCommon,
+        wrapper: &WrapperShape,
+        access: &TokenStream,
+    ) {
+        let idx = self.next_terminal;
+        self.next_terminal += 1;
+        let TerminalLeafRoute::Primitive(leaf) = common.leaf_spec().route() else {
+            unreachable!("replayed tuple plans contain only primitive leaves");
+        };
+        let input_rows_exact = idents::input_rows_exact(self.ident_scope);
+        let ctx = LeafCtx {
+            base: BaseCtx {
+                access,
+                row_capacity: self.row_capacity,
+                sink: self.sink,
+                idx,
+                name: common.name(),
+            },
+            cardinality: LeafCardinality::InputRows,
+            ident_scope: self.ident_scope,
+            input_rows_exact: &input_rows_exact,
+            decimal128_encode_trait: &self.config.runtime.decimal128_encode,
+            paths: &self.config.external_paths,
+        };
+        let Encoder::Leaf {
+            decls,
+            push,
+            series,
+        } = build_encoder_with_option_receiver(leaf, wrapper, &ctx, None)
+        else {
+            unreachable!("a replayable primitive leaf always has a scalar encoder");
+        };
+        let row = self.row;
+        let rows = self.replay_rows;
+        let sink = self.sink;
+        let name = common.name();
+        let output_series = idents::tuple_output_series(self.ident_scope);
+        let output_named = idents::tuple_output_named(self.ident_scope);
+        self.builders.push(quote! {{
+            #(#decls)*
+            for #row in #rows.iter().copied() {
+                #push
+            }
+            let #output_series = #series;
+            let #output_named = #output_series.with_name(#name.into());
+            #sink.push(#output_named.into())?;
+        }});
+    }
+}
+
+const fn wrapper_is_bare_leaf(wrapper: &WrapperShape) -> bool {
+    matches!(wrapper, WrapperShape::Leaf(shape) if shape.is_bare())
+}
+
+fn node_is_replayable(node: &TupleNode) -> bool {
+    match node.kind() {
+        TupleNodeKind::Leaf(common) => {
+            matches!(node.wrapper_shape(), WrapperShape::Leaf(_))
+                && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(_))
+        }
+        TupleNodeKind::Tuple(elements) => {
+            wrapper_is_bare_leaf(node.wrapper_shape()) && elements.iter().all(node_is_replayable)
+        }
+    }
+}
+
+pub(in crate::codegen) fn replayable_tuple_terminal_count(field: &TupleField) -> Option<usize> {
+    (wrapper_is_bare_leaf(field.wrapper_shape()) && field.elements().iter().all(node_is_replayable))
+        .then(|| tuple_terminal_count(field.elements()))
+}
+
+fn tuple_terminal_count(elements: &NonEmpty<TupleNode>) -> usize {
+    elements
+        .iter()
+        .map(|node| match node.kind() {
+            TupleNodeKind::Leaf(_) => 1,
+            TupleNodeKind::Tuple(children) => tuple_terminal_count(children),
+        })
+        .sum()
+}
+
+fn tuple_group_count(elements: &NonEmpty<TupleNode>) -> usize {
+    1 + elements
+        .iter()
+        .map(|node| match node.kind() {
+            TupleNodeKind::Leaf(_) => 0,
+            TupleNodeKind::Tuple(children) => tuple_group_count(children),
+        })
+        .sum::<usize>()
+}
+
+fn build_replayed_tuple_field_emit(
+    field: &TupleField,
+    params: TupleFieldEmitParams<'_>,
+) -> TupleFieldEmit {
+    let root = crate::codegen::source_access::field_source_access(field.source(), params.row);
+    let mut builder = ReplayedTupleBuilder {
+        config: params.config,
+        ident_scope: params.ident_scope,
+        row: params.row,
+        replay_rows: params.replay_rows,
+        row_capacity: params.row_capacity,
+        sink: params.sink,
+        next_terminal: params.terminal_start,
+        builders: Vec::new(),
+    };
+    builder.build_children(field.elements(), &quote! { &(#root) });
+    let terminal_count = builder.next_terminal - params.terminal_start;
+    debug_assert_eq!(terminal_count, tuple_terminal_count(field.elements()));
+    TupleFieldEmit {
+        lifecycle: EncodeLifecycle {
+            decls: Vec::new(),
+            push: TokenStream::new(),
+            builders: builder.builders,
+        },
+        requires_replay: true,
+        terminal_count,
+        group_count: tuple_group_count(field.elements()),
+    }
+}
+
 pub(in crate::codegen) fn build_tuple_field_emit(
     field: &TupleField,
     params: TupleFieldEmitParams<'_>,
 ) -> TupleFieldEmit {
+    if params.replay_static_tuples && replayable_tuple_terminal_count(field).is_some() {
+        return build_replayed_tuple_field_emit(field, params);
+    }
     let TupleFieldEmitParams {
         config,
         ident_scope,
         terminal_start,
         group_start,
         row,
+        replay_rows: _,
+        replay_static_tuples: _,
         row_capacity,
         sink,
     } = params;
@@ -470,6 +634,7 @@ pub(in crate::codegen) fn build_tuple_field_emit(
             push,
             builders: builder.builders,
         },
+        requires_replay: false,
         terminal_count: builder.next_terminal - builder.terminal_start,
         group_count: builder.next_group - builder.group_start,
     }

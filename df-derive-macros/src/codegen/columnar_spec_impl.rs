@@ -1,4 +1,4 @@
-use crate::ir::StructIR;
+use crate::ir::{FieldPlan, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -9,6 +9,7 @@ struct EncodeParts {
     decls: Vec<TokenStream>,
     pushes: Vec<TokenStream>,
     builders: Vec<TokenStream>,
+    requires_replay: bool,
 }
 
 /// Walk every source field and concatenate its declaration, per-row, and
@@ -18,6 +19,8 @@ fn prepare_encode_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
+    replay_rows: &syn::Ident,
+    replay_static_tuples: bool,
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
 ) -> EncodeParts {
@@ -34,6 +37,8 @@ fn prepare_encode_parts(
                 terminal_start: terminal_idx,
                 group_start: group_idx,
                 row: it_ident,
+                replay_rows,
+                replay_static_tuples,
                 row_capacity,
                 sink,
             },
@@ -41,11 +46,25 @@ fn prepare_encode_parts(
         terminal_idx += emit.terminal_count;
         group_idx += emit.group_count;
         parts.decls.extend(emit.decls);
-        parts.pushes.push(emit.push);
+        if !emit.push.is_empty() {
+            parts.pushes.push(emit.push);
+        }
         parts.builders.extend(emit.builders);
+        parts.requires_replay |= emit.requires_replay;
     }
     debug_assert_eq!(terminal_idx, ir.terminal_column_count());
     parts
+}
+
+fn should_replay_static_tuples(ir: &StructIR) -> bool {
+    ir.fields
+        .iter()
+        .filter_map(|field| match field {
+            FieldPlan::Tuple(tuple) => super::encoder::replayable_tuple_terminal_count(tuple),
+            FieldPlan::Column(_) => None,
+        })
+        .sum::<usize>()
+        >= super::encoder::REPLAY_STATIC_TUPLE_MIN_TERMINALS
 }
 
 fn encode_columns_method_body(
@@ -59,11 +78,43 @@ fn encode_columns_method_body(
     let ident_scope = idents::GeneratedIdentScope::new(&ir.generics);
     let row_upper_bound = idents::row_upper_bound(ident_scope);
     let input_rows_exact = idents::input_rows_exact(ident_scope);
+    let replay_rows = idents::replay_rows(ident_scope);
+    let replay_static_tuples = should_replay_static_tuples(ir);
     let EncodeParts {
         decls,
         pushes,
         builders,
-    } = prepare_encode_parts(ir, config, it_ident, row_capacity, sink);
+        requires_replay,
+    } = prepare_encode_parts(
+        ir,
+        config,
+        it_ident,
+        &replay_rows,
+        replay_static_tuples,
+        row_capacity,
+        sink,
+    );
+
+    if requires_replay {
+        return quote! {
+            let (#row_capacity, #row_upper_bound) =
+                ::core::iter::Iterator::size_hint(&*#rows);
+            let #input_rows_exact: bool =
+                #row_upper_bound == ::std::option::Option::Some(#row_capacity);
+            let _ = #input_rows_exact;
+            let mut #replay_rows: ::std::vec::Vec<_> =
+                ::std::vec::Vec::with_capacity(#row_capacity);
+            #(#decls)*
+            for #it_ident in #rows.by_ref() {
+                #replay_rows.push(#it_ident);
+                #(#pushes)*
+                let _ = #it_ident;
+            }
+            let #row_capacity: usize = #replay_rows.len();
+            #(#builders)*
+            ::std::result::Result::Ok(())
+        };
+    }
 
     quote! {
         let (#row_capacity, #row_upper_bound) =

@@ -198,6 +198,25 @@ pub enum PrimitiveLeaf<'a> {
     AsStr(&'a StringyBase),
 }
 
+/// Observable effects of evaluating one primitive source value.
+///
+/// The planner uses this instead of a boolean so fallible built-ins and
+/// user-defined calls cannot silently acquire the same scheduling policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvaluationEffect {
+    InfallibleBuiltin,
+    FallibleBuiltin,
+    UserCode,
+}
+
+impl EvaluationEffect {
+    /// Whether evaluation may move after the source-row pass without changing
+    /// iterator consumption, error order, or user-code call order.
+    pub const fn allows_replay(self) -> bool {
+        matches!(self, Self::InfallibleBuiltin)
+    }
+}
+
 impl PrimitiveLeaf<'_> {
     pub const fn is_copy(self) -> bool {
         matches!(
@@ -211,9 +230,8 @@ impl PrimitiveLeaf<'_> {
         )
     }
 
-    /// Whether leaf evaluation is concrete, infallible, and free of
-    /// user-defined calls, so codegen may move it after the source-row pass.
-    pub const fn is_deferred_safe(self) -> bool {
+    /// Classifies the observable work required to evaluate this leaf.
+    pub const fn evaluation_effect(self) -> EvaluationEffect {
         match self {
             Self::Numeric(_)
             | Self::String
@@ -226,17 +244,58 @@ impl PrimitiveLeaf<'_> {
             | Self::Duration {
                 unit: DateTimeUnit::Milliseconds,
                 source: DurationSource::Chrono,
-            } => true,
-            Self::AsStr(base) => matches!(
-                base,
-                StringyBase::String | StringyBase::BorrowedStr | StringyBase::CowStr
-            ),
+            } => EvaluationEffect::InfallibleBuiltin,
+            Self::AsStr(StringyBase::String | StringyBase::BorrowedStr | StringyBase::CowStr) => {
+                EvaluationEffect::InfallibleBuiltin
+            }
             Self::DateTime(DateTimeUnit::Nanoseconds)
             | Self::NaiveDateTime(DateTimeUnit::Nanoseconds)
-            | Self::Duration { .. }
-            | Self::Decimal { .. }
-            | Self::AsString => false,
+            | Self::Duration { .. } => EvaluationEffect::FallibleBuiltin,
+            Self::Decimal { .. }
+            | Self::AsString
+            | Self::AsStr(StringyBase::Struct(_) | StringyBase::Generic(_)) => {
+                EvaluationEffect::UserCode
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod primitive_effect_tests {
+    use super::*;
+
+    #[test]
+    fn primitive_effects_separate_replayable_fallible_and_user_work() {
+        assert_eq!(
+            PrimitiveLeaf::Numeric(NumericKind::I32).evaluation_effect(),
+            EvaluationEffect::InfallibleBuiltin,
+        );
+        assert_eq!(
+            PrimitiveLeaf::DateTime(DateTimeUnit::Nanoseconds).evaluation_effect(),
+            EvaluationEffect::FallibleBuiltin,
+        );
+        assert_eq!(
+            PrimitiveLeaf::Duration {
+                unit: DateTimeUnit::Milliseconds,
+                source: DurationSource::Std,
+            }
+            .evaluation_effect(),
+            EvaluationEffect::FallibleBuiltin,
+        );
+        assert_eq!(
+            PrimitiveLeaf::Decimal {
+                precision: 18,
+                scale: 4,
+            }
+            .evaluation_effect(),
+            EvaluationEffect::UserCode,
+        );
+
+        let custom = StringyBase::Struct(syn::parse_quote!(CustomString));
+        assert_eq!(
+            PrimitiveLeaf::AsStr(&custom).evaluation_effect(),
+            EvaluationEffect::UserCode,
+        );
     }
 }
 

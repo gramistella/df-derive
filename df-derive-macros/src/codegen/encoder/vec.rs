@@ -812,7 +812,7 @@ const fn primitive_vec_leaf_schedule(leaf: PrimitiveLeaf<'_>) -> PrimitiveVecSch
     // Deferred fill runs after the source iterator is exhausted. Restrict it
     // to concrete, infallible operations so an encoding error or user-defined
     // call still stops at—and is observed in—the current source row.
-    if leaf.is_deferred_safe() {
+    if leaf.evaluation_effect().allows_replay() {
         PrimitiveVecSchedule::DeferredSegments
     } else {
         PrimitiveVecSchedule::ImmediateReserved

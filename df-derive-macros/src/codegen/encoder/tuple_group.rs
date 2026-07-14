@@ -150,7 +150,7 @@ impl TupleBuilder<'_> {
         idx: usize,
         name: &str,
     ) -> Option<TokenStream> {
-        if !self.replay_static_terminals || !leaf.is_deferred_safe() {
+        if !self.replay_static_terminals || !leaf.evaluation_effect().allows_replay() {
             return None;
         }
         let (Some(replay_input), WrapperShape::Leaf(_)) = (replay_input, wrapper) else {
@@ -589,7 +589,7 @@ const fn wrapper_is_bare_leaf(wrapper: &WrapperShape) -> bool {
 
 const fn terminal_is_replayable(node: &TupleNode, common: &ColumnCommon) -> bool {
     matches!(node.wrapper_shape(), WrapperShape::Leaf(_))
-        && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(leaf) if leaf.is_deferred_safe())
+        && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(leaf) if leaf.evaluation_effect().allows_replay())
 }
 
 pub(in crate::codegen) fn replayable_tuple_terminal_count(field: &TupleField) -> Option<usize> {

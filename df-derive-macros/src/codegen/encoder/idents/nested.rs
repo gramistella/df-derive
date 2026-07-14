@@ -61,6 +61,10 @@ pub(in crate::codegen) fn nested_inner_rech() -> Ident {
     format_ident!("__df_derive_inner_rech")
 }
 
+pub(in crate::codegen) fn nested_inner_logical_dtype() -> Ident {
+    format_ident!("__df_derive_inner_logical_dtype")
+}
+
 pub(in crate::codegen) fn nested_maybe() -> Ident {
     format_ident!("__df_derive_maybe")
 }

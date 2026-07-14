@@ -1,109 +1,97 @@
 use syn::Ident;
 
-use super::{AccessChain, NestedNamePolicy, NonEmpty, TerminalLeafSpec, VecLayers, WrapperShape};
+use super::{NestedNamePolicy, NonEmpty, TerminalLeafSpec, WrapperShape};
 
+/// One source field in declaration order.
+///
+/// Tuple fields retain their semantic hierarchy until execution planning so
+/// sibling leaves can share source traversal and list infrastructure.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ColumnIR {
-    Field(FieldColumn),
-    TupleStatic(TupleStaticColumn),
-    TupleParentOption(TupleParentOptionColumn),
-    TupleParentVec(TupleParentVecColumn),
+pub enum FieldPlan {
+    Column(FieldColumn),
+    Tuple(TupleField),
 }
 
-impl ColumnIR {
-    pub(crate) const fn field(
+impl FieldPlan {
+    pub(crate) const fn column(
         name: String,
         source: FieldSource,
         leaf_spec: TerminalLeafSpec,
         wrapper_shape: WrapperShape,
         nested_name_policy: NestedNamePolicy,
     ) -> Self {
-        Self::Field(FieldColumn {
+        Self::Column(FieldColumn {
             common: ColumnCommon::new(name, leaf_spec, nested_name_policy),
             source,
             wrapper_shape,
         })
     }
 
-    pub(crate) const fn tuple_static(
-        name: String,
-        root: FieldSource,
-        path: TupleProjectionPath,
-        leaf_spec: TerminalLeafSpec,
+    pub(crate) const fn tuple(
+        source: FieldSource,
         wrapper_shape: WrapperShape,
+        elements: NonEmpty<TupleNode>,
     ) -> Self {
-        Self::TupleStatic(TupleStaticColumn {
-            common: ColumnCommon::new(name, leaf_spec, NestedNamePolicy::Field),
-            root,
-            path,
+        Self::Tuple(TupleField {
+            source,
             wrapper_shape,
+            elements,
         })
     }
 
-    pub(crate) const fn tuple_parent_option(
-        name: String,
-        root: FieldSource,
-        path: TupleProjectionPath,
-        parent_access: AccessChain,
-        leaf_spec: TerminalLeafSpec,
-        wrapper_shape: WrapperShape,
-    ) -> Self {
-        Self::TupleParentOption(TupleParentOptionColumn {
-            common: ColumnCommon::new(name, leaf_spec, NestedNamePolicy::Field),
-            root,
-            path,
-            parent_access,
-            wrapper_shape,
-        })
-    }
-
-    pub(crate) const fn tuple_parent_vec(
-        name: String,
-        root: FieldSource,
-        terminal_step: TupleProjectionStep,
-        projection_layer: usize,
-        parent_inner_access: AccessChain,
-        leaf_spec: TerminalLeafSpec,
-        wrapper_shape: VecLayers,
-    ) -> Self {
-        Self::TupleParentVec(TupleParentVecColumn {
-            common: ColumnCommon::new(name, leaf_spec, NestedNamePolicy::Field),
-            root,
-            terminal_step,
-            projection_layer,
-            parent_inner_access,
-            wrapper_shape,
-        })
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        self.common().name()
-    }
-
-    pub const fn leaf_spec(&self) -> &TerminalLeafSpec {
-        self.common().leaf_spec()
-    }
-
-    pub const fn nested_name_policy(&self) -> &NestedNamePolicy {
-        self.common().nested_name_policy()
-    }
-
-    pub const fn vec_depth(&self) -> usize {
+    pub fn visit_terminal_columns(&self, visitor: &mut impl FnMut(TerminalColumnRef<'_>)) {
         match self {
-            Self::Field(column) => column.wrapper_shape.vec_depth(),
-            Self::TupleStatic(column) => column.wrapper_shape.vec_depth(),
-            Self::TupleParentOption(column) => column.wrapper_shape.vec_depth(),
-            Self::TupleParentVec(column) => column.wrapper_shape.depth(),
+            Self::Column(column) => visitor(TerminalColumnRef {
+                common: &column.common,
+                vec_depth: column.wrapper_shape.vec_depth(),
+            }),
+            Self::Tuple(tuple) => {
+                let parent_vec_depth = tuple.wrapper_shape.vec_depth();
+                for element in tuple.elements.iter() {
+                    element.visit_terminal_columns(parent_vec_depth, visitor);
+                }
+            }
         }
     }
 
-    const fn common(&self) -> &ColumnCommon {
+    pub fn terminal_column_count(&self) -> usize {
+        let mut count = 0;
+        self.visit_terminal_columns(&mut |_| count += 1);
+        count
+    }
+
+    pub fn has_vec_shape(&self) -> bool {
         match self {
-            Self::Field(column) => &column.common,
-            Self::TupleStatic(column) => &column.common,
-            Self::TupleParentOption(column) => &column.common,
-            Self::TupleParentVec(column) => &column.common,
+            Self::Column(column) => column.wrapper_shape.vec_depth() > 0,
+            Self::Tuple(tuple) => {
+                tuple.wrapper_shape.vec_depth() > 0
+                    || tuple.elements.iter().any(TupleNode::has_vec_shape)
+            }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TerminalColumnRef<'a> {
+    common: &'a ColumnCommon,
+    vec_depth: usize,
+}
+
+impl<'a> TerminalColumnRef<'a> {
+    pub fn name(self) -> &'a str {
+        self.common.name()
+    }
+
+    pub const fn leaf_spec(self) -> &'a TerminalLeafSpec {
+        self.common.leaf_spec()
+    }
+
+    pub const fn nested_name_policy(self) -> &'a NestedNamePolicy {
+        self.common.nested_name_policy()
+    }
+
+    pub const fn vec_depth(self) -> usize {
+        self.vec_depth
     }
 }
 
@@ -170,123 +158,109 @@ impl FieldColumn {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TupleStaticColumn {
-    common: ColumnCommon,
-    root: FieldSource,
-    path: TupleProjectionPath,
+pub struct TupleField {
+    source: FieldSource,
     wrapper_shape: WrapperShape,
+    elements: NonEmpty<TupleNode>,
 }
 
-impl TupleStaticColumn {
-    pub fn name(&self) -> &str {
-        self.common.name()
-    }
-
-    pub const fn leaf_spec(&self) -> &TerminalLeafSpec {
-        self.common.leaf_spec()
-    }
-
-    pub const fn root(&self) -> &FieldSource {
-        &self.root
-    }
-
-    pub const fn path(&self) -> &TupleProjectionPath {
-        &self.path
+impl TupleField {
+    pub const fn source(&self) -> &FieldSource {
+        &self.source
     }
 
     pub const fn wrapper_shape(&self) -> &WrapperShape {
         &self.wrapper_shape
     }
+
+    pub const fn elements(&self) -> &NonEmpty<TupleNode> {
+        &self.elements
+    }
 }
 
+/// One tuple element. Nested tuples remain nodes rather than being flattened
+/// into independent terminal columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TupleParentOptionColumn {
-    common: ColumnCommon,
-    root: FieldSource,
-    path: TupleProjectionPath,
-    parent_access: AccessChain,
+pub struct TupleNode {
+    step: TupleProjectionStep,
     wrapper_shape: WrapperShape,
+    kind: TupleNodeKind,
 }
 
-impl TupleParentOptionColumn {
-    pub fn name(&self) -> &str {
-        self.common.name()
+impl TupleNode {
+    pub(crate) fn leaf(
+        name: String,
+        step: TupleProjectionStep,
+        wrapper_shape: WrapperShape,
+        leaf_spec: TerminalLeafSpec,
+    ) -> Self {
+        Self {
+            step,
+            wrapper_shape,
+            kind: TupleNodeKind::Leaf(Box::new(ColumnCommon::new(
+                name,
+                leaf_spec,
+                NestedNamePolicy::Field,
+            ))),
+        }
     }
 
-    pub const fn leaf_spec(&self) -> &TerminalLeafSpec {
-        self.common.leaf_spec()
+    pub(crate) fn tuple(
+        step: TupleProjectionStep,
+        wrapper_shape: WrapperShape,
+        elements: NonEmpty<Self>,
+    ) -> Self {
+        Self {
+            step,
+            wrapper_shape,
+            kind: TupleNodeKind::Tuple(Box::new(elements)),
+        }
     }
 
-    pub const fn root(&self) -> &FieldSource {
-        &self.root
-    }
-
-    pub const fn path(&self) -> &TupleProjectionPath {
-        &self.path
-    }
-
-    pub const fn parent_access(&self) -> &AccessChain {
-        &self.parent_access
+    pub const fn step(&self) -> TupleProjectionStep {
+        self.step
     }
 
     pub const fn wrapper_shape(&self) -> &WrapperShape {
         &self.wrapper_shape
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TupleParentVecColumn {
-    common: ColumnCommon,
-    root: FieldSource,
-    terminal_step: TupleProjectionStep,
-    projection_layer: usize,
-    parent_inner_access: AccessChain,
-    wrapper_shape: VecLayers,
-}
-
-impl TupleParentVecColumn {
-    pub fn name(&self) -> &str {
-        self.common.name()
+    pub const fn kind(&self) -> &TupleNodeKind {
+        &self.kind
     }
 
-    pub const fn leaf_spec(&self) -> &TerminalLeafSpec {
-        self.common.leaf_spec()
+    fn visit_terminal_columns(
+        &self,
+        parent_vec_depth: usize,
+        visitor: &mut impl FnMut(TerminalColumnRef<'_>),
+    ) {
+        let vec_depth = parent_vec_depth + self.wrapper_shape.vec_depth();
+        match &self.kind {
+            TupleNodeKind::Leaf(common) => visitor(TerminalColumnRef {
+                common: common.as_ref(),
+                vec_depth,
+            }),
+            TupleNodeKind::Tuple(elements) => {
+                for element in elements.iter() {
+                    element.visit_terminal_columns(vec_depth, visitor);
+                }
+            }
+        }
     }
 
-    pub const fn root(&self) -> &FieldSource {
-        &self.root
-    }
-
-    pub const fn terminal_step(&self) -> TupleProjectionStep {
-        self.terminal_step
-    }
-
-    pub const fn projection_layer(&self) -> usize {
-        self.projection_layer
-    }
-
-    pub const fn parent_inner_access(&self) -> &AccessChain {
-        &self.parent_inner_access
-    }
-
-    pub const fn wrapper_shape(&self) -> &VecLayers {
-        &self.wrapper_shape
+    fn has_vec_shape(&self) -> bool {
+        self.wrapper_shape.vec_depth() > 0
+            || match &self.kind {
+                TupleNodeKind::Leaf(_) => false,
+                TupleNodeKind::Tuple(elements) => elements.iter().any(Self::has_vec_shape),
+            }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TupleProjectionPath {
-    steps: NonEmpty<TupleProjectionStep>,
-}
-
-impl TupleProjectionPath {
-    pub(crate) fn from_vec(steps: Vec<TupleProjectionStep>) -> Option<Self> {
-        NonEmpty::from_vec(steps).map(|steps| Self { steps })
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &TupleProjectionStep> {
-        self.steps.iter()
-    }
+pub enum TupleNodeKind {
+    Leaf(Box<ColumnCommon>),
+    Tuple(Box<NonEmpty<TupleNode>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

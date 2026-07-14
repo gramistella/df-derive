@@ -15,18 +15,19 @@
 //! `Self`-bearing impl method so `clippy::unsafe_derive_deserialize` stays
 //! silent on downstream `#[derive(ToDataFrame, Deserialize)]` types.
 //!
-//! Every shape produces an `Encoder::Multi { columnar }` because the inner
-//! checked batch carries one column per inner schema entry of `T`. The block
-//! renames each validated inner column for its parent path and writes it
-//! through the call site's `ColumnSink`.
+//! Every shape produces an [`super::ctx::EncodeLifecycle`] because the inner
+//! checked batch carries one column per inner schema entry of `T`. Its
+//! materialization phase renames each validated inner column for the parent
+//! path and writes it through the call site's `ColumnSink`.
 
 use crate::ir::NestedNamePolicy;
 use crate::ir::WrapperShape;
 use proc_macro2::TokenStream;
 
 use super::BaseCtx;
-use super::emit::vec_emit_ctb;
+use super::emit::{vec_emit_ctb, vec_emit_ctb_with_prefix};
 use super::leaf_kind::CollectThenBulk;
+use super::nested_columns::SharedListPrefix;
 use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
@@ -45,7 +46,7 @@ pub struct NestedLeafCtx<'a> {
 impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
     fn from(ctx: &NestedLeafCtx<'a>) -> Self {
         Self {
-            rows: ctx.base.rows,
+            row_capacity: ctx.base.row_capacity,
             sink: ctx.base.sink,
             ty: ctx.ty,
             columnar_trait: ctx.columnar_trait,
@@ -61,7 +62,26 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
 /// wrapper shape the parser accepts — bare `Nested`, `Option<...<Nested>>`,
 /// or any `Vec`-bearing stack — routes through the unified emitter via a
 /// single [`CollectThenBulk`] leaf.
-pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> TokenStream {
+pub fn build_nested_encoder(
+    wrapper: &WrapperShape,
+    ctx: &NestedLeafCtx<'_>,
+) -> super::ctx::EncodeLifecycle {
     let ctb = CollectThenBulk::from(ctx);
     vec_emit_ctb(&ctb, ctx.base.access, ctx.base.idx, wrapper, ctx.paths)
+}
+
+pub(super) fn build_nested_encoder_with_prefix(
+    wrapper: &WrapperShape,
+    prefix: SharedListPrefix<'_>,
+    ctx: &NestedLeafCtx<'_>,
+) -> super::ctx::EncodeLifecycle {
+    let ctb = CollectThenBulk::from(ctx);
+    vec_emit_ctb_with_prefix(
+        &ctb,
+        ctx.base.access,
+        ctx.base.idx,
+        wrapper,
+        Some(prefix),
+        ctx.paths,
+    )
 }

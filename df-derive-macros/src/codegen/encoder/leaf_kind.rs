@@ -9,7 +9,9 @@ use crate::ir::NestedNamePolicy;
 
 #[derive(Clone)]
 pub(super) struct PerElementPush {
+    pub row_capacity: syn::Ident,
     pub per_elem_push: TokenStream,
+    pub reserve: TokenStream,
     pub storage_decls: TokenStream,
     pub leaf_arr_expr: TokenStream,
     pub leaf_offsets_post_push: TokenStream,
@@ -19,7 +21,7 @@ pub(super) struct PerElementPush {
 
 #[derive(Clone, Copy)]
 pub(super) struct CollectThenBulk<'a> {
-    pub rows: &'a syn::Ident,
+    pub row_capacity: &'a syn::Ident,
     pub sink: &'a syn::Ident,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a syn::Path,

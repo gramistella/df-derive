@@ -13,16 +13,16 @@ mod leaf_kind;
 mod nested_columns;
 mod nested_leaf;
 mod option;
-mod projected;
 mod shape_walk;
 mod stringy;
+mod tuple_group;
 mod vec;
 mod wrapper_access;
 
-pub use ctx::{BaseCtx, Encoder, LeafCtx, build_encoder};
+pub use ctx::{BaseCtx, EncodeLifecycle, Encoder, LeafCtx, build_encoder};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
-pub(in crate::codegen) use projected::{build_projected_vec_nested, build_projected_vec_primitive};
 pub use stringy::struct_type_tokens;
+pub(in crate::codegen) use tuple_group::{TupleFieldEmitParams, build_tuple_field_emit};
 
 pub(super) use ctx::build_encoder_with_option_receiver;
 pub(super) use stringy::{StringyExprKind, stringy_value_expr};

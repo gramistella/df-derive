@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 fn needs_list_assembly(ir: &StructIR) -> bool {
-    ir.columns.iter().any(|column| column.vec_depth() > 0)
+    ir.fields.iter().any(crate::ir::FieldPlan::has_vec_shape)
 }
 
 #[allow(clippy::too_many_lines)]

@@ -11,38 +11,40 @@ struct EncodeParts {
     builders: Vec<TokenStream>,
 }
 
-/// Walk every column, build its [`ColumnEmit`](super::column_emit::ColumnEmit),
-/// and concatenate decls/pushes/builders into the three buckets the
-/// generated encoder splices into `ColumnarSpec::encode_columns`. Each `ColumnEmit`
-/// explicitly declares whether it contributes row-wise work or builds whole
-/// columns after the loop. Concatenation is order-preserving.
+/// Walk every source field and concatenate its declaration, per-row, and
+/// materialization phases. Tuple fields contribute one recursive push tree,
+/// regardless of how many terminal columns they contain.
 fn prepare_encode_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
-    rows: &syn::Ident,
+    row_capacity: &syn::Ident,
     sink: &syn::Ident,
 ) -> EncodeParts {
     let mut parts = EncodeParts::default();
-    for (idx, column) in ir.columns.iter().enumerate() {
-        let emit = super::column_emit::build_column_emit(column, config, idx, it_ident, rows, sink);
-        match emit {
-            super::column_emit::ColumnEmit::RowWise {
-                decls: emit_decls,
-                push,
-                builders: emit_builders,
-            } => {
-                parts.decls.extend(emit_decls);
-                parts.pushes.push(push);
-                parts.builders.extend(emit_builders);
-            }
-            super::column_emit::ColumnEmit::WholeColumn {
-                builders: emit_builders,
-            } => {
-                parts.builders.extend(emit_builders);
-            }
-        }
+    let mut terminal_idx = 0;
+    let mut group_idx = 0;
+    let ident_scope = idents::GeneratedIdentScope::new(&ir.generics);
+    for field in &ir.fields {
+        let emit = super::column_emit::build_field_emit(
+            field,
+            super::column_emit::FieldEmitParams {
+                config,
+                ident_scope,
+                terminal_start: terminal_idx,
+                group_start: group_idx,
+                row: it_ident,
+                row_capacity,
+                sink,
+            },
+        );
+        terminal_idx += emit.terminal_count;
+        group_idx += emit.group_count;
+        parts.decls.extend(emit.decls);
+        parts.pushes.push(emit.push);
+        parts.builders.extend(emit.builders);
     }
+    debug_assert_eq!(terminal_idx, ir.terminal_column_count());
     parts
 }
 
@@ -51,22 +53,23 @@ fn encode_columns_method_body(
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
     rows: &syn::Ident,
+    row_capacity: &syn::Ident,
     sink: &syn::Ident,
 ) -> TokenStream {
     let EncodeParts {
         decls,
         pushes,
         builders,
-    } = prepare_encode_parts(ir, config, it_ident, rows, sink);
-    let push_loop = if pushes.is_empty() {
-        TokenStream::new()
-    } else {
-        quote! { for #it_ident in #rows.iter().copied() { #(#pushes)* } }
-    };
+    } = prepare_encode_parts(ir, config, it_ident, row_capacity, sink);
 
     quote! {
+        let #row_capacity: usize =
+            ::core::iter::Iterator::size_hint(&*#rows).0;
         #(#decls)*
-        #push_loop
+        for #it_ident in #rows.by_ref() {
+            #(#pushes)*
+            let _ = #it_ident;
+        }
         #(#builders)*
         ::std::result::Result::Ok(())
     }
@@ -76,12 +79,11 @@ fn build_schema_method_body(ir: &StructIR, config: &super::MacroConfig) -> Token
     let pp = config.external_paths.prelude();
     let fields = idents::schema_fields(&ir.generics);
     let duplicate_name = idents::schema_duplicate_name(&ir.generics);
-    let column_count = ir.columns.len();
-    let schema_entries: Vec<TokenStream> = ir
-        .columns
-        .iter()
-        .map(|column| super::schema::build_schema_entries(column, ir, config))
-        .collect();
+    let column_count = ir.terminal_column_count();
+    let mut schema_entries = Vec::with_capacity(column_count);
+    ir.visit_terminal_columns(|column| {
+        schema_entries.push(super::schema::build_schema_entries(column, ir, config));
+    });
 
     quote! {
         let mut #fields: ::std::vec::Vec<(#pp::PlSmallStr, #pp::DataType)> =
@@ -114,12 +116,14 @@ pub fn generate_columnar_spec_impl(ir: &StructIR, config: &super::MacroConfig) -
     let row_iter_param = idents::row_iter_param(&ir.generics);
     let row_lifetime = idents::row_lifetime(&ir.generics);
     let rows = idents::rows_param(&ir.generics);
+    let row_capacity = idents::row_capacity(&ir.generics);
     let sink = idents::column_sink_param(&ir.generics);
     let (impl_generics, ty_generics, where_clause) =
         super::bounds::impl_parts_with_bounds(ir, config);
 
     let schema_body = build_schema_method_body(ir, config);
-    let encode_columns_body = encode_columns_method_body(ir, config, &it_ident, &rows, &sink);
+    let encode_columns_body =
+        encode_columns_method_body(ir, config, &it_ident, &rows, &row_capacity, &sink);
 
     quote! {
         #[automatically_derived]
@@ -136,8 +140,6 @@ pub fn generate_columnar_spec_impl(ir: &StructIR, config: &super::MacroConfig) -
                 Self: #row_lifetime,
                 #row_iter_param: ::core::iter::Iterator<Item = &#row_lifetime Self>,
             {
-                let #rows: ::std::vec::Vec<&#row_lifetime Self> =
-                    ::core::iter::Iterator::collect(#rows.by_ref());
                 #encode_columns_body
             }
         }

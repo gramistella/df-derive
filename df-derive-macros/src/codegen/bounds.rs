@@ -54,9 +54,9 @@ fn collect_leaf_requirements(leaf: &LeafSpec, reqs: &mut GenericRequirements) {
 fn collect_generic_requirements(ir: &StructIR) -> GenericRequirements {
     let mut reqs = GenericRequirements::default();
 
-    for column in &ir.columns {
+    ir.visit_terminal_columns(|column| {
         collect_leaf_requirements(column.leaf_spec().as_leaf_spec(), &mut reqs);
-    }
+    });
 
     reqs
 }
@@ -84,12 +84,11 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
         .expect("AsRef<str> should parse as bound");
     let display_bound: syn::TypeParamBound =
         syn::parse2(quote! { ::core::fmt::Display }).expect("Display should parse as bound");
-    // No `Clone` bound: bulk emitters collect `Vec<&T>` and route through
-    // `Columnar::encode_batch`, and every primitive-vec branch in the
-    // encoder IR borrows from the for-loop binding directly. A user with a
-    // non-`Clone` payload (e.g. `T: Columnar` only) can derive
-    // `ToDataFrame` on a struct holding `T` without that bound leaking from
-    // the macro.
+    // No `Clone` bound: nested emitters buffer references and route through
+    // `Columnar::encode_batch`, while primitive branches borrow directly
+    // from the shared row-loop binding. A user with a non-`Clone` payload
+    // (e.g. `T: Columnar` only) can derive `ToDataFrame` on a struct holding
+    // `T` without that bound leaking from the macro.
     for tp in generics.type_params_mut() {
         if contains_ident(&reqs.nested_params, &tp.ident) {
             tp.bounds.push(columnar_bound.clone());

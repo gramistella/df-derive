@@ -6,12 +6,6 @@ pub struct LeafShape {
 }
 
 impl LeafShape {
-    pub const fn bare() -> Self {
-        Self {
-            access: AccessChain::empty(),
-        }
-    }
-
     pub fn from_access(access: AccessChain) -> Self {
         assert!(
             access.is_empty() || access.has_option(),
@@ -50,10 +44,6 @@ pub struct VecLayers {
 impl VecLayers {
     pub const fn depth(&self) -> usize {
         self.layers.len()
-    }
-
-    pub fn any_outer_validity(&self) -> bool {
-        self.layers.iter().any(VecLayerSpec::has_outer_validity)
     }
 
     pub fn has_inner_option(&self) -> bool {

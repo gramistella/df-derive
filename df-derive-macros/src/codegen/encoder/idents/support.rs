@@ -2,6 +2,21 @@ use proc_macro2::Span;
 use quote::format_ident;
 use syn::{GenericParam, Generics, Ident};
 
+#[derive(Clone, Copy)]
+pub(in crate::codegen) struct GeneratedIdentScope<'a> {
+    generics: &'a Generics,
+}
+
+impl<'a> GeneratedIdentScope<'a> {
+    pub(in crate::codegen) const fn new(generics: &'a Generics) -> Self {
+        Self { generics }
+    }
+
+    pub(in crate::codegen) fn fresh(self, base: &str) -> Ident {
+        fresh_generic_ident(self.generics, base)
+    }
+}
+
 pub(in crate::codegen) fn column_sink_param(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_sink")
 }
@@ -47,6 +62,10 @@ pub(in crate::codegen) fn rows_param(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "rows")
 }
 
+pub(in crate::codegen) fn row_capacity(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_row_capacity")
+}
+
 fn fresh_generic_ident(generics: &Generics, base: &str) -> Ident {
     let mut suffix = 0_usize;
     loop {
@@ -69,6 +88,10 @@ fn fresh_generic_ident(generics: &Generics, base: &str) -> Ident {
 
 pub(in crate::codegen) fn field_named_series() -> Ident {
     format_ident!("__df_derive_named")
+}
+
+pub(in crate::codegen) fn field_output_series(scope: GeneratedIdentScope<'_>) -> Ident {
+    scope.fresh("__df_derive_series")
 }
 
 pub(in crate::codegen) fn schema_wrapped_dtype(generics: &Generics) -> Ident {
@@ -116,6 +139,7 @@ mod tests {
         assert_eq!(row_iter_param(&generics), "__DfDeriveRows_2");
         assert_eq!(row_lifetime(&generics).to_string(), "'__df_derive_row_1");
         assert_eq!(rows_param(&generics), "rows_1");
+        assert_eq!(row_capacity(&generics), "__df_derive_row_capacity");
         assert_eq!(column_sink_param(&generics), "__df_derive_sink_1");
     }
 

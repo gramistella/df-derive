@@ -1,12 +1,27 @@
 use syn::Ident;
 
-use super::{ColumnIR, LeafSpec, NestedNamePolicy, WrapperShape};
+use super::{FieldPlan, LeafSpec, NestedNamePolicy, TerminalColumnRef, WrapperShape};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructIR {
     pub name: Ident,
     pub generics: syn::Generics,
-    pub columns: Vec<ColumnIR>,
+    pub fields: Vec<FieldPlan>,
+}
+
+impl StructIR {
+    pub fn visit_terminal_columns(&self, mut visitor: impl FnMut(TerminalColumnRef<'_>)) {
+        for field in &self.fields {
+            field.visit_terminal_columns(&mut visitor);
+        }
+    }
+
+    pub fn terminal_column_count(&self) -> usize {
+        self.fields
+            .iter()
+            .map(FieldPlan::terminal_column_count)
+            .sum()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

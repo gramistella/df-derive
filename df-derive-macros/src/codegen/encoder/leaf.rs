@@ -26,46 +26,26 @@ pub(super) struct LeafArm {
 }
 
 pub(super) fn vec_decl(buf: &syn::Ident, elem: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
-    let rows = ctx.base.rows;
+    let row_capacity = ctx.base.row_capacity;
     quote! {
         let mut #buf: ::std::vec::Vec<#elem> =
-            ::std::vec::Vec::with_capacity(#rows.len());
+            ::std::vec::Vec::with_capacity(#row_capacity);
     }
 }
 
 pub(super) fn mb_decl(ident: &syn::Ident, pa_root: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
-    let rows = ctx.base.rows;
+    let row_capacity = ctx.base.row_capacity;
     quote! {
         let mut #ident: #pa_root::bitmap::MutableBitmap =
-            #pa_root::bitmap::MutableBitmap::with_capacity(#rows.len());
+            #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity);
     }
-}
-
-pub(super) fn mb_decl_filled(
-    ident: &syn::Ident,
-    capacity: &TokenStream,
-    value: bool,
-    pa_root: &TokenStream,
-) -> TokenStream {
-    let b = idents::bitmap_builder();
-    quote! {
-        let mut #ident: #pa_root::bitmap::MutableBitmap = {
-            let mut #b = #pa_root::bitmap::MutableBitmap::with_capacity(#capacity);
-            #b.extend_constant(#capacity, #value);
-            #b
-        };
-    }
-}
-
-pub(super) fn row_idx_decl(ident: &syn::Ident) -> TokenStream {
-    quote! { let mut #ident: usize = 0; }
 }
 
 pub(super) fn mbva_decl(buf: &syn::Ident, pa_root: &TokenStream, ctx: &LeafCtx<'_>) -> TokenStream {
-    let rows = ctx.base.rows;
+    let row_capacity = ctx.base.row_capacity;
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<str> =
-            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#rows.len());
+            #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#row_capacity);
     }
 }
 
@@ -74,10 +54,10 @@ pub(super) fn mbva_bytes_decl(
     pa_root: &TokenStream,
     ctx: &LeafCtx<'_>,
 ) -> TokenStream {
-    let rows = ctx.base.rows;
+    let row_capacity = ctx.base.row_capacity;
     quote! {
         let mut #buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
-            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#rows.len());
+            #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#row_capacity);
     }
 }
 
@@ -191,12 +171,10 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
 pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
-    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
@@ -214,13 +192,13 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
                         #buf.push_value_ignore_validity(#v.as_str());
+                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
                         #buf.push_value_ignore_validity("");
-                        #validity.set(#row_idx, false);
+                        #validity.push(false);
                     }
                 }
-                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = string_chunked_series(
@@ -231,8 +209,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
-                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
-                    row_idx_decl(&row_idx),
+                    mb_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -245,12 +222,10 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
 pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
-    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
@@ -271,13 +246,13 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 match &(#access) {
                     ::std::option::Option::Some(#v) => {
                         #buf.push_value_ignore_validity(#bytes);
+                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
                         #buf.push_value_ignore_validity(#empty);
-                        #validity.set(#row_idx, false);
+                        #validity.push(false);
                     }
                 }
-                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = binary_chunked_series(
@@ -288,8 +263,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             LeafArm {
                 decls: vec![
                     mbva_bytes_decl(&buf, pa_root, ctx),
-                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
-                    row_idx_decl(&row_idx),
+                    mb_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -306,12 +280,10 @@ fn bytes_ref_expr(binding: &proc_macro2::TokenStream) -> proc_macro2::TokenStrea
 pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
-    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
 
     match arm {
         LeafArmKind::Bare => {
@@ -326,11 +298,19 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         LeafArmKind::Option { .. } => {
             let option_push = quote! {
                 match (#access) {
-                    ::std::option::Option::Some(true) => { #buf.set(#row_idx, true); }
-                    ::std::option::Option::Some(false) => {}
-                    ::std::option::Option::None => { #validity.set(#row_idx, false); }
+                    ::std::option::Option::Some(true) => {
+                        #buf.push(true);
+                        #validity.push(true);
+                    }
+                    ::std::option::Option::Some(false) => {
+                        #buf.push(false);
+                        #validity.push(true);
+                    }
+                    ::std::option::Option::None => {
+                        #buf.push(false);
+                        #validity.push(false);
+                    }
                 }
-                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = quote! {{
@@ -345,9 +325,8 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             }};
             LeafArm {
                 decls: vec![
-                    mb_decl_filled(&buf, &quote! { #rows.len() }, false, pa_root),
-                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
-                    row_idx_decl(&row_idx),
+                    mb_decl(&buf, pa_root, ctx),
+                    mb_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -517,12 +496,10 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
-    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
     let scratch_decl =
         quote! { let mut #scratch: ::std::string::String = ::std::string::String::new(); };
 
@@ -564,13 +541,13 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                             )
                         })?;
                         #buf.push_value_ignore_validity(#scratch.as_str());
+                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
                         #buf.push_value_ignore_validity("");
-                        #validity.set(#row_idx, false);
+                        #validity.push(false);
                     }
                 }
-                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = string_chunked_series(
@@ -582,8 +559,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
                     scratch_decl,
-                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
-                    row_idx_decl(&row_idx),
+                    mb_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,
@@ -596,12 +572,10 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
 pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
-    let row_idx = idents::primitive_row_idx(ctx.base.idx);
     let access = ctx.base.access;
     let name = ctx.base.name;
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
     match arm {
         LeafArmKind::Bare => {
             let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
@@ -621,13 +595,13 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
                 match #option_value {
                     ::std::option::Option::Some(#v) => {
                         #buf.push_value_ignore_validity(#v);
+                        #validity.push(true);
                     }
                     ::std::option::Option::None => {
                         #buf.push_value_ignore_validity("");
-                        #validity.set(#row_idx, false);
+                        #validity.push(false);
                     }
                 }
-                #row_idx += 1;
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let option_series = string_chunked_series(
@@ -638,8 +612,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             LeafArm {
                 decls: vec![
                     mbva_decl(&buf, pa_root, ctx),
-                    mb_decl_filled(&validity, &quote! { #rows.len() }, true, pa_root),
-                    row_idx_decl(&row_idx),
+                    mb_decl(&validity, pa_root, ctx),
                 ],
                 push: option_push,
                 series: option_series,

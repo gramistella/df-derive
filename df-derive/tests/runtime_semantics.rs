@@ -90,3 +90,6 @@ mod flatten_field;
 
 #[path = "runtime/61-explicit-schema-composition.rs"]
 mod explicit_schema_composition;
+
+#[path = "runtime/62-wrapped-nested-tuples.rs"]
+mod wrapped_nested_tuples;

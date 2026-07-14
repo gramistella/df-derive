@@ -5,9 +5,7 @@ use crate::attrs::{
 use crate::ir::{FieldIR, NestedNamePolicy, WrapperShape};
 use crate::lower::binary::parse_as_binary_shape;
 use crate::lower::leaf::parse_leaf_spec;
-use crate::lower::tuple::{
-    FieldAttrRef, reject_attrs_on_tuple, reject_unsupported_wrapped_nested_tuples,
-};
+use crate::lower::tuple::{FieldAttrRef, reject_attrs_on_tuple};
 use crate::lower::validation::reject_direct_self_reference;
 use crate::lower::wrappers::normalize_wrappers;
 use crate::type_analysis::{AnalyzedBase, analyze_type};
@@ -64,7 +62,6 @@ pub fn lower_field(
 
     let analyzed = analyze_type(&field.ty, generic_params)?;
     reject_direct_self_reference(&analyzed, &display_name, struct_name)?;
-    reject_unsupported_wrapped_nested_tuples(&analyzed, &display_name)?;
 
     let outer_smart_ptr_depth = analyzed.outer_smart_ptr_depth;
     let conversion = match &disposition {

@@ -45,11 +45,7 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{
-        AccessChain, ColumnIR, FieldSource, LeafShape, LeafSpec, NestedNamePolicy, NonEmpty,
-        NumericKind, StructIR, TerminalLeafSpec, VecLayerSpec, VecLayers, WrapperShape,
-    };
-    use quote::{format_ident, quote};
+    use quote::quote;
 
     fn test_config() -> MacroConfig {
         let dataframe_mod = quote! { crate::dataframe };
@@ -74,74 +70,36 @@ mod tests {
         assert!(generated.contains(&columnar_spec_impl), "{generated}");
     }
 
-    fn field_source(name: &str) -> FieldSource {
-        FieldSource {
-            name: format_ident!("{}", name),
-            field_index: None,
-            outer_smart_ptr_depth: 0,
-        }
+    fn parse_ir(input: &syn::DeriveInput) -> StructIR {
+        crate::parser::parse_to_ir(input).expect("input should lower to IR")
     }
 
-    fn numeric_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
-        ColumnIR::field(
-            name.to_owned(),
-            field_source(name),
-            terminal_leaf(LeafSpec::Numeric(NumericKind::U32)),
-            wrapper_shape,
-            NestedNamePolicy::Field,
-        )
-    }
-
-    fn nested_column(name: &str, wrapper_shape: WrapperShape) -> ColumnIR {
-        ColumnIR::field(
-            name.to_owned(),
-            field_source(name),
-            terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
-            wrapper_shape,
-            NestedNamePolicy::Field,
-        )
-    }
-
-    fn terminal_leaf(leaf: LeafSpec) -> TerminalLeafSpec {
-        TerminalLeafSpec::new(leaf).expect("test leaf should be terminal")
-    }
-
-    fn depth_one_vec_shape() -> WrapperShape {
-        WrapperShape::Vec(VecLayers {
-            layers: NonEmpty::new(
-                VecLayerSpec {
-                    access: AccessChain::empty(),
-                },
-                Vec::new(),
-            ),
-            inner_access: AccessChain::empty(),
-        })
+    fn generated(input: &syn::DeriveInput) -> String {
+        generate_code(&parse_ir(input), &test_config()).to_string()
     }
 
     #[test]
     fn generated_columnar_specs_are_automatically_derived() {
-        let empty_ir = StructIR {
-            name: format_ident!("EmptyRow"),
-            generics: syn::Generics::default(),
-            columns: Vec::new(),
-        };
+        let empty_ir = parse_ir(&syn::parse_quote!(
+            struct EmptyRow;
+        ));
         assert_generated_impl_is_automatically_derived(&empty_ir);
 
-        let non_empty_ir = StructIR {
-            name: format_ident!("Row"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
-        };
+        let non_empty_ir = parse_ir(&syn::parse_quote! {
+            struct Row {
+                id: u32,
+            }
+        });
         assert_generated_impl_is_automatically_derived(&non_empty_ir);
     }
 
     #[test]
     fn derive_emits_exactly_one_runtime_primitive() {
-        let ir = StructIR {
-            name: format_ident!("Row"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
-        };
+        let ir = parse_ir(&syn::parse_quote! {
+            struct Row {
+                id: u32,
+            }
+        });
         let generated = generate_code(&ir, &test_config()).to_string();
 
         assert_eq!(
@@ -179,21 +137,18 @@ mod tests {
 
     #[test]
     fn generated_specs_emit_columns_without_constructing_frames() {
-        let empty_ir = StructIR {
-            name: format_ident!("EmptyRow"),
-            generics: syn::Generics::default(),
-            columns: Vec::new(),
-        };
-        let empty = generate_code(&empty_ir, &test_config()).to_string();
+        let empty = generated(&syn::parse_quote!(
+            struct EmptyRow;
+        ));
         assert!(!empty.contains("DataFrame"), "{empty}");
-        assert!(empty.contains("Iterator :: collect"), "{empty}");
+        assert!(!empty.contains("Iterator :: collect"), "{empty}");
+        assert_eq!(empty.matches("in rows . by_ref ()").count(), 1, "{empty}");
 
-        let non_empty_ir = StructIR {
-            name: format_ident!("Row"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
-        };
-        let non_empty = generate_code(&non_empty_ir, &test_config()).to_string();
+        let non_empty = generated(&syn::parse_quote! {
+            struct Row {
+                id: u32,
+            }
+        });
         let sink = encoder::idents::column_sink_param(&syn::Generics::default());
         assert!(non_empty.contains(&format!("{sink} . push")), "{non_empty}");
 
@@ -207,12 +162,11 @@ mod tests {
 
     #[test]
     fn list_assembly_helper_is_emitted_only_for_vec_shapes() {
-        let scalar_ir = StructIR {
-            name: format_ident!("ScalarRow"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
-        };
-        let scalar = generate_code(&scalar_ir, &test_config()).to_string();
+        let scalar = generated(&syn::parse_quote! {
+            struct ScalarRow {
+                id: u32,
+            }
+        });
         assert!(!scalar.contains("__DfDeriveListAssembly"), "{scalar}");
         assert!(
             !scalar.contains("from_chunks_and_dtype_unchecked"),
@@ -220,12 +174,11 @@ mod tests {
         );
         assert!(!scalar.contains("unsafe"), "{scalar}");
 
-        let vec_ir = StructIR {
-            name: format_ident!("VecRow"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("ids", depth_one_vec_shape())],
-        };
-        let with_vec = generate_code(&vec_ir, &test_config()).to_string();
+        let with_vec = generated(&syn::parse_quote! {
+            struct VecRow {
+                ids: Vec<u32>,
+            }
+        });
         assert!(with_vec.contains("__DfDeriveListAssembly"), "{with_vec}");
         assert!(
             with_vec.contains("from_chunks_and_dtype_unchecked"),
@@ -236,31 +189,25 @@ mod tests {
 
     #[test]
     fn nested_shapes_compose_checked_batches_without_child_frames() {
-        let scalar_ir = StructIR {
-            name: format_ident!("ScalarRow"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("id", WrapperShape::Leaf(LeafShape::bare()))],
-        };
-        let scalar = generate_code(&scalar_ir, &test_config()).to_string();
+        let scalar = generated(&syn::parse_quote! {
+            struct ScalarRow {
+                id: u32,
+            }
+        });
         assert!(!scalar.contains("encode_batch"), "{scalar}");
 
-        let primitive_vec_ir = StructIR {
-            name: format_ident!("PrimitiveVecRow"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("ids", depth_one_vec_shape())],
-        };
-        let primitive_vec = generate_code(&primitive_vec_ir, &test_config()).to_string();
+        let primitive_vec = generated(&syn::parse_quote! {
+            struct PrimitiveVecRow {
+                ids: Vec<u32>,
+            }
+        });
         assert!(!primitive_vec.contains("encode_batch"), "{primitive_vec}");
 
-        let nested_ir = StructIR {
-            name: format_ident!("NestedRow"),
-            generics: syn::Generics::default(),
-            columns: vec![nested_column(
-                "inner",
-                WrapperShape::Leaf(LeafShape::bare()),
-            )],
-        };
-        let nested = generate_code(&nested_ir, &test_config()).to_string();
+        let nested = generated(&syn::parse_quote! {
+            struct NestedRow {
+                inner: Inner,
+            }
+        });
         assert!(nested.contains("Columnar > :: encode_batch"), "{nested}");
         assert!(nested.contains(". into_columns ()"), "{nested}");
         assert!(
@@ -270,18 +217,11 @@ mod tests {
         assert!(!nested.contains("DataFrame"), "{nested}");
         assert!(!nested.contains("validate_nested_frame"), "{nested}");
 
-        let tuple_nested_ir = StructIR {
-            name: format_ident!("TupleNestedRow"),
-            generics: syn::Generics::default(),
-            columns: vec![ColumnIR::field(
-                "pair.field_0".to_owned(),
-                field_source("pair"),
-                terminal_leaf(LeafSpec::Struct(syn::parse_quote!(Inner))),
-                WrapperShape::Leaf(LeafShape::bare()),
-                NestedNamePolicy::Field,
-            )],
-        };
-        let tuple_nested = generate_code(&tuple_nested_ir, &test_config()).to_string();
+        let tuple_nested = generated(&syn::parse_quote! {
+            struct TupleNestedRow {
+                pair: (Inner, u32),
+            }
+        });
         assert!(
             tuple_nested.contains("Columnar > :: encode_batch"),
             "{tuple_nested}"
@@ -291,63 +231,72 @@ mod tests {
     }
 
     #[test]
-    fn builder_only_spec_omits_empty_row_loop() {
-        let vec_ir = StructIR {
-            name: format_ident!("VecOnlyRow"),
-            generics: syn::Generics::default(),
-            columns: vec![numeric_column("ids", depth_one_vec_shape())],
-        };
-        let generated = generate_code(&vec_ir, &test_config()).to_string();
-        let empty_loop = format!(
-            "for {} in rows . iter () {{ }}",
-            encoder::idents::populator_iter()
-        );
+    fn generated_encoder_consumes_every_shape_in_one_outer_loop() {
+        let mixed = generated(&syn::parse_quote! {
+            struct Mixed<T> {
+                id: u32,
+                name: Option<String>,
+                values: Vec<Vec<Option<u32>>>,
+                nested: Option<Vec<Inner>>,
+                tuple: Option<Vec<(u32, Vec<bool>, Option<Inner>)>>,
+                generic: T,
+            }
+        });
 
-        assert!(!generated.contains(&empty_loop), "{generated}");
+        assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
+        assert!(!mixed.contains("Iterator :: collect"), "{mixed}");
+        assert!(!mixed.contains("rows . iter"), "{mixed}");
     }
 
     #[test]
-    fn list_columns_have_no_separate_precount_walk() {
-        fn row_walks(input: syn::DeriveInput) -> usize {
-            let ir = crate::parser::parse_to_ir(&input).expect("input should lower to IR");
-            generate_code(&ir, &test_config())
-                .to_string()
-                .matches("in rows . iter () . copied ()")
-                .count()
-        }
+    fn tuple_siblings_share_their_source_projection() {
+        let bare = generated(&syn::parse_quote! {
+            struct TupleScalars {
+                values: (u32, bool, String),
+            }
+        });
+        let optional_nested = generated(&syn::parse_quote! {
+            struct OptionalNestedTuple {
+                values: Option<((u32, bool), String)>,
+            }
+        });
+        let listed = generated(&syn::parse_quote! {
+            struct TupleLists {
+                values: Option<Vec<(u32, bool, String)>>,
+            }
+        });
 
+        let generics = syn::Generics::default();
+        let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let row = encoder::idents::populator_iter();
+        let tuple_item = encoder::idents::tuple_item(ident_scope, 0);
+        let tuple_layer = encoder::idents::LayerIdents::tuple(ident_scope, 0, 0);
+
+        for generated in [&bare, &optional_nested, &listed] {
+            assert_eq!(
+                generated.matches(&format!("{row} . values")).count(),
+                1,
+                "tuple siblings must bind their source once: {generated}",
+            );
+        }
         assert_eq!(
-            row_walks(syn::parse_quote! {
-                struct PrimitiveLists {
-                    values: Vec<Vec<Option<u32>>>,
-                }
-            }),
+            listed.matches(&format!("for {tuple_item} in")).count(),
             1,
+            "tuple siblings must share one item walk: {listed}",
         );
         assert_eq!(
-            row_walks(syn::parse_quote! {
-                struct BooleanLists {
-                    values: Vec<bool>,
-                }
-            }),
+            listed
+                .matches(&format!("let mut {}", tuple_layer.offsets))
+                .count(),
             1,
+            "tuple siblings must share one offsets vector: {listed}",
         );
         assert_eq!(
-            row_walks(syn::parse_quote! {
-                struct NestedLists {
-                    values: Vec<Inner>,
-                }
-            }),
+            listed
+                .matches(&format!("let mut {}", tuple_layer.validity_mb))
+                .count(),
             1,
-        );
-        assert_eq!(
-            row_walks(syn::parse_quote! {
-                struct ProjectedLists {
-                    values: Vec<(u32, bool)>,
-                }
-            }),
-            2,
-            "each projected column should scan once until sibling traversal is grouped",
+            "tuple siblings must share one validity bitmap: {listed}",
         );
     }
 }

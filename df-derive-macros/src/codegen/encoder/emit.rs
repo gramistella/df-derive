@@ -14,17 +14,22 @@ use quote::quote;
 
 use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
+use super::ctx::EncodeLifecycle;
 use super::idents::{self, LayerIdents};
 use super::leaf_kind::CollectThenBulk;
-use super::nested_columns::{NestedMaterializeCtx, NestedWrapper, materialize_nested_columns};
+use super::nested_columns::{
+    NestedMaterializeCtx, NestedWrapper, SharedListPrefix, materialize_nested_columns,
+};
 use super::shape_walk::{ShapeEmitter, ShapeEmitterParts, shape_assemble_list_stack};
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
-fn layer_idents(field_idx: Option<usize>, layer_idx: usize) -> LayerIdents {
-    let namespace = field_idx.map_or(idents::LayerNamespace::Vec, |idx| {
-        idents::LayerNamespace::Nested { field_idx: idx }
-    });
+fn layer_idents(field_idx: usize, nested: bool, layer_idx: usize) -> LayerIdents {
+    let namespace = if nested {
+        idents::LayerNamespace::Nested { field_idx }
+    } else {
+        idents::LayerNamespace::Vec { field_idx }
+    };
     LayerIdents::new(namespace, layer_idx)
 }
 
@@ -32,10 +37,17 @@ fn pep_leaf_body<'a>(
     shape: &'a VecLayers,
     leaf_bind: &'a syn::Ident,
     per_elem_push: &'a TokenStream,
+    reserve: &'a TokenStream,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
+        let additional = idents::leaf_reserve_len();
+        let reserve = quote! {
+            let #additional: usize = #vec_bind.len();
+            #reserve
+        };
         if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
             quote! {
+                #reserve
                 for #leaf_bind in #vec_bind.iter() {
                     #per_elem_push
                 }
@@ -46,6 +58,7 @@ fn pep_leaf_body<'a>(
             let resolved = chain_ref.expr;
             if chain_ref.has_option {
                 quote! {
+                    #reserve
                     for #raw_bind in #vec_bind.iter() {
                         let #leaf_bind: ::std::option::Option<_> = #resolved;
                         #per_elem_push
@@ -53,6 +66,7 @@ fn pep_leaf_body<'a>(
                 }
             } else {
                 quote! {
+                    #reserve
                     for #raw_bind in #vec_bind.iter() {
                         let #leaf_bind = #resolved;
                         #per_elem_push
@@ -94,8 +108,18 @@ fn ctb_leaf_body<'a>(
     move |vec_bind: &TokenStream| -> TokenStream {
         let maybe = idents::nested_maybe();
         let v = idents::leaf_value();
+        let additional = idents::leaf_reserve_len();
+        let positions_reserve = shape.has_inner_option().then(|| {
+            quote! { #positions.reserve(#additional); }
+        });
+        let reserve = quote! {
+            let #additional: usize = #vec_bind.len();
+            #flat.reserve(#additional);
+            #positions_reserve
+        };
         if shape.inner_access.is_empty() {
             quote! {
+                #reserve
                 for #v in #vec_bind.iter() {
                     #flat.push(#v);
                 }
@@ -103,6 +127,7 @@ fn ctb_leaf_body<'a>(
         } else if shape.inner_access.is_single_plain_option() {
             let flat_idx = idx_size_len_expr(flat, pp);
             quote! {
+                #reserve
                 for #maybe in #vec_bind.iter() {
                     match #maybe {
                         ::std::option::Option::Some(#v) => {
@@ -124,6 +149,7 @@ fn ctb_leaf_body<'a>(
             if chain_ref.has_option {
                 let flat_idx = idx_size_len_expr(flat, pp);
                 quote! {
+                    #reserve
                     for #raw_bind in #vec_bind.iter() {
                         match #resolved {
                             ::std::option::Option::Some(#v) => {
@@ -140,6 +166,7 @@ fn ctb_leaf_body<'a>(
                 }
             } else {
                 quote! {
+                    #reserve
                     for #raw_bind in #vec_bind.iter() {
                         let #v = #resolved;
                         #flat.push(#v);
@@ -153,6 +180,7 @@ fn ctb_leaf_body<'a>(
 fn pep_materialize(
     pep: &super::leaf_kind::PerElementPush,
     emitter: &ShapeEmitter<'_>,
+    idx: usize,
     pp: &TokenStream,
 ) -> TokenStream {
     let pa_root = emitter.pa_root;
@@ -165,6 +193,7 @@ fn pep_materialize(
     let seed = quote! { ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef };
     let seed_dtype = quote! { #seed_arrow_dtype_id };
     let wrap_layers = emitter.layer_wraps_move();
+    let arr_id_for_layer = |layer| idents::vec_layer_list_arr(idx, layer);
     let stack = shape_assemble_list_stack(
         seed,
         seed_dtype,
@@ -172,7 +201,7 @@ fn pep_materialize(
         pep.leaf_logical_dtype.clone(),
         pp,
         pa_root,
-        &idents::vec_layer_list_arr,
+        &arr_id_for_layer,
     );
     let leaf_arr_expr = &pep.leaf_arr_expr;
     quote! {
@@ -186,10 +215,11 @@ fn ctb_materialize(
     ctb: &CollectThenBulk<'_>,
     wrapper: &WrapperShape,
     layers: &[LayerIdents],
+    prefix: Option<SharedListPrefix<'_>>,
     paths: &ExternalPaths,
 ) -> TokenStream {
     let CollectThenBulk {
-        rows,
+        row_capacity: _,
         sink,
         ty,
         columnar_trait,
@@ -202,12 +232,12 @@ fn ctb_materialize(
     let positions = idents::nested_positions(idx);
     let (nested_wrapper, positions, total_len) = match wrapper {
         WrapperShape::Leaf(shape) if shape.is_bare() => {
-            (NestedWrapper::None, None, quote! { #rows.len() })
+            (NestedWrapper::None, None, quote! { #flat.len() })
         }
         WrapperShape::Leaf(_) => (
             NestedWrapper::None,
             Some(&positions),
-            quote! { #rows.len() },
+            quote! { #positions.len() },
         ),
         WrapperShape::Vec(shape) => (
             NestedWrapper::List {
@@ -234,6 +264,7 @@ fn ctb_materialize(
         positions,
         total_len,
         wrapper: nested_wrapper,
+        prefix,
         columnar_trait,
         columnar_spec_trait,
         paths,
@@ -249,57 +280,55 @@ fn pep_emit(
     layers: &[LayerIdents],
     pa_root: &TokenStream,
     pp: &TokenStream,
-    rows: &syn::Ident,
-) -> TokenStream {
+    idx: usize,
+) -> EncodeLifecycle {
     let leaf_bind = idents::leaf_value();
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
-        rows,
+        row_capacity: &pep.row_capacity,
         shape,
         access,
         layers,
         pp,
         pa_root,
     });
-    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push);
-    let scan = emitter.scan(&leaf_body, &pep.leaf_offsets_post_push);
+    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push, &pep.reserve);
+    let push = emitter.row_push(&leaf_body, &pep.leaf_offsets_post_push);
 
     let offsets_decls = emitter.offsets_decls();
     let validity_decls = emitter.validity_decls();
 
-    let materialize = pep_materialize(pep, &emitter, pp);
+    let materialize = pep_materialize(pep, &emitter, idx, pp);
     let storage_decls = &pep.storage_decls;
     let extra_imports = &pep.extra_imports;
 
-    quote! {
-        let #series_local: #pp::Series = {
+    EncodeLifecycle {
+        decls: vec![quote! {
             #extra_imports
             #storage_decls
             #offsets_decls
             #validity_decls
-            #scan
+        }],
+        push,
+        builders: vec![quote! {
+            let #series_local: #pp::Series = {
             #materialize
-        };
+            };
+        }],
     }
 }
 
-fn ctb_leaf_scan_depth0(
+fn ctb_leaf_row_push_depth0(
     access: &TokenStream,
     flat: &syn::Ident,
     positions: &syn::Ident,
     option_layers: usize,
     access_chain: &AccessChain,
     pp: &TokenStream,
-    rows: &syn::Ident,
 ) -> TokenStream {
-    let it = idents::populator_iter();
     let v = idents::leaf_value();
     if option_layers == 0 {
         let value_ref = ctb_depth0_ref_expr(access, access_chain);
-        quote! {
-            for #it in #rows.iter().copied() {
-                #flat.push(#value_ref);
-            }
-        }
+        quote! { #flat.push(#value_ref); }
     } else {
         // `option_layers == 1`: match `&Option<T>` directly. `>= 2`:
         // collapse to `Option<&T>` first, then match by value. Mirrors
@@ -307,17 +336,15 @@ fn ctb_leaf_scan_depth0(
         let match_expr = ctb_depth0_match_expr(access, access_chain, option_layers);
         let flat_idx = idx_size_len_expr(flat, pp);
         quote! {
-            for #it in #rows.iter().copied() {
-                match #match_expr {
-                    ::std::option::Option::Some(#v) => {
-                        #positions.push(::std::option::Option::Some(
-                            #flat_idx,
-                        ));
-                        #flat.push(#v);
-                    }
-                    ::std::option::Option::None => {
-                        #positions.push(::std::option::Option::None);
-                    }
+            match #match_expr {
+                ::std::option::Option::Some(#v) => {
+                    #positions.push(::std::option::Option::Some(
+                        #flat_idx,
+                    ));
+                    #flat.push(#v);
+                }
+                ::std::option::Option::None => {
+                    #positions.push(::std::option::Option::None);
                 }
             }
         }
@@ -332,45 +359,35 @@ fn ctb_emit(
     layers: &[LayerIdents],
     pa_root: &TokenStream,
     pp: &TokenStream,
+    prefix: Option<SharedListPrefix<'_>>,
     paths: &ExternalPaths,
-) -> TokenStream {
+) -> EncodeLifecycle {
     let flat = idents::nested_flat(ctb.idx);
     let positions = idents::nested_positions(ctb.idx);
     let ty = ctb.ty;
-    let rows = ctb.rows;
+    let row_capacity = ctb.row_capacity;
 
-    let (scan, offsets_decls, validity_decls, flat_capacity) = match wrapper {
+    let (push, offsets_decls, validity_decls) = match wrapper {
         WrapperShape::Leaf(shape) if shape.is_bare() => {
             let empty_access = AccessChain::empty();
-            let scan = ctb_leaf_scan_depth0(access, &flat, &positions, 0, &empty_access, pp, rows);
-            (
-                scan,
-                TokenStream::new(),
-                TokenStream::new(),
-                quote! { #rows.len() },
-            )
+            let push = ctb_leaf_row_push_depth0(access, &flat, &positions, 0, &empty_access, pp);
+            (push, TokenStream::new(), TokenStream::new())
         }
         WrapperShape::Leaf(shape) => {
             let access_chain = shape.access();
-            let scan = ctb_leaf_scan_depth0(
+            let push = ctb_leaf_row_push_depth0(
                 access,
                 &flat,
                 &positions,
                 access_chain.option_layers(),
                 access_chain,
                 pp,
-                rows,
             );
-            (
-                scan,
-                TokenStream::new(),
-                TokenStream::new(),
-                quote! { #rows.len() },
-            )
+            (push, TokenStream::new(), TokenStream::new())
         }
         WrapperShape::Vec(shape) => {
             let emitter = ShapeEmitter::nested(ShapeEmitterParts {
-                rows,
+                row_capacity,
                 shape,
                 access,
                 layers,
@@ -383,10 +400,10 @@ fn ctb_emit(
             } else {
                 quote! { #flat.len() }
             };
-            let scan = emitter.scan(&leaf_body, &leaf_offsets_post_push);
+            let push = emitter.row_push(&leaf_body, &leaf_offsets_post_push);
             let offsets_decls = emitter.offsets_decls();
             let validity_decls = emitter.validity_decls();
-            (scan, offsets_decls, validity_decls, quote! { #rows.len() })
+            (push, offsets_decls, validity_decls)
         }
     };
 
@@ -399,22 +416,25 @@ fn ctb_emit(
     let positions_decl = if needs_positions {
         quote! {
             let mut #positions: ::std::vec::Vec<::std::option::Option<#pp::IdxSize>> =
-                ::std::vec::Vec::with_capacity(#flat_capacity);
+                ::std::vec::Vec::with_capacity(#row_capacity);
         }
     } else {
         TokenStream::new()
     };
 
-    let materialize = ctb_materialize(ctb, wrapper, layers, paths);
+    let materialize = ctb_materialize(ctb, wrapper, layers, prefix, paths);
 
-    quote! {{
-        let mut #flat: ::std::vec::Vec<&#ty> = ::std::vec::Vec::with_capacity(#flat_capacity);
-        #positions_decl
-        #offsets_decls
-        #validity_decls
-        #scan
-        #materialize
-    }}
+    EncodeLifecycle {
+        decls: vec![quote! {
+            let mut #flat: ::std::vec::Vec<&#ty> =
+                ::std::vec::Vec::with_capacity(#row_capacity);
+            #positions_decl
+            #offsets_decls
+            #validity_decls
+        }],
+        push,
+        builders: vec![materialize],
+    }
 }
 
 /// Shape-aware emitter for primitive `Vec` leaves. The signature requires a
@@ -426,23 +446,13 @@ pub(super) fn vec_emit_pep(
     idx: usize,
     shape: &VecLayers,
     paths: &ExternalPaths,
-    rows: &syn::Ident,
-) -> TokenStream {
+) -> EncodeLifecycle {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
     let depth = shape.depth();
-    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(None, i)).collect();
+    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(idx, false, i)).collect();
     let series_local = idents::vec_field_series(idx);
-    pep_emit(
-        pep,
-        access,
-        &series_local,
-        shape,
-        &layers,
-        pa_root,
-        pp,
-        rows,
-    )
+    pep_emit(pep, access, &series_local, shape, &layers, pa_root, pp, idx)
 }
 
 /// Shape-aware emitter for nested struct / generic leaves. Accepts the full
@@ -454,10 +464,21 @@ pub(super) fn vec_emit_ctb(
     idx: usize,
     wrapper: &WrapperShape,
     paths: &ExternalPaths,
-) -> TokenStream {
+) -> EncodeLifecycle {
+    vec_emit_ctb_with_prefix(ctb, access, idx, wrapper, None, paths)
+}
+
+pub(super) fn vec_emit_ctb_with_prefix(
+    ctb: &CollectThenBulk<'_>,
+    access: &TokenStream,
+    idx: usize,
+    wrapper: &WrapperShape,
+    prefix: Option<SharedListPrefix<'_>>,
+    paths: &ExternalPaths,
+) -> EncodeLifecycle {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
     let depth = wrapper.vec_depth();
-    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(Some(idx), i)).collect();
-    ctb_emit(ctb, access, wrapper, &layers, pa_root, pp, paths)
+    let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(idx, true, i)).collect();
+    ctb_emit(ctb, access, wrapper, &layers, pa_root, pp, prefix, paths)
 }

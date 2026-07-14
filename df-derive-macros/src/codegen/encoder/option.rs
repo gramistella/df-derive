@@ -58,7 +58,7 @@ pub(super) fn wrap_option_access_chain_primitive(
     let new_ctx = LeafCtx {
         base: BaseCtx {
             access: &local_access,
-            rows: ctx.base.rows,
+            row_capacity: ctx.base.row_capacity,
             sink: ctx.base.sink,
             idx: ctx.base.idx,
             name: ctx.base.name,

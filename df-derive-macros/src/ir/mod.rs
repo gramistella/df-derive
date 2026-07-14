@@ -10,8 +10,8 @@ mod wrappers;
 
 pub use access::{AccessChain, AccessStep};
 pub use columns::{
-    ColumnIR, FieldColumn, FieldSource, TupleParentOptionColumn, TupleParentVecColumn,
-    TupleProjectionPath, TupleProjectionStep, TupleStaticColumn,
+    ColumnCommon, FieldColumn, FieldPlan, FieldSource, TerminalColumnRef, TupleField, TupleNode,
+    TupleNodeKind, TupleProjectionStep,
 };
 pub use leaf::*;
 pub use names::{NestedNamePolicy, column_name_for_ident};

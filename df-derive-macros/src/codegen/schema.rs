@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::ir::{ColumnIR, NestedLeaf, PrimitiveLeaf, StructIR, TerminalLeafRoute};
+use crate::ir::{NestedLeaf, PrimitiveLeaf, StructIR, TerminalColumnRef, TerminalLeafRoute};
 
 use super::encoder::struct_type_tokens;
 
@@ -27,7 +27,7 @@ fn column_full_dtype(
 /// Primitive leaves contribute one entry. Nested leaves compose their
 /// explicitly declared `ColumnarSpec` schema without encoding an empty batch.
 pub fn build_schema_entries(
-    column: &ColumnIR,
+    column: TerminalColumnRef<'_>,
     ir: &StructIR,
     config: &super::MacroConfig,
 ) -> TokenStream {

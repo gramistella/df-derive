@@ -60,19 +60,4 @@ impl AccessChain {
         steps.extend(self.iter());
         Self { steps }
     }
-
-    pub fn concat(&self, suffix: &Self) -> Self {
-        let mut steps = Vec::with_capacity(self.steps.len() + suffix.steps.len());
-        steps.extend(self.iter());
-        steps.extend(suffix.iter());
-        Self { steps }
-    }
-
-    pub fn suffix_after(&self, prefix: &Self) -> Option<Self> {
-        self.steps
-            .strip_prefix(prefix.steps.as_slice())
-            .map(|steps| Self {
-                steps: steps.to_vec(),
-            })
-    }
 }

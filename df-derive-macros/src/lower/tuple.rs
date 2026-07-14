@@ -1,6 +1,6 @@
 use crate::attrs::LeafOverride;
 use crate::ir::TupleElement;
-use crate::type_analysis::{AnalyzedBase, AnalyzedType, RawWrapper};
+use crate::type_analysis::AnalyzedType;
 use proc_macro2::Span;
 
 use super::errors;
@@ -61,33 +61,4 @@ pub(super) fn analyzed_to_tuple_element(
         wrapper_shape,
         outer_smart_ptr_depth: analyzed.outer_smart_ptr_depth,
     })
-}
-
-const fn has_semantic_wrappers(wrappers: &[RawWrapper]) -> bool {
-    !wrappers.is_empty()
-}
-
-pub(super) fn reject_unsupported_wrapped_nested_tuples(
-    analyzed: &AnalyzedType,
-    field_display_name: &str,
-) -> Result<(), syn::Error> {
-    let AnalyzedBase::Tuple(elements) = &analyzed.base else {
-        return Ok(());
-    };
-    let parent_wrapped = has_semantic_wrappers(&analyzed.wrappers);
-
-    for element in elements {
-        if matches!(element.base, AnalyzedBase::Tuple(_))
-            && (parent_wrapped || has_semantic_wrappers(&element.wrappers))
-        {
-            return Err(errors::unsupported_wrapped_nested_tuple(
-                &element.field_ty,
-                field_display_name,
-            ));
-        }
-
-        reject_unsupported_wrapped_nested_tuples(element, field_display_name)?;
-    }
-
-    Ok(())
 }

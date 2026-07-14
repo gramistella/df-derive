@@ -1,5 +1,5 @@
 use crate::ir::{FieldIR, StructIR};
-use crate::lower::{lower_field, project_fields_to_columns};
+use crate::lower::{lower_field, plan_fields};
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident};
 
@@ -61,33 +61,63 @@ pub fn parse_to_ir(input: &DeriveInput) -> Result<StructIR, syn::Error> {
     Ok(StructIR {
         name,
         generics,
-        columns: project_fields_to_columns(fields_ir),
+        fields: plan_fields(fields_ir),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{AccessStep, ColumnIR, DecimalBackend, LeafSpec, NumericKind, WrapperShape};
+    use crate::ir::{
+        AccessStep, DecimalBackend, FieldColumn, FieldPlan, LeafSpec, NumericKind, TupleField,
+        TupleNode, TupleNodeKind, WrapperShape,
+    };
 
     fn parse(input: &DeriveInput) -> StructIR {
         parse_to_ir(input).expect("input should lower to IR")
     }
 
-    fn column<'a>(ir: &'a StructIR, name: &str) -> &'a ColumnIR {
-        ir.columns
+    fn field<'a>(ir: &'a StructIR, name: &str) -> &'a FieldPlan {
+        ir.fields
             .iter()
-            .find(|column| column.name() == name)
-            .expect("column should exist")
+            .find(|field| match field {
+                FieldPlan::Column(column) => column.source().name == name,
+                FieldPlan::Tuple(tuple) => tuple.source().name == name,
+            })
+            .expect("field plan should exist")
     }
 
-    fn column_wrapper_shape(column: &ColumnIR) -> WrapperShape {
-        match column {
-            ColumnIR::Field(column) => column.wrapper_shape().clone(),
-            ColumnIR::TupleStatic(column) => column.wrapper_shape().clone(),
-            ColumnIR::TupleParentOption(column) => column.wrapper_shape().clone(),
-            ColumnIR::TupleParentVec(column) => WrapperShape::Vec(column.wrapper_shape().clone()),
+    fn column<'a>(ir: &'a StructIR, name: &str) -> &'a FieldColumn {
+        let FieldPlan::Column(column) = field(ir, name) else {
+            panic!("expected a direct column field");
+        };
+        column
+    }
+
+    fn tuple<'a>(ir: &'a StructIR, name: &str) -> &'a TupleField {
+        let FieldPlan::Tuple(tuple) = field(ir, name) else {
+            panic!("expected a tuple field");
+        };
+        tuple
+    }
+
+    fn node<'a>(tuple: &'a TupleField, path: &[usize]) -> &'a TupleNode {
+        let (first, rest) = path.split_first().expect("tuple path must not be empty");
+        let mut node = &tuple.elements()[*first];
+        for index in rest {
+            let TupleNodeKind::Tuple(elements) = node.kind() else {
+                panic!("tuple path traversed through a terminal node");
+            };
+            node = &elements[*index];
         }
+        node
+    }
+
+    fn node_leaf_spec(node: &TupleNode) -> &crate::ir::TerminalLeafSpec {
+        let TupleNodeKind::Leaf(common) = node.kind() else {
+            panic!("expected a terminal tuple node");
+        };
+        common.leaf_spec()
     }
 
     fn assert_leaf_option_layers(shape: &WrapperShape, expected: usize) {
@@ -124,74 +154,46 @@ mod tests {
         });
 
         let doubly_optional = column(&ir, "doubly_optional");
-        assert_leaf_option_layers(&column_wrapper_shape(doubly_optional), 2);
+        assert_leaf_option_layers(doubly_optional.wrapper_shape(), 2);
         assert!(matches!(
             doubly_optional.leaf_spec().as_leaf_spec(),
             LeafSpec::Generic(ident) if ident == "T"
         ));
 
-        assert_vec_shape(&column_wrapper_shape(column(&ir, "optional_vec")), &[1], 0);
-        assert_vec_shape(&column_wrapper_shape(column(&ir, "vec_optional")), &[0], 1);
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "vec_option_vec")),
-            &[0, 1],
-            0,
-        );
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "option_vec_option")),
-            &[1],
-            1,
-        );
+        assert_vec_shape(column(&ir, "optional_vec").wrapper_shape(), &[1], 0);
+        assert_vec_shape(column(&ir, "vec_optional").wrapper_shape(), &[0], 1);
+        assert_vec_shape(column(&ir, "vec_option_vec").wrapper_shape(), &[0, 1], 0);
+        assert_vec_shape(column(&ir, "option_vec_option").wrapper_shape(), &[1], 1);
 
-        let optional_tuple_0 = column(&ir, "optional_tuple.field_0");
-        assert_leaf_option_layers(&column_wrapper_shape(optional_tuple_0), 1);
+        let optional_tuple = tuple(&ir, "optional_tuple");
+        assert_leaf_option_layers(optional_tuple.wrapper_shape(), 1);
+        let optional_tuple_0 = node(optional_tuple, &[0]);
+        assert_leaf_option_layers(optional_tuple_0.wrapper_shape(), 0);
         assert!(matches!(
-            optional_tuple_0.leaf_spec().as_leaf_spec(),
+            node_leaf_spec(optional_tuple_0).as_leaf_spec(),
             LeafSpec::Numeric(NumericKind::I32)
         ));
-        assert!(matches!(optional_tuple_0, ColumnIR::TupleParentOption(_)));
         assert!(matches!(
-            column(&ir, "optional_tuple.field_1")
-                .leaf_spec()
-                .as_leaf_spec(),
+            node_leaf_spec(node(optional_tuple, &[1])).as_leaf_spec(),
             LeafSpec::String
         ));
 
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "vec_tuple.field_0")),
-            &[0, 0],
-            0,
-        );
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "vec_tuple.field_1")),
-            &[0],
-            1,
-        );
-        assert!(matches!(
-            column(&ir, "vec_tuple.field_0"),
-            ColumnIR::TupleParentVec(_)
-        ));
+        let vec_tuple = tuple(&ir, "vec_tuple");
+        assert_vec_shape(vec_tuple.wrapper_shape(), &[0], 0);
+        assert_vec_shape(node(vec_tuple, &[0]).wrapper_shape(), &[0], 0);
+        assert_leaf_option_layers(node(vec_tuple, &[1]).wrapper_shape(), 1);
 
-        let nested_vec = column_wrapper_shape(column(&ir, "nested_optional_vec_tuple.field_0"));
-        assert_vec_shape(&nested_vec, &[0, 1], 0);
-        let WrapperShape::Vec(nested_vec) = nested_vec else {
-            unreachable!("assert_vec_shape already proved this is a Vec shape");
-        };
-        assert_eq!(nested_vec.layers[0].access.iter().collect::<Vec<_>>(), []);
-        assert_eq!(
-            nested_vec.layers[1].access.iter().collect::<Vec<_>>(),
-            [AccessStep::Option]
-        );
-
-        let nested_leaf = column_wrapper_shape(column(&ir, "nested_optional_vec_tuple.field_1"));
-        assert_vec_shape(&nested_leaf, &[0], 3);
-        let WrapperShape::Vec(nested_leaf) = nested_leaf else {
+        let nested_tuple = tuple(&ir, "nested_optional_vec_tuple");
+        assert_vec_shape(nested_tuple.wrapper_shape(), &[0], 2);
+        let WrapperShape::Vec(nested_parent) = nested_tuple.wrapper_shape() else {
             unreachable!("assert_vec_shape already proved this is a Vec shape");
         };
         assert_eq!(
-            nested_leaf.inner_access.iter().collect::<Vec<_>>(),
-            [AccessStep::Option, AccessStep::Option, AccessStep::Option]
+            nested_parent.inner_access.iter().collect::<Vec<_>>(),
+            [AccessStep::Option, AccessStep::Option]
         );
+        assert_vec_shape(node(nested_tuple, &[0]).wrapper_shape(), &[0], 0);
+        assert_leaf_option_layers(node(nested_tuple, &[1]).wrapper_shape(), 1);
     }
 
     #[test]
@@ -204,11 +206,13 @@ mod tests {
             }
         });
 
-        assert_eq!(ir.columns.len(), 1);
-        assert_eq!(ir.columns[0].name(), "kept");
-        assert!(matches!(ir.columns[0], ColumnIR::Field(_)));
+        assert_eq!(ir.fields.len(), 1);
+        let FieldPlan::Column(kept) = &ir.fields[0] else {
+            panic!("kept field should be a direct column");
+        };
+        assert_eq!(kept.name(), "kept");
         assert!(matches!(
-            column_wrapper_shape(&ir.columns[0]),
+            kept.wrapper_shape(),
             WrapperShape::Leaf(shape) if shape.is_bare()
         ));
     }
@@ -254,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_tuple_fields_to_terminal_columns() {
+    fn retains_tuple_hierarchy_and_terminal_column_order() {
         let ir = parse(&syn::parse_quote! {
             struct Row {
                 bare: (i32, String),
@@ -264,7 +268,8 @@ mod tests {
             }
         });
 
-        let names: Vec<&str> = ir.columns.iter().map(ColumnIR::name).collect();
+        let mut names = Vec::new();
+        ir.visit_terminal_columns(|column| names.push(column.name().to_owned()));
         assert_eq!(
             names,
             [
@@ -280,40 +285,65 @@ mod tests {
             ]
         );
 
+        let optional = tuple(&ir, "optional");
+        assert_leaf_option_layers(optional.wrapper_shape(), 1);
+        assert_vec_shape(node(optional, &[0]).wrapper_shape(), &[0], 0);
+        assert_leaf_option_layers(node(optional, &[1]).wrapper_shape(), 0);
+
+        let vec_parent = tuple(&ir, "vec_parent");
+        assert_vec_shape(vec_parent.wrapper_shape(), &[0], 0);
+        assert_vec_shape(node(vec_parent, &[0]).wrapper_shape(), &[0], 0);
+        assert_leaf_option_layers(node(vec_parent, &[1]).wrapper_shape(), 1);
+
+        let boxed_nested = tuple(&ir, "boxed_nested");
+        assert_eq!(boxed_nested.source().outer_smart_ptr_depth, 1);
+        let inner_tuple = node(boxed_nested, &[0]);
+        assert!(matches!(inner_tuple.kind(), TupleNodeKind::Tuple(_)));
+        assert_eq!(inner_tuple.step().index, 0);
+        assert_eq!(node(boxed_nested, &[1]).step().outer_smart_ptr_depth, 1);
         assert!(matches!(
-            column(&ir, "bare.field_0"),
-            ColumnIR::TupleStatic(_)
-        ));
-        assert!(matches!(
-            column(&ir, "optional.field_0"),
-            ColumnIR::TupleParentOption(_)
-        ));
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "optional.field_0")),
-            &[1],
-            0,
-        );
-        assert_leaf_option_layers(&column_wrapper_shape(column(&ir, "optional.field_1")), 1);
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "vec_parent.field_0")),
-            &[0, 0],
-            0,
-        );
-        assert_vec_shape(
-            &column_wrapper_shape(column(&ir, "vec_parent.field_1")),
-            &[0],
-            1,
-        );
-        let ColumnIR::TupleParentVec(parent_vec) = column(&ir, "vec_parent.field_0") else {
-            panic!("expected parent vec tuple projection");
-        };
-        assert_eq!(parent_vec.terminal_step().index, 0);
-        assert_eq!(parent_vec.projection_layer(), 1);
-        assert!(matches!(
-            column(&ir, "boxed_nested.field_1")
-                .leaf_spec()
-                .as_leaf_spec(),
+            node_leaf_spec(node(boxed_nested, &[1])).as_leaf_spec(),
             LeafSpec::Bool
         ));
+    }
+
+    #[test]
+    fn accepts_wrappers_around_nested_tuple_nodes() {
+        let ir = parse(&syn::parse_quote! {
+            struct Row {
+                optional_parent: Option<((i32, String), bool)>,
+                optional_element: (Option<(i32, String)>, bool),
+                list_parent: Vec<((i32, String), bool)>,
+            }
+        });
+
+        let optional_parent = tuple(&ir, "optional_parent");
+        assert_leaf_option_layers(optional_parent.wrapper_shape(), 1);
+        assert_leaf_option_layers(node(optional_parent, &[0]).wrapper_shape(), 0);
+
+        let optional_element = tuple(&ir, "optional_element");
+        assert_leaf_option_layers(optional_element.wrapper_shape(), 0);
+        assert_leaf_option_layers(node(optional_element, &[0]).wrapper_shape(), 1);
+
+        let list_parent = tuple(&ir, "list_parent");
+        assert_vec_shape(list_parent.wrapper_shape(), &[0], 0);
+        let nested = node(list_parent, &[0]);
+        assert!(matches!(nested.kind(), TupleNodeKind::Tuple(_)));
+        assert_leaf_option_layers(nested.wrapper_shape(), 0);
+
+        let mut list_columns = Vec::new();
+        ir.visit_terminal_columns(|column| {
+            if column.name().starts_with("list_parent.") {
+                list_columns.push((column.name().to_owned(), column.vec_depth()));
+            }
+        });
+        assert_eq!(
+            list_columns,
+            [
+                ("list_parent.field_0.field_0".to_owned(), 1),
+                ("list_parent.field_0.field_1".to_owned(), 1),
+                ("list_parent.field_1".to_owned(), 1),
+            ]
+        );
     }
 }

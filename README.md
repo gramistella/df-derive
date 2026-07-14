@@ -161,12 +161,12 @@ impl ColumnarSpec for Trade {
         Self: 'a,
         I: Iterator<Item = &'a Self>,
     {
-        let rows = rows.collect::<Vec<&Self>>();
-        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(rows.len());
-        let mut price = Vec::<f64>::with_capacity(rows.len());
-        let mut size = Vec::<u64>::with_capacity(rows.len());
+        let row_capacity = rows.size_hint().0;
+        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(row_capacity);
+        let mut price = Vec::<f64>::with_capacity(row_capacity);
+        let mut size = Vec::<u64>::with_capacity(row_capacity);
 
-        for item in rows.iter().copied() {
+        for item in rows.by_ref() {
             symbol.push_value_ignore_validity(item.symbol.as_str());
             price.push(item.price);
             size.push(item.size);
@@ -319,8 +319,8 @@ supported as a generic payload and contributes zero columns.
 
 Tuple fields cannot carry field-level conversion attributes such as `as_str`,
 `as_binary`, `decimal(...)`, or `time_unit`; hoist that value into a named
-struct when you need an attributed field. Nested tuples inside an outer
-`Option` or `Vec` are rejected for now; use a named struct for those shapes.
+struct when you need an attributed field. Tuple hierarchy and wrappers compose,
+including nested tuples inside `Option` and `Vec` layers.
 
 ## Column Naming
 
@@ -333,7 +333,7 @@ struct when you need an attributed field. Nested tuples inside an outer
 - `Vec<Nested>` fields use the outer field plus nested field name, such as
   `quotes.close`.
 - Tuple-typed fields use `field.field_0`, `field.field_1`, and recurse for
-  unwrapped nested tuples.
+  nested tuples regardless of their `Option` and `Vec` wrappers.
 - Tuple structs use `field_0`, `field_1`, and so on.
 
 ## Limitations And Guidance
@@ -558,15 +558,16 @@ selects which trait receives the impl.
 The public `Columnar::encode` boundary accepts slices,
 `refs.iter().copied()`, and arbitrary one-shot iterators. It counts the rows
 actually yielded and validates the generated `ColumnarSpec` output against its
-explicit schema before constructing the outer frame. The current generated
-`encode_columns` body stabilizes borrowed rows once in a `Vec<&Self>` for its
-shape-dependent passes; values remain borrowed and clone-free.
+explicit schema before constructing the outer frame. The generated
+`encode_columns` body advances that iterator in exactly one outer row loop;
+scalar, list, nested, and tuple builders all participate in that pass.
 
 The generated hot path is shape-dependent. Primitive scalar fields share a
 row loop. Nested fields collect references and call the child's checked batch
 encoder; the parent consumes validated columns directly, without allocating a
-temporary child `DataFrame`. Tuple/list traversal costs remain most visible in
-wide nested and tuple-heavy schemas.
+temporary child `DataFrame`. Tuple siblings also share source resolution,
+list traversal, offsets, and validity before materializing their individual
+columns.
 
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted

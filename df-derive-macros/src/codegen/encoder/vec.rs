@@ -11,7 +11,7 @@ use super::emit::vec_emit_pep;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
 use super::leaf_kind::PerElementPush;
-use super::{Encoder, LeafCtx, leaf, list_offset_i64_expr};
+use super::{Encoder, LeafCtx, leaf};
 
 enum VecLeafSpec {
     Numeric {
@@ -60,23 +60,43 @@ fn bool_leaf_array_tokens(
 }
 
 /// The element-count expression that becomes the checked list offset.
-fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec) -> TokenStream {
-    let flat = idents::vec_flat();
-    let view_buf = idents::vec_view_buf();
+fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec, idx: usize) -> TokenStream {
+    let flat = idents::vec_flat(idx);
+    let view_buf = idents::vec_view_buf(idx);
     match spec {
         VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
         VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
             quote! { #view_buf.len() }
         }
         VecLeafSpec::Bool => {
-            let values = idents::bool_values();
+            let values = idents::bool_values(idx);
             quote! { #values.len() }
         }
     }
 }
 
+fn leaf_reserve_tokens(spec: &VecLeafSpec, idx: usize, has_inner_option: bool) -> TokenStream {
+    let additional = idents::leaf_reserve_len();
+    let validity_reserve = has_inner_option.then(|| {
+        let validity = idents::bool_validity(idx);
+        quote! { #validity.reserve(#additional); }
+    });
+    let values = match spec {
+        VecLeafSpec::Numeric { .. } => idents::vec_flat(idx),
+        VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
+            idents::vec_view_buf(idx)
+        }
+        VecLeafSpec::Bool => idents::bool_values(idx),
+    };
+    quote! {
+        #values.reserve(#additional);
+        #validity_reserve
+    }
+}
+
 fn build_vec_leaf_pieces(
     spec: &VecLeafSpec,
+    idx: usize,
     has_inner_option: bool,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
@@ -85,6 +105,7 @@ fn build_vec_leaf_pieces(
         VecLeafSpec::Numeric { native, value_expr } => numeric_leaf_pieces(
             native,
             value_expr,
+            idx,
             has_inner_option,
             leaf_capacity_expr,
             pa_root,
@@ -95,29 +116,35 @@ fn build_vec_leaf_pieces(
         } => string_like_leaf_pieces(
             value_expr,
             extra_decls,
+            idx,
             has_inner_option,
             leaf_capacity_expr,
             pa_root,
         ),
-        VecLeafSpec::BinaryLike { value_expr } => {
-            binary_like_leaf_pieces(value_expr, has_inner_option, leaf_capacity_expr, pa_root)
-        }
+        VecLeafSpec::BinaryLike { value_expr } => binary_like_leaf_pieces(
+            value_expr,
+            idx,
+            has_inner_option,
+            leaf_capacity_expr,
+            pa_root,
+        ),
         VecLeafSpec::Bool => {
             if has_inner_option {
-                bool_inner_option_leaf_pieces(leaf_capacity_expr, pa_root)
+                bool_inner_option_leaf_pieces(idx, leaf_capacity_expr, pa_root)
             } else {
-                bool_bare_leaf_pieces(leaf_capacity_expr, pa_root)
+                bool_bare_leaf_pieces(idx, leaf_capacity_expr, pa_root)
             }
         }
     }
 }
 
 fn bool_bare_leaf_pieces(
+    idx: usize,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let values_ident = idents::bool_values();
-    let validity_ident = idents::bool_validity();
+    let values_ident = idents::bool_values(idx);
+    let validity_ident = idents::bool_validity(idx);
     let v = idents::leaf_value();
     let values_decl = quote! {
         let mut #values_ident: #pa_root::bitmap::MutableBitmap =
@@ -140,12 +167,13 @@ fn bool_bare_leaf_pieces(
 fn numeric_leaf_pieces(
     native: &TokenStream,
     value_expr: &TokenStream,
+    idx: usize,
     has_inner_option: bool,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let flat = idents::vec_flat();
-    let validity = idents::bool_validity();
+    let flat = idents::vec_flat(idx);
+    let validity = idents::bool_validity(idx);
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let storage = if has_inner_option {
@@ -204,12 +232,13 @@ fn numeric_leaf_pieces(
 fn string_like_leaf_pieces(
     value_expr: &TokenStream,
     extra_decls: &[TokenStream],
+    idx: usize,
     has_inner_option: bool,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let view_buf = idents::vec_view_buf();
-    let validity = idents::bool_validity();
+    let view_buf = idents::vec_view_buf(idx);
+    let validity = idents::bool_validity(idx);
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let mut storage_parts: Vec<TokenStream> = Vec::new();
@@ -265,12 +294,13 @@ fn string_like_leaf_pieces(
 
 fn binary_like_leaf_pieces(
     value_expr: &TokenStream,
+    idx: usize,
     has_inner_option: bool,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let view_buf = idents::vec_view_buf();
-    let validity = idents::bool_validity();
+    let view_buf = idents::vec_view_buf(idx);
+    let validity = idents::bool_validity(idx);
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let mut storage_parts: Vec<TokenStream> = Vec::new();
@@ -323,11 +353,12 @@ fn binary_like_leaf_pieces(
 }
 
 fn bool_inner_option_leaf_pieces(
+    idx: usize,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
 ) -> (TokenStream, TokenStream, TokenStream) {
-    let values_ident = idents::bool_values();
-    let validity_ident = idents::bool_validity();
+    let values_ident = idents::bool_values(idx);
+    let validity_ident = idents::bool_validity(idx);
     let v = idents::leaf_value();
     let values_decl = quote! {
         let mut #values_ident: #pa_root::bitmap::MutableBitmap =
@@ -365,37 +396,20 @@ fn bool_inner_option_leaf_pieces(
     (storage, push, leaf_arr_expr)
 }
 
-fn vec_encoder_series_local(idx: usize) -> syn::Ident {
-    idents::vec_field_series(idx)
-}
-
 fn vec_encoder(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
 ) -> Encoder {
-    let series_local = vec_encoder_series_local(ctx.base.idx);
     let pep = lower_to_pep(ctx, spec, shape, leaf_dtype);
-    let decl = vec_emit_pep(
+    Encoder::Multi(vec_emit_pep(
         &pep,
         ctx.base.access,
         ctx.base.idx,
         shape,
         ctx.paths,
-        ctx.base.rows,
-    );
-    let name = ctx.base.name;
-    let named = idents::field_named_series();
-    let sink = ctx.base.sink;
-    let columnar = quote! {
-        {
-            #decl
-            let #named = #series_local.with_name(#name.into());
-            #sink.push(#named.into())?;
-        }
-    };
-    Encoder::Multi { columnar }
+    ))
 }
 
 fn lower_to_pep(
@@ -405,13 +419,23 @@ fn lower_to_pep(
     leaf_dtype: &TokenStream,
 ) -> PerElementPush {
     let pa_root = ctx.paths.polars_arrow_root();
-    let rows = ctx.base.rows;
-    let leaf_capacity_expr = quote! { #rows.len() };
-    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) =
-        build_vec_leaf_pieces(spec, shape.has_inner_option(), &leaf_capacity_expr, pa_root);
-    let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec);
+    // A row count says nothing about the flattened element count of a list
+    // column. Start conservatively and let the buffers grow during the one
+    // traversal that actually observes the values.
+    let leaf_capacity_expr = quote! { 0usize };
+    let (leaf_storage_decls, per_elem_push, leaf_arr_expr) = build_vec_leaf_pieces(
+        spec,
+        ctx.base.idx,
+        shape.has_inner_option(),
+        &leaf_capacity_expr,
+        pa_root,
+    );
+    let leaf_offsets_post_push = leaf_offsets_post_push_tokens(spec, ctx.base.idx);
+    let reserve = leaf_reserve_tokens(spec, ctx.base.idx, shape.has_inner_option());
     PerElementPush {
+        row_capacity: ctx.base.row_capacity.clone(),
         per_elem_push,
+        reserve,
         storage_decls: leaf_storage_decls,
         leaf_arr_expr,
         leaf_offsets_post_push,
@@ -420,88 +444,9 @@ fn lower_to_pep(
     }
 }
 
-pub(super) fn pep_for_primitive_leaf(
-    leaf: PrimitiveLeaf<'_>,
-    ctx: &LeafCtx<'_>,
-    shape: &VecLayers,
-) -> PerElementPush {
-    let plan = vec_leaf_plan(leaf, ctx);
-    lower_to_pep(ctx, &plan.spec, shape, &plan.leaf_dtype)
-}
-
-/// Bare-bool variant with a depth-1 `BooleanArray::from_slice` fast path.
 fn vec_encoder_bool_bare(ctx: &LeafCtx<'_>, shape: &VecLayers) -> Encoder {
-    // The depth-1 fast path uses `(&access).iter().copied()`, which
-    // requires a plain `&bool`-yielding iterator. Any inner access chain
-    // (Option or smart-pointer boundary) routes through the generalized
-    // scanner so that boundary is resolved before the leaf push.
-    if shape.depth() == 1 && !shape.any_outer_validity() && shape.inner_access.is_empty() {
-        let pa_root = ctx.paths.polars_arrow_root();
-        let pp = ctx.paths.prelude();
-        let series_local = vec_encoder_series_local(ctx.base.idx);
-        let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
-        let body = bool_bare_depth1_body(ctx.base.access, &leaf_dtype, pa_root, pp, ctx.base.rows);
-        let name = ctx.base.name;
-        let named = idents::field_named_series();
-        let sink = ctx.base.sink;
-        let decl = quote! { let #series_local: #pp::Series = { #body }; };
-        let columnar = quote! {
-            {
-                #decl
-                let #named = #series_local.with_name(#name.into());
-                #sink.push(#named.into())?;
-            }
-        };
-        return Encoder::Multi { columnar };
-    }
     let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype)
-}
-
-fn bool_bare_depth1_body(
-    access: &TokenStream,
-    leaf_dtype: &TokenStream,
-    pa_root: &TokenStream,
-    pp: &TokenStream,
-    rows: &syn::Ident,
-) -> TokenStream {
-    let inner_offsets = idents::bool_inner_offsets();
-    let it = idents::populator_iter();
-    let leaf_arr = idents::leaf_arr();
-    let flat = idents::vec_flat();
-    let offsets_buf = idents::bool_bare_offsets_buf();
-    let list_arr = idents::bool_bare_list_arr();
-    let assemble_helper = idents::assemble_helper();
-    let offset_ident = idents::list_offset();
-    let offset = list_offset_i64_expr(&quote! { #flat.len() }, pp);
-    quote! {
-        let mut #flat: ::std::vec::Vec<bool> =
-            ::std::vec::Vec::with_capacity(#rows.len());
-        let mut #inner_offsets: ::std::vec::Vec<i64> =
-            ::std::vec::Vec::with_capacity(#rows.len() + 1);
-        #inner_offsets.push(0);
-        for #it in #rows.iter().copied() {
-            #flat.extend((&(#access)).iter().copied());
-            let #offset_ident: i64 = #offset;
-            #inner_offsets.push(#offset_ident);
-        }
-        let #leaf_arr: #pa_root::array::BooleanArray =
-            #pa_root::array::BooleanArray::from_slice(&#flat);
-        let #offsets_buf: #pa_root::offset::OffsetsBuffer<i64> =
-            <#pa_root::offset::OffsetsBuffer<i64> as ::core::convert::TryFrom<::std::vec::Vec<i64>>>::try_from(#inner_offsets)?;
-        let #list_arr: #pp::LargeListArray = #pp::LargeListArray::new(
-            #pp::LargeListArray::default_datatype(
-                #pa_root::array::Array::dtype(&#leaf_arr).clone(),
-            ),
-            #offsets_buf,
-            ::std::boxed::Box::new(#leaf_arr) as #pp::ArrayRef,
-            ::std::option::Option::None,
-        );
-        #assemble_helper(
-            #list_arr,
-            #leaf_dtype,
-        )?
-    }
 }
 
 fn mapped_numeric_plan(

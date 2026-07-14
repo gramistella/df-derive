@@ -73,6 +73,41 @@ struct BinaryMediumRow {
     bytes: Vec<u8>,
 }
 
+#[derive(ToDataFrame)]
+struct FlatScalarControl {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i64,
+    h: i64,
+}
+
+#[derive(ToDataFrame)]
+struct TupleScalarRow {
+    values: (i64, i64, i64, i64, i64, i64, i64, i64),
+}
+
+#[derive(ToDataFrame)]
+struct ListQuad {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+}
+
+#[derive(ToDataFrame)]
+struct NestedStructListControl {
+    items: Vec<ListQuad>,
+}
+
+#[derive(ToDataFrame)]
+struct TupleListRow {
+    items: Vec<(i64, i64, i64, i64)>,
+}
+
 fn convert_rows<T>(rows: Vec<T>) -> (usize, usize)
 where
     [T]: ToDataFrameVec,
@@ -194,6 +229,80 @@ fn generate_binary_medium() -> Vec<BinaryMediumRow> {
         .collect()
 }
 
+fn generate_flat_scalar_control() -> Vec<FlatScalarControl> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| {
+            let base = i64::try_from(i).unwrap() * 8;
+            FlatScalarControl {
+                a: base,
+                b: base + 1,
+                c: base + 2,
+                d: base + 3,
+                e: base + 4,
+                f: base + 5,
+                g: base + 6,
+                h: base + 7,
+            }
+        })
+        .collect()
+}
+
+fn generate_tuple_scalar_rows() -> Vec<TupleScalarRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| {
+            let base = i64::try_from(i).unwrap() * 8;
+            TupleScalarRow {
+                values: (
+                    base,
+                    base + 1,
+                    base + 2,
+                    base + 3,
+                    base + 4,
+                    base + 5,
+                    base + 6,
+                    base + 7,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn list_value(row: usize, item: usize, lane: i64) -> i64 {
+    i64::try_from(row).unwrap() * 100 + i64::try_from(item).unwrap() * 10 + lane
+}
+
+fn generate_nested_struct_list_control() -> Vec<NestedStructListControl> {
+    (0..N_NUMERIC_ROWS)
+        .map(|row| NestedStructListControl {
+            items: (0..(row % 7))
+                .map(|item| ListQuad {
+                    a: list_value(row, item, 0),
+                    b: list_value(row, item, 1),
+                    c: list_value(row, item, 2),
+                    d: list_value(row, item, 3),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_tuple_list_rows() -> Vec<TupleListRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|row| TupleListRow {
+            items: (0..(row % 7))
+                .map(|item| {
+                    (
+                        list_value(row, item, 0),
+                        list_value(row, item, 1),
+                        list_value(row, item, 2),
+                        list_value(row, item, 3),
+                    )
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 #[library_benchmark]
 #[bench::top_level_vec(generate_ticks())]
 fn bench_top_level_vec(rows: Vec<Tick>) -> (usize, usize) {
@@ -230,6 +339,30 @@ fn bench_as_binary_medium(rows: Vec<BinaryMediumRow>) -> (usize, usize) {
     convert_rows(rows)
 }
 
+#[library_benchmark]
+#[bench::flat_scalar_control(generate_flat_scalar_control())]
+fn bench_flat_scalar_control(rows: Vec<FlatScalarControl>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_scalar_grouped(generate_tuple_scalar_rows())]
+fn bench_tuple_scalar_grouped(rows: Vec<TupleScalarRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::nested_struct_list_control(generate_nested_struct_list_control())]
+fn bench_nested_struct_list_control(rows: Vec<NestedStructListControl>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_list_grouped(generate_tuple_list_rows())]
+fn bench_tuple_list_grouped(rows: Vec<TupleListRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
 library_benchmark_group!(
     name = instruction_counts,
     benchmarks = [
@@ -238,7 +371,11 @@ library_benchmark_group!(
         bench_string_columns_required,
         bench_string_columns_optional,
         bench_as_binary_tiny,
-        bench_as_binary_medium
+        bench_as_binary_medium,
+        bench_flat_scalar_control,
+        bench_tuple_scalar_grouped,
+        bench_nested_struct_list_control,
+        bench_tuple_list_grouped
     ]
 );
 

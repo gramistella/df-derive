@@ -21,6 +21,9 @@ All notable changes to this project will be documented in this file.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling
   `ColumnarSpec`, `ColumnSink`, and decimal runtime paths are inferred.
+- Tuple fields retain their hierarchy through execution planning. Wrapped
+  nested tuples now compose through `Option` and `Vec` layers instead of
+  being rejected during terminal-column projection.
 
 ### Fixed
 
@@ -37,13 +40,15 @@ All notable changes to this project will be documented in this file.
 
 ### Performance
 
-- Direct, borrowed, and arbitrary iterator inputs share one generated body.
-  The input is consumed once into a `Vec<&T>` so the shape-dependent column
-  emitters can make their required passes without requiring a repeatable
-  caller-owned batch abstraction.
-- Every list column now builds its values, validity, and offsets in one scan
-  of the collected rows. The separate leaf-counting pass and its generated
-  counters were removed.
+- Direct, borrowed, and arbitrary iterator inputs share one generated body
+  and exactly one outer row loop. Scalar, list, nested, and tuple builders
+  all consume that pass without first collecting the input into `Vec<&T>`.
+- Every list column now builds its values, validity, and offsets during that
+  input pass. The separate leaf-counting traversal and its generated counters
+  were removed.
+- Tuple siblings share source resolution and list traversal. Their offsets
+  and validity buffers are built and frozen once per tuple group, then reused
+  while assembling the terminal columns.
 - Empty structs and unit payloads preserve height through the checked iterator
   boundary without a temporary null column or `drop_in_place` workaround.
 - Nested composition consumes validated child batch columns directly. It no

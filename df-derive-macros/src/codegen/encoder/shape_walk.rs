@@ -7,59 +7,12 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::ir::{AccessChain, NonEmpty, VecLayers};
+use crate::ir::{NonEmpty, VecLayers};
 
 use super::idents::{self, LayerIdents};
-use super::{access_chain_to_option_ref, access_chain_to_ref, list_offset_i64_expr};
-
-/// Optional tuple projection injected at an inter-layer transition.
-#[derive(Clone, Copy)]
-pub(super) struct LayerProjection<'a> {
-    pub layer: usize,
-    pub path: &'a TokenStream,
-    /// Transparent wrappers between the parent Vec item and the tuple itself.
-    pub parent_access: &'a AccessChain,
-    /// Smart pointers wrapped around the projected element before its own layers.
-    pub smart_ptr_depth: usize,
-}
-
-fn projection_base_to_ref(item_bind: &syn::Ident, parent_access: &AccessChain) -> TokenStream {
-    if parent_access.is_empty() {
-        return quote! { #item_bind };
-    }
-    if parent_access.has_option() {
-        return access_chain_to_option_ref(&quote! { #item_bind }, parent_access);
-    }
-    access_chain_to_ref(&quote! { #item_bind }, parent_access).expr
-}
-
-fn projected_layer_bind(
-    item_bind: &syn::Ident,
-    projection: &LayerProjection<'_>,
-    bind_prefix: &str,
-    cur: usize,
-) -> TokenStream {
-    let path = projection.path;
-    let project_from = |tuple_ref: &TokenStream| -> TokenStream {
-        let mut projected = quote! { (*(#tuple_ref)) #path };
-        for _ in 0..projection.smart_ptr_depth {
-            projected = quote! { (*(#projected)) };
-        }
-        quote! { &(#projected) }
-    };
-
-    let tuple_ref = projection_base_to_ref(item_bind, projection.parent_access);
-    if !projection.parent_access.has_option() {
-        return project_from(&tuple_ref);
-    }
-
-    let param = format_ident!("{bind_prefix}proj_{cur}");
-    let projected = project_from(&quote! { #param });
-    quote! { (#tuple_ref).map(|#param| #projected) }
-}
+use super::{access_chain_to_ref, list_offset_i64_expr};
 
 pub(super) struct ShapeScan<'shape, 'body> {
-    pub rows: &'shape syn::Ident,
     pub shape: &'shape VecLayers,
     pub access: &'shape TokenStream,
     pub layers: &'shape [LayerIdents],
@@ -67,7 +20,6 @@ pub(super) struct ShapeScan<'shape, 'body> {
     pub leaf_body: &'body dyn Fn(&TokenStream) -> TokenStream,
     pub leaf_offsets_post_push: &'body TokenStream,
     pub pp: &'shape TokenStream,
-    pub projection: Option<LayerProjection<'shape>>,
 }
 
 impl ShapeScan<'_, '_> {
@@ -76,14 +28,7 @@ impl ShapeScan<'_, '_> {
             let access = self.access;
             quote! { (&(#access)) }
         };
-        let body = self.build_layer(0, &layer0_iter_src);
-        let it = idents::populator_iter();
-        let rows = self.rows;
-        quote! {
-            for #it in #rows.iter().copied() {
-                #body
-            }
-        }
+        self.build_layer(0, &layer0_iter_src)
     }
 
     fn build_iter(&self, cur: usize, vec_bind: &TokenStream) -> TokenStream {
@@ -92,35 +37,25 @@ impl ShapeScan<'_, '_> {
             (self.leaf_body)(vec_bind)
         } else {
             let inner_bind = &self.layers[cur + 1].bind;
+            let inner_layer = &self.layers[cur + 1];
+            let inner_offsets = &inner_layer.offsets;
+            let additional = idents::layer_reserve_len(cur + 1);
+            let validity_reserve = self.shape.layers[cur + 1].has_outer_validity().then(|| {
+                let validity = &inner_layer.validity_mb;
+                quote! { #validity.reserve(#additional); }
+            });
+            let reserve = quote! {
+                let #additional: usize = #vec_bind.len();
+                #inner_offsets.reserve(#additional);
+                #validity_reserve
+            };
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
-            self.projection
-                .as_ref()
-                .filter(|p| cur + 1 == p.layer)
-                .map_or_else(
-                    || {
-                        quote! {
-                            for #inner_bind in #vec_bind.iter() {
-                                #inner_layer_body
-                            }
-                        }
-                    },
-                    |projection| {
-                        let item_bind =
-                            format_ident!("{}proj_item_{}", self.outer_some_prefix, cur);
-                        let projected = projected_layer_bind(
-                            &item_bind,
-                            projection,
-                            self.outer_some_prefix,
-                            cur,
-                        );
-                        quote! {
-                            for #item_bind in #vec_bind.iter() {
-                                let #inner_bind = #projected;
-                                #inner_layer_body
-                            }
-                        }
-                    },
-                )
+            quote! {
+                #reserve
+                for #inner_bind in #vec_bind.iter() {
+                    #inner_layer_body
+                }
+            }
         }
     }
 
@@ -166,19 +101,18 @@ impl ShapeScan<'_, '_> {
 }
 
 pub(super) struct ShapeEmitter<'a> {
-    pub rows: &'a syn::Ident,
+    pub row_capacity: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
     pub outer_some_prefix: &'a str,
     pub pp: &'a TokenStream,
     pub pa_root: &'a TokenStream,
-    pub projection: Option<LayerProjection<'a>>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ShapeEmitterParts<'a> {
-    pub rows: &'a syn::Ident,
+    pub row_capacity: &'a syn::Ident,
     pub shape: &'a VecLayers,
     pub access: &'a TokenStream,
     pub layers: &'a [LayerIdents],
@@ -189,53 +123,36 @@ pub(super) struct ShapeEmitterParts<'a> {
 impl<'a> ShapeEmitter<'a> {
     pub(super) const fn vec(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
-            rows: parts.rows,
+            row_capacity: parts.row_capacity,
             shape: parts.shape,
             access: parts.access,
             layers: parts.layers,
             outer_some_prefix: idents::VEC_OUTER_SOME_PREFIX,
             pp: parts.pp,
             pa_root: parts.pa_root,
-            projection: None,
         }
     }
 
     pub(super) const fn nested(parts: ShapeEmitterParts<'a>) -> Self {
         Self {
-            rows: parts.rows,
+            row_capacity: parts.row_capacity,
             shape: parts.shape,
             access: parts.access,
             layers: parts.layers,
             outer_some_prefix: idents::NESTED_OUTER_SOME_PREFIX,
             pp: parts.pp,
             pa_root: parts.pa_root,
-            projection: None,
         }
     }
 
-    pub(super) const fn tuple(
-        parts: ShapeEmitterParts<'a>,
-        projection: Option<LayerProjection<'a>>,
-    ) -> Self {
-        Self {
-            rows: parts.rows,
-            shape: parts.shape,
-            access: parts.access,
-            layers: parts.layers,
-            outer_some_prefix: idents::TUPLE_OUTER_SOME_PREFIX,
-            pp: parts.pp,
-            pa_root: parts.pa_root,
-            projection,
-        }
-    }
-
-    pub(super) fn scan<'body>(
+    /// Builds the work for one already-bound outer row. The caller owns the
+    /// only iteration over the input iterator.
+    pub(super) fn row_push<'body>(
         &self,
         leaf_body: &'body dyn Fn(&TokenStream) -> TokenStream,
         leaf_offsets_post_push: &'body TokenStream,
     ) -> TokenStream {
         ShapeScan {
-            rows: self.rows,
             shape: self.shape,
             access: self.access,
             layers: self.layers,
@@ -243,7 +160,6 @@ impl<'a> ShapeEmitter<'a> {
             leaf_body,
             leaf_offsets_post_push,
             pp: self.pp,
-            projection: self.projection,
         }
         .build()
     }
@@ -434,12 +350,16 @@ pub(super) fn shape_assemble_list_stack(
 
 fn shape_offsets_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::with_capacity(emitter.layers.len());
-    for layer in emitter.layers {
+    for (idx, layer) in emitter.layers.iter().enumerate() {
         let offsets = &layer.offsets;
-        let rows = emitter.rows;
+        let row_capacity = emitter.row_capacity;
+        let decl = if idx == 0 {
+            quote! { ::std::vec::Vec::with_capacity(#row_capacity.saturating_add(1)) }
+        } else {
+            quote! { ::std::vec::Vec::new() }
+        };
         out.push(quote! {
-            let mut #offsets: ::std::vec::Vec<i64> =
-                ::std::vec::Vec::with_capacity(#rows.len() + 1);
+            let mut #offsets: ::std::vec::Vec<i64> = #decl;
             #offsets.push(0);
         });
     }
@@ -453,11 +373,16 @@ fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
             continue;
         }
         let validity = &layer.validity_mb;
-        let rows = emitter.rows;
         let pa_root = emitter.pa_root;
+        let row_capacity = emitter.row_capacity;
+        let capacity = if i == 0 {
+            quote! { #row_capacity }
+        } else {
+            quote! { 0usize }
+        };
         out.push(quote! {
             let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#rows.len());
+                #pa_root::bitmap::MutableBitmap::with_capacity(#capacity);
         });
     }
     quote! { #(#out)* }

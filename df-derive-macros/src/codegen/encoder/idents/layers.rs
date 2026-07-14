@@ -1,13 +1,15 @@
 use quote::format_ident;
 use syn::Ident;
 
+use super::GeneratedIdentScope;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::codegen) enum LayerNamespace {
-    Vec,
+    Vec { field_idx: usize },
     Nested { field_idx: usize },
-    Tuple { field_idx: usize },
 }
 
+#[derive(Clone)]
 pub(in crate::codegen) struct LayerIdents {
     pub offsets: Ident,
     pub offsets_buf: Ident,
@@ -19,12 +21,12 @@ pub(in crate::codegen) struct LayerIdents {
 impl LayerIdents {
     pub(in crate::codegen) fn new(namespace: LayerNamespace, layer: usize) -> Self {
         match namespace {
-            LayerNamespace::Vec => Self {
-                offsets: vec_layer_offsets(layer),
-                offsets_buf: vec_layer_offsets_buf(layer),
-                validity_mb: vec_layer_validity(layer),
-                validity_bm: vec_layer_validity_bm(layer),
-                bind: vec_layer_bind(layer),
+            LayerNamespace::Vec { field_idx } => Self {
+                offsets: vec_layer_offsets(field_idx, layer),
+                offsets_buf: vec_layer_offsets_buf(field_idx, layer),
+                validity_mb: vec_layer_validity(field_idx, layer),
+                validity_bm: vec_layer_validity_bm(field_idx, layer),
+                bind: vec_layer_bind(field_idx, layer),
             },
             LayerNamespace::Nested { field_idx } => Self {
                 offsets: nested_layer_offsets(field_idx, layer),
@@ -33,39 +35,46 @@ impl LayerIdents {
                 validity_bm: nested_layer_validity_bm(field_idx, layer),
                 bind: nested_layer_bind(field_idx, layer),
             },
-            LayerNamespace::Tuple { field_idx } => Self {
-                offsets: tuple_layer_offsets(field_idx, layer),
-                offsets_buf: tuple_layer_offsets_buf(field_idx, layer),
-                validity_mb: tuple_layer_validity_mb(field_idx, layer),
-                validity_bm: tuple_layer_validity_bm(field_idx, layer),
-                bind: tuple_layer_bind(field_idx, layer),
-            },
+        }
+    }
+
+    pub(in crate::codegen) fn tuple(
+        scope: GeneratedIdentScope<'_>,
+        group_idx: usize,
+        layer: usize,
+    ) -> Self {
+        Self {
+            offsets: tuple_layer_offsets(scope, group_idx, layer),
+            offsets_buf: tuple_layer_offsets_buf(scope, group_idx, layer),
+            validity_mb: tuple_layer_validity_mb(scope, group_idx, layer),
+            validity_bm: tuple_layer_validity_bm(scope, group_idx, layer),
+            bind: tuple_layer_bind(scope, group_idx, layer),
         }
     }
 }
 
-pub(in crate::codegen) fn vec_layer_offsets(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_off_{}", layer)
+pub(in crate::codegen) fn vec_layer_offsets(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_off_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn vec_layer_validity(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_val_{}", layer)
+pub(in crate::codegen) fn vec_layer_validity(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_val_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn vec_layer_bind(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_bind_{}", layer)
+pub(in crate::codegen) fn vec_layer_bind(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_bind_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn vec_layer_offsets_buf(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_off_buf_{}", layer)
+pub(in crate::codegen) fn vec_layer_offsets_buf(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_off_buf_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn vec_layer_validity_bm(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_val_bm_{}", layer)
+pub(in crate::codegen) fn vec_layer_validity_bm(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_val_bm_{}_{}", field_idx, layer)
 }
 
-pub(in crate::codegen) fn vec_layer_list_arr(layer: usize) -> Ident {
-    format_ident!("__df_derive_list_arr_{}", layer)
+pub(in crate::codegen) fn vec_layer_list_arr(field_idx: usize, layer: usize) -> Ident {
+    format_ident!("__df_derive_list_arr_{}_{}", field_idx, layer)
 }
 
 pub(in crate::codegen) const VEC_OUTER_SOME_PREFIX: &str = "__df_derive_some_";
@@ -96,28 +105,38 @@ pub(in crate::codegen) fn nested_layer_list_arr(layer: usize) -> Ident {
     format_ident!("__df_derive_n_arr_{}", layer)
 }
 
-pub(in crate::codegen) fn tuple_layer_offsets(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_off_{}_{}", field_idx, layer)
+fn tuple_layer_offsets(scope: GeneratedIdentScope<'_>, group_idx: usize, layer: usize) -> Ident {
+    scope.fresh(&format!("__df_derive_t_off_{group_idx}_{layer}"))
 }
 
-pub(in crate::codegen) fn tuple_layer_offsets_buf(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_off_buf_{}_{}", field_idx, layer)
+fn tuple_layer_offsets_buf(
+    scope: GeneratedIdentScope<'_>,
+    group_idx: usize,
+    layer: usize,
+) -> Ident {
+    scope.fresh(&format!("__df_derive_t_off_buf_{group_idx}_{layer}"))
 }
 
-pub(in crate::codegen) fn tuple_layer_validity_mb(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_valmb_{}_{}", field_idx, layer)
+fn tuple_layer_validity_mb(
+    scope: GeneratedIdentScope<'_>,
+    group_idx: usize,
+    layer: usize,
+) -> Ident {
+    scope.fresh(&format!("__df_derive_t_valmb_{group_idx}_{layer}"))
 }
 
-pub(in crate::codegen) fn tuple_layer_validity_bm(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_valbm_{}_{}", field_idx, layer)
+fn tuple_layer_validity_bm(
+    scope: GeneratedIdentScope<'_>,
+    group_idx: usize,
+    layer: usize,
+) -> Ident {
+    scope.fresh(&format!("__df_derive_t_valbm_{group_idx}_{layer}"))
 }
 
-pub(in crate::codegen) fn tuple_layer_bind(field_idx: usize, layer: usize) -> Ident {
-    format_ident!("__df_derive_t_bind_{}_{}", field_idx, layer)
+fn tuple_layer_bind(scope: GeneratedIdentScope<'_>, group_idx: usize, layer: usize) -> Ident {
+    scope.fresh(&format!("__df_derive_t_bind_{group_idx}_{layer}"))
 }
 
-pub(in crate::codegen) fn tuple_layer_list_arr(layer: usize) -> Ident {
-    format_ident!("__df_derive_t_arr_{}", layer)
+pub(in crate::codegen) fn layer_reserve_len(layer: usize) -> Ident {
+    format_ident!("__df_derive_layer_reserve_len_{}", layer)
 }
-
-pub(in crate::codegen) const TUPLE_OUTER_SOME_PREFIX: &str = "__df_derive_t_some_";

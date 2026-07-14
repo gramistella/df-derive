@@ -11,14 +11,24 @@ pub enum Encoder {
         push: TokenStream,
         series: TokenStream,
     },
-    Multi {
-        columnar: TokenStream,
-    },
+    Multi(EncodeLifecycle),
+}
+
+/// The three phases every multi-value encoder contributes to the enclosing
+/// one-shot row pass.
+///
+/// Declarations run before the shared row loop, `push` runs once for the
+/// current row, and builders materialize checked columns after the iterator
+/// has been exhausted.
+pub struct EncodeLifecycle {
+    pub decls: Vec<TokenStream>,
+    pub push: TokenStream,
+    pub builders: Vec<TokenStream>,
 }
 
 pub struct BaseCtx<'a> {
     pub access: &'a TokenStream,
-    pub rows: &'a syn::Ident,
+    pub row_capacity: &'a syn::Ident,
     pub sink: &'a syn::Ident,
     pub idx: usize,
     pub name: &'a str,

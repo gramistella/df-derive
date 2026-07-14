@@ -149,9 +149,9 @@ measure(Approach::DfDerive, rows, || {
 hidden `ColumnarSpec` with explicit schema composition and column encoding;
 the blanket runtime owns the one-shot input iterator and validates its
 `ColumnSink` output before constructing the outer frame. Generated encoders
-currently stabilize borrowed rows once in a `Vec<&ShowcaseRow>` for their
-shape-dependent passes. `ToDataFrame::schema()` uses the explicit schema path,
-not an empty encoding.
+advance borrowed rows in one outer loop shared by scalar, list, nested, and
+tuple builders. `ToDataFrame::schema()` uses the explicit schema path, not an
+empty encoding.
 
 The user-facing form is the same conversion through the slice extension:
 

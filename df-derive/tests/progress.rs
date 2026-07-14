@@ -42,6 +42,8 @@ fn tests() {
     t.pass("tests/pass/47-option-access-chain-no-clone.rs");
     t.pass("tests/pass/48-runtime-override-combinations.rs");
     t.pass("tests/pass/49-flatten-field.rs");
+    t.pass("tests/pass/50-wrapped-nested-tuples.rs");
+    t.pass("tests/pass/51-tuple-ident-collisions.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -83,8 +85,6 @@ fn tests() {
     t.compile_fail("tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs");
     t.compile_fail("tests/fail/133-fail-skip-with-conversion-attr.rs");
     t.compile_fail("tests/fail/134-fail-as-string-concrete-type-without-display.rs");
-    t.compile_fail("tests/fail/135-fail-wrapped-nested-tuple-parent.rs");
-    t.compile_fail("tests/fail/136-fail-wrapped-nested-tuple-element.rs");
     t.compile_fail("tests/fail/137-fail-duplicate-override-attributes.rs");
     t.compile_fail("tests/fail/138-fail-mixed-runtime-overrides.rs");
     t.compile_fail("tests/fail/139-fail-duplicate-container-attributes.rs");
@@ -92,7 +92,6 @@ fn tests() {
     t.compile_fail("tests/fail/141-fail-as-string-on-std-duration.rs");
     t.compile_fail("tests/fail/142-fail-as-string-on-borrowed-bytes.rs");
     t.compile_fail("tests/fail/143-fail-as-string-on-borrowed-slice.rs");
-    t.compile_fail("tests/fail/144-fail-vec-wrapped-nested-tuple.rs");
     t.compile_fail("tests/fail/145-fail-duplicate-decimal-keys.rs");
     t.compile_fail("tests/fail/146-fail-direct-self-recursive-field.rs");
     t.compile_fail("tests/fail/147-fail-unsized-smart-pointer-leaves.rs");

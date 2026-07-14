@@ -94,6 +94,9 @@ mod explicit_schema_composition;
 #[path = "runtime/62-wrapped-nested-tuples.rs"]
 mod wrapped_nested_tuples;
 
+#[path = "runtime/63-list-bitmap-boundaries.rs"]
+mod list_bitmap_boundaries;
+
 #[path = "runtime/64-wide-tuple-error-consumption.rs"]
 mod wide_tuple_error_consumption;
 

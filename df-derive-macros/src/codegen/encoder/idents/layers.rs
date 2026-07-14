@@ -136,7 +136,3 @@ fn tuple_layer_validity_bm(
 fn tuple_layer_bind(scope: GeneratedIdentScope<'_>, group_idx: usize, layer: usize) -> Ident {
     scope.fresh(&format!("__df_derive_t_bind_{group_idx}_{layer}"))
 }
-
-pub(in crate::codegen) fn layer_reserve_len(layer: usize) -> Ident {
-    format_ident!("__df_derive_layer_reserve_len_{}", layer)
-}

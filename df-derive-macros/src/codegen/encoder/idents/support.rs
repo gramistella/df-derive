@@ -126,6 +126,14 @@ pub(in crate::codegen) fn list_assembly() -> Ident {
     format_ident!("__DfDeriveListAssembly")
 }
 
+pub(in crate::codegen) fn push_reserved(scope: GeneratedIdentScope<'_>) -> Ident {
+    scope.fresh("__df_derive_push_reserved")
+}
+
+pub(in crate::codegen) fn set_prepared_bitmap(scope: GeneratedIdentScope<'_>) -> Ident {
+    scope.fresh("__df_derive_set_prepared_bitmap")
+}
+
 pub(in crate::codegen) fn as_ref_str_assert_helper() -> Ident {
     format_ident!("__df_derive_assert_as_ref_str")
 }
@@ -162,6 +170,8 @@ mod tests {
                 const __df_derive_sink: usize,
                 const __df_derive_row_upper_bound: usize,
                 const __df_derive_input_rows_exact: usize,
+                const __df_derive_push_reserved: usize,
+                const __df_derive_set_prepared_bitmap: usize,
             >
         );
 
@@ -182,6 +192,14 @@ mod tests {
             "__df_derive_input_rows_exact_1"
         );
         assert_eq!(column_sink_param(&generics), "__df_derive_sink_1");
+        assert_eq!(
+            push_reserved(GeneratedIdentScope::new(&generics)),
+            "__df_derive_push_reserved_1"
+        );
+        assert_eq!(
+            set_prepared_bitmap(GeneratedIdentScope::new(&generics)),
+            "__df_derive_set_prepared_bitmap_1"
+        );
     }
 
     #[test]

@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_encoder_consumes_every_shape_in_one_outer_loop() {
+    fn generated_encoder_consumes_source_once_and_replays_selected_shapes() {
         let mixed = generated(&syn::parse_quote! {
             struct Mixed<T> {
                 id: u32,
@@ -242,10 +242,144 @@ mod tests {
                 generic: T,
             }
         });
+        let generics = syn::Generics::default();
+        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let replay_rows = encoder::idents::replay_rows(scope).to_string();
+        let row = encoder::idents::populator_iter().to_string();
+        let replay_push = format!("{replay_rows} . push ({row})");
+        let replay_loop = format!("in {replay_rows} . iter () . copied ()");
 
         assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
         assert!(!mixed.contains("Iterator :: collect"), "{mixed}");
-        assert!(!mixed.contains("rows . iter"), "{mixed}");
+        assert_eq!(mixed.matches(&replay_push).count(), 1, "{mixed}");
+        assert!(mixed.contains(&replay_loop), "{mixed}");
+    }
+
+    #[test]
+    fn primitive_lists_select_deferred_or_immediate_leaf_fill_by_effects() {
+        let deferred = generated(&syn::parse_quote! {
+            struct InfallibleLists {
+                booleans: Vec<Option<bool>>,
+                integers: Option<Vec<Option<Vec<Option<i32>>>>>,
+            }
+        });
+        let generics = syn::Generics::default();
+        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let replay_rows = encoder::idents::replay_rows(scope).to_string();
+        let row = encoder::idents::populator_iter().to_string();
+        let shallow_segments = encoder::idents::vec_leaf_segments(scope, 0).to_string();
+        let deep_segments = encoder::idents::vec_leaf_segments(scope, 1).to_string();
+        let deep_counts = encoder::idents::vec_shape_counts(scope, 1).to_string();
+        let replay_push = format!("{replay_rows} . push ({row})");
+
+        assert_eq!(
+            deferred.matches("in rows . by_ref ()").count(),
+            1,
+            "{deferred}",
+        );
+        assert!(!deferred.contains("Iterator :: collect"), "{deferred}");
+        assert!(
+            deferred
+                .matches("bitmap :: MutableBitmap :: from_len_set")
+                .count()
+                >= 2,
+            "{deferred}",
+        );
+        assert_eq!(deferred.matches(". checked_add").count(), 4, "{deferred}");
+        assert!(deferred.contains(&shallow_segments), "{deferred}");
+        assert!(!deferred.contains(&deep_segments), "{deferred}");
+        assert_eq!(deferred.matches(&replay_push).count(), 1, "{deferred}");
+        assert!(deferred.contains("push_reserved"), "{deferred}");
+        assert!(deferred.contains("set_prepared_bitmap"), "{deferred}");
+        assert!(deferred.contains(":: core :: ptr :: write"), "{deferred}");
+        let derived_impl = deferred
+            .find("# [automatically_derived] impl")
+            .expect("generated ColumnarSpec impl");
+        let deferred_impl = &deferred[derived_impl..];
+        assert_eq!(
+            deferred_impl.matches(". checked_add").count(),
+            4,
+            "{deferred}"
+        );
+        assert!(
+            deferred_impl.contains(&format!("Vec :: with_capacity ({deep_counts} [2usize])")),
+            "{deferred}",
+        );
+        for layer in 0..2 {
+            assert!(
+                deferred_impl.contains(&format!(
+                    "Vec :: with_capacity ({deep_counts} [{layer}usize] . saturating_add (1)"
+                )),
+                "{deferred}",
+            );
+            assert!(
+                deferred_impl.contains(&format!(
+                    "MutableBitmap :: with_capacity ({deep_counts} [{layer}usize])"
+                )),
+                "{deferred}",
+            );
+        }
+        assert!(
+            deferred_impl.matches("set_prepared_bitmap").count() >= 3,
+            "{deferred}"
+        );
+        assert!(!deferred_impl.contains(". set ("), "{deferred}");
+        assert!(!deferred_impl.contains("unsafe"), "{deferred}");
+
+        let immediate = generated(&syn::parse_quote! {
+            struct FallibleList {
+                #[df_derive(as_string)]
+                values: Vec<DisplayValue>,
+            }
+        });
+        assert_eq!(
+            immediate.matches("in rows . by_ref ()").count(),
+            1,
+            "{immediate}",
+        );
+        let immediate_impl = &immediate[immediate
+            .find("# [automatically_derived] impl")
+            .expect("generated ColumnarSpec impl")..];
+        assert!(!immediate_impl.contains(". checked_add"), "{immediate}");
+        assert!(immediate_impl.contains(". reserve"), "{immediate}");
+        assert!(!immediate.contains(&replay_rows), "{immediate}");
+    }
+
+    #[test]
+    fn primitive_list_helpers_are_emitted_selectively() {
+        let bulk_boolean = generated(&syn::parse_quote! {
+            struct BulkBooleanList {
+                values: Vec<Vec<bool>>,
+            }
+        });
+        assert!(!bulk_boolean.contains("push_reserved"), "{bulk_boolean}");
+        assert!(
+            !bulk_boolean.contains("set_prepared_bitmap"),
+            "{bulk_boolean}",
+        );
+        assert!(
+            bulk_boolean.contains("BooleanArray :: from_slice"),
+            "deep bare booleans should be packed once from contiguous storage: {bulk_boolean}",
+        );
+
+        let bitmap_only = generated(&syn::parse_quote! {
+            struct ShallowBooleanList {
+                values: Vec<bool>,
+            }
+        });
+        assert!(!bitmap_only.contains("push_reserved"), "{bitmap_only}");
+        assert!(bitmap_only.contains("set_prepared_bitmap"), "{bitmap_only}");
+
+        let bare_numeric = generated(&syn::parse_quote! {
+            struct BareNumericList {
+                values: Vec<Vec<i32>>,
+            }
+        });
+        assert!(bare_numeric.contains("push_reserved"), "{bare_numeric}");
+        assert!(
+            !bare_numeric.contains("set_prepared_bitmap"),
+            "{bare_numeric}",
+        );
     }
 
     #[test]

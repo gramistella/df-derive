@@ -35,6 +35,12 @@ pub struct BaseCtx<'a> {
     pub name: &'a str,
 }
 
+#[derive(Clone, Copy)]
+pub struct RowReplay<'a> {
+    pub row: &'a syn::Ident,
+    pub rows: &'a syn::Ident,
+}
+
 /// Relates one primitive-leaf push to the source iterator.
 ///
 /// Only row-aligned leaves may seed validity from an exact iterator size
@@ -48,6 +54,7 @@ pub enum LeafCardinality {
 
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
+    pub row_replay: Option<RowReplay<'a>>,
     pub cardinality: LeafCardinality,
     pub ident_scope: GeneratedIdentScope<'a>,
     pub input_rows_exact: &'a syn::Ident,

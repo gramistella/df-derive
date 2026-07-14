@@ -162,6 +162,7 @@ impl TupleBuilder<'_> {
                 idx,
                 name,
             },
+            row_replay: None,
             cardinality: LeafCardinality::InputRows,
             ident_scope: self.ident_scope,
             input_rows_exact: &input_rows_exact,
@@ -370,6 +371,7 @@ impl TupleBuilder<'_> {
                         idx,
                         name: common.name(),
                     },
+                    row_replay: None,
                     cardinality: if prefix.is_empty()
                         && matches!(&effective_wrapper, WrapperShape::Leaf(_))
                     {

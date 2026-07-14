@@ -27,8 +27,22 @@ struct TupleIdentCollisions<
 }
 
 #[derive(ToDataFrame)]
-struct PrimitiveIdentCollisions<const __df_derive_ri_0: usize> {
+struct PrimitiveIdentCollisions<
+    const __df_derive_ri_0: usize,
+    const __df_derive_leaf_idx_1: usize,
+    const __df_derive_leaf_count_1: usize,
+    const __df_derive_shape_counts_4: usize,
+    const __df_derive_leaf_segments_1: usize,
+    const __df_derive_leaf_segment_1: usize,
+    const __df_derive_validity_growth_3: usize,
+    const __df_derive_push_reserved: usize,
+    const __df_derive_set_prepared_bitmap: usize,
+> {
     flag: Option<bool>,
+    values: Vec<Option<bool>>,
+    numbers: Vec<i32>,
+    decimals: Vec<Option<rust_decimal::Decimal>>,
+    nested: Vec<Vec<i32>>,
 }
 
 fn main() {}

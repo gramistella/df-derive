@@ -58,12 +58,15 @@ pub(in crate::codegen) fn build_field_emit(
     } = params;
     match field {
         FieldPlan::Column(column) => {
-            let lifecycle = build_field_column_emit(
+            let (lifecycle, requires_replay) = build_field_column_emit(
                 column,
                 config,
                 ident_scope,
                 terminal_start,
-                row,
+                encoder::RowReplay {
+                    row,
+                    rows: replay_rows,
+                },
                 row_capacity,
                 sink,
             );
@@ -71,7 +74,7 @@ pub(in crate::codegen) fn build_field_emit(
                 decls: lifecycle.decls,
                 push: lifecycle.push,
                 builders: lifecycle.builders,
-                requires_replay: false,
+                requires_replay,
                 terminal_count: 1,
                 group_count: 0,
             }
@@ -108,25 +111,46 @@ fn build_field_column_emit(
     config: &super::MacroConfig,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
-    row: &Ident,
+    row_replay: encoder::RowReplay<'_>,
     row_capacity: &Ident,
     sink: &Ident,
-) -> EncodeLifecycle {
+) -> (EncodeLifecycle, bool) {
     match column.leaf_spec().route() {
         TerminalLeafRoute::Nested(nested) => {
             let type_path = nested_type_path(nested);
-            build_nested_emit(column, config, idx, row, &type_path, row_capacity, sink)
+            (
+                build_nested_emit(
+                    column,
+                    config,
+                    idx,
+                    row_replay.row,
+                    &type_path,
+                    row_capacity,
+                    sink,
+                ),
+                false,
+            )
         }
-        TerminalLeafRoute::Primitive(leaf) => build_primitive_emit(
-            column,
-            config,
-            ident_scope,
-            idx,
-            row,
-            leaf,
-            row_capacity,
-            sink,
-        ),
+        TerminalLeafRoute::Primitive(leaf) => {
+            let requires_replay = match column.wrapper_shape() {
+                WrapperShape::Vec(shape) => encoder::primitive_vec_requires_row_replay(leaf, shape),
+                WrapperShape::Leaf(_) => false,
+            };
+            (
+                build_primitive_emit(
+                    column,
+                    config,
+                    ident_scope,
+                    idx,
+                    row_replay,
+                    leaf,
+                    requires_replay,
+                    row_capacity,
+                    sink,
+                ),
+                requires_replay,
+            )
+        }
     }
 }
 
@@ -164,13 +188,14 @@ fn build_primitive_emit(
     config: &super::MacroConfig,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
-    row: &Ident,
+    row_replay: encoder::RowReplay<'_>,
     leaf: PrimitiveLeaf<'_>,
+    requires_replay: bool,
     row_capacity: &Ident,
     sink: &Ident,
 ) -> EncodeLifecycle {
     let name = column.name();
-    let access = super::source_access::field_column_access(column, row);
+    let access = super::source_access::field_column_access(column, row_replay.row);
     let input_rows_exact = idents::input_rows_exact(ident_scope);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
@@ -180,6 +205,7 @@ fn build_primitive_emit(
             idx,
             name,
         },
+        row_replay: requires_replay.then_some(row_replay),
         cardinality: match column.wrapper_shape() {
             WrapperShape::Leaf(_) => LeafCardinality::InputRows,
             WrapperShape::Vec(_) => LeafCardinality::Dynamic,

@@ -63,6 +63,7 @@ pub(super) fn wrap_option_access_chain_primitive(
             idx: ctx.base.idx,
             name: ctx.base.name,
         },
+        row_replay: ctx.row_replay,
         cardinality: ctx.cardinality,
         ident_scope: ctx.ident_scope,
         input_rows_exact: ctx.input_rows_exact,

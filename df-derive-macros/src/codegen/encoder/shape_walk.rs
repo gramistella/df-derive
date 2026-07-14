@@ -37,21 +37,8 @@ impl ShapeScan<'_, '_> {
             (self.leaf_body)(vec_bind)
         } else {
             let inner_bind = &self.layers[cur + 1].bind;
-            let inner_layer = &self.layers[cur + 1];
-            let inner_offsets = &inner_layer.offsets;
-            let additional = idents::layer_reserve_len(cur + 1);
-            let validity_reserve = self.shape.layers[cur + 1].has_outer_validity().then(|| {
-                let validity = &inner_layer.validity_mb;
-                quote! { #validity.reserve(#additional); }
-            });
-            let reserve = quote! {
-                let #additional: usize = #vec_bind.len();
-                #inner_offsets.reserve(#additional);
-                #validity_reserve
-            };
             let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
             quote! {
-                #reserve
                 for #inner_bind in #vec_bind.iter() {
                     #inner_layer_body
                 }
@@ -96,6 +83,76 @@ impl ShapeScan<'_, '_> {
             #inner_iter
             let #offset_ident: i64 = #offset;
             #offsets.push(#offset_ident);
+        }
+    }
+}
+
+struct ShapeCount<'shape, 'counts> {
+    shape: &'shape VecLayers,
+    access: &'shape TokenStream,
+    layers: &'shape [LayerIdents],
+    outer_some_prefix: &'shape str,
+    counts: &'counts syn::Ident,
+    pp: &'shape TokenStream,
+}
+
+impl ShapeCount<'_, '_> {
+    fn build(&self) -> TokenStream {
+        let access = self.access;
+        self.build_layer(0, &quote! { (&(#access)) })
+    }
+
+    fn build_iter(&self, cur: usize, vec_bind: &TokenStream) -> TokenStream {
+        if cur + 1 == self.shape.depth() {
+            let counts = self.counts;
+            let leaves = self.shape.depth();
+            let pp = self.pp;
+            return quote! {
+                #counts[#leaves] = #counts[#leaves]
+                    .checked_add(#vec_bind.len())
+                    .ok_or_else(|| #pp::polars_err!(
+                        ComputeError:
+                        "df-derive: flattened list element count exceeds usize range",
+                    ))?;
+            };
+        }
+
+        let inner_bind = &self.layers[cur + 1].bind;
+        let inner_layer_body = self.build_layer(cur + 1, &quote! { #inner_bind });
+        quote! {
+            for #inner_bind in #vec_bind.iter() {
+                #inner_layer_body
+            }
+        }
+    }
+
+    fn build_layer(&self, cur: usize, bind: &TokenStream) -> TokenStream {
+        let layer_access = access_chain_to_ref(bind, &self.shape.layers[cur].access);
+        let inner_iter = if layer_access.has_option {
+            let inner_vec_bind = format_ident!("{}{}", self.outer_some_prefix, cur);
+            let inner_iter = self.build_iter(cur, &quote! { #inner_vec_bind });
+            let collapsed = layer_access.expr;
+            quote! {
+                if let ::std::option::Option::Some(#inner_vec_bind) = #collapsed {
+                    #inner_iter
+                }
+            }
+        } else {
+            self.build_iter(cur, &layer_access.expr)
+        };
+        let counts = self.counts;
+        let child = cur + 1;
+        let offset = list_offset_i64_expr(&quote! { #counts[#child] }, self.pp);
+        let pp = self.pp;
+        quote! {
+            #inner_iter
+            let _: i64 = #offset;
+            #counts[#cur] = #counts[#cur]
+                .checked_add(1)
+                .ok_or_else(|| #pp::polars_err!(
+                    ComputeError:
+                    "df-derive: list layer element count exceeds usize range",
+                ))?;
         }
     }
 }
@@ -164,12 +221,35 @@ impl<'a> ShapeEmitter<'a> {
         .build()
     }
 
+    /// Counts one already-bound row without retaining per-element references.
+    /// Deferred encoders use these cardinalities to allocate the whole list
+    /// shape exactly before replaying through [`Self::row_push`].
+    pub(super) fn row_count(&self, counts: &syn::Ident) -> TokenStream {
+        ShapeCount {
+            shape: self.shape,
+            access: self.access,
+            layers: self.layers,
+            outer_some_prefix: self.outer_some_prefix,
+            counts,
+            pp: self.pp,
+        }
+        .build()
+    }
+
     pub(super) fn offsets_decls(&self) -> TokenStream {
         shape_offsets_decls(self)
     }
 
     pub(super) fn validity_decls(&self) -> TokenStream {
         shape_validity_decls(self)
+    }
+
+    pub(super) fn exact_offsets_decls(&self, counts: &syn::Ident) -> TokenStream {
+        shape_exact_offsets_decls(self, counts)
+    }
+
+    pub(super) fn exact_validity_decls(&self, counts: &syn::Ident) -> TokenStream {
+        shape_exact_validity_decls(self, counts)
     }
 
     pub(super) fn layer_wraps_move(&self) -> NonEmpty<LayerWrap<'a>> {
@@ -366,6 +446,19 @@ fn shape_offsets_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     quote! { #(#out)* }
 }
 
+fn shape_exact_offsets_decls(emitter: &ShapeEmitter<'_>, counts: &syn::Ident) -> TokenStream {
+    let declarations = emitter.layers.iter().enumerate().map(|(idx, layer)| {
+        let offsets = &layer.offsets;
+        quote! {
+            let mut #offsets: ::std::vec::Vec<i64> = ::std::vec::Vec::with_capacity(
+                #counts[#idx].saturating_add(1),
+            );
+            #offsets.push(0);
+        }
+    });
+    quote! { #(#declarations)* }
+}
+
 fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
     let mut out: Vec<TokenStream> = Vec::new();
     for (i, layer) in emitter.layers.iter().enumerate() {
@@ -386,4 +479,21 @@ fn shape_validity_decls(emitter: &ShapeEmitter<'_>) -> TokenStream {
         });
     }
     quote! { #(#out)* }
+}
+
+fn shape_exact_validity_decls(emitter: &ShapeEmitter<'_>, counts: &syn::Ident) -> TokenStream {
+    let declarations = emitter
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| emitter.shape.layers[*idx].has_outer_validity())
+        .map(|(idx, layer)| {
+            let validity = &layer.validity_mb;
+            let pa_root = emitter.pa_root;
+            quote! {
+                let mut #validity: #pa_root::bitmap::MutableBitmap =
+                    #pa_root::bitmap::MutableBitmap::with_capacity(#counts[#idx]);
+            }
+        });
+    quote! { #(#declarations)* }
 }

@@ -19,12 +19,17 @@ mod tuple_group;
 mod vec;
 mod wrapper_access;
 
-pub use ctx::{BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, build_encoder};
+pub use ctx::{
+    BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, RowReplay, build_encoder,
+};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
 pub use stringy::struct_type_tokens;
 pub(in crate::codegen) use tuple_group::{
     REPLAY_STATIC_TUPLE_MIN_TERMINALS, TupleFieldEmitParams, build_tuple_field_emit,
     replayable_tuple_terminal_count,
+};
+pub(in crate::codegen) use vec::{
+    PrimitiveVecHelperNeeds, primitive_vec_helper_needs, primitive_vec_requires_row_replay,
 };
 
 pub(super) use ctx::build_encoder_with_option_receiver;

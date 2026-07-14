@@ -22,12 +22,14 @@
 // — paired with a `Decimal` field, the shape that surfaced the original
 // downstream report.
 //
-// Also covers `Option<String>` — the direct-view fast path for that shape
-// uses a `MutableBitmap` for validity. An earlier draft used the unsafe
-// `set_unchecked` to flip the per-row bit, which would have re-introduced
-// `unsafe` into the user's impl method. The current code uses the safe
-// `MutableBitmap::set` (bounds-checked, no `unsafe` keyword) so this lint
-// does not fire on `Option<String>` fields either.
+// Also covers the primitive-list paths that maintain their own value and
+// validity buffers:
+// - `Vec<i32>` exercises reserved numeric writes
+// - `Vec<Option<i32>>` exercises prepared numeric validity writes
+// - `Vec<Option<bool>>` exercises value and validity bitmaps
+//
+// `Option<String>` covers the direct-view validity path too. None of these
+// generated paths may place an `unsafe` block inside the user's impl.
 
 #![deny(clippy::unsafe_derive_deserialize)]
 
@@ -52,18 +54,23 @@ struct Outer {
     #[df_derive(decimal(precision = 18, scale = 6))]
     maybe_price: Option<Decimal>,
     label: Option<String>,
+    numbers: Vec<i32>,
+    optional_numbers: Vec<Option<i32>>,
+    flags: Vec<Option<bool>>,
     payloads: Vec<Inner>,
     optional_payloads: Option<Vec<Inner>>,
 }
 
-#[test]
-fn derived_struct_with_deserialize_compiles_and_runs() {
-    let rows = vec![
+fn fixture_rows() -> Vec<Outer> {
+    vec![
         Outer {
             id: 1,
             price: Decimal::new(12345, 2),
             maybe_price: Some(Decimal::new(6789, 2)),
             label: Some("alpha".to_string()),
+            numbers: vec![1, -2, 3],
+            optional_numbers: vec![Some(8), None, Some(-5)],
+            flags: vec![Some(true), None, Some(false)],
             payloads: vec![
                 Inner {
                     field_a: 10,
@@ -84,10 +91,32 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
             price: Decimal::new(0, 0),
             maybe_price: None,
             label: None,
+            numbers: vec![],
+            optional_numbers: vec![None],
+            flags: vec![None, Some(true)],
             payloads: vec![],
             optional_payloads: None,
         },
-    ];
+    ]
+}
+
+fn assert_i32_list(df: &DataFrame, column: &str, row: usize, expected: &[Option<i32>]) {
+    let AnyValue::List(values) = df.column(column).unwrap().get(row).unwrap() else {
+        panic!("expected {column} row {row} to be a list");
+    };
+    assert_eq!(values.i32().unwrap().iter().collect::<Vec<_>>(), expected);
+}
+
+fn assert_bool_list(df: &DataFrame, column: &str, row: usize, expected: &[Option<bool>]) {
+    let AnyValue::List(values) = df.column(column).unwrap().get(row).unwrap() else {
+        panic!("expected {column} row {row} to be a list");
+    };
+    assert_eq!(values.bool().unwrap().iter().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn derived_struct_with_deserialize_compiles_and_runs() {
+    let rows = fixture_rows();
 
     let df_single = rows[0].to_dataframe().unwrap();
     assert_eq!(df_single.height(), 1);
@@ -136,4 +165,10 @@ fn derived_struct_with_deserialize_compiles_and_runs() {
         df_batch.column("label").unwrap().get(1).unwrap(),
         AnyValue::Null
     );
+
+    assert_i32_list(&df_batch, "numbers", 0, &[Some(1), Some(-2), Some(3)]);
+    assert_i32_list(&df_batch, "numbers", 1, &[]);
+    assert_i32_list(&df_batch, "optional_numbers", 0, &[Some(8), None, Some(-5)]);
+    assert_bool_list(&df_batch, "flags", 0, &[Some(true), None, Some(false)]);
+    assert_bool_list(&df_batch, "flags", 1, &[None, Some(true)]);
 }

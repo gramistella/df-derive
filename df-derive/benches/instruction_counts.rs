@@ -120,6 +120,36 @@ struct TupleListRow {
     items: Vec<(i64, i64, i64, i64)>,
 }
 
+#[derive(ToDataFrame)]
+struct VecBoolRow {
+    id: u64,
+    items: Vec<bool>,
+}
+
+#[derive(ToDataFrame)]
+struct VecOptBoolRow {
+    id: u64,
+    items: Vec<Option<bool>>,
+}
+
+#[derive(ToDataFrame)]
+struct VecVecBoolRow {
+    id: u64,
+    items: Vec<Vec<bool>>,
+}
+
+#[derive(ToDataFrame)]
+struct VecVecI32Row {
+    id: u64,
+    items: Vec<Vec<i32>>,
+}
+
+#[derive(ToDataFrame)]
+struct VecVecOptI32Row {
+    id: u64,
+    items: Vec<Vec<Option<i32>>>,
+}
+
 fn convert_rows<T>(rows: Vec<T>) -> (usize, usize)
 where
     [T]: ToDataFrameVec,
@@ -337,6 +367,83 @@ fn generate_tuple_list_rows() -> Vec<TupleListRow> {
         .collect()
 }
 
+fn generate_vec_bool_rows() -> Vec<VecBoolRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecBoolRow {
+            id: i as u64,
+            items: (0..(i % 7 + 3)).map(|k| (k + i) % 2 == 0).collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_opt_bool_rows() -> Vec<VecOptBoolRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecOptBoolRow {
+            id: i as u64,
+            items: (0..(i % 7 + 3))
+                .map(|k| {
+                    if (k + i) % 5 == 0 {
+                        None
+                    } else {
+                        Some((k + i) % 2 == 0)
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_vec_bool_rows() -> Vec<VecVecBoolRow> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecVecBoolRow {
+            id: i as u64,
+            items: (0..(i % 5 + 2))
+                .map(|j| (0..(j % 4 + 2)).map(|k| (i + j + k) % 2 == 0).collect())
+                .collect(),
+        })
+        .collect()
+}
+
+fn nested_i32_value(row: usize, list: usize, item: usize) -> i32 {
+    i32::try_from(row).unwrap() * 10 + i32::try_from(list).unwrap() + i32::try_from(item).unwrap()
+}
+
+fn generate_vec_vec_i32_rows() -> Vec<VecVecI32Row> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecVecI32Row {
+            id: i as u64,
+            items: (0..(i % 5 + 2))
+                .map(|j| {
+                    (0..(j % 4 + 2))
+                        .map(|k| nested_i32_value(i, j, k))
+                        .collect()
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn generate_vec_vec_opt_i32_rows() -> Vec<VecVecOptI32Row> {
+    (0..N_NUMERIC_ROWS)
+        .map(|i| VecVecOptI32Row {
+            id: i as u64,
+            items: (0..(i % 5 + 2))
+                .map(|j| {
+                    (0..(j % 4 + 2))
+                        .map(|k| {
+                            if (i + j + k) % 5 == 0 {
+                                None
+                            } else {
+                                Some(nested_i32_value(i, j, k))
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 #[library_benchmark]
 #[bench::top_level_vec(generate_ticks())]
 fn bench_top_level_vec(rows: Vec<Tick>) -> (usize, usize) {
@@ -403,6 +510,36 @@ fn bench_tuple_list_grouped(rows: Vec<TupleListRow>) -> (usize, usize) {
     convert_rows(rows)
 }
 
+#[library_benchmark]
+#[bench::vec_bool(generate_vec_bool_rows())]
+fn bench_vec_bool(rows: Vec<VecBoolRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::vec_opt_bool(generate_vec_opt_bool_rows())]
+fn bench_vec_opt_bool(rows: Vec<VecOptBoolRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::vec_vec_bool(generate_vec_vec_bool_rows())]
+fn bench_vec_vec_bool(rows: Vec<VecVecBoolRow>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::vec_vec_i32(generate_vec_vec_i32_rows())]
+fn bench_vec_vec_i32(rows: Vec<VecVecI32Row>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::vec_vec_opt_i32(generate_vec_vec_opt_i32_rows())]
+fn bench_vec_vec_opt_i32(rows: Vec<VecVecOptI32Row>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
 library_benchmark_group!(
     name = instruction_counts,
     benchmarks = [
@@ -420,8 +557,19 @@ library_benchmark_group!(
     ]
 );
 
+library_benchmark_group!(
+    name = primitive_list_instruction_counts,
+    benchmarks = [
+        bench_vec_bool,
+        bench_vec_opt_bool,
+        bench_vec_vec_bool,
+        bench_vec_vec_i32,
+        bench_vec_vec_opt_i32
+    ]
+);
+
 main!(
     config = LibraryBenchmarkConfig::default()
         .envs([("POLARS_MAX_THREADS", "1"), ("RAYON_NUM_THREADS", "1")]),
-    library_benchmark_groups = instruction_counts
+    library_benchmark_groups = [instruction_counts, primitive_list_instruction_counts]
 );

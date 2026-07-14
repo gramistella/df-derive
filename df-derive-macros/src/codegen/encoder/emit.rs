@@ -16,7 +16,7 @@ use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
 use super::ctx::EncodeLifecycle;
 use super::idents::{self, LayerIdents};
-use super::leaf_kind::CollectThenBulk;
+use super::leaf_kind::{CollectThenBulk, PrimitiveListSchedule};
 use super::nested_columns::{
     NestedMaterializeCtx, NestedWrapper, SharedListPrefix, materialize_nested_columns,
 };
@@ -33,23 +33,25 @@ fn layer_idents(field_idx: usize, nested: bool, layer_idx: usize) -> LayerIdents
     LayerIdents::new(namespace, layer_idx)
 }
 
-fn pep_leaf_body<'a>(
+fn element_leaf_body<'a>(
     shape: &'a VecLayers,
     leaf_bind: &'a syn::Ident,
-    per_elem_push: &'a TokenStream,
-    reserve: &'a TokenStream,
+    write_leaf: &'a TokenStream,
+    prepare_segment: Option<&'a TokenStream>,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
-        let additional = idents::leaf_reserve_len();
-        let reserve = quote! {
-            let #additional: usize = #vec_bind.len();
-            #reserve
-        };
+        let segment_prelude = prepare_segment.map(|prepare_segment| {
+            let additional = idents::leaf_reserve_len();
+            quote! {
+                let #additional: usize = #vec_bind.len();
+                #prepare_segment
+            }
+        });
         if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
             quote! {
-                #reserve
+                #segment_prelude
                 for #leaf_bind in #vec_bind.iter() {
-                    #per_elem_push
+                    #write_leaf
                 }
             }
         } else {
@@ -58,18 +60,18 @@ fn pep_leaf_body<'a>(
             let resolved = chain_ref.expr;
             if chain_ref.has_option {
                 quote! {
-                    #reserve
+                    #segment_prelude
                     for #raw_bind in #vec_bind.iter() {
                         let #leaf_bind: ::std::option::Option<_> = #resolved;
-                        #per_elem_push
+                        #write_leaf
                     }
                 }
             } else {
                 quote! {
-                    #reserve
+                    #segment_prelude
                     for #raw_bind in #vec_bind.iter() {
                         let #leaf_bind = #resolved;
-                        #per_elem_push
+                        #write_leaf
                     }
                 }
             }
@@ -271,7 +273,7 @@ fn ctb_materialize(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn pep_emit(
     pep: &super::leaf_kind::PerElementPush,
     access: &TokenStream,
@@ -291,29 +293,140 @@ fn pep_emit(
         pp,
         pa_root,
     });
-    let leaf_body = pep_leaf_body(shape, &leaf_bind, &pep.per_elem_push, &pep.reserve);
-    let push = emitter.row_push(&leaf_body, &pep.leaf_offsets_post_push);
-
     let offsets_decls = emitter.offsets_decls();
     let validity_decls = emitter.validity_decls();
-
     let materialize = pep_materialize(pep, &emitter, idx, pp);
     let storage_decls = &pep.storage_decls;
     let extra_imports = &pep.extra_imports;
 
-    EncodeLifecycle {
-        decls: vec![quote! {
-            #extra_imports
-            #storage_decls
-            #offsets_decls
-            #validity_decls
-        }],
-        push,
-        builders: vec![quote! {
-            let #series_local: #pp::Series = {
-            #materialize
+    match &pep.schedule {
+        PrimitiveListSchedule::Immediate {
+            prepare_segment,
+            leaf_offsets_post_push,
+        } => {
+            let leaf_body =
+                element_leaf_body(shape, &leaf_bind, &pep.write_leaf, Some(prepare_segment));
+            let push = emitter.row_push(&leaf_body, leaf_offsets_post_push);
+            EncodeLifecycle {
+                decls: vec![quote! {
+                    #extra_imports
+                    #storage_decls
+                    #offsets_decls
+                    #validity_decls
+                }],
+                push,
+                builders: vec![quote! {
+                    let #series_local: #pp::Series = {
+                        #materialize
+                    };
+                }],
+            }
+        }
+        PrimitiveListSchedule::ImmediateSegments {
+            leaf_segment,
+            write_segment,
+            leaf_offsets_post_push,
+        } => {
+            let write_segment = |vec_bind: &TokenStream| {
+                quote! {
+                    let #leaf_segment: &::std::vec::Vec<_> = #vec_bind;
+                    #write_segment
+                }
             };
-        }],
+            let push = emitter.row_push(&write_segment, leaf_offsets_post_push);
+            EncodeLifecycle {
+                decls: vec![quote! {
+                    #extra_imports
+                    #storage_decls
+                    #offsets_decls
+                    #validity_decls
+                }],
+                push,
+                builders: vec![quote! {
+                    let #series_local: #pp::Series = {
+                        #materialize
+                    };
+                }],
+            }
+        }
+        PrimitiveListSchedule::DeferredRows {
+            shape_counts,
+            leaf_offsets_post_push,
+            row,
+            replay_rows,
+        } => {
+            let push = emitter.row_count(shape_counts);
+            let fill_segment = element_leaf_body(shape, &leaf_bind, &pep.write_leaf, None);
+            let fill_row = emitter.row_push(&fill_segment, leaf_offsets_post_push);
+            let exact_offsets_decls = emitter.exact_offsets_decls(shape_counts);
+            let exact_validity_decls = emitter.exact_validity_decls(shape_counts);
+            let cardinality_count = shape.depth() + 1;
+            EncodeLifecycle {
+                decls: vec![quote! {
+                    #extra_imports
+                    let mut #shape_counts: [usize; #cardinality_count] =
+                        [0; #cardinality_count];
+                }],
+                push,
+                builders: vec![quote! {
+                    let #series_local: #pp::Series = {
+                        #storage_decls
+                        #exact_offsets_decls
+                        #exact_validity_decls
+                        for #row in #replay_rows.iter().copied() {
+                            #fill_row
+                        }
+                        #materialize
+                    };
+                }],
+            }
+        }
+        PrimitiveListSchedule::DeferredSegments {
+            leaf_count,
+            leaf_segments,
+            leaf_segment,
+        } => {
+            let collect_segment = |vec_bind: &TokenStream| {
+                quote! {
+                    let #leaf_segment: &::std::vec::Vec<_> = #vec_bind;
+                    #leaf_count = #leaf_count.checked_add(#leaf_segment.len()).ok_or_else(||
+                        #pp::polars_err!(
+                            ComputeError:
+                            "df-derive: flattened list element count exceeds usize range",
+                        )
+                    )?;
+                    if !#leaf_segment.is_empty() {
+                        #leaf_segments.push(#leaf_segment);
+                    }
+                }
+            };
+            let push = emitter.row_push(&collect_segment, &quote! { #leaf_count });
+            let fill_segment = element_leaf_body(shape, &leaf_bind, &pep.write_leaf, None);
+            let fill_segment = fill_segment(&quote! { #leaf_segment });
+            let fill_leaf_storage = quote! {
+                for #leaf_segment in #leaf_segments {
+                    #fill_segment
+                }
+            };
+            EncodeLifecycle {
+                decls: vec![quote! {
+                    #extra_imports
+                    let mut #leaf_count: usize = 0;
+                    let mut #leaf_segments: ::std::vec::Vec<_> =
+                        ::std::vec::Vec::new();
+                    #offsets_decls
+                    #validity_decls
+                }],
+                push,
+                builders: vec![quote! {
+                    let #series_local: #pp::Series = {
+                        #storage_decls
+                        #fill_leaf_storage
+                        #materialize
+                    };
+                }],
+            }
+        }
     }
 }
 

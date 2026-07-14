@@ -1,6 +1,7 @@
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
+use std::cell::Cell;
 
 // A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`
 // attribute is the semantic opt-in that tells the macro to route this leaf
@@ -230,4 +231,29 @@ fn decimal_precision_is_validated_after_encode() {
         .to_dataframe(),
         "nullable vec",
     );
+}
+
+#[test]
+fn custom_decimal_list_errors_do_not_consume_later_source_rows() {
+    let yielded = Cell::new(0);
+    let rows = [
+        PrecisionVec {
+            amounts: vec![MoneyAmount::new(i128::MAX, 0)],
+        },
+        PrecisionVec {
+            amounts: vec![MoneyAmount::new(1, 2)],
+        },
+    ];
+    assert_eq!(rows[0].amounts[0].try_to_i128_mantissa(2), None);
+
+    let inspected = rows.iter().inspect(|_| yielded.set(yielded.get() + 1));
+    let error = PrecisionVec::encode(inspected).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("decimal mantissa rescale to scale 2 failed"),
+        "unexpected error: {error}",
+    );
+    assert_eq!(yielded.get(), 1);
 }

@@ -105,3 +105,6 @@ mod misreported_size_hint;
 
 #[path = "runtime/66-schema-cache.rs"]
 mod schema_cache;
+
+#[path = "runtime/67-nanosecond-datetime-error-consumption.rs"]
+mod nanosecond_datetime_error_consumption;

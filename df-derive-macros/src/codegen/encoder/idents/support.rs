@@ -29,6 +29,14 @@ pub(in crate::codegen) fn schema_duplicate_name(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_duplicate_name")
 }
 
+pub(in crate::codegen) fn schema_cache(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_schema_cache")
+}
+
+pub(in crate::codegen) fn schema_built(generics: &Generics) -> Ident {
+    fresh_generic_ident(generics, "__df_derive_schema_built")
+}
+
 pub(in crate::codegen) fn schema_nested_fields(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_nested_fields")
 }
@@ -182,6 +190,8 @@ mod tests {
             <
                 const __df_derive_schema_fields: usize,
                 const __df_derive_duplicate_name: usize,
+                const __df_derive_schema_cache: usize,
+                const __df_derive_schema_built: usize,
                 const __df_derive_nested_fields: usize,
                 const __df_derive_inner_name: usize,
                 const __df_derive_inner_dtype: usize,
@@ -195,6 +205,8 @@ mod tests {
             schema_duplicate_name(&generics),
             "__df_derive_duplicate_name_1"
         );
+        assert_eq!(schema_cache(&generics), "__df_derive_schema_cache_1");
+        assert_eq!(schema_built(&generics), "__df_derive_schema_built_1");
         assert_eq!(
             schema_nested_fields(&generics),
             "__df_derive_nested_fields_1"

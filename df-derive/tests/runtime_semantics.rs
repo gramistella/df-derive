@@ -96,3 +96,6 @@ mod wrapped_nested_tuples;
 
 #[path = "runtime/65-misreported-size-hint.rs"]
 mod misreported_size_hint;
+
+#[path = "runtime/66-schema-cache.rs"]
+mod schema_cache;

@@ -136,19 +136,20 @@ fn build_schema_method_body(ir: &StructIR, config: &super::MacroConfig) -> Token
     let pp = config.external_paths.prelude();
     let fields = idents::schema_fields(&ir.generics);
     let duplicate_name = idents::schema_duplicate_name(&ir.generics);
+    let schema_built = idents::schema_built(&ir.generics);
     let column_count = ir.terminal_column_count();
     let mut schema_entries = Vec::with_capacity(column_count);
     ir.visit_terminal_columns(|column| {
         schema_entries.push(super::schema::build_schema_entries(column, ir, config));
     });
 
-    quote! {
+    let build = quote! {
         let mut #fields: ::std::vec::Vec<(#pp::PlSmallStr, #pp::DataType)> =
             ::std::vec::Vec::with_capacity(#column_count);
         #(
             #fields.extend(#schema_entries);
         )*
-        ::std::result::Result::Ok(::std::sync::Arc::new(
+        let #schema_built: #pp::SchemaRef = ::std::sync::Arc::new(
             #pp::Schema::try_from_iter_check_duplicates(
                 #fields.into_iter().map(::std::result::Result::Ok),
                 |#duplicate_name: &str| #pp::polars_err!(
@@ -158,7 +159,26 @@ fn build_schema_method_body(ir: &StructIR, config: &super::MacroConfig) -> Token
                     ::core::any::type_name::<Self>(),
                 ),
             )?,
-        ))
+        );
+    };
+
+    if !ir.generics.params.is_empty() {
+        return quote! {
+            #build
+            ::std::result::Result::Ok(#schema_built)
+        };
+    }
+
+    let schema_cache = idents::schema_cache(&ir.generics);
+    quote! {
+        static #schema_cache: ::std::sync::OnceLock<#pp::SchemaRef> =
+            ::std::sync::OnceLock::new();
+        if let ::std::option::Option::Some(#schema_built) = #schema_cache.get() {
+            return ::std::result::Result::Ok(::std::clone::Clone::clone(#schema_built));
+        }
+        #build
+        let #schema_built: &#pp::SchemaRef = #schema_cache.get_or_init(|| #schema_built);
+        ::std::result::Result::Ok(::std::clone::Clone::clone(#schema_built))
     }
 }
 

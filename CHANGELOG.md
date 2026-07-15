@@ -34,6 +34,10 @@ All notable changes to this project will be documented in this file.
   inferred.
 - Tuple fields retain their hierarchy through execution planning rather than
   being flattened into projection-specific terminal-column variants.
+- Macro lowering now composes a phase-typed `EncodePlan` for initialization,
+  the shared source scan, and ordered post-scan/emission groups. Existing
+  completion order and block scopes remain explicit while later scheduling
+  policy moves behind a planner boundary.
 - Primitive-list plans represent reserved element writes and whole-segment
   writes as distinct states. Generated exact-fill helpers make their unchecked
   storage contracts explicit and retain debug assertions at the boundary.

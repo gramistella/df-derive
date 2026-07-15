@@ -12,9 +12,11 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use crate::codegen::encode_plan::{
+    EmitOp, EncodePlan, FinishGroup, InitOp, PostScanOp, ScanOp, SeriesPlan,
+};
 use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
-use super::ctx::EncodeLifecycle;
 use super::idents::{self, LayerIdents};
 use super::leaf_kind::{CollectThenBulk, ImmediatePrimitiveWriter, PrimitiveListSchedule};
 use super::nested_columns::{
@@ -302,7 +304,7 @@ fn primitive_list_emit(
     pa_root: &TokenStream,
     pp: &TokenStream,
     idx: usize,
-) -> EncodeLifecycle {
+) -> SeriesPlan {
     let leaf_bind = idents::leaf_value();
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
         row_capacity: &encoding.row_capacity,
@@ -325,20 +327,21 @@ fn primitive_list_emit(
         } => {
             let leaf_body = immediate_primitive_leaf_body(shape, &leaf_bind, writer);
             let push = emitter.row_push(&leaf_body, leaf_offsets_post_push);
-            EncodeLifecycle {
-                decls: vec![quote! {
+            SeriesPlan::new(
+                vec![InitOp::new(quote! {
                     #extra_imports
                     #storage_decls
                     #offsets_decls
                     #validity_decls
-                }],
-                push,
-                builders: vec![quote! {
+                })],
+                ScanOp::new(push),
+                vec![PostScanOp::new(quote! {
                     let #series_local: #pp::Series = {
                         #materialize
                     };
-                }],
-            }
+                })],
+                quote! { #series_local },
+            )
         }
         PrimitiveListSchedule::DeferredRows {
             shape_counts,
@@ -353,14 +356,14 @@ fn primitive_list_emit(
             let exact_offsets_decls = emitter.exact_offsets_decls(shape_counts);
             let exact_validity_decls = emitter.exact_validity_decls(shape_counts);
             let cardinality_count = shape.depth() + 1;
-            EncodeLifecycle {
-                decls: vec![quote! {
+            SeriesPlan::new(
+                vec![InitOp::new(quote! {
                     #extra_imports
                     let mut #shape_counts: [usize; #cardinality_count] =
                         [0; #cardinality_count];
-                }],
-                push,
-                builders: vec![quote! {
+                })],
+                ScanOp::new(push),
+                vec![PostScanOp::replay_rows(quote! {
                     let #series_local: #pp::Series = {
                         #storage_decls
                         #exact_offsets_decls
@@ -370,8 +373,9 @@ fn primitive_list_emit(
                         }
                         #materialize
                     };
-                }],
-            }
+                })],
+                quote! { #series_local },
+            )
         }
         PrimitiveListSchedule::DeferredSegments {
             leaf_count,
@@ -401,24 +405,25 @@ fn primitive_list_emit(
                     #fill_segment
                 }
             };
-            EncodeLifecycle {
-                decls: vec![quote! {
+            SeriesPlan::new(
+                vec![InitOp::new(quote! {
                     #extra_imports
                     let mut #leaf_count: usize = 0;
                     let mut #leaf_segments: ::std::vec::Vec<_> =
                         ::std::vec::Vec::new();
                     #offsets_decls
                     #validity_decls
-                }],
-                push,
-                builders: vec![quote! {
+                })],
+                ScanOp::new(push),
+                vec![PostScanOp::new(quote! {
                     let #series_local: #pp::Series = {
                         #storage_decls
                         #fill_leaf_storage
                         #materialize
                     };
-                }],
-            }
+                })],
+                quote! { #series_local },
+            )
         }
     }
 }
@@ -467,7 +472,7 @@ fn ctb_emit(
     pp: &TokenStream,
     prefix: Option<SharedListPrefix<'_>>,
     paths: &ExternalPaths,
-) -> EncodeLifecycle {
+) -> EncodePlan {
     let flat = idents::nested_flat(ctb.idx);
     let positions = idents::nested_positions(ctb.idx);
     let ty = ctb.ty;
@@ -530,17 +535,20 @@ fn ctb_emit(
 
     let materialize = ctb_materialize(ctb, wrapper, layers, prefix, paths);
 
-    EncodeLifecycle {
-        decls: vec![quote! {
+    EncodePlan::new(
+        vec![InitOp::new(quote! {
             let mut #flat: ::std::vec::Vec<&#ty> =
                 ::std::vec::Vec::with_capacity(#row_capacity);
             #positions_decl
             #offsets_decls
             #validity_decls
-        }],
-        push,
-        builders: vec![materialize],
-    }
+        })],
+        vec![ScanOp::new(push)],
+        vec![FinishGroup::inline(
+            Vec::new(),
+            vec![EmitOp::new(materialize)],
+        )],
+    )
 }
 
 /// Shape-aware emitter for primitive `Vec` leaves. The signature requires a
@@ -552,7 +560,7 @@ pub(super) fn vec_emit_primitive(
     idx: usize,
     shape: &VecLayers,
     paths: &ExternalPaths,
-) -> EncodeLifecycle {
+) -> SeriesPlan {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
     let depth = shape.depth();
@@ -579,7 +587,7 @@ pub(super) fn vec_emit_ctb(
     idx: usize,
     wrapper: &WrapperShape,
     paths: &ExternalPaths,
-) -> EncodeLifecycle {
+) -> EncodePlan {
     vec_emit_ctb_with_prefix(ctb, access, idx, wrapper, None, paths)
 }
 
@@ -590,7 +598,7 @@ pub(super) fn vec_emit_ctb_with_prefix(
     wrapper: &WrapperShape,
     prefix: Option<SharedListPrefix<'_>>,
     paths: &ExternalPaths,
-) -> EncodeLifecycle {
+) -> EncodePlan {
     let pa_root = paths.polars_arrow_root();
     let pp = paths.prelude();
     let depth = wrapper.vec_depth();

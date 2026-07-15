@@ -2,6 +2,7 @@
 //!
 //! `vec(inner)` fuses N consecutive `Vec` layers into one bulk emission.
 
+use crate::codegen::encode_plan::SeriesPlan;
 use crate::codegen::type_registry::ScalarTransform;
 use crate::ir::{PrimitiveLeaf, VecLayers};
 use proc_macro2::TokenStream;
@@ -11,7 +12,7 @@ use super::emit::vec_emit_primitive;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
 use super::leaf_kind::{ImmediatePrimitiveWriter, PrimitiveListEncoding, PrimitiveListSchedule};
-use super::{Encoder, LeafCtx, leaf};
+use super::{LeafCtx, leaf};
 
 enum VecLeafSpec {
     Numeric {
@@ -575,15 +576,9 @@ fn vec_encoder(
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
     schedule: PrimitiveVecSchedule,
-) -> Encoder {
+) -> SeriesPlan {
     let encoding = lower_primitive_list(ctx, spec, shape, leaf_dtype, schedule);
-    Encoder::Multi(vec_emit_primitive(
-        &encoding,
-        ctx.base.access,
-        ctx.base.idx,
-        shape,
-        ctx.paths,
-    ))
+    vec_emit_primitive(&encoding, ctx.base.access, ctx.base.idx, shape, ctx.paths)
 }
 
 fn lower_primitive_list(
@@ -697,7 +692,7 @@ fn vec_encoder_bool_bare(
     ctx: &LeafCtx<'_>,
     shape: &VecLayers,
     schedule: PrimitiveVecSchedule,
-) -> Encoder {
+) -> SeriesPlan {
     let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
     vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype, schedule)
 }
@@ -898,7 +893,7 @@ pub(super) fn try_build_vec_encoder(
     leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
     vec_shape: &VecLayers,
-) -> Encoder {
+) -> SeriesPlan {
     let schedule = primitive_vec_schedule(leaf, vec_shape);
     match leaf {
         PrimitiveLeaf::Bool => {

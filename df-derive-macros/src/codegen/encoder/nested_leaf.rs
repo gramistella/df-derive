@@ -15,7 +15,7 @@
 //! assembly, including for downstream
 //! `#[derive(ToDataFrame, Deserialize)]` types.
 //!
-//! Every shape produces an [`super::ctx::EncodeLifecycle`] because the inner
+//! Every shape produces an [`crate::codegen::encode_plan::EncodePlan`] because the inner
 //! checked batch carries one column per inner schema entry of `T`. Its
 //! materialization phase renames each validated inner column for the parent
 //! path and writes it through the call site's `ColumnSink`.
@@ -23,6 +23,8 @@
 use crate::ir::NestedNamePolicy;
 use crate::ir::WrapperShape;
 use proc_macro2::TokenStream;
+
+use crate::codegen::encode_plan::EncodePlan;
 
 use super::BaseCtx;
 use super::emit::{vec_emit_ctb, vec_emit_ctb_with_prefix};
@@ -62,10 +64,7 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
 /// wrapper shape the parser accepts — bare `Nested`, `Option<...<Nested>>`,
 /// or any `Vec`-bearing stack — routes through the unified emitter via a
 /// single [`CollectThenBulk`] leaf.
-pub fn build_nested_encoder(
-    wrapper: &WrapperShape,
-    ctx: &NestedLeafCtx<'_>,
-) -> super::ctx::EncodeLifecycle {
+pub fn build_nested_encoder(wrapper: &WrapperShape, ctx: &NestedLeafCtx<'_>) -> EncodePlan {
     let ctb = CollectThenBulk::from(ctx);
     vec_emit_ctb(&ctb, ctx.base.access, ctx.base.idx, wrapper, ctx.paths)
 }
@@ -74,7 +73,7 @@ pub(super) fn build_nested_encoder_with_prefix(
     wrapper: &WrapperShape,
     prefix: SharedListPrefix<'_>,
     ctx: &NestedLeafCtx<'_>,
-) -> super::ctx::EncodeLifecycle {
+) -> EncodePlan {
     let ctb = CollectThenBulk::from(ctx);
     vec_emit_ctb_with_prefix(
         &ctb,

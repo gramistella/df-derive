@@ -8,9 +8,11 @@
 use crate::ir::{AccessChain, PrimitiveLeaf, StringyBase};
 use quote::quote;
 
+use crate::codegen::encode_plan::SeriesPlan;
+
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, named_from_buf, vec_decl};
-use super::{BaseCtx, Encoder, LeafCtx, access_chain_to_ref};
+use super::{BaseCtx, LeafCtx, access_chain_to_ref};
 
 /// Build the encoder for a primitive leaf with any non-trivial `AccessChain`
 /// above it: multiple `Option`s, smart pointers under an `Option`, or both.
@@ -33,7 +35,7 @@ pub(super) fn wrap_option_access_chain_primitive(
     ctx: &LeafCtx<'_>,
     access: &AccessChain,
     layers: usize,
-) -> Encoder {
+) -> SeriesPlan {
     debug_assert!(layers >= 1);
     if let PrimitiveLeaf::AsStr(stringy) = leaf {
         return wrap_option_access_chain_as_str(stringy, ctx, access);
@@ -81,14 +83,14 @@ pub(super) fn wrap_option_access_chain_primitive(
             some_receiver: crate::codegen::type_registry::PrimitiveExprReceiver::RefRef,
         },
     );
-    Encoder::Leaf {
+    SeriesPlan::leaf(
         decls,
-        push: quote! {
+        quote! {
             #setup
             #push
         },
         series,
-    }
+    )
 }
 
 /// `as_str`-specific multi-Option wrapper. Builds the same `Vec<Option<&str>>`
@@ -102,7 +104,7 @@ fn wrap_option_access_chain_as_str(
     base: &StringyBase,
     ctx: &LeafCtx<'_>,
     access: &AccessChain,
-) -> Encoder {
+) -> SeriesPlan {
     let buf = idents::primitive_buf(ctx.base.idx);
     let name = ctx.base.name;
     let orig_access = ctx.base.access;
@@ -114,9 +116,9 @@ fn wrap_option_access_chain_as_str(
     );
     let push = quote! { #buf.push(#value); };
     let finish_series = named_from_buf(name, &buf, ctx.paths.prelude());
-    Encoder::Leaf {
-        decls: vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> }, ctx)],
+    SeriesPlan::leaf(
+        vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> }, ctx)],
         push,
-        series: finish_series,
-    }
+        finish_series,
+    )
 }

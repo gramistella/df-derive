@@ -90,6 +90,8 @@ This repository uses a serde-like three-crate architecture:
   `Decimal128Encode for rust_decimal::Decimal` impl.
 - `df-derive-macros`: the proc-macro implementation. Power users can depend
   on this directly and target `df-derive-core`, `paft`, or a custom runtime.
+  Encoder lowering composes a phase-typed plan with one shared source scan and
+  ordered completion groups before rendering generated Rust.
 
 Because `df-derive-core` owns the default trait identity, models derived in
 different crates can compose as nested `ToDataFrame` types when they use the

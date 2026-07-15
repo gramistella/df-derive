@@ -3,6 +3,7 @@ mod bounds;
 mod column_emit;
 mod columnar_spec_impl;
 mod config;
+mod encode_plan;
 mod encoder;
 pub mod external_paths;
 mod nested_names;
@@ -74,6 +75,26 @@ mod tests {
 
     fn generated(input: &syn::DeriveInput) -> String {
         generate_code(&parse_ir(input), &test_config()).to_string()
+    }
+
+    fn encode_plan(input: &syn::DeriveInput) -> encode_plan::EncodePlan {
+        let ir = parse_ir(input);
+        let config = test_config();
+        let row = encoder::idents::populator_iter();
+        let row_capacity = encoder::idents::row_capacity(&ir.generics);
+        let sink = encoder::idents::column_sink_param(&ir.generics);
+        let replay = quote! { crate::dataframe::RowCursor::replay(&*rows) };
+        let replay_static_tuples = columnar_spec_impl::should_replay_static_tuples(&ir);
+
+        columnar_spec_impl::prepare_encode_plan(
+            &ir,
+            &config,
+            &row,
+            &replay,
+            replay_static_tuples,
+            &row_capacity,
+            &sink,
+        )
     }
 
     fn enable_replay_call() -> String {
@@ -374,6 +395,55 @@ mod tests {
         assert!(!immediate.contains(&enable_replay), "{immediate}");
         assert!(!immediate.contains(&replay), "{immediate}");
         assert_replay_policy(&immediate, false);
+    }
+
+    #[test]
+    fn typed_plan_derives_replay_from_actual_list_and_tuple_lowering() {
+        let shallow_infallible = encode_plan(&syn::parse_quote! {
+            struct ShallowInfallible {
+                values: Vec<Option<bool>>,
+            }
+        });
+        let deep_infallible = encode_plan(&syn::parse_quote! {
+            struct DeepInfallible {
+                values: Vec<Vec<Option<i32>>>,
+            }
+        });
+        let fallible = encode_plan(&syn::parse_quote! {
+            struct Fallible {
+                #[df_derive(as_string)]
+                values: Vec<DisplayValue>,
+            }
+        });
+        let tuple_boundary_minus_one = encode_plan(&syn::parse_quote! {
+            struct TupleBoundaryMinusOne {
+                values: (
+                    i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64,
+                ),
+            }
+        });
+        let tuple_boundary = encode_plan(&syn::parse_quote! {
+            struct TupleBoundary {
+                values: (
+                    i64, i64, i64, i64, i64, i64, i64, i64,
+                    i64, i64, i64, i64, i64, i64, i64, i64,
+                ),
+            }
+        });
+
+        assert!(!shallow_infallible.requirements().requires_row_replay());
+        assert!(deep_infallible.requirements().requires_row_replay());
+        assert_eq!(deep_infallible.row_replay_group_count(), 1);
+        assert!(!fallible.requirements().requires_row_replay());
+        assert!(
+            !tuple_boundary_minus_one
+                .requirements()
+                .requires_row_replay()
+        );
+        assert!(tuple_boundary.requirements().requires_row_replay());
+        assert_eq!(tuple_boundary.row_replay_group_count(), 2);
     }
 
     #[test]

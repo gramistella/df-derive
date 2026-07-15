@@ -19,9 +19,7 @@ mod tuple_group;
 mod vec;
 mod wrapper_access;
 
-pub use ctx::{
-    BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, RowReplay, build_encoder,
-};
+pub use ctx::{BaseCtx, LeafCardinality, LeafCtx, RowReplay, build_encoder};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
 pub use stringy::struct_type_tokens;
 pub(in crate::codegen) use tuple_group::{

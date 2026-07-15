@@ -23,14 +23,15 @@ use super::shape_walk::{
     shape_freeze_validity_bitmaps, shape_layer_wraps_clone,
 };
 use super::{
-    BaseCtx, EncodeLifecycle, Encoder, LeafCardinality, LeafCtx, NestedLeafCtx,
-    access_chain_to_option_ref, access_chain_to_ref, build_encoder_with_option_receiver,
-    struct_type_tokens,
+    BaseCtx, LeafCardinality, LeafCtx, NestedLeafCtx, access_chain_to_option_ref,
+    access_chain_to_ref, build_encoder_with_option_receiver, struct_type_tokens,
+};
+use crate::codegen::encode_plan::{
+    EmitOp, EncodePlan, FinishGroup, InitOp, PostScanOp, ScanOp, SeriesNameState, SeriesPlan,
 };
 
 pub(in crate::codegen) struct TupleFieldEmit {
-    pub lifecycle: EncodeLifecycle,
-    pub requires_replay: bool,
+    pub plan: EncodePlan,
     pub terminal_count: usize,
     pub group_count: usize,
 }
@@ -101,8 +102,8 @@ enum InputAccess {
 struct ReplayTupleAccess(TokenStream);
 
 struct ReplayedPrimitive {
-    decls: Vec<TokenStream>,
-    push: TokenStream,
+    init: Vec<InitOp>,
+    scan: ScanOp,
     series: TokenStream,
     name: String,
 }
@@ -131,14 +132,13 @@ struct TupleBuilder<'a> {
     row_capacity: &'a syn::Ident,
     sink: &'a syn::Ident,
     replay_static_terminals: bool,
-    requires_replay: bool,
     next_terminal: usize,
     next_group: usize,
     terminal_start: usize,
     group_start: usize,
-    decls: Vec<TokenStream>,
-    freezes: Vec<TokenStream>,
-    builders: Vec<TokenStream>,
+    init: Vec<InitOp>,
+    freezes: Vec<PostScanOp>,
+    finish: Vec<FinishGroup>,
     replay_lane: Vec<ReplayedPrimitive>,
 }
 
@@ -267,17 +267,17 @@ impl TupleBuilder<'_> {
 
         let offsets_decls = emitter.offsets_decls();
         let validity_decls = emitter.validity_decls();
-        self.decls.push(quote! {
+        self.init.push(InitOp::new(quote! {
             let mut #count: usize = 0;
             #offsets_decls
             #validity_decls
-        });
+        }));
         let validity_freeze = shape_freeze_validity_bitmaps(shape, &layers, pa_root);
         let offsets_freeze = shape_freeze_offsets_buffers(&layers, pa_root);
-        self.freezes.push(quote! {
+        self.freezes.push(PostScanOp::new(quote! {
             #validity_freeze
             #offsets_freeze
-        });
+        }));
 
         let child_prefix = prefix.with_group(shape, &layers);
         let item = idents::tuple_item(self.ident_scope, group_idx);
@@ -431,76 +431,64 @@ impl TupleBuilder<'_> {
                         )
                     },
                 );
-                self.collect_lifecycle(lifecycle)
+                self.collect_plan(lifecycle)
             }
         }
     }
 
     fn collect_primitive(
         &mut self,
-        encoder: Encoder,
+        plan: SeriesPlan,
         name: &str,
         idx: usize,
         prefix: &SharedListStack,
     ) -> TokenStream {
-        match encoder {
-            Encoder::Leaf {
-                decls,
-                push,
-                series,
-            } => {
-                self.decls.extend(decls);
-                let wrapped = self.wrap_shared_prefix(series, idx, prefix);
-                let sink = self.sink;
-                let output_series = idents::tuple_output_series(self.ident_scope);
-                let output_named = idents::tuple_output_named(self.ident_scope);
-                self.builders.push(quote! {
-                    {
-                        let #output_series = #wrapped;
-                        let #output_named = #output_series.with_name(#name.into());
-                        #sink.push(#output_named.into())?;
-                    }
-                });
-                push
-            }
-            Encoder::Multi(lifecycle) => {
-                let EncodeLifecycle {
-                    decls,
-                    push,
-                    builders,
-                } = lifecycle;
-                self.decls.extend(decls);
-                self.builders.extend(builders);
-                let series = idents::vec_field_series(idx);
-                let wrapped = self.wrap_shared_prefix(quote! { #series }, idx, prefix);
-                let sink = self.sink;
-                let output_series = idents::tuple_output_series(self.ident_scope);
-                let output_named = idents::tuple_output_named(self.ident_scope);
-                self.builders.push(quote! {
-                    {
-                        let #output_series = #wrapped;
-                        let #output_named = #output_series.with_name(#name.into());
-                        #sink.push(#output_named.into())?;
-                    }
-                });
-                push
-            }
+        let SeriesPlan {
+            init,
+            scan,
+            post_scan,
+            series,
+            naming: _,
+        } = plan;
+        self.init.extend(init);
+        if !post_scan.is_empty() {
+            self.finish.push(FinishGroup::inline(post_scan, Vec::new()));
         }
+        let wrapped = self.wrap_shared_prefix(series, idx, prefix);
+        let sink = self.sink;
+        let output_series = idents::tuple_output_series(self.ident_scope);
+        let output_named = idents::tuple_output_named(self.ident_scope);
+        self.finish.push(FinishGroup::scoped(
+            Vec::new(),
+            vec![EmitOp::new(quote! {
+                let #output_series = #wrapped;
+                let #output_named = #output_series.with_name(#name.into());
+                #sink.push(#output_named.into())?;
+            })],
+        ));
+        scan.into_tokens()
     }
 
-    fn collect_replayed_primitive(&mut self, encoder: Encoder, name: &str) {
-        let Encoder::Leaf {
-            decls,
-            push,
+    fn collect_replayed_primitive(&mut self, plan: SeriesPlan, name: &str) {
+        let SeriesPlan {
+            init,
+            scan,
+            post_scan,
             series,
-        } = encoder
-        else {
-            unreachable!("a replayed static tuple terminal always has a scalar encoder");
-        };
-        self.requires_replay = true;
+            naming,
+        } = plan;
+        assert!(
+            post_scan.is_empty(),
+            "a replayed static tuple terminal must have no prior completion work",
+        );
+        assert_eq!(
+            naming,
+            SeriesNameState::AlreadyNamed,
+            "a replayed static tuple terminal must be a named scalar series",
+        );
         self.replay_lane.push(ReplayedPrimitive {
-            decls,
-            push,
+            init,
+            scan,
             series,
             name: name.to_owned(),
         });
@@ -519,33 +507,36 @@ impl TupleBuilder<'_> {
         let sink = self.sink;
         let output_series = idents::tuple_output_series(self.ident_scope);
         let output_named = idents::tuple_output_named(self.ident_scope);
-        let mut declarations = Vec::new();
-        let mut pushes = Vec::new();
+        let mut init = Vec::new();
+        let mut scan = Vec::new();
         let mut outputs = Vec::new();
         for terminal in ::core::mem::take(&mut self.replay_lane) {
-            declarations.extend(terminal.decls);
-            pushes.push(terminal.push);
+            init.extend(terminal.init);
+            scan.push(terminal.scan);
             let series = terminal.series;
             let name = syn::LitStr::new(&terminal.name, proc_macro2::Span::call_site());
-            outputs.push(quote! {{
+            outputs.push(EmitOp::new(quote! {{
                 let #output_series = #series;
                 let #output_named = #output_series.with_name(#name.into());
                 #sink.push(#output_named.into())?;
-            }});
+            }}));
         }
-        self.builders.push(quote! {{
-            #(#declarations)*
-            for #row in #replay {
-                #(#pushes)*
-            }
-            #(#outputs)*
-        }});
+        self.finish.push(FinishGroup::scoped(
+            vec![PostScanOp::replay_rows(quote! {
+                #(#init)*
+                for #row in #replay {
+                    #(#scan)*
+                }
+            })],
+            outputs,
+        ));
     }
 
-    fn collect_lifecycle(&mut self, lifecycle: EncodeLifecycle) -> TokenStream {
-        self.decls.extend(lifecycle.decls);
-        self.builders.extend(lifecycle.builders);
-        lifecycle.push
+    fn collect_plan(&mut self, plan: EncodePlan) -> TokenStream {
+        let (init, scan, finish) = plan.into_parts();
+        self.init.extend(init);
+        self.finish.extend(finish);
+        quote! { #(#scan)* }
     }
 
     fn wrap_shared_prefix(
@@ -640,14 +631,13 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         row_capacity,
         sink,
         replay_static_terminals: replay_static_tuples,
-        requires_replay: false,
         next_terminal: terminal_start,
         next_group: group_start,
         terminal_start,
         group_start,
-        decls: Vec::new(),
+        init: Vec::new(),
         freezes: Vec::new(),
-        builders: Vec::new(),
+        finish: Vec::new(),
         replay_lane: Vec::new(),
     };
     let push = builder.build_group(
@@ -658,17 +648,12 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         &SharedListStack::empty(),
     );
     debug_assert!(builder.replay_lane.is_empty());
-    let freezes = &builder.freezes;
-    let freeze = quote! { #(#freezes)* };
-    builder.builders.insert(0, freeze);
+    builder
+        .finish
+        .insert(0, FinishGroup::inline(builder.freezes, Vec::new()));
 
     TupleFieldEmit {
-        lifecycle: EncodeLifecycle {
-            decls: builder.decls,
-            push,
-            builders: builder.builders,
-        },
-        requires_replay: builder.requires_replay,
+        plan: EncodePlan::new(builder.init, vec![ScanOp::new(push)], builder.finish),
         terminal_count: builder.next_terminal - builder.terminal_start,
         group_count: builder.next_group - builder.group_start,
     }

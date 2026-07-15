@@ -2,25 +2,18 @@ use crate::ir::{FieldPlan, StructIR};
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::encode_plan::EncodePlan;
 use super::encoder::idents;
-
-#[derive(Default)]
-struct EncodeParts {
-    decls: Vec<TokenStream>,
-    pushes: Vec<TokenStream>,
-    builders: Vec<TokenStream>,
-    requires_replay: bool,
-}
 
 struct EncodeColumnsMethod {
     body: TokenStream,
     requires_replay: bool,
 }
 
-/// Walk every source field and concatenate its declaration, per-row, and
-/// materialization phases. Tuple fields contribute one recursive push tree,
-/// regardless of how many terminal columns they contain.
-fn prepare_encode_parts(
+/// Walk every source field and concatenate its typed execution plan. Tuple
+/// fields contribute one recursive scan tree, regardless of how many
+/// terminal columns they contain.
+pub(super) fn prepare_encode_plan(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
@@ -28,8 +21,8 @@ fn prepare_encode_parts(
     replay_static_tuples: bool,
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
-) -> EncodeParts {
-    let mut parts = EncodeParts::default();
+) -> EncodePlan {
+    let mut plan = EncodePlan::default();
     let mut terminal_idx = 0;
     let mut group_idx = 0;
     let ident_scope = idents::GeneratedIdentScope::new(&ir.generics);
@@ -50,18 +43,13 @@ fn prepare_encode_parts(
         );
         terminal_idx += emit.terminal_count;
         group_idx += emit.group_count;
-        parts.decls.extend(emit.decls);
-        if !emit.push.is_empty() {
-            parts.pushes.push(emit.push);
-        }
-        parts.builders.extend(emit.builders);
-        parts.requires_replay |= emit.requires_replay;
+        plan.append(emit.plan);
     }
     debug_assert_eq!(terminal_idx, ir.terminal_column_count());
-    parts
+    plan
 }
 
-fn should_replay_static_tuples(ir: &StructIR) -> bool {
+pub(super) fn should_replay_static_tuples(ir: &StructIR) -> bool {
     ir.fields
         .iter()
         .filter_map(|field| match field {
@@ -86,12 +74,7 @@ fn encode_columns_method_body(
     let row_cursor = &config.runtime.row_cursor;
     let replay = quote! { #row_cursor::replay(&*#rows) };
     let replay_static_tuples = should_replay_static_tuples(ir);
-    let EncodeParts {
-        decls,
-        pushes,
-        builders,
-        requires_replay,
-    } = prepare_encode_parts(
+    let plan = prepare_encode_plan(
         ir,
         config,
         it_ident,
@@ -100,6 +83,8 @@ fn encode_columns_method_body(
         row_capacity,
         sink,
     );
+    let requires_replay = plan.requirements().requires_row_replay();
+    let (init, scan, finish) = plan.into_parts();
 
     let body = if requires_replay {
         quote! {
@@ -109,13 +94,13 @@ fn encode_columns_method_body(
                 #row_upper_bound == ::std::option::Option::Some(#row_capacity);
             let _ = #input_rows_exact;
             #row_cursor::enable_replay(#rows, #row_capacity);
-            #(#decls)*
+            #(#init)*
             for #it_ident in #rows.by_ref() {
-                #(#pushes)*
+                #(#scan)*
                 let _ = #it_ident;
             }
             let #row_capacity: usize = #row_cursor::yielded(&*#rows);
-            #(#builders)*
+            #(#finish)*
             ::std::result::Result::Ok(())
         }
     } else {
@@ -125,12 +110,12 @@ fn encode_columns_method_body(
             let #input_rows_exact: bool =
                 #row_upper_bound == ::std::option::Option::Some(#row_capacity);
             let _ = #input_rows_exact;
-            #(#decls)*
+            #(#init)*
             for #it_ident in #rows.by_ref() {
-                #(#pushes)*
+                #(#scan)*
                 let _ = #it_ident;
             }
-            #(#builders)*
+            #(#finish)*
             ::std::result::Result::Ok(())
         }
     };

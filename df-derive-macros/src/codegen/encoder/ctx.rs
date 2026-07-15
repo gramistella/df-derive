@@ -1,31 +1,11 @@
 use proc_macro2::TokenStream;
 
+use crate::codegen::encode_plan::SeriesPlan;
 use crate::codegen::external_paths::ExternalPaths;
 use crate::ir::{PrimitiveLeaf, WrapperShape};
 
 use super::idents::GeneratedIdentScope;
 use super::{leaf, option, vec};
-
-pub enum Encoder {
-    Leaf {
-        decls: Vec<TokenStream>,
-        push: TokenStream,
-        series: TokenStream,
-    },
-    Multi(EncodeLifecycle),
-}
-
-/// The three phases every multi-value encoder contributes to the enclosing
-/// one-shot row pass.
-///
-/// Declarations run before the shared row loop, `push` runs once for the
-/// current row, and builders materialize checked columns after the iterator
-/// has been exhausted.
-pub struct EncodeLifecycle {
-    pub decls: Vec<TokenStream>,
-    pub push: TokenStream,
-    pub builders: Vec<TokenStream>,
-}
 
 pub struct BaseCtx<'a> {
     pub access: &'a TokenStream,
@@ -66,7 +46,7 @@ pub fn build_encoder(
     leaf: PrimitiveLeaf<'_>,
     wrapper: &WrapperShape,
     ctx: &LeafCtx<'_>,
-) -> Encoder {
+) -> SeriesPlan {
     build_encoder_with_option_receiver(leaf, wrapper, ctx, None)
 }
 
@@ -75,7 +55,7 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
     wrapper: &WrapperShape,
     ctx: &LeafCtx<'_>,
     option_some_receiver: Option<crate::codegen::type_registry::PrimitiveExprReceiver>,
-) -> Encoder {
+) -> SeriesPlan {
     match wrapper {
         WrapperShape::Leaf(shape) if shape.is_bare() => {
             let leaf::LeafArm {
@@ -83,11 +63,7 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
                 push,
                 series,
             } = vec::build_leaf(leaf, ctx, leaf::LeafArmKind::Bare);
-            Encoder::Leaf {
-                decls,
-                push,
-                series,
-            }
+            SeriesPlan::leaf(decls, push, series)
         }
         WrapperShape::Leaf(shape) if shape.access().is_single_plain_option() => {
             let leaf::LeafArm {
@@ -102,11 +78,7 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
                         .unwrap_or(crate::codegen::type_registry::PrimitiveExprReceiver::Ref),
                 },
             );
-            Encoder::Leaf {
-                decls,
-                push,
-                series,
-            }
+            SeriesPlan::leaf(decls, push, series)
         }
         WrapperShape::Leaf(shape) => option::wrap_option_access_chain_primitive(
             leaf,

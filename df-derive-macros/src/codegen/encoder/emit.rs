@@ -1,6 +1,6 @@
 //! Unified shape-aware emitter for vector-backed leaves.
 //!
-//! The shape-aware emitters ([`vec_emit_pep`] and [`vec_emit_ctb`]) tie together
+//! The shape-aware emitters ([`vec_emit_primitive`] and [`vec_emit_ctb`]) tie together
 //! the depth-N walker primitives and diverge only at leaf storage/materialization.
 //!
 //! The collect-then-bulk path also accepts the depth-0 (`Leaf`) wrapper —
@@ -16,7 +16,7 @@ use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
 use super::ctx::EncodeLifecycle;
 use super::idents::{self, LayerIdents};
-use super::leaf_kind::{CollectThenBulk, PrimitiveListSchedule};
+use super::leaf_kind::{CollectThenBulk, ImmediatePrimitiveWriter, PrimitiveListSchedule};
 use super::nested_columns::{
     NestedMaterializeCtx, NestedWrapper, SharedListPrefix, materialize_nested_columns,
 };
@@ -74,6 +74,25 @@ fn element_leaf_body<'a>(
                         #write_leaf
                     }
                 }
+            }
+        }
+    }
+}
+
+fn immediate_primitive_leaf_body<'a>(
+    shape: &'a VecLayers,
+    leaf_bind: &'a syn::Ident,
+    writer: &'a ImmediatePrimitiveWriter,
+) -> impl Fn(&TokenStream) -> TokenStream + 'a {
+    move |vec_bind: &TokenStream| match writer {
+        ImmediatePrimitiveWriter::ReservedElements {
+            prepare_segment,
+            write_leaf,
+        } => element_leaf_body(shape, leaf_bind, write_leaf, Some(prepare_segment))(vec_bind),
+        ImmediatePrimitiveWriter::Segment { binding, write } => {
+            quote! {
+                let #binding: &::std::vec::Vec<_> = #vec_bind;
+                #write
             }
         }
     }
@@ -179,8 +198,8 @@ fn ctb_leaf_body<'a>(
     }
 }
 
-fn pep_materialize(
-    pep: &super::leaf_kind::PerElementPush,
+fn primitive_list_materialize(
+    encoding: &super::leaf_kind::PrimitiveListEncoding,
     emitter: &ShapeEmitter<'_>,
     idx: usize,
     pp: &TokenStream,
@@ -200,12 +219,12 @@ fn pep_materialize(
         seed,
         seed_dtype,
         &wrap_layers,
-        pep.leaf_logical_dtype.clone(),
+        encoding.leaf_logical_dtype.clone(),
         pp,
         pa_root,
         &arr_id_for_layer,
     );
-    let leaf_arr_expr = &pep.leaf_arr_expr;
+    let leaf_arr_expr = &encoding.leaf_arr_expr;
     quote! {
         #leaf_arr_expr
         #seed_dtype_decl
@@ -274,8 +293,8 @@ fn ctb_materialize(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn pep_emit(
-    pep: &super::leaf_kind::PerElementPush,
+fn primitive_list_emit(
+    encoding: &super::leaf_kind::PrimitiveListEncoding,
     access: &TokenStream,
     series_local: &syn::Ident,
     shape: &VecLayers,
@@ -286,7 +305,7 @@ fn pep_emit(
 ) -> EncodeLifecycle {
     let leaf_bind = idents::leaf_value();
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
-        row_capacity: &pep.row_capacity,
+        row_capacity: &encoding.row_capacity,
         shape,
         access,
         layers,
@@ -295,45 +314,17 @@ fn pep_emit(
     });
     let offsets_decls = emitter.offsets_decls();
     let validity_decls = emitter.validity_decls();
-    let materialize = pep_materialize(pep, &emitter, idx, pp);
-    let storage_decls = &pep.storage_decls;
-    let extra_imports = &pep.extra_imports;
+    let materialize = primitive_list_materialize(encoding, &emitter, idx, pp);
+    let storage_decls = &encoding.storage_decls;
+    let extra_imports = &encoding.extra_imports;
 
-    match &pep.schedule {
+    match &encoding.schedule {
         PrimitiveListSchedule::Immediate {
-            prepare_segment,
+            writer,
             leaf_offsets_post_push,
         } => {
-            let leaf_body =
-                element_leaf_body(shape, &leaf_bind, &pep.write_leaf, Some(prepare_segment));
+            let leaf_body = immediate_primitive_leaf_body(shape, &leaf_bind, writer);
             let push = emitter.row_push(&leaf_body, leaf_offsets_post_push);
-            EncodeLifecycle {
-                decls: vec![quote! {
-                    #extra_imports
-                    #storage_decls
-                    #offsets_decls
-                    #validity_decls
-                }],
-                push,
-                builders: vec![quote! {
-                    let #series_local: #pp::Series = {
-                        #materialize
-                    };
-                }],
-            }
-        }
-        PrimitiveListSchedule::ImmediateSegments {
-            leaf_segment,
-            write_segment,
-            leaf_offsets_post_push,
-        } => {
-            let write_segment = |vec_bind: &TokenStream| {
-                quote! {
-                    let #leaf_segment: &::std::vec::Vec<_> = #vec_bind;
-                    #write_segment
-                }
-            };
-            let push = emitter.row_push(&write_segment, leaf_offsets_post_push);
             EncodeLifecycle {
                 decls: vec![quote! {
                     #extra_imports
@@ -354,9 +345,10 @@ fn pep_emit(
             leaf_offsets_post_push,
             row,
             replay_rows,
+            write_leaf,
         } => {
             let push = emitter.row_count(shape_counts);
-            let fill_segment = element_leaf_body(shape, &leaf_bind, &pep.write_leaf, None);
+            let fill_segment = element_leaf_body(shape, &leaf_bind, write_leaf, None);
             let fill_row = emitter.row_push(&fill_segment, leaf_offsets_post_push);
             let exact_offsets_decls = emitter.exact_offsets_decls(shape_counts);
             let exact_validity_decls = emitter.exact_validity_decls(shape_counts);
@@ -385,6 +377,7 @@ fn pep_emit(
             leaf_count,
             leaf_segments,
             leaf_segment,
+            write_leaf,
         } => {
             let collect_segment = |vec_bind: &TokenStream| {
                 quote! {
@@ -401,7 +394,7 @@ fn pep_emit(
                 }
             };
             let push = emitter.row_push(&collect_segment, &quote! { #leaf_count });
-            let fill_segment = element_leaf_body(shape, &leaf_bind, &pep.write_leaf, None);
+            let fill_segment = element_leaf_body(shape, &leaf_bind, write_leaf, None);
             let fill_segment = fill_segment(&quote! { #leaf_segment });
             let fill_leaf_storage = quote! {
                 for #leaf_segment in #leaf_segments {
@@ -551,10 +544,10 @@ fn ctb_emit(
 }
 
 /// Shape-aware emitter for primitive `Vec` leaves. The signature requires a
-/// [`VecLayers`] shape, so a per-element-push leaf cannot be paired with a
+/// [`VecLayers`] shape, so a primitive-list encoding cannot be paired with a
 /// leaf-only wrapper.
-pub(super) fn vec_emit_pep(
-    pep: &super::leaf_kind::PerElementPush,
+pub(super) fn vec_emit_primitive(
+    encoding: &super::leaf_kind::PrimitiveListEncoding,
     access: &TokenStream,
     idx: usize,
     shape: &VecLayers,
@@ -565,7 +558,16 @@ pub(super) fn vec_emit_pep(
     let depth = shape.depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(idx, false, i)).collect();
     let series_local = idents::vec_field_series(idx);
-    pep_emit(pep, access, &series_local, shape, &layers, pa_root, pp, idx)
+    primitive_list_emit(
+        encoding,
+        access,
+        &series_local,
+        shape,
+        &layers,
+        pa_root,
+        pp,
+        idx,
+    )
 }
 
 /// Shape-aware emitter for nested struct / generic leaves. Accepts the full

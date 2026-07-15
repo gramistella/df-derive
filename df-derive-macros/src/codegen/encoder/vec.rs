@@ -7,10 +7,10 @@ use crate::ir::{PrimitiveLeaf, VecLayers};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::emit::vec_emit_pep;
+use super::emit::vec_emit_primitive;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
-use super::leaf_kind::{PerElementPush, PrimitiveListSchedule};
+use super::leaf_kind::{ImmediatePrimitiveWriter, PrimitiveListEncoding, PrimitiveListSchedule};
 use super::{Encoder, LeafCtx, leaf};
 
 enum VecLeafSpec {
@@ -174,13 +174,19 @@ fn prepared_bitmap_set(
     value: bool,
 ) -> TokenStream {
     quote! {
-        #helper(&mut #builder, #index, #value);
+        // SAFETY: generated schedules prepare the complete bitmap range before
+        // entering this element loop.
+        unsafe { #helper(&mut #builder, #index, #value); }
     }
 }
 
 fn reserved_vec_push(helper: &syn::Ident, values: &syn::Ident, value: &TokenStream) -> TokenStream {
+    let mapped = idents::leaf_value_mapped();
     quote! {
-        #helper(&mut #values, #value);
+        let #mapped = #value;
+        // SAFETY: generated schedules reserve this segment or allocate its
+        // exact observed cardinality before entering the element loop.
+        unsafe { #helper(&mut #values, #mapped); }
     }
 }
 
@@ -315,26 +321,6 @@ fn numeric_leaf_pieces(
     } else {
         leaf_capacity_expr.clone()
     };
-    let storage = if incremental_validity {
-        quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity);
-        }
-    } else if has_inner_option {
-        quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
-        }
-    } else {
-        quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
-        }
-    };
     let push_reserved = idents::push_reserved(ident_scope);
     let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
     let value_push = reserved_vec_push(&push_reserved, &flat, value_expr);
@@ -356,6 +342,26 @@ fn numeric_leaf_pieces(
         }
     } else {
         value_push
+    };
+    let storage = if incremental_validity {
+        quote! {
+            let mut #flat: ::std::vec::Vec<#native> =
+                ::std::vec::Vec::with_capacity(#value_capacity);
+            let mut #validity: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity);
+        }
+    } else if has_inner_option {
+        quote! {
+            let mut #flat: ::std::vec::Vec<#native> =
+                ::std::vec::Vec::with_capacity(#value_capacity);
+            let mut #validity: #pa_root::bitmap::MutableBitmap =
+                #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
+        }
+    } else {
+        quote! {
+            let mut #flat: ::std::vec::Vec<#native> =
+                ::std::vec::Vec::with_capacity(#value_capacity);
+        }
     };
     let leaf_arr_expr = if incremental_validity {
         let valid_opt = validity_into_option(&validity, pa_root);
@@ -570,9 +576,9 @@ fn vec_encoder(
     leaf_dtype: &TokenStream,
     schedule: PrimitiveVecSchedule,
 ) -> Encoder {
-    let pep = lower_to_pep(ctx, spec, shape, leaf_dtype, schedule);
-    Encoder::Multi(vec_emit_pep(
-        &pep,
+    let encoding = lower_primitive_list(ctx, spec, shape, leaf_dtype, schedule);
+    Encoder::Multi(vec_emit_primitive(
+        &encoding,
         ctx.base.access,
         ctx.base.idx,
         shape,
@@ -580,13 +586,13 @@ fn vec_encoder(
     ))
 }
 
-fn lower_to_pep(
+fn lower_primitive_list(
     ctx: &LeafCtx<'_>,
     spec: &VecLeafSpec,
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
     schedule: PrimitiveVecSchedule,
-) -> PerElementPush {
+) -> PrimitiveListEncoding {
     let pa_root = ctx.paths.polars_arrow_root();
     let row_capacity = ctx.base.row_capacity;
     let leaf_count = idents::vec_leaf_count(ctx.ident_scope, ctx.base.idx);
@@ -616,12 +622,37 @@ fn lower_to_pep(
         build_vec_leaf_pieces(spec, &leaf_build_ctx);
     let schedule = match schedule {
         PrimitiveVecSchedule::ImmediateSegments => {
+            let VecLeafSpec::Bool = spec else {
+                unreachable!("only Boolean leaves support whole-segment writes");
+            };
             let values = idents::bool_values(ctx.base.idx);
-            let leaf_segment = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
-            PrimitiveListSchedule::ImmediateSegments {
-                leaf_segment: leaf_segment.clone(),
-                write_segment: quote! {
-                    #values.extend(#leaf_segment.iter().copied());
+            let binding = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
+            let write = quote! {
+                #values.extend(#binding.iter().copied());
+            };
+            PrimitiveListSchedule::Immediate {
+                writer: ImmediatePrimitiveWriter::Segment { binding, write },
+                leaf_offsets_post_push: leaf_offsets_post_push_tokens(
+                    spec,
+                    schedule,
+                    ctx.ident_scope,
+                    ctx.base.idx,
+                ),
+            }
+        }
+        PrimitiveVecSchedule::ImmediateReserved => {
+            let prepare_segment = leaf_prepare_segment_tokens(
+                spec,
+                schedule,
+                ctx.ident_scope,
+                ctx.base.idx,
+                shape.has_inner_option(),
+                ctx.base.row_capacity,
+            );
+            PrimitiveListSchedule::Immediate {
+                writer: ImmediatePrimitiveWriter::ReservedElements {
+                    prepare_segment,
+                    write_leaf,
                 },
                 leaf_offsets_post_push: leaf_offsets_post_push_tokens(
                     spec,
@@ -631,22 +662,6 @@ fn lower_to_pep(
                 ),
             }
         }
-        PrimitiveVecSchedule::ImmediateReserved => PrimitiveListSchedule::Immediate {
-            prepare_segment: leaf_prepare_segment_tokens(
-                spec,
-                schedule,
-                ctx.ident_scope,
-                ctx.base.idx,
-                shape.has_inner_option(),
-                ctx.base.row_capacity,
-            ),
-            leaf_offsets_post_push: leaf_offsets_post_push_tokens(
-                spec,
-                schedule,
-                ctx.ident_scope,
-                ctx.base.idx,
-            ),
-        },
         PrimitiveVecSchedule::DeferredSegments => match ctx.row_replay {
             Some(row_replay) if shape.depth() >= 2 => PrimitiveListSchedule::DeferredRows {
                 shape_counts,
@@ -658,18 +673,19 @@ fn lower_to_pep(
                 ),
                 row: row_replay.row.clone(),
                 replay_rows: row_replay.rows.clone(),
+                write_leaf,
             },
             Some(_) | None => PrimitiveListSchedule::DeferredSegments {
                 leaf_count,
                 leaf_segments: idents::vec_leaf_segments(ctx.ident_scope, ctx.base.idx),
                 leaf_segment: idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx),
+                write_leaf,
             },
         },
     };
-    PerElementPush {
+    PrimitiveListEncoding {
         row_capacity: ctx.base.row_capacity.clone(),
         schedule,
-        write_leaf,
         storage_decls: leaf_storage_decls,
         leaf_arr_expr,
         extra_imports: TokenStream::new(),
@@ -837,11 +853,8 @@ pub(in crate::codegen) struct PrimitiveVecHelperNeeds {
     pub set_prepared_bitmap: bool,
 }
 
-pub(in crate::codegen) fn primitive_vec_helper_needs(
-    leaf: PrimitiveLeaf<'_>,
-    shape: &VecLayers,
-) -> PrimitiveVecHelperNeeds {
-    let push_reserved = matches!(
+const fn is_fixed_width_primitive(leaf: PrimitiveLeaf<'_>) -> bool {
+    matches!(
         leaf,
         PrimitiveLeaf::Numeric(_)
             | PrimitiveLeaf::DateTime(_)
@@ -850,7 +863,14 @@ pub(in crate::codegen) fn primitive_vec_helper_needs(
             | PrimitiveLeaf::NaiveTime
             | PrimitiveLeaf::Duration { .. }
             | PrimitiveLeaf::Decimal { .. }
-    );
+    )
+}
+
+pub(in crate::codegen) fn primitive_vec_helper_needs(
+    leaf: PrimitiveLeaf<'_>,
+    shape: &VecLayers,
+) -> PrimitiveVecHelperNeeds {
+    let push_reserved = is_fixed_width_primitive(leaf);
     let set_prepared_bitmap = shape.has_inner_option()
         || (matches!(leaf, PrimitiveLeaf::Bool)
             && matches!(

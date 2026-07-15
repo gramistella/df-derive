@@ -2,6 +2,7 @@ use df_derive::ToDataFrame;
 use df_derive::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 use std::cell::Cell;
+use std::rc::Rc;
 
 // A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`
 // attribute is the semantic opt-in that tells the macro to route this leaf
@@ -75,6 +76,33 @@ struct PrecisionVec {
 struct PrecisionNullableVec {
     #[df_derive(decimal(precision = 5, scale = 2))]
     amounts: Vec<Option<MoneyAmount>>,
+}
+
+#[derive(Clone)]
+struct TrackedDecimal {
+    mantissa: Option<i128>,
+    calls: Rc<Cell<usize>>,
+    panic: bool,
+}
+
+impl Decimal128Encode for TrackedDecimal {
+    fn try_to_i128_mantissa(&self, _target_scale: u32) -> Option<i128> {
+        self.calls.set(self.calls.get() + 1);
+        assert!(!self.panic, "tracked decimal panic");
+        self.mantissa
+    }
+}
+
+#[derive(ToDataFrame)]
+struct TrackedDecimalVec {
+    #[df_derive(decimal(precision = 18, scale = 4))]
+    values: Vec<TrackedDecimal>,
+}
+
+#[derive(ToDataFrame)]
+struct TrackedNullableDecimalVec {
+    #[df_derive(decimal(precision = 18, scale = 4))]
+    values: Vec<Option<TrackedDecimal>>,
 }
 
 fn decimal_mantissa(av: AnyValue<'_>) -> Option<i128> {
@@ -256,4 +284,91 @@ fn custom_decimal_list_errors_do_not_consume_later_source_rows() {
         "unexpected error: {error}",
     );
     assert_eq!(yielded.get(), 1);
+}
+
+#[test]
+fn custom_decimal_list_errors_stop_inside_the_current_segment() {
+    let tracked = |mantissa| {
+        let calls = Rc::new(Cell::new(0));
+        (
+            TrackedDecimal {
+                mantissa,
+                calls: Rc::clone(&calls),
+                panic: false,
+            },
+            calls,
+        )
+    };
+
+    let (first, first_calls) = tracked(Some(1));
+    let (failure, failure_calls) = tracked(None);
+    let (trailing, trailing_calls) = tracked(Some(3));
+    let error = TrackedDecimalVec {
+        values: vec![first, failure, trailing],
+    }
+    .to_dataframe()
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("decimal mantissa rescale to scale 4 failed"),
+        "unexpected error: {error}",
+    );
+    assert_eq!(first_calls.get(), 1);
+    assert_eq!(failure_calls.get(), 1);
+    assert_eq!(trailing_calls.get(), 0);
+
+    let (first, first_calls) = tracked(Some(1));
+    let (failure, failure_calls) = tracked(None);
+    let (trailing, trailing_calls) = tracked(Some(3));
+    let error = TrackedNullableDecimalVec {
+        values: vec![None, Some(first), None, Some(failure), Some(trailing)],
+    }
+    .to_dataframe()
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("decimal mantissa rescale to scale 4 failed"),
+        "unexpected error: {error}",
+    );
+    assert_eq!(first_calls.get(), 1);
+    assert_eq!(failure_calls.get(), 1);
+    assert_eq!(trailing_calls.get(), 0);
+}
+
+#[test]
+fn custom_decimal_list_panics_stop_inside_the_current_segment() {
+    let calls = || Rc::new(Cell::new(0));
+    let first_calls = calls();
+    let panic_calls = calls();
+    let trailing_calls = calls();
+    let row = TrackedDecimalVec {
+        values: vec![
+            TrackedDecimal {
+                mantissa: Some(1),
+                calls: Rc::clone(&first_calls),
+                panic: false,
+            },
+            TrackedDecimal {
+                mantissa: Some(2),
+                calls: Rc::clone(&panic_calls),
+                panic: true,
+            },
+            TrackedDecimal {
+                mantissa: Some(3),
+                calls: Rc::clone(&trailing_calls),
+                panic: false,
+            },
+        ],
+    };
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = row.to_dataframe();
+    }));
+
+    assert!(panic.is_err());
+    assert_eq!(first_calls.get(), 1);
+    assert_eq!(panic_calls.get(), 1);
+    assert_eq!(trailing_calls.get(), 0);
 }

@@ -61,18 +61,15 @@ pub(in crate::codegen) fn generate_support(ir: &StructIR, config: &MacroConfig) 
         quote! {
             #[inline(always)]
             #[allow(clippy::inline_always)]
-            fn #push_reserved<T>(
+            unsafe fn #push_reserved<T>(
                 destination: &mut ::std::vec::Vec<T>,
                 value: T,
             ) {
-                // Every generated caller first reserves its observed segment
-                // or allocates the exact deferred leaf count. The assertion
-                // diagnoses future codegen violations without a release branch.
-                debug_assert!(destination.len() < destination.capacity());
                 let initialized = destination.len();
-                // SAFETY: the codegen invariant documented above proves
-                // `initialized` names a spare slot. The value is written
-                // before the initialized length is advanced.
+                debug_assert!(initialized < destination.capacity());
+                // SAFETY: the caller promises that `initialized` names one
+                // reserved, uninitialized slot. The value is written before
+                // the initialized length advances.
                 unsafe {
                     ::core::ptr::write(
                         destination.as_mut_ptr().add(initialized),
@@ -88,16 +85,14 @@ pub(in crate::codegen) fn generate_support(ir: &StructIR, config: &MacroConfig) 
         quote! {
             #[inline(always)]
             #[allow(clippy::inline_always)]
-            fn #set_prepared_bitmap(
+            unsafe fn #set_prepared_bitmap(
                 bitmap: &mut #pa_root::bitmap::MutableBitmap,
                 index: usize,
                 value: bool,
             ) {
-                // Generated primitive-list schedules size this bitmap before
-                // the element loop and advance the index once per value.
                 debug_assert!(index < bitmap.len());
-                // SAFETY: the const-scoped helper is unnameable by user code;
-                // all generated call sites establish the bound above.
+                // SAFETY: the caller promises that `index` is inside the
+                // bitmap range prepared by its list schedule.
                 unsafe {
                     bitmap.set_unchecked(index, value);
                 }

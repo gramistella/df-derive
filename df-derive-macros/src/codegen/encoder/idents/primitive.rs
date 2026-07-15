@@ -35,6 +35,10 @@ pub(in crate::codegen) fn leaf_value_raw() -> Ident {
     format_ident!("__df_derive_v_raw")
 }
 
+pub(in crate::codegen) fn leaf_value_mapped() -> Ident {
+    format_ident!("__df_derive_v_mapped")
+}
+
 pub(in crate::codegen) fn leaf_reserve_len() -> Ident {
     format_ident!("__df_derive_leaf_reserve_len")
 }

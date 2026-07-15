@@ -270,6 +270,10 @@ mod tests {
         let shallow_segments = encoder::idents::vec_leaf_segments(scope, 0).to_string();
         let deep_segments = encoder::idents::vec_leaf_segments(scope, 1).to_string();
         let deep_counts = encoder::idents::vec_shape_counts(scope, 1).to_string();
+        let push_reserved = encoder::idents::push_reserved(scope).to_string();
+        let set_prepared_bitmap = encoder::idents::set_prepared_bitmap(scope).to_string();
+        let unsafe_push_reserved = format!("unsafe fn {push_reserved}");
+        let unsafe_set_prepared_bitmap = format!("unsafe fn {set_prepared_bitmap}");
         let replay_push = format!("{replay_rows} . push ({row})");
 
         assert_eq!(
@@ -289,9 +293,11 @@ mod tests {
         assert!(deferred.contains(&shallow_segments), "{deferred}");
         assert!(!deferred.contains(&deep_segments), "{deferred}");
         assert_eq!(deferred.matches(&replay_push).count(), 1, "{deferred}");
-        assert!(deferred.contains("push_reserved"), "{deferred}");
+        assert!(deferred.contains(&unsafe_push_reserved), "{deferred}");
+        assert!(deferred.contains(&unsafe_set_prepared_bitmap), "{deferred}");
+        assert_eq!(deferred.matches("debug_assert !").count(), 2, "{deferred}");
         assert!(deferred.contains("set_prepared_bitmap"), "{deferred}");
-        assert!(deferred.contains(":: core :: ptr :: write"), "{deferred}");
+        assert!(deferred.contains(". as_mut_ptr ()"), "{deferred}");
         let derived_impl = deferred
             .find("# [automatically_derived] impl")
             .expect("generated ColumnarSpec impl");
@@ -320,11 +326,12 @@ mod tests {
             );
         }
         assert!(
-            deferred_impl.matches("set_prepared_bitmap").count() >= 3,
+            deferred_impl.matches("set_prepared_bitmap").count() >= 2,
             "{deferred}"
         );
+        assert!(deferred_impl.contains("push_reserved"), "{deferred}");
         assert!(!deferred_impl.contains(". set ("), "{deferred}");
-        assert!(!deferred_impl.contains("unsafe"), "{deferred}");
+        assert!(deferred_impl.contains("unsafe"), "{deferred}");
 
         let immediate = generated(&syn::parse_quote! {
             struct FallibleList {
@@ -347,6 +354,12 @@ mod tests {
 
     #[test]
     fn primitive_list_helpers_are_emitted_selectively() {
+        let generics = syn::Generics::default();
+        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let push_reserved = encoder::idents::push_reserved(scope).to_string();
+        let set_prepared_bitmap = encoder::idents::set_prepared_bitmap(scope).to_string();
+        let unsafe_push_reserved = format!("unsafe fn {push_reserved}");
+        let unsafe_set_prepared_bitmap = format!("unsafe fn {set_prepared_bitmap}");
         let bulk_boolean = generated(&syn::parse_quote! {
             struct BulkBooleanList {
                 values: Vec<Vec<bool>>,
@@ -371,10 +384,31 @@ mod tests {
                 values: Vec<Vec<i32>>,
             }
         });
-        assert!(bare_numeric.contains("push_reserved"), "{bare_numeric}");
+        assert!(
+            bare_numeric.contains(&unsafe_push_reserved),
+            "{bare_numeric}"
+        );
         assert!(
             !bare_numeric.contains("set_prepared_bitmap"),
-            "{bare_numeric}",
+            "{bare_numeric}"
+        );
+
+        let mapped_numeric = generated(&syn::parse_quote! {
+            struct MappedNumericLists {
+                nullable: Vec<Option<i32>>,
+                #[df_derive(decimal(precision = 18, scale = 4))]
+                fallible: Vec<DecimalValue>,
+                #[df_derive(decimal(precision = 18, scale = 4))]
+                nullable_fallible: Vec<Option<DecimalValue>>,
+            }
+        });
+        assert!(
+            mapped_numeric.contains(&unsafe_push_reserved),
+            "{mapped_numeric}"
+        );
+        assert!(
+            mapped_numeric.contains(&unsafe_set_prepared_bitmap),
+            "{mapped_numeric}",
         );
     }
 

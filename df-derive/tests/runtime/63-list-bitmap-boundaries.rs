@@ -43,8 +43,9 @@ struct NestedBoolRow {
 }
 
 #[derive(ToDataFrame)]
+#[allow(clippy::vec_box)]
 struct NestedOptionalI32Row {
-    values: Vec<Vec<Option<i32>>>,
+    values: Vec<Vec<Option<Box<i32>>>>,
 }
 
 #[derive(ToDataFrame)]
@@ -241,7 +242,10 @@ fn nested_optional_i32_bitmaps_preserve_segment_and_word_boundaries() {
             let flat = i32_values(len, pattern);
             let expected = segment_values(&flat);
             let rows = [NestedOptionalI32Row {
-                values: expected.clone(),
+                values: expected
+                    .iter()
+                    .map(|segment| segment.iter().map(|value| value.map(Box::new)).collect())
+                    .collect(),
             }];
             let dataframe = rows.as_slice().to_dataframe().unwrap();
 

@@ -7,6 +7,7 @@ mod encode_plan;
 mod encoder;
 pub mod external_paths;
 mod nested_names;
+mod planner;
 mod schema;
 mod schema_nested;
 mod source_access;
@@ -84,14 +85,14 @@ mod tests {
         let row_capacity = encoder::idents::row_capacity(&ir.generics);
         let sink = encoder::idents::column_sink_param(&ir.generics);
         let replay = quote! { crate::dataframe::RowCursor::replay(&*rows) };
-        let replay_static_tuples = columnar_spec_impl::should_replay_static_tuples(&ir);
+        let static_tuple_plan = planner::StaticTuplePlan::select(&ir);
 
         columnar_spec_impl::prepare_encode_plan(
             &ir,
             &config,
             &row,
             &replay,
-            replay_static_tuples,
+            static_tuple_plan,
             &row_capacity,
             &sink,
         )

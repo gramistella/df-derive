@@ -3,6 +3,7 @@
 //! `vec(inner)` fuses N consecutive `Vec` layers into one bulk emission.
 
 use crate::codegen::encode_plan::SeriesPlan;
+use crate::codegen::planner::{PrimitiveListPlan, PrimitiveListPolicy};
 use crate::codegen::type_registry::ScalarTransform;
 use crate::ir::{PrimitiveLeaf, VecLayers};
 use proc_macro2::TokenStream;
@@ -11,7 +12,10 @@ use quote::quote;
 use super::emit::vec_emit_primitive;
 use super::idents;
 use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
-use super::leaf_kind::{ImmediatePrimitiveWriter, PrimitiveListEncoding, PrimitiveListSchedule};
+use super::leaf_kind::{
+    BulkPrimitiveList, CapturedPrimitiveList, PrimitiveListCommon, PrimitiveListEncoding,
+    ReplayedPrimitiveList, StreamPrimitiveList,
+};
 use super::{LeafCtx, leaf};
 
 enum VecLeafSpec {
@@ -34,16 +38,9 @@ struct VecLeafPlan {
     leaf_dtype: TokenStream,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrimitiveVecSchedule {
-    ImmediateSegments,
-    ImmediateReserved,
-    DeferredSegments,
-}
-
 #[derive(Clone, Copy)]
 struct VecLeafBuildCtx<'tokens, 'ir> {
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
     ident_scope: idents::GeneratedIdentScope<'ir>,
     idx: usize,
     has_inner_option: bool,
@@ -82,7 +79,7 @@ fn bool_leaf_array_tokens(
 /// immediate schedule.
 fn leaf_offsets_post_push_tokens(
     spec: &VecLeafSpec,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
 ) -> TokenStream {
@@ -93,7 +90,7 @@ fn leaf_offsets_post_push_tokens(
         VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
             quote! { #view_buf.len() }
         }
-        VecLeafSpec::Bool if matches!(schedule, PrimitiveVecSchedule::DeferredSegments) => {
+        VecLeafSpec::Bool if plan.uses_exact_deferred_storage() => {
             let leaf_idx = idents::vec_leaf_idx(ident_scope, idx);
             quote! { #leaf_idx }
         }
@@ -106,7 +103,7 @@ fn leaf_offsets_post_push_tokens(
 
 fn leaf_prepare_segment_tokens(
     spec: &VecLeafSpec,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
     has_inner_option: bool,
@@ -115,7 +112,7 @@ fn leaf_prepare_segment_tokens(
     let additional = idents::leaf_reserve_len();
     let validity_prepare = (has_inner_option
         && !(matches!(spec, VecLeafSpec::Numeric { .. })
-            && matches!(schedule, PrimitiveVecSchedule::ImmediateReserved)))
+            && matches!(plan, PrimitiveListPlan::StreamReserved(()))))
     .then(|| {
         let validity = idents::bool_validity(idx);
         quote! { #validity.extend_constant(#additional, true); }
@@ -124,7 +121,7 @@ fn leaf_prepare_segment_tokens(
         VecLeafSpec::Numeric { .. } => {
             let values = idents::vec_flat(idx);
             let incremental_validity = (has_inner_option
-                && matches!(schedule, PrimitiveVecSchedule::ImmediateReserved))
+                && matches!(plan, PrimitiveListPlan::StreamReserved(())))
             .then(|| {
                 let validity = idents::bool_validity(idx);
                 let growth = idents::vec_validity_growth(ident_scope, idx);
@@ -231,7 +228,7 @@ fn build_vec_leaf_pieces(
                     ctx.idx,
                     ctx.leaf_capacity_expr,
                     ctx.pa_root,
-                    ctx.schedule,
+                    ctx.plan,
                 )
             }
         }
@@ -243,20 +240,20 @@ fn bool_bare_leaf_pieces(
     idx: usize,
     leaf_capacity_expr: &TokenStream,
     pa_root: &TokenStream,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let values_ident = idents::bool_values(idx);
     let validity_ident = idents::bool_validity(idx);
     let v = idents::leaf_value();
-    let (storage, push) = match schedule {
-        PrimitiveVecSchedule::ImmediateSegments => (
+    let (storage, push) = match plan {
+        PrimitiveListPlan::BulkSegments(()) => (
             quote! {
                 let mut #values_ident: ::std::vec::Vec<bool> =
                     ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
             },
             TokenStream::new(),
         ),
-        PrimitiveVecSchedule::DeferredSegments => {
+        PrimitiveListPlan::CaptureSegments(()) | PrimitiveListPlan::ReplayRows(()) => {
             let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
             let leaf_idx = idents::vec_leaf_idx(ident_scope, idx);
             let set_true = prepared_bitmap_set(
@@ -279,11 +276,11 @@ fn bool_bare_leaf_pieces(
                 },
             )
         }
-        PrimitiveVecSchedule::ImmediateReserved => {
+        PrimitiveListPlan::StreamReserved(()) => {
             unreachable!("bare Boolean leaves use append or deferred fill")
         }
     };
-    let leaf_arr_inner = if matches!(schedule, PrimitiveVecSchedule::ImmediateSegments) {
+    let leaf_arr_inner = if matches!(plan, PrimitiveListPlan::BulkSegments(())) {
         quote! {
             #pa_root::array::BooleanArray::from_slice(&#values_ident)
         }
@@ -303,7 +300,7 @@ fn numeric_leaf_pieces(
     ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let VecLeafBuildCtx {
-        schedule,
+        plan,
         ident_scope,
         idx,
         has_inner_option,
@@ -316,8 +313,8 @@ fn numeric_leaf_pieces(
     let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
     let incremental_validity =
-        has_inner_option && matches!(schedule, PrimitiveVecSchedule::ImmediateReserved);
-    let value_capacity = if matches!(schedule, PrimitiveVecSchedule::ImmediateReserved) {
+        has_inner_option && matches!(plan, PrimitiveListPlan::StreamReserved(()));
+    let value_capacity = if matches!(plan, PrimitiveListPlan::StreamReserved(())) {
         quote! { #row_capacity }
     } else {
         leaf_capacity_expr.clone()
@@ -575,10 +572,28 @@ fn vec_encoder(
     spec: &VecLeafSpec,
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
 ) -> SeriesPlan {
-    let encoding = lower_primitive_list(ctx, spec, shape, leaf_dtype, schedule);
+    let encoding = lower_primitive_list(ctx, spec, shape, leaf_dtype, plan);
     vec_emit_primitive(&encoding, ctx.base.access, ctx.base.idx, shape, ctx.paths)
+}
+
+fn primitive_list_leaf_capacity(
+    plan: PrimitiveListPolicy,
+    shape: &VecLayers,
+    row_capacity: &syn::Ident,
+    shape_counts: &syn::Ident,
+    leaf_count: &syn::Ident,
+) -> TokenStream {
+    match plan {
+        PrimitiveListPlan::BulkSegments(()) => quote! { #row_capacity },
+        PrimitiveListPlan::StreamReserved(()) => quote! { 0usize },
+        PrimitiveListPlan::ReplayRows(()) => {
+            let leaves = shape.depth();
+            quote! { #shape_counts[#leaves] }
+        }
+        PrimitiveListPlan::CaptureSegments(()) => quote! { #leaf_count },
+    }
 }
 
 fn lower_primitive_list(
@@ -586,26 +601,18 @@ fn lower_primitive_list(
     spec: &VecLeafSpec,
     shape: &VecLayers,
     leaf_dtype: &TokenStream,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
 ) -> PrimitiveListEncoding {
     let pa_root = ctx.paths.polars_arrow_root();
     let row_capacity = ctx.base.row_capacity;
     let leaf_count = idents::vec_leaf_count(ctx.ident_scope, ctx.base.idx);
     let shape_counts = idents::vec_shape_counts(ctx.ident_scope, ctx.base.idx);
-    let deferred_rows = matches!(schedule, PrimitiveVecSchedule::DeferredSegments)
-        && ctx.row_replay.is_some()
-        && shape.depth() >= 2;
-    let leaf_capacity_expr = match schedule {
-        PrimitiveVecSchedule::ImmediateSegments => quote! { #row_capacity },
-        PrimitiveVecSchedule::ImmediateReserved => quote! { 0usize },
-        PrimitiveVecSchedule::DeferredSegments if deferred_rows => {
-            let leaves = shape.depth();
-            quote! { #shape_counts[#leaves] }
-        }
-        PrimitiveVecSchedule::DeferredSegments => quote! { #leaf_count },
-    };
+    let leaf_segments = idents::vec_leaf_segments(ctx.ident_scope, ctx.base.idx);
+    let leaf_segment = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
+    let leaf_capacity_expr =
+        primitive_list_leaf_capacity(plan, shape, row_capacity, &shape_counts, &leaf_count);
     let leaf_build_ctx = VecLeafBuildCtx {
-        schedule,
+        plan,
         ident_scope: ctx.ident_scope,
         idx: ctx.base.idx,
         has_inner_option: shape.has_inner_option(),
@@ -615,86 +622,93 @@ fn lower_primitive_list(
     };
     let (leaf_storage_decls, write_leaf, leaf_arr_expr) =
         build_vec_leaf_pieces(spec, &leaf_build_ctx);
-    let schedule = match schedule {
-        PrimitiveVecSchedule::ImmediateSegments => {
+    let common = PrimitiveListCommon {
+        row_capacity: ctx.base.row_capacity.clone(),
+        storage_decls: leaf_storage_decls,
+        leaf_arr_expr,
+        extra_imports: TokenStream::new(),
+        leaf_logical_dtype: leaf_dtype.clone(),
+    };
+    match plan {
+        PrimitiveListPlan::BulkSegments(()) => {
             let VecLeafSpec::Bool = spec else {
-                unreachable!("only Boolean leaves support whole-segment writes");
+                unreachable!("only Boolean leaves support whole-segment writes")
             };
             let values = idents::bool_values(ctx.base.idx);
             let binding = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
             let write = quote! {
                 #values.extend(#binding.iter().copied());
             };
-            PrimitiveListSchedule::Immediate {
-                writer: ImmediatePrimitiveWriter::Segment { binding, write },
+            PrimitiveListPlan::BulkSegments(BulkPrimitiveList {
+                common,
+                binding,
+                write,
                 leaf_offsets_post_push: leaf_offsets_post_push_tokens(
                     spec,
-                    schedule,
+                    plan,
                     ctx.ident_scope,
                     ctx.base.idx,
                 ),
-            }
+            })
         }
-        PrimitiveVecSchedule::ImmediateReserved => {
+        PrimitiveListPlan::StreamReserved(()) => {
             let prepare_segment = leaf_prepare_segment_tokens(
                 spec,
-                schedule,
+                plan,
                 ctx.ident_scope,
                 ctx.base.idx,
                 shape.has_inner_option(),
                 ctx.base.row_capacity,
             );
-            PrimitiveListSchedule::Immediate {
-                writer: ImmediatePrimitiveWriter::ReservedElements {
-                    prepare_segment,
-                    write_leaf,
-                },
+            PrimitiveListPlan::StreamReserved(StreamPrimitiveList {
+                common,
+                prepare_segment,
+                write_leaf,
                 leaf_offsets_post_push: leaf_offsets_post_push_tokens(
                     spec,
-                    schedule,
+                    plan,
                     ctx.ident_scope,
                     ctx.base.idx,
                 ),
-            }
+            })
         }
-        PrimitiveVecSchedule::DeferredSegments => match ctx.row_replay {
-            Some(row_replay) if shape.depth() >= 2 => PrimitiveListSchedule::DeferredRows {
+        PrimitiveListPlan::ReplayRows(()) => {
+            let Some(row_replay) = ctx.row_replay else {
+                unreachable!("direct replay ingredients must accompany a replay-row policy")
+            };
+            PrimitiveListPlan::ReplayRows(ReplayedPrimitiveList {
+                common,
                 shape_counts,
                 leaf_offsets_post_push: leaf_offsets_post_push_tokens(
                     spec,
-                    schedule,
+                    plan,
                     ctx.ident_scope,
                     ctx.base.idx,
                 ),
                 row: row_replay.row.clone(),
-                replay: (*row_replay.replay).clone(),
+                replay: row_replay.replay.clone(),
                 write_leaf,
-            },
-            Some(_) | None => PrimitiveListSchedule::DeferredSegments {
+            })
+        }
+        PrimitiveListPlan::CaptureSegments(()) => {
+            PrimitiveListPlan::CaptureSegments(CapturedPrimitiveList {
+                common,
                 leaf_count,
-                leaf_segments: idents::vec_leaf_segments(ctx.ident_scope, ctx.base.idx),
-                leaf_segment: idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx),
+                leaf_segments,
+                leaf_segment,
                 write_leaf,
-            },
-        },
-    };
-    PrimitiveListEncoding {
-        row_capacity: ctx.base.row_capacity.clone(),
-        schedule,
-        storage_decls: leaf_storage_decls,
-        leaf_arr_expr,
-        extra_imports: TokenStream::new(),
-        leaf_logical_dtype: leaf_dtype.clone(),
+            })
+        }
     }
 }
 
 fn vec_encoder_bool_bare(
     ctx: &LeafCtx<'_>,
     shape: &VecLayers,
-    schedule: PrimitiveVecSchedule,
+    plan: PrimitiveListPolicy,
 ) -> SeriesPlan {
     let leaf_dtype = PrimitiveLeaf::Bool.dtype(ctx.paths);
-    vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype, schedule)
+    vec_encoder(ctx, &VecLeafSpec::Bool, shape, &leaf_dtype, plan)
 }
 
 fn mapped_numeric_plan(
@@ -819,89 +833,19 @@ fn vec_leaf_plan(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>) -> VecLeafPlan {
     }
 }
 
-const fn primitive_vec_leaf_schedule(leaf: PrimitiveLeaf<'_>) -> PrimitiveVecSchedule {
-    // Deferred fill runs after the source iterator is exhausted. Restrict it
-    // to concrete, infallible operations so an encoding error or user-defined
-    // call still stops at—and is observed in—the current source row.
-    if leaf.evaluation_effect().allows_replay() {
-        PrimitiveVecSchedule::DeferredSegments
-    } else {
-        PrimitiveVecSchedule::ImmediateReserved
-    }
-}
-
-fn primitive_vec_schedule(leaf: PrimitiveLeaf<'_>, shape: &VecLayers) -> PrimitiveVecSchedule {
-    if matches!(leaf, PrimitiveLeaf::Bool)
-        && !shape.has_inner_option()
-        && shape.depth() >= 2
-        && shape.inner_access.is_empty()
-    {
-        PrimitiveVecSchedule::ImmediateSegments
-    } else {
-        primitive_vec_leaf_schedule(leaf)
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub(in crate::codegen) struct PrimitiveVecHelperNeeds {
-    pub push_reserved: bool,
-    pub set_prepared_bitmap: bool,
-}
-
-const fn is_fixed_width_primitive(leaf: PrimitiveLeaf<'_>) -> bool {
-    matches!(
-        leaf,
-        PrimitiveLeaf::Numeric(_)
-            | PrimitiveLeaf::DateTime(_)
-            | PrimitiveLeaf::NaiveDateTime(_)
-            | PrimitiveLeaf::NaiveDate
-            | PrimitiveLeaf::NaiveTime
-            | PrimitiveLeaf::Duration { .. }
-            | PrimitiveLeaf::Decimal { .. }
-    )
-}
-
-pub(in crate::codegen) fn primitive_vec_helper_needs(
-    leaf: PrimitiveLeaf<'_>,
-    shape: &VecLayers,
-) -> PrimitiveVecHelperNeeds {
-    let push_reserved = is_fixed_width_primitive(leaf);
-    let set_prepared_bitmap = shape.has_inner_option()
-        || (matches!(leaf, PrimitiveLeaf::Bool)
-            && matches!(
-                primitive_vec_schedule(leaf, shape),
-                PrimitiveVecSchedule::DeferredSegments
-            ));
-    PrimitiveVecHelperNeeds {
-        push_reserved,
-        set_prepared_bitmap,
-    }
-}
-
-pub(in crate::codegen) fn primitive_vec_requires_row_replay(
-    leaf: PrimitiveLeaf<'_>,
-    shape: &VecLayers,
-) -> bool {
-    shape.depth() >= 2
-        && matches!(
-            primitive_vec_schedule(leaf, shape),
-            PrimitiveVecSchedule::DeferredSegments
-        )
-}
-
 pub(super) fn try_build_vec_encoder(
     leaf: PrimitiveLeaf<'_>,
     ctx: &LeafCtx<'_>,
     vec_shape: &VecLayers,
+    list_plan: PrimitiveListPolicy,
 ) -> SeriesPlan {
-    let schedule = primitive_vec_schedule(leaf, vec_shape);
     match leaf {
         PrimitiveLeaf::Bool => {
             if vec_shape.has_inner_option() {
                 let plan = vec_leaf_plan(leaf, ctx);
-                vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype, schedule)
+                vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype, list_plan)
             } else {
-                vec_encoder_bool_bare(ctx, vec_shape, schedule)
+                vec_encoder_bool_bare(ctx, vec_shape, list_plan)
             }
         }
         PrimitiveLeaf::Numeric(_)
@@ -916,7 +860,7 @@ pub(super) fn try_build_vec_encoder(
         | PrimitiveLeaf::AsString
         | PrimitiveLeaf::AsStr(_) => {
             let plan = vec_leaf_plan(leaf, ctx);
-            vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype, schedule)
+            vec_encoder(ctx, &plan.spec, vec_shape, &plan.leaf_dtype, list_plan)
         }
     }
 }
@@ -937,63 +881,5 @@ pub(super) fn build_leaf(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>, kind: LeafA
         }
         PrimitiveLeaf::AsString => leaf::as_string_leaf(ctx, kind),
         PrimitiveLeaf::AsStr(stringy) => leaf::as_str_leaf(ctx, stringy, kind),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ir::{DateTimeUnit, DurationSource, NumericKind, StringyBase};
-
-    #[test]
-    fn deferred_schedule_excludes_fallible_and_user_defined_leaf_work() {
-        let standard_string = StringyBase::String;
-        for leaf in [
-            PrimitiveLeaf::Numeric(NumericKind::I32),
-            PrimitiveLeaf::Bool,
-            PrimitiveLeaf::String,
-            PrimitiveLeaf::Binary,
-            PrimitiveLeaf::DateTime(DateTimeUnit::Milliseconds),
-            PrimitiveLeaf::NaiveDateTime(DateTimeUnit::Microseconds),
-            PrimitiveLeaf::NaiveDate,
-            PrimitiveLeaf::NaiveTime,
-            PrimitiveLeaf::Duration {
-                unit: DateTimeUnit::Milliseconds,
-                source: DurationSource::Chrono,
-            },
-            PrimitiveLeaf::AsStr(&standard_string),
-        ] {
-            assert_eq!(
-                primitive_vec_leaf_schedule(leaf),
-                PrimitiveVecSchedule::DeferredSegments,
-                "{leaf:?}",
-            );
-        }
-
-        let custom_string = StringyBase::Struct(syn::parse_quote!(CustomString));
-        for leaf in [
-            PrimitiveLeaf::DateTime(DateTimeUnit::Nanoseconds),
-            PrimitiveLeaf::NaiveDateTime(DateTimeUnit::Nanoseconds),
-            PrimitiveLeaf::Duration {
-                unit: DateTimeUnit::Nanoseconds,
-                source: DurationSource::Std,
-            },
-            PrimitiveLeaf::Duration {
-                unit: DateTimeUnit::Microseconds,
-                source: DurationSource::Chrono,
-            },
-            PrimitiveLeaf::Decimal {
-                precision: 18,
-                scale: 4,
-            },
-            PrimitiveLeaf::AsString,
-            PrimitiveLeaf::AsStr(&custom_string),
-        ] {
-            assert_eq!(
-                primitive_vec_leaf_schedule(leaf),
-                PrimitiveVecSchedule::ImmediateReserved,
-                "{leaf:?}",
-            );
-        }
     }
 }

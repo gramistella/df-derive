@@ -9,6 +9,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::codegen::MacroConfig;
+use crate::codegen::planner::{
+    STATIC_TUPLE_REPLAY_LANE_WIDTH, StaticTuplePlan, tuple_group_has_replay_access,
+};
 use crate::ir::{
     AccessChain, ColumnCommon, LeafShape, NestedLeaf, NestedNamePolicy, NonEmpty,
     TerminalLeafRoute, TupleField, TupleNode, TupleNodeKind, TupleProjectionStep, VecLayerSpec,
@@ -44,19 +47,10 @@ pub(in crate::codegen) struct TupleFieldEmitParams<'a> {
     pub group_start: usize,
     pub row: &'a syn::Ident,
     pub replay: &'a TokenStream,
-    pub replay_static_tuples: bool,
+    pub static_tuple_plan: StaticTuplePlan,
     pub row_capacity: &'a syn::Ident,
     pub sink: &'a syn::Ident,
 }
-
-// Below this width, one fused source pass is cheaper than setting up and
-// revisiting the runtime row cursor once per safe scalar column. At and above
-// it, one giant row-wise push loop creates enough live buffer state to lose
-// decisively to narrow column-at-a-time loops. The
-// `tuple_replay_boundary_minus_one` and `tuple_replay_boundary`
-// Criterion/Gungraun cases own this policy boundary; the matching codegen test
-// pins the exact branch.
-pub(in crate::codegen) const REPLAY_STATIC_TUPLE_MIN_TERMINALS: usize = 16;
 
 #[derive(Clone)]
 struct SharedListStack {
@@ -108,10 +102,6 @@ struct ReplayedPrimitive {
     name: String,
 }
 
-// The flat sixteen-terminal boundary benchmark distinguishes this cap from
-// four-wide and sixteen-wide replay, while the codegen test pins two lanes.
-const REPLAY_LANE_MAX_TERMINALS: usize = 8;
-
 impl InputAccess {
     const fn expr(&self) -> &TokenStream {
         match self {
@@ -131,7 +121,7 @@ struct TupleBuilder<'a> {
     replay: &'a TokenStream,
     row_capacity: &'a syn::Ident,
     sink: &'a syn::Ident,
-    replay_static_terminals: bool,
+    static_tuple_plan: StaticTuplePlan,
     next_terminal: usize,
     next_group: usize,
     terminal_start: usize,
@@ -151,12 +141,10 @@ impl TupleBuilder<'_> {
         idx: usize,
         name: &str,
     ) -> Option<TokenStream> {
-        if !self.replay_static_terminals || !leaf.evaluation_effect().allows_replay() {
+        let replay_input = replay_input?;
+        if !self.static_tuple_plan.replays_terminal(leaf, wrapper, true) {
             return None;
         }
-        let (Some(replay_input), WrapperShape::Leaf(_)) = (replay_input, wrapper) else {
-            return None;
-        };
         let input_rows_exact = idents::input_rows_exact(self.ident_scope);
         let ctx = LeafCtx {
             base: BaseCtx {
@@ -166,6 +154,7 @@ impl TupleBuilder<'_> {
                 idx,
                 name,
             },
+            primitive_list_plan: None,
             row_replay: None,
             cardinality: LeafCardinality::InputRows,
             ident_scope: self.ident_scope,
@@ -201,7 +190,7 @@ impl TupleBuilder<'_> {
             }
         };
         let effective_wrapper = inherit_parent_option(wrapper, input_optional);
-        let replay_input = wrapper_is_bare_leaf(&effective_wrapper)
+        let replay_input = tuple_group_has_replay_access(&effective_wrapper)
             .then_some(replay_input)
             .flatten();
         let body = match &effective_wrapper {
@@ -375,6 +364,11 @@ impl TupleBuilder<'_> {
                         idx,
                         name: common.name(),
                     },
+                    primitive_list_plan: crate::codegen::planner::PrimitiveListPolicy::for_wrapper(
+                        leaf,
+                        &effective_wrapper,
+                        crate::codegen::planner::RowReplayCapability::Unavailable,
+                    ),
                     row_replay: None,
                     cardinality: if prefix.is_empty()
                         && matches!(&effective_wrapper, WrapperShape::Leaf(_))
@@ -492,7 +486,7 @@ impl TupleBuilder<'_> {
             series,
             name: name.to_owned(),
         });
-        if self.replay_lane.len() == REPLAY_LANE_MAX_TERMINALS {
+        if self.replay_lane.len() == STATIC_TUPLE_REPLAY_LANE_WIDTH {
             self.flush_replay_lane();
         }
     }
@@ -575,36 +569,6 @@ impl TupleBuilder<'_> {
     }
 }
 
-const fn wrapper_is_bare_leaf(wrapper: &WrapperShape) -> bool {
-    matches!(wrapper, WrapperShape::Leaf(shape) if shape.is_bare())
-}
-
-const fn terminal_is_replayable(node: &TupleNode, common: &ColumnCommon) -> bool {
-    matches!(node.wrapper_shape(), WrapperShape::Leaf(_))
-        && matches!(common.leaf_spec().route(), TerminalLeafRoute::Primitive(leaf) if leaf.evaluation_effect().allows_replay())
-}
-
-pub(in crate::codegen) fn replayable_tuple_terminal_count(field: &TupleField) -> Option<usize> {
-    if !wrapper_is_bare_leaf(field.wrapper_shape()) {
-        return None;
-    }
-    let count = replayable_terminal_count(field.elements());
-    (count > 0).then_some(count)
-}
-
-fn replayable_terminal_count(elements: &NonEmpty<TupleNode>) -> usize {
-    elements
-        .iter()
-        .map(|node| match node.kind() {
-            TupleNodeKind::Leaf(common) => usize::from(terminal_is_replayable(node, common)),
-            TupleNodeKind::Tuple(children) if wrapper_is_bare_leaf(node.wrapper_shape()) => {
-                replayable_terminal_count(children)
-            }
-            TupleNodeKind::Tuple(_) => 0,
-        })
-        .sum()
-}
-
 pub(in crate::codegen) fn build_tuple_field_emit(
     field: &TupleField,
     params: TupleFieldEmitParams<'_>,
@@ -616,12 +580,13 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         group_start,
         row,
         replay,
-        replay_static_tuples,
+        static_tuple_plan,
         row_capacity,
         sink,
     } = params;
     let root = crate::codegen::source_access::field_source_access(field.source(), row);
-    let replay_root = (replay_static_tuples && wrapper_is_bare_leaf(field.wrapper_shape()))
+    let replay_root = static_tuple_plan
+        .replays_root(field)
         .then(|| ReplayTupleAccess(quote! { &(#root) }));
     let mut builder = TupleBuilder {
         config,
@@ -630,7 +595,7 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         replay,
         row_capacity,
         sink,
-        replay_static_terminals: replay_static_tuples,
+        static_tuple_plan,
         next_terminal: terminal_start,
         next_group: group_start,
         terminal_start,

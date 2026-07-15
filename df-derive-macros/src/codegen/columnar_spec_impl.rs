@@ -1,4 +1,4 @@
-use crate::ir::{FieldPlan, StructIR};
+use crate::ir::StructIR;
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -18,7 +18,7 @@ pub(super) fn prepare_encode_plan(
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
     replay: &TokenStream,
-    replay_static_tuples: bool,
+    static_tuple_plan: super::planner::StaticTuplePlan,
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
 ) -> EncodePlan {
@@ -36,7 +36,7 @@ pub(super) fn prepare_encode_plan(
                 group_start: group_idx,
                 row: it_ident,
                 replay,
-                replay_static_tuples,
+                static_tuple_plan,
                 row_capacity,
                 sink,
             },
@@ -47,17 +47,6 @@ pub(super) fn prepare_encode_plan(
     }
     debug_assert_eq!(terminal_idx, ir.terminal_column_count());
     plan
-}
-
-pub(super) fn should_replay_static_tuples(ir: &StructIR) -> bool {
-    ir.fields
-        .iter()
-        .filter_map(|field| match field {
-            FieldPlan::Tuple(tuple) => super::encoder::replayable_tuple_terminal_count(tuple),
-            FieldPlan::Column(_) => None,
-        })
-        .sum::<usize>()
-        >= super::encoder::REPLAY_STATIC_TUPLE_MIN_TERMINALS
 }
 
 fn encode_columns_method_body(
@@ -73,13 +62,13 @@ fn encode_columns_method_body(
     let input_rows_exact = idents::input_rows_exact(ident_scope);
     let row_cursor = &config.runtime.row_cursor;
     let replay = quote! { #row_cursor::replay(&*#rows) };
-    let replay_static_tuples = should_replay_static_tuples(ir);
+    let static_tuple_plan = super::planner::StaticTuplePlan::select(ir);
     let plan = prepare_encode_plan(
         ir,
         config,
         it_ident,
         &replay,
-        replay_static_tuples,
+        static_tuple_plan,
         row_capacity,
         sink,
     );

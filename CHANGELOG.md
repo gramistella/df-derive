@@ -38,6 +38,11 @@ All notable changes to this project will be documented in this file.
   the shared source scan, and ordered post-scan/emission groups. Existing
   completion order and block scopes remain explicit while later scheduling
   policy moves behind a planner boundary.
+- Primitive-list execution strategy, helper requirements, and the empirical
+  static-tuple replay boundary now have one typed planner authority. Emitters
+  render the selected plan instead of independently rediscovering replay and
+  storage policy, and direct columns no longer need a circular replay
+  preflight before they can be lowered.
 - Primitive-list plans represent reserved element writes and whole-segment
   writes as distinct states. Generated exact-fill helpers make their unchecked
   storage contracts explicit and retain debug assertions at the boundary.

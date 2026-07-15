@@ -2,6 +2,7 @@ use proc_macro2::TokenStream;
 
 use crate::codegen::encode_plan::SeriesPlan;
 use crate::codegen::external_paths::ExternalPaths;
+use crate::codegen::planner::PrimitiveListPolicy;
 use crate::ir::{PrimitiveLeaf, WrapperShape};
 
 use super::idents::GeneratedIdentScope;
@@ -34,6 +35,7 @@ pub enum LeafCardinality {
 
 pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
+    pub primitive_list_plan: Option<PrimitiveListPolicy>,
     pub row_replay: Option<RowReplay<'a>>,
     pub cardinality: LeafCardinality,
     pub ident_scope: GeneratedIdentScope<'a>,
@@ -86,6 +88,11 @@ pub(in crate::codegen) fn build_encoder_with_option_receiver(
             shape.access(),
             shape.access().option_layers(),
         ),
-        WrapperShape::Vec(vec_layers) => vec::try_build_vec_encoder(leaf, ctx, vec_layers),
+        WrapperShape::Vec(vec_layers) => {
+            let Some(plan) = ctx.primitive_list_plan else {
+                unreachable!("primitive-list policy must be selected before lowering")
+            };
+            vec::try_build_vec_encoder(leaf, ctx, vec_layers, plan)
+        }
     }
 }

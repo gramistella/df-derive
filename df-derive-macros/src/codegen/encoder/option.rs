@@ -65,6 +65,7 @@ pub(super) fn wrap_option_access_chain_primitive(
             idx: ctx.base.idx,
             name: ctx.base.name,
         },
+        primitive_list_plan: ctx.primitive_list_plan,
         row_replay: ctx.row_replay,
         cardinality: ctx.cardinality,
         ident_scope: ctx.ident_scope,

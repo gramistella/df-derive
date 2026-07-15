@@ -26,7 +26,7 @@ pub(in crate::codegen) struct FieldEmitParams<'a> {
     pub group_start: usize,
     pub row: &'a Ident,
     pub replay: &'a TokenStream,
-    pub replay_static_tuples: bool,
+    pub static_tuple_plan: super::planner::StaticTuplePlan,
     pub row_capacity: &'a Ident,
     pub sink: &'a Ident,
 }
@@ -49,7 +49,7 @@ pub(in crate::codegen) fn build_field_emit(
         group_start,
         row,
         replay,
-        replay_static_tuples,
+        static_tuple_plan,
         row_capacity,
         sink,
     } = params;
@@ -80,7 +80,7 @@ pub(in crate::codegen) fn build_field_emit(
                     group_start,
                     row,
                     replay,
-                    replay_static_tuples,
+                    static_tuple_plan,
                     row_capacity,
                     sink,
                 },
@@ -116,23 +116,16 @@ fn build_field_column_emit(
                 sink,
             )
         }
-        TerminalLeafRoute::Primitive(leaf) => {
-            let requires_replay = match column.wrapper_shape() {
-                WrapperShape::Vec(shape) => encoder::primitive_vec_requires_row_replay(leaf, shape),
-                WrapperShape::Leaf(_) => false,
-            };
-            build_primitive_emit(
-                column,
-                config,
-                ident_scope,
-                idx,
-                row_replay,
-                leaf,
-                requires_replay,
-                row_capacity,
-                sink,
-            )
-        }
+        TerminalLeafRoute::Primitive(leaf) => build_primitive_emit(
+            column,
+            config,
+            ident_scope,
+            idx,
+            row_replay,
+            leaf,
+            row_capacity,
+            sink,
+        ),
     }
 }
 
@@ -172,7 +165,6 @@ fn build_primitive_emit(
     idx: usize,
     row_replay: encoder::RowReplay<'_>,
     leaf: PrimitiveLeaf<'_>,
-    requires_replay: bool,
     row_capacity: &Ident,
     sink: &Ident,
 ) -> EncodePlan {
@@ -187,7 +179,12 @@ fn build_primitive_emit(
             idx,
             name,
         },
-        row_replay: requires_replay.then_some(row_replay),
+        primitive_list_plan: super::planner::PrimitiveListPolicy::for_wrapper(
+            leaf,
+            column.wrapper_shape(),
+            super::planner::RowReplayCapability::Direct,
+        ),
+        row_replay: Some(row_replay),
         cardinality: match column.wrapper_shape() {
             WrapperShape::Leaf(_) => LeafCardinality::InputRows,
             WrapperShape::Vec(_) => LeafCardinality::Dynamic,

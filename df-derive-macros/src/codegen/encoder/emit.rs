@@ -15,10 +15,11 @@ use quote::quote;
 use crate::codegen::encode_plan::{
     EmitOp, EncodePlan, FinishGroup, InitOp, PostScanOp, ScanOp, SeriesPlan,
 };
+use crate::codegen::planner::PrimitiveListPlan;
 use crate::ir::{AccessChain, VecLayers, WrapperShape};
 
 use super::idents::{self, LayerIdents};
-use super::leaf_kind::{CollectThenBulk, ImmediatePrimitiveWriter, PrimitiveListSchedule};
+use super::leaf_kind::{CollectThenBulk, PrimitiveListCommon};
 use super::nested_columns::{
     NestedMaterializeCtx, NestedWrapper, SharedListPrefix, materialize_nested_columns,
 };
@@ -76,25 +77,6 @@ fn element_leaf_body<'a>(
                         #write_leaf
                     }
                 }
-            }
-        }
-    }
-}
-
-fn immediate_primitive_leaf_body<'a>(
-    shape: &'a VecLayers,
-    leaf_bind: &'a syn::Ident,
-    writer: &'a ImmediatePrimitiveWriter,
-) -> impl Fn(&TokenStream) -> TokenStream + 'a {
-    move |vec_bind: &TokenStream| match writer {
-        ImmediatePrimitiveWriter::ReservedElements {
-            prepare_segment,
-            write_leaf,
-        } => element_leaf_body(shape, leaf_bind, write_leaf, Some(prepare_segment))(vec_bind),
-        ImmediatePrimitiveWriter::Segment { binding, write } => {
-            quote! {
-                let #binding: &::std::vec::Vec<_> = #vec_bind;
-                #write
             }
         }
     }
@@ -201,7 +183,7 @@ fn ctb_leaf_body<'a>(
 }
 
 fn primitive_list_materialize(
-    encoding: &super::leaf_kind::PrimitiveListEncoding,
+    common: &PrimitiveListCommon,
     emitter: &ShapeEmitter<'_>,
     idx: usize,
     pp: &TokenStream,
@@ -221,12 +203,12 @@ fn primitive_list_materialize(
         seed,
         seed_dtype,
         &wrap_layers,
-        encoding.leaf_logical_dtype.clone(),
+        common.leaf_logical_dtype.clone(),
         pp,
         pa_root,
         &arr_id_for_layer,
     );
-    let leaf_arr_expr = &encoding.leaf_arr_expr;
+    let leaf_arr_expr = &common.leaf_arr_expr;
     quote! {
         #leaf_arr_expr
         #seed_dtype_decl
@@ -306,8 +288,9 @@ fn primitive_list_emit(
     idx: usize,
 ) -> SeriesPlan {
     let leaf_bind = idents::leaf_value();
+    let common = encoding.common();
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
-        row_capacity: &encoding.row_capacity,
+        row_capacity: &common.row_capacity,
         shape,
         access,
         layers,
@@ -316,17 +299,19 @@ fn primitive_list_emit(
     });
     let offsets_decls = emitter.offsets_decls();
     let validity_decls = emitter.validity_decls();
-    let materialize = primitive_list_materialize(encoding, &emitter, idx, pp);
-    let storage_decls = &encoding.storage_decls;
-    let extra_imports = &encoding.extra_imports;
+    let materialize = primitive_list_materialize(common, &emitter, idx, pp);
+    let storage_decls = &common.storage_decls;
+    let extra_imports = &common.extra_imports;
 
-    match &encoding.schedule {
-        PrimitiveListSchedule::Immediate {
-            writer,
-            leaf_offsets_post_push,
-        } => {
-            let leaf_body = immediate_primitive_leaf_body(shape, &leaf_bind, writer);
-            let push = emitter.row_push(&leaf_body, leaf_offsets_post_push);
+    match encoding {
+        PrimitiveListPlan::StreamReserved(plan) => {
+            let leaf_body = element_leaf_body(
+                shape,
+                &leaf_bind,
+                &plan.write_leaf,
+                Some(&plan.prepare_segment),
+            );
+            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_push);
             SeriesPlan::new(
                 vec![InitOp::new(quote! {
                     #extra_imports
@@ -343,16 +328,39 @@ fn primitive_list_emit(
                 quote! { #series_local },
             )
         }
-        PrimitiveListSchedule::DeferredRows {
-            shape_counts,
-            leaf_offsets_post_push,
-            row,
-            replay,
-            write_leaf,
-        } => {
+        PrimitiveListPlan::BulkSegments(plan) => {
+            let binding = &plan.binding;
+            let write = &plan.write;
+            let leaf_body = |vec_bind: &TokenStream| {
+                quote! {
+                    let #binding: &::std::vec::Vec<_> = #vec_bind;
+                    #write
+                }
+            };
+            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_push);
+            SeriesPlan::new(
+                vec![InitOp::new(quote! {
+                    #extra_imports
+                    #storage_decls
+                    #offsets_decls
+                    #validity_decls
+                })],
+                ScanOp::new(push),
+                vec![PostScanOp::new(quote! {
+                    let #series_local: #pp::Series = {
+                        #materialize
+                    };
+                })],
+                quote! { #series_local },
+            )
+        }
+        PrimitiveListPlan::ReplayRows(plan) => {
+            let shape_counts = &plan.shape_counts;
+            let row = &plan.row;
+            let replay = &plan.replay;
             let push = emitter.row_count(shape_counts);
-            let fill_segment = element_leaf_body(shape, &leaf_bind, write_leaf, None);
-            let fill_row = emitter.row_push(&fill_segment, leaf_offsets_post_push);
+            let fill_segment = element_leaf_body(shape, &leaf_bind, &plan.write_leaf, None);
+            let fill_row = emitter.row_push(&fill_segment, &plan.leaf_offsets_post_push);
             let exact_offsets_decls = emitter.exact_offsets_decls(shape_counts);
             let exact_validity_decls = emitter.exact_validity_decls(shape_counts);
             let cardinality_count = shape.depth() + 1;
@@ -377,12 +385,10 @@ fn primitive_list_emit(
                 quote! { #series_local },
             )
         }
-        PrimitiveListSchedule::DeferredSegments {
-            leaf_count,
-            leaf_segments,
-            leaf_segment,
-            write_leaf,
-        } => {
+        PrimitiveListPlan::CaptureSegments(plan) => {
+            let leaf_count = &plan.leaf_count;
+            let leaf_segments = &plan.leaf_segments;
+            let leaf_segment = &plan.leaf_segment;
             let collect_segment = |vec_bind: &TokenStream| {
                 quote! {
                     let #leaf_segment: &::std::vec::Vec<_> = #vec_bind;
@@ -398,7 +404,7 @@ fn primitive_list_emit(
                 }
             };
             let push = emitter.row_push(&collect_segment, &quote! { #leaf_count });
-            let fill_segment = element_leaf_body(shape, &leaf_bind, write_leaf, None);
+            let fill_segment = element_leaf_body(shape, &leaf_bind, &plan.write_leaf, None);
             let fill_segment = fill_segment(&quote! { #leaf_segment });
             let fill_leaf_storage = quote! {
                 for #leaf_segment in #leaf_segments {

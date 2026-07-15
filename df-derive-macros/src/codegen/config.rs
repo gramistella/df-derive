@@ -18,7 +18,7 @@ pub struct RuntimeSurfacePaths {
     /// generated code.
     pub columnar_spec: syn::Path,
     /// Fully-qualified path to the hidden `ColumnSink` checked-composition
-    /// boundary used by generated `ColumnarSpec` implementations.
+    /// boundary whose slots provide authoritative output metadata.
     pub column_sink: syn::Path,
     /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
     /// fields.

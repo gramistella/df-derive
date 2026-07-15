@@ -7,7 +7,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
-use super::encode_plan::{EmitOp, EncodePlan, FinishGroup, SeriesNameState, SeriesPlan};
+use super::encode_plan::{EmitOp, EncodePlan, FinishGroup, SeriesPlan};
 use super::encoder::{
     self, BaseCtx, LeafCardinality, LeafCtx, NestedLeafCtx, idents, struct_type_tokens,
 };
@@ -109,6 +109,7 @@ fn build_field_column_emit(
             build_nested_emit(
                 column,
                 config,
+                ident_scope,
                 idx,
                 row_replay.row,
                 &type_path,
@@ -133,6 +134,7 @@ fn build_field_column_emit(
 fn build_nested_emit(
     column: &FieldColumn,
     config: &super::MacroConfig,
+    ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
     row: &Ident,
     type_path: &TokenStream,
@@ -144,11 +146,10 @@ fn build_nested_emit(
         base: BaseCtx {
             access: &access,
             row_capacity,
-            sink,
             idx,
-            name: column.name(),
         },
-        name_policy: column.nested_name_policy(),
+        ident_scope,
+        sink,
         ty: type_path,
         columnar_trait: &config.runtime.columnar,
         columnar_spec_trait: &config.runtime.columnar_spec,
@@ -168,17 +169,16 @@ fn build_primitive_emit(
     row_capacity: &Ident,
     sink: &Ident,
 ) -> EncodePlan {
-    let name = column.name();
     let access = super::source_access::field_column_access(column, row_replay.row);
     let input_rows_exact = idents::input_rows_exact(ident_scope);
+    let output_slot = idents::output_slot(ident_scope, idx);
     let leaf_ctx = LeafCtx {
         base: BaseCtx {
             access: &access,
             row_capacity,
-            sink,
             idx,
-            name,
         },
+        materialization: encoder::MaterializationTarget::schema_slot(&output_slot),
         primitive_list_plan: super::planner::PrimitiveListPolicy::for_wrapper(
             leaf,
             column.wrapper_shape(),
@@ -198,34 +198,17 @@ fn build_primitive_emit(
         init,
         scan,
         post_scan,
-        series,
-        naming,
+        materialize,
+        output_slot,
     } = encoder::build_encoder(leaf, column.wrapper_shape(), &leaf_ctx);
-    let mut finish = Vec::new();
-    if !post_scan.is_empty() {
-        finish.push(FinishGroup::inline(post_scan, Vec::new()));
-    }
-    match naming {
-        SeriesNameState::AlreadyNamed => {
-            let output_series = idents::field_output_series(ident_scope);
-            finish.push(FinishGroup::scoped(
-                Vec::new(),
-                vec![EmitOp::new(quote! {
-                    let #output_series = #series;
-                    #sink.push(#output_series.into())?;
-                })],
-            ));
-        }
-        SeriesNameState::NeedsName => {
-            let named = idents::field_named_series();
-            finish.push(FinishGroup::scoped(
-                Vec::new(),
-                vec![EmitOp::new(quote! {
-                    let #named = #series.with_name(#name.into());
-                    #sink.push(#named.into())?;
-                })],
-            ));
-        }
-    }
+    let output_series = idents::field_output_series(ident_scope);
+    let finish = vec![FinishGroup::scoped(
+        post_scan,
+        vec![EmitOp::new(quote! {
+            let #output_slot = #sink.next_slot()?;
+            let #output_series = #materialize;
+            #output_slot.commit(#output_series.into())?;
+        })],
+    )];
     EncodePlan::new(init, vec![scan], finish)
 }

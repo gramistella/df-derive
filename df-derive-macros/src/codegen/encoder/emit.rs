@@ -23,7 +23,10 @@ use super::leaf_kind::{CollectThenBulk, PrimitiveListCommon};
 use super::nested_columns::{
     NestedMaterializeCtx, NestedWrapper, SharedListPrefix, materialize_nested_columns,
 };
-use super::shape_walk::{ShapeEmitter, ShapeEmitterParts, shape_assemble_list_stack};
+use super::shape_walk::{
+    ListAssembly, ListAssemblySeed, ListAssemblyTarget, ShapeEmitter, ShapeEmitterParts,
+    shape_assemble_list_stack,
+};
 use super::{access_chain_to_ref, collapse_options_to_ref, idx_size_len_expr};
 use crate::codegen::external_paths::ExternalPaths;
 
@@ -199,15 +202,18 @@ fn primitive_list_materialize(
     let seed_dtype = quote! { #seed_arrow_dtype_id };
     let wrap_layers = emitter.layer_wraps_move();
     let arr_id_for_layer = |layer| idents::vec_layer_list_arr(idx, layer);
-    let stack = shape_assemble_list_stack(
-        seed,
-        seed_dtype,
-        &wrap_layers,
-        common.leaf_logical_dtype.clone(),
+    let stack = shape_assemble_list_stack(ListAssembly {
+        seed: ListAssemblySeed {
+            payload: seed,
+            arrow_dtype: seed_dtype,
+            logical_dtype: common.leaf_logical_dtype.clone(),
+        },
+        layers: &wrap_layers,
+        target: ListAssemblyTarget::from(&common.materialization),
         pp,
         pa_root,
-        &arr_id_for_layer,
-    );
+        arr_id_for_layer: &arr_id_for_layer,
+    });
     let leaf_arr_expr = &common.leaf_arr_expr;
     quote! {
         #leaf_arr_expr
@@ -225,12 +231,11 @@ fn ctb_materialize(
 ) -> TokenStream {
     let CollectThenBulk {
         row_capacity: _,
+        ident_scope,
         sink,
         ty,
         columnar_trait,
         columnar_spec_trait,
-        name,
-        name_policy,
         idx,
     } = *ctb;
     let flat = idents::nested_flat(idx);
@@ -261,10 +266,9 @@ fn ctb_materialize(
 
     materialize_nested_columns(&NestedMaterializeCtx {
         field_idx: idx,
+        ident_scope,
         sink,
         ty,
-        column_prefix: name,
-        name_policy,
         flat: &flat,
         positions,
         total_len,
@@ -280,7 +284,6 @@ fn ctb_materialize(
 fn primitive_list_emit(
     encoding: &super::leaf_kind::PrimitiveListEncoding,
     access: &TokenStream,
-    series_local: &syn::Ident,
     shape: &VecLayers,
     layers: &[LayerIdents],
     pa_root: &TokenStream,
@@ -320,12 +323,9 @@ fn primitive_list_emit(
                     #validity_decls
                 })],
                 ScanOp::new(push),
-                vec![PostScanOp::new(quote! {
-                    let #series_local: #pp::Series = {
-                        #materialize
-                    };
-                })],
-                quote! { #series_local },
+                Vec::new(),
+                quote! {{ #materialize }},
+                common.materialization.output_slot().clone(),
             )
         }
         PrimitiveListPlan::BulkSegments(plan) => {
@@ -346,12 +346,9 @@ fn primitive_list_emit(
                     #validity_decls
                 })],
                 ScanOp::new(push),
-                vec![PostScanOp::new(quote! {
-                    let #series_local: #pp::Series = {
-                        #materialize
-                    };
-                })],
-                quote! { #series_local },
+                Vec::new(),
+                quote! {{ #materialize }},
+                common.materialization.output_slot().clone(),
             )
         }
         PrimitiveListPlan::ReplayRows(plan) => {
@@ -372,17 +369,15 @@ fn primitive_list_emit(
                 })],
                 ScanOp::new(push),
                 vec![PostScanOp::replay_rows(quote! {
-                    let #series_local: #pp::Series = {
-                        #storage_decls
-                        #exact_offsets_decls
-                        #exact_validity_decls
-                        for #row in #replay {
-                            #fill_row
-                        }
-                        #materialize
-                    };
+                    #storage_decls
+                    #exact_offsets_decls
+                    #exact_validity_decls
+                    for #row in #replay {
+                        #fill_row
+                    }
                 })],
-                quote! { #series_local },
+                quote! {{ #materialize }},
+                common.materialization.output_slot().clone(),
             )
         }
         PrimitiveListPlan::CaptureSegments(plan) => {
@@ -422,13 +417,11 @@ fn primitive_list_emit(
                 })],
                 ScanOp::new(push),
                 vec![PostScanOp::new(quote! {
-                    let #series_local: #pp::Series = {
-                        #storage_decls
-                        #fill_leaf_storage
-                        #materialize
-                    };
+                    #storage_decls
+                    #fill_leaf_storage
                 })],
-                quote! { #series_local },
+                quote! {{ #materialize }},
+                common.materialization.output_slot().clone(),
             )
         }
     }
@@ -571,17 +564,7 @@ pub(super) fn vec_emit_primitive(
     let pp = paths.prelude();
     let depth = shape.depth();
     let layers: Vec<LayerIdents> = (0..depth).map(|i| layer_idents(idx, false, i)).collect();
-    let series_local = idents::vec_field_series(idx);
-    primitive_list_emit(
-        encoding,
-        access,
-        &series_local,
-        shape,
-        &layers,
-        pa_root,
-        pp,
-        idx,
-    )
+    primitive_list_emit(encoding, access, shape, &layers, pa_root, pp, idx)
 }
 
 /// Shape-aware emitter for nested struct / generic leaves. Accepts the full

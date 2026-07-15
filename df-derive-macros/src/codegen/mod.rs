@@ -183,7 +183,16 @@ mod tests {
             }
         });
         let sink = encoder::idents::column_sink_param(&syn::Generics::default());
-        assert!(non_empty.contains(&format!("{sink} . push")), "{non_empty}");
+        assert!(
+            non_empty.contains(&format!("{sink} . next_slot")),
+            "{non_empty}"
+        );
+        assert!(non_empty.contains(". commit"), "{non_empty}");
+        assert!(non_empty.contains(". name"), "{non_empty}");
+        assert!(
+            !non_empty.contains(&format!("{sink} . push")),
+            "{non_empty}"
+        );
         assert!(!non_empty.contains("record_for_replay"), "{non_empty}");
         assert_replay_policy(&non_empty, false);
 

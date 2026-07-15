@@ -102,10 +102,6 @@ fn fresh_generic_ident(generics: &Generics, base: &str) -> Ident {
     }
 }
 
-pub(in crate::codegen) fn field_named_series() -> Ident {
-    format_ident!("__df_derive_named")
-}
-
 pub(in crate::codegen) fn field_output_series(scope: GeneratedIdentScope<'_>) -> Ident {
     scope.fresh("__df_derive_series")
 }

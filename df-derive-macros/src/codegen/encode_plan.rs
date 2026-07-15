@@ -140,33 +140,28 @@ impl ToTokens for FinishGroup {
     }
 }
 
-/// A primitive encoder before its final name/sink policy is attached.
+/// A primitive encoder before its schema slot is acquired and committed.
 pub(in crate::codegen) struct SeriesPlan {
     pub init: Vec<InitOp>,
     pub scan: ScanOp,
     pub post_scan: Vec<PostScanOp>,
-    pub series: TokenStream,
-    pub naming: SeriesNameState,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::codegen) enum SeriesNameState {
-    AlreadyNamed,
-    NeedsName,
+    pub materialize: TokenStream,
+    pub output_slot: syn::Ident,
 }
 
 impl SeriesPlan {
     pub(in crate::codegen) fn leaf(
         init: Vec<TokenStream>,
         scan: TokenStream,
-        series: TokenStream,
+        materialize: TokenStream,
+        output_slot: syn::Ident,
     ) -> Self {
         Self {
             init: init.into_iter().map(InitOp::new).collect(),
             scan: ScanOp::new(scan),
             post_scan: Vec::new(),
-            series,
-            naming: SeriesNameState::AlreadyNamed,
+            materialize,
+            output_slot,
         }
     }
 
@@ -174,14 +169,15 @@ impl SeriesPlan {
         init: Vec<InitOp>,
         scan: ScanOp,
         post_scan: Vec<PostScanOp>,
-        series: TokenStream,
+        materialize: TokenStream,
+        output_slot: syn::Ident,
     ) -> Self {
         Self {
             init,
             scan,
             post_scan,
-            series,
-            naming: SeriesNameState::NeedsName,
+            materialize,
+            output_slot,
         }
     }
 }

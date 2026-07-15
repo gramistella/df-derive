@@ -624,6 +624,7 @@ fn lower_primitive_list(
         build_vec_leaf_pieces(spec, &leaf_build_ctx);
     let common = PrimitiveListCommon {
         row_capacity: ctx.base.row_capacity.clone(),
+        materialization: ctx.materialization.clone(),
         storage_decls: leaf_storage_decls,
         leaf_arr_expr,
         extra_imports: TokenStream::new(),

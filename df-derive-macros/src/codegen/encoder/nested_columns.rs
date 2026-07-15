@@ -2,20 +2,19 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::codegen::external_paths::ExternalPaths;
-use crate::ir::{NestedNamePolicy, VecLayers};
+use crate::ir::VecLayers;
 
 use super::idents::{self, LayerIdents};
 use super::shape_walk::{
-    shape_assemble_list_stack, shape_freeze_offsets_buffers, shape_freeze_validity_bitmaps,
-    shape_layer_wraps_clone,
+    ListAssembly, ListAssemblySeed, ListAssemblyTarget, shape_assemble_list_stack,
+    shape_freeze_offsets_buffers, shape_freeze_validity_bitmaps, shape_layer_wraps_clone,
 };
 
 pub(super) struct NestedMaterializeCtx<'a> {
     pub field_idx: usize,
+    pub ident_scope: idents::GeneratedIdentScope<'a>,
     pub sink: &'a syn::Ident,
     pub ty: &'a TokenStream,
-    pub column_prefix: &'a str,
-    pub name_policy: &'a NestedNamePolicy,
     pub flat: &'a syn::Ident,
     pub positions: Option<&'a syn::Ident>,
     pub total_len: TokenStream,
@@ -211,6 +210,7 @@ fn wrap_list_column(
     layers: &[LayerIdents],
     arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
     inner_col_expr: &TokenStream,
+    target: ListAssemblyTarget,
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> TokenStream {
@@ -225,15 +225,18 @@ fn wrap_list_column(
         let #inner_chunk: #pp::ArrayRef = #inner_rech.chunks()[0].clone();
     };
     let wrap_layers = shape_layer_wraps_clone(shape, layers);
-    let stack = shape_assemble_list_stack(
-        quote! { #inner_chunk },
-        quote! { #inner_chunk.dtype().clone() },
-        &wrap_layers,
-        quote! { #logical_dtype },
+    let stack = shape_assemble_list_stack(ListAssembly {
+        seed: ListAssemblySeed {
+            payload: quote! { #inner_chunk },
+            arrow_dtype: quote! { #inner_chunk.dtype().clone() },
+            logical_dtype: quote! { #logical_dtype },
+        },
+        layers: &wrap_layers,
+        target,
         pp,
         pa_root,
         arr_id_for_layer,
-    );
+    });
     quote! {{
         #chunk_decl
         #stack
@@ -245,6 +248,7 @@ fn wrap_nested_column(
     prefix: Option<SharedListPrefix<'_>>,
     field_idx: usize,
     inner_col_expr: &TokenStream,
+    output_slot: &syn::Ident,
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> TokenStream {
@@ -254,11 +258,28 @@ fn wrap_nested_column(
             shape,
             layers,
             arr_id_for_layer,
-        } => wrap_list_column(shape, layers, arr_id_for_layer, inner_col_expr, pp, pa_root),
+        } => wrap_list_column(
+            shape,
+            layers,
+            arr_id_for_layer,
+            inner_col_expr,
+            if prefix.is_none() {
+                ListAssemblyTarget::schema_slot(output_slot)
+            } else {
+                ListAssemblyTarget::intermediate()
+            },
+            pp,
+            pa_root,
+        ),
     };
 
     prefix.map_or_else(
-        || terminal_series.clone(),
+        || match wrapper {
+            NestedWrapper::None => {
+                quote! { (#terminal_series).with_name(#output_slot.name().clone()) }
+            }
+            NestedWrapper::List { .. } => terminal_series.clone(),
+        },
         |prefix| {
             let arr_id_for_layer =
                 |layer| idents::tuple_prefix_list_arr(prefix.ident_scope, field_idx, layer);
@@ -267,6 +288,7 @@ fn wrap_nested_column(
                 prefix.layers,
                 &arr_id_for_layer,
                 &terminal_series,
+                ListAssemblyTarget::schema_slot(output_slot),
                 pp,
                 pa_root,
             )
@@ -281,17 +303,39 @@ struct NestedSeriesBranches {
     all_absent: TokenStream,
 }
 
+#[derive(Clone, Copy)]
+struct NestedSeriesIdents<'a> {
+    output_slot: &'a syn::Ident,
+    child_column: &'a syn::Ident,
+    take: &'a syn::Ident,
+    dtype: &'a syn::Ident,
+    inner_full: &'a syn::Ident,
+}
+
 fn build_nested_series_branches(
     ctx: &NestedMaterializeCtx<'_>,
-    child_column: &syn::Ident,
-    take: &syn::Ident,
-    dtype: &syn::Ident,
-    inner_full: &syn::Ident,
+    idents: &NestedSeriesIdents<'_>,
     pp: &TokenStream,
     pa_root: &TokenStream,
 ) -> NestedSeriesBranches {
-    let wrap =
-        |inner| wrap_nested_column(&ctx.wrapper, ctx.prefix, ctx.field_idx, &inner, pp, pa_root);
+    let NestedSeriesIdents {
+        output_slot,
+        child_column,
+        take,
+        dtype,
+        inner_full,
+    } = *idents;
+    let wrap = |inner| {
+        wrap_nested_column(
+            &ctx.wrapper,
+            ctx.prefix,
+            ctx.field_idx,
+            &inner,
+            output_slot,
+            pp,
+            pa_root,
+        )
+    };
     NestedSeriesBranches {
         direct: wrap(build_inner_col_direct(child_column, inner_full)),
         take: wrap(build_inner_col_take(child_column, take, inner_full)),
@@ -309,39 +353,37 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
     let take = idents::nested_take(ctx.field_idx);
     let dtype = idents::nested_col_dtype();
     let inner_full = idents::nested_inner_full();
+    let output_slot = idents::output_slot(ctx.ident_scope, ctx.field_idx);
 
-    let series =
-        build_nested_series_branches(ctx, &child_column, &take, &dtype, &inner_full, pp, pa_root);
+    let series = build_nested_series_branches(
+        ctx,
+        &NestedSeriesIdents {
+            output_slot: &output_slot,
+            child_column: &child_column,
+            take: &take,
+            dtype: &dtype,
+            inner_full: &inner_full,
+        },
+        pp,
+        pa_root,
+    );
 
     let consume_batch = |series| {
         consume_nested_batch_columns(
             ctx.sink,
             &child_columns,
             &child_column,
-            ctx.column_prefix,
-            ctx.name_policy,
+            &output_slot,
             series,
             pp,
         )
     };
     let consume_direct = consume_batch(&series.direct);
     let consume_take = consume_batch(&series.take);
-    let consume_empty_columns = consume_nested_schema_columns(
-        ctx.sink,
-        &schema,
-        ctx.column_prefix,
-        ctx.name_policy,
-        &series.empty,
-        pp,
-    );
-    let consume_all_absent_columns = consume_nested_schema_columns(
-        ctx.sink,
-        &schema,
-        ctx.column_prefix,
-        ctx.name_policy,
-        &series.all_absent,
-        pp,
-    );
+    let consume_empty_columns =
+        consume_nested_schema_columns(ctx.sink, &schema, &output_slot, &series.empty, pp);
+    let consume_all_absent_columns =
+        consume_nested_schema_columns(ctx.sink, &schema, &output_slot, &series.all_absent, pp);
 
     let ty = ctx.ty;
     let columnar_spec_trait = ctx.columnar_spec_trait;
@@ -399,24 +441,14 @@ pub(super) fn materialize_nested_columns(ctx: &NestedMaterializeCtx<'_>) -> Toke
 
 fn nested_column_body(
     sink: &syn::Ident,
-    parent_name: &str,
-    name_policy: &NestedNamePolicy,
+    output_slot: &syn::Ident,
     series_expr: &TokenStream,
 ) -> TokenStream {
-    let col_name = idents::nested_col_name();
-    let prefixed = idents::nested_prefixed_name();
     let inner = idents::nested_inner_series();
-    let named = idents::field_named_series();
-    let output_name = crate::codegen::nested_names::compose_nested_name(
-        name_policy,
-        parent_name,
-        &quote! { #col_name },
-    );
     quote! {
-        let #prefixed = #output_name;
+        let #output_slot = #sink.next_slot()?;
         let #inner = #series_expr;
-        let #named = #inner.with_name(#prefixed.as_str().into());
-        #sink.push(#named.into())?;
+        #output_slot.commit(#inner.into())?;
     }
 }
 
@@ -424,17 +456,14 @@ pub(super) fn consume_nested_batch_columns(
     sink: &syn::Ident,
     columns: &syn::Ident,
     column: &syn::Ident,
-    parent_name: &str,
-    name_policy: &NestedNamePolicy,
+    output_slot: &syn::Ident,
     series_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
-    let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
-    let body = nested_column_body(sink, parent_name, name_policy, series_expr);
+    let body = nested_column_body(sink, output_slot, series_expr);
     quote! {
         for #column in &#columns {
-            let #col_name: &str = #column.name().as_str();
             let #dtype: &#pp::DataType = #column.dtype();
             #body
         }
@@ -444,17 +473,14 @@ pub(super) fn consume_nested_batch_columns(
 pub(super) fn consume_nested_schema_columns(
     sink: &syn::Ident,
     schema: &syn::Ident,
-    parent_name: &str,
-    name_policy: &NestedNamePolicy,
+    output_slot: &syn::Ident,
     series_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
-    let col_name = idents::nested_col_name();
     let dtype = idents::nested_col_dtype();
-    let body = nested_column_body(sink, parent_name, name_policy, series_expr);
+    let body = nested_column_body(sink, output_slot, series_expr);
     quote! {
-        for (#col_name, #dtype) in #schema.iter() {
-            let #col_name: &str = #col_name.as_str();
+        for (_, #dtype) in #schema.iter() {
             let #dtype: &#pp::DataType = #dtype;
             #body
         }

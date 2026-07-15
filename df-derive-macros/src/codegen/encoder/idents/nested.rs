@@ -33,14 +33,6 @@ pub(in crate::codegen) fn nested_take(idx: usize) -> Ident {
     format_ident!("__df_derive_gen_take_{}", idx)
 }
 
-pub(in crate::codegen) fn nested_prefixed_name() -> Ident {
-    format_ident!("__df_derive_prefixed")
-}
-
-pub(in crate::codegen) fn nested_col_name() -> Ident {
-    format_ident!("__df_derive_col_name")
-}
-
 pub(in crate::codegen) fn nested_col_dtype() -> Ident {
     format_ident!("__df_derive_dtype")
 }

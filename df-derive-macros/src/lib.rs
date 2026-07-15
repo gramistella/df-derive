@@ -13,8 +13,10 @@
 //! `decimal128_encode = "..."` may override decimal dispatch. Built-in
 //! dataframe runtime paths cannot be mixed with custom `columnar` paths.
 //! Custom runtimes must expose canonical `RowCursor`, `ColumnarSpec`, and
-//! `ColumnSink` siblings beside the selected `Columnar` path and provide the
-//! checked `EncodedBatch` returned by their blanket `Columnar`
+//! `ColumnSink` siblings beside the selected `Columnar` path. Its public
+//! `next_slot` result must expose `name`, `dtype`, and consuming `commit`
+//! operations. Custom runtimes also provide the checked `EncodedBatch`
+//! returned by their blanket `Columnar`
 //! implementation.
 //! Without runtime overrides, discovery tries `df-derive`, `df-derive-core`,
 //! `paft-utils`, `paft`, then the `crate::core::dataframe` fallback.
@@ -36,7 +38,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// - A hidden `ColumnarSpec` implementation for the annotated type `T`.
 ///   `build_schema` composes its ordered `SchemaRef` without encoding rows;
-///   `encode_columns` writes into a checked `ColumnSink` through the runtime's
+///   `encode_columns` writes through schema-authoritative slots obtained from
+///   a checked `ColumnSink` and the runtime's
 ///   `RowCursor`. The runtime's blanket `Columnar` owns and counts the caller's
 ///   one-shot iterator, validates the resulting `EncodedBatch`, and constructs
 ///   a `DataFrame` only at the public boundary. Blanket `ToDataFrame` supplies

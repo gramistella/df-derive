@@ -32,7 +32,9 @@ impl ColumnarSpec for NoClonePayload {
         I: RowCursor<Item = &'a Self>,
     {
         let vals: Vec<i64> = rows.map(|row| row.value).collect();
-        sink.push(Series::new("value".into(), &vals).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), &vals);
+        slot.commit(column.into())
     }
 }
 

@@ -13,24 +13,24 @@ use crate::codegen::planner::{
     STATIC_TUPLE_REPLAY_LANE_WIDTH, StaticTuplePlan, tuple_group_has_replay_access,
 };
 use crate::ir::{
-    AccessChain, ColumnCommon, LeafShape, NestedLeaf, NestedNamePolicy, NonEmpty,
-    TerminalLeafRoute, TupleField, TupleNode, TupleNodeKind, TupleProjectionStep, VecLayerSpec,
-    VecLayers, WrapperShape,
+    AccessChain, ColumnCommon, LeafShape, NestedLeaf, NonEmpty, TerminalLeafRoute, TupleField,
+    TupleNode, TupleNodeKind, TupleProjectionStep, VecLayerSpec, VecLayers, WrapperShape,
 };
 
 use super::idents::{self, GeneratedIdentScope, LayerIdents};
 use super::nested_columns::SharedListPrefix;
 use super::nested_leaf::{build_nested_encoder, build_nested_encoder_with_prefix};
 use super::shape_walk::{
-    ShapeEmitter, ShapeEmitterParts, shape_assemble_list_stack, shape_freeze_offsets_buffers,
-    shape_freeze_validity_bitmaps, shape_layer_wraps_clone,
+    ListAssembly, ListAssemblySeed, ListAssemblyTarget, ShapeEmitter, ShapeEmitterParts,
+    shape_assemble_list_stack, shape_freeze_offsets_buffers, shape_freeze_validity_bitmaps,
+    shape_layer_wraps_clone,
 };
 use super::{
     BaseCtx, LeafCardinality, LeafCtx, NestedLeafCtx, access_chain_to_option_ref,
     access_chain_to_ref, build_encoder_with_option_receiver, struct_type_tokens,
 };
 use crate::codegen::encode_plan::{
-    EmitOp, EncodePlan, FinishGroup, InitOp, PostScanOp, ScanOp, SeriesNameState, SeriesPlan,
+    EmitOp, EncodePlan, FinishGroup, InitOp, PostScanOp, ScanOp, SeriesPlan,
 };
 
 pub(in crate::codegen) struct TupleFieldEmit {
@@ -98,8 +98,8 @@ struct ReplayTupleAccess(TokenStream);
 struct ReplayedPrimitive {
     init: Vec<InitOp>,
     scan: ScanOp,
-    series: TokenStream,
-    name: String,
+    materialize: TokenStream,
+    output_slot: syn::Ident,
 }
 
 impl InputAccess {
@@ -139,21 +139,20 @@ impl TupleBuilder<'_> {
         wrapper: &WrapperShape,
         replay_input: Option<&ReplayTupleAccess>,
         idx: usize,
-        name: &str,
     ) -> Option<TokenStream> {
         let replay_input = replay_input?;
         if !self.static_tuple_plan.replays_terminal(leaf, wrapper, true) {
             return None;
         }
         let input_rows_exact = idents::input_rows_exact(self.ident_scope);
+        let output_slot = idents::output_slot(self.ident_scope, idx);
         let ctx = LeafCtx {
             base: BaseCtx {
                 access: &replay_input.0,
                 row_capacity: self.row_capacity,
-                sink: self.sink,
                 idx,
-                name,
             },
+            materialization: super::ctx::MaterializationTarget::schema_slot(&output_slot),
             primitive_list_plan: None,
             row_replay: None,
             cardinality: LeafCardinality::InputRows,
@@ -163,7 +162,7 @@ impl TupleBuilder<'_> {
             paths: &self.config.external_paths,
         };
         let encoder = build_encoder_with_option_receiver(leaf, wrapper, &ctx, None);
-        self.collect_replayed_primitive(encoder, name);
+        self.collect_replayed_primitive(encoder);
         Some(TokenStream::new())
     }
 
@@ -340,13 +339,9 @@ impl TupleBuilder<'_> {
 
         match common.leaf_spec().route() {
             TerminalLeafRoute::Primitive(leaf) => {
-                if let Some(push) = self.try_collect_replayed_primitive(
-                    leaf,
-                    &effective_wrapper,
-                    replay_input,
-                    idx,
-                    common.name(),
-                ) {
+                if let Some(push) =
+                    self.try_collect_replayed_primitive(leaf, &effective_wrapper, replay_input, idx)
+                {
                     return push;
                 }
                 self.flush_replay_lane();
@@ -356,13 +351,17 @@ impl TupleBuilder<'_> {
                 .then(|| quote! { (#input_expr).copied() });
                 let access = copied_access.as_ref().unwrap_or(input_expr);
                 let input_rows_exact = idents::input_rows_exact(self.ident_scope);
+                let output_slot = idents::output_slot(self.ident_scope, idx);
                 let ctx = LeafCtx {
                     base: BaseCtx {
                         access,
                         row_capacity: self.row_capacity,
-                        sink: self.sink,
                         idx,
-                        name: common.name(),
+                    },
+                    materialization: if prefix.is_empty() {
+                        super::ctx::MaterializationTarget::schema_slot(&output_slot)
+                    } else {
+                        super::ctx::MaterializationTarget::intermediate(common.name(), &output_slot)
                     },
                     primitive_list_plan: crate::codegen::planner::PrimitiveListPolicy::for_wrapper(
                         leaf,
@@ -390,21 +389,19 @@ impl TupleBuilder<'_> {
                     &ctx,
                     option_receiver,
                 );
-                self.collect_primitive(encoder, common.name(), idx, prefix)
+                self.collect_primitive(encoder, idx, prefix)
             }
             TerminalLeafRoute::Nested(nested) => {
                 self.flush_replay_lane();
                 let ty = nested_type_path(nested);
-                let name_policy = NestedNamePolicy::Field;
                 let ctx = NestedLeafCtx {
                     base: BaseCtx {
                         access: input_expr,
                         row_capacity: self.row_capacity,
-                        sink: self.sink,
                         idx,
-                        name: common.name(),
                     },
-                    name_policy: &name_policy,
+                    ident_scope: self.ident_scope,
+                    sink: self.sink,
                     ty: &ty,
                     columnar_trait: &self.config.runtime.columnar,
                     columnar_spec_trait: &self.config.runtime.columnar_spec,
@@ -433,7 +430,6 @@ impl TupleBuilder<'_> {
     fn collect_primitive(
         &mut self,
         plan: SeriesPlan,
-        name: &str,
         idx: usize,
         prefix: &SharedListStack,
     ) -> TokenStream {
@@ -441,50 +437,41 @@ impl TupleBuilder<'_> {
             init,
             scan,
             post_scan,
-            series,
-            naming: _,
+            materialize,
+            output_slot,
         } = plan;
         self.init.extend(init);
-        if !post_scan.is_empty() {
-            self.finish.push(FinishGroup::inline(post_scan, Vec::new()));
-        }
-        let wrapped = self.wrap_shared_prefix(series, idx, prefix);
+        let wrapped = self.wrap_shared_prefix(materialize, idx, prefix, &output_slot);
         let sink = self.sink;
         let output_series = idents::tuple_output_series(self.ident_scope);
-        let output_named = idents::tuple_output_named(self.ident_scope);
         self.finish.push(FinishGroup::scoped(
-            Vec::new(),
+            post_scan,
             vec![EmitOp::new(quote! {
+                let #output_slot = #sink.next_slot()?;
                 let #output_series = #wrapped;
-                let #output_named = #output_series.with_name(#name.into());
-                #sink.push(#output_named.into())?;
+                #output_slot.commit(#output_series.into())?;
             })],
         ));
         scan.into_tokens()
     }
 
-    fn collect_replayed_primitive(&mut self, plan: SeriesPlan, name: &str) {
+    fn collect_replayed_primitive(&mut self, plan: SeriesPlan) {
         let SeriesPlan {
             init,
             scan,
             post_scan,
-            series,
-            naming,
+            materialize,
+            output_slot,
         } = plan;
         assert!(
             post_scan.is_empty(),
             "a replayed static tuple terminal must have no prior completion work",
         );
-        assert_eq!(
-            naming,
-            SeriesNameState::AlreadyNamed,
-            "a replayed static tuple terminal must be a named scalar series",
-        );
         self.replay_lane.push(ReplayedPrimitive {
             init,
             scan,
-            series,
-            name: name.to_owned(),
+            materialize,
+            output_slot,
         });
         if self.replay_lane.len() == STATIC_TUPLE_REPLAY_LANE_WIDTH {
             self.flush_replay_lane();
@@ -500,19 +487,18 @@ impl TupleBuilder<'_> {
         let replay = self.replay;
         let sink = self.sink;
         let output_series = idents::tuple_output_series(self.ident_scope);
-        let output_named = idents::tuple_output_named(self.ident_scope);
         let mut init = Vec::new();
         let mut scan = Vec::new();
         let mut outputs = Vec::new();
         for terminal in ::core::mem::take(&mut self.replay_lane) {
             init.extend(terminal.init);
             scan.push(terminal.scan);
-            let series = terminal.series;
-            let name = syn::LitStr::new(&terminal.name, proc_macro2::Span::call_site());
+            let materialize = terminal.materialize;
+            let output_slot = terminal.output_slot;
             outputs.push(EmitOp::new(quote! {{
-                let #output_series = #series;
-                let #output_named = #output_series.with_name(#name.into());
-                #sink.push(#output_named.into())?;
+                let #output_slot = #sink.next_slot()?;
+                let #output_series = #materialize;
+                #output_slot.commit(#output_series.into())?;
             }}));
         }
         self.finish.push(FinishGroup::scoped(
@@ -535,12 +521,13 @@ impl TupleBuilder<'_> {
 
     fn wrap_shared_prefix(
         &self,
-        series: TokenStream,
+        materialize: TokenStream,
         idx: usize,
         prefix: &SharedListStack,
+        output_slot: &syn::Ident,
     ) -> TokenStream {
         let Some(shape) = prefix.shape() else {
-            return series;
+            return materialize;
         };
         let pp = self.config.external_paths.prelude();
         let pa_root = self.config.external_paths.polars_arrow_root();
@@ -550,17 +537,20 @@ impl TupleBuilder<'_> {
         let logical_dtype = idents::tuple_logical_dtype(self.ident_scope);
         let wraps = shape_layer_wraps_clone(&shape, &prefix.layers);
         let arr_id_for_layer = |layer| idents::tuple_prefix_list_arr(self.ident_scope, idx, layer);
-        let stack = shape_assemble_list_stack(
-            quote! { #chunk },
-            quote! { #chunk.dtype().clone() },
-            &wraps,
-            quote! { #logical_dtype },
+        let stack = shape_assemble_list_stack(ListAssembly {
+            seed: ListAssemblySeed {
+                payload: quote! { #chunk },
+                arrow_dtype: quote! { #chunk.dtype().clone() },
+                logical_dtype: quote! { #logical_dtype },
+            },
+            layers: &wraps,
+            target: ListAssemblyTarget::schema_slot(output_slot),
             pp,
             pa_root,
-            &arr_id_for_layer,
-        );
+            arr_id_for_layer: &arr_id_for_layer,
+        });
         quote! {{
-            let #inner: #pp::Series = #series;
+            let #inner: #pp::Series = #materialize;
             let #logical_dtype: #pp::DataType = #inner.dtype().clone();
             let #rechunked = #inner.rechunk();
             let #chunk: #pp::ArrayRef = #rechunked.chunks()[0].clone();

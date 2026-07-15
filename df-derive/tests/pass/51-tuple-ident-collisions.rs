@@ -22,6 +22,7 @@ struct TupleIdentCollisions<
     const __df_derive_tuple_series: usize,
     const __df_derive_tuple_named: usize,
     const __df_derive_t_logical_dtype: usize,
+    const __df_derive_slot_0: usize,
 > {
     values: Option<Vec<Option<(Option<(i32, String)>, bool)>>>,
 }
@@ -43,6 +44,16 @@ struct PrimitiveIdentCollisions<
     numbers: Vec<i32>,
     decimals: Vec<Option<rust_decimal::Decimal>>,
     nested: Vec<Vec<i32>>,
+}
+
+#[derive(ToDataFrame)]
+struct NestedPayload {
+    value: i32,
+}
+
+#[derive(ToDataFrame)]
+struct NestedSlotIdentCollision<const __df_derive_slot_0: usize> {
+    nested: NestedPayload,
 }
 
 fn main() {}

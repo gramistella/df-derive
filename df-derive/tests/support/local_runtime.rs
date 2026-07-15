@@ -6,7 +6,9 @@
 pub mod dataframe {
     use std::sync::Arc;
 
-    use polars::prelude::{Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err};
+    use polars::prelude::{
+        Column, DataFrame, DataType, PlSmallStr, PolarsResult, Schema, SchemaRef, polars_err,
+    };
 
     pub struct EncodedBatch {
         height: usize,
@@ -30,6 +32,55 @@ pub mod dataframe {
         producer: &'static str,
     }
 
+    #[must_use]
+    pub struct ColumnSlot<'a> {
+        columns: &'a mut Vec<Column>,
+        producer: &'static str,
+        index: usize,
+        expected_name: &'a PlSmallStr,
+        expected_dtype: &'a DataType,
+    }
+
+    impl ColumnSlot<'_> {
+        #[must_use]
+        #[inline]
+        pub const fn name(&self) -> &PlSmallStr {
+            self.expected_name
+        }
+
+        #[must_use]
+        #[inline]
+        pub const fn dtype(&self) -> &DataType {
+            self.expected_dtype
+        }
+
+        #[inline]
+        pub fn commit(self, column: Column) -> PolarsResult<()> {
+            if column.name() != self.expected_name {
+                return Err(polars_err!(
+                    ComputeError:
+                    "fixture ColumnarSpec for {} returned column `{}` at index {}, expected `{}`",
+                    self.producer,
+                    column.name(),
+                    self.index,
+                    self.expected_name,
+                ));
+            }
+            if column.dtype() != self.expected_dtype {
+                return Err(polars_err!(
+                    ComputeError:
+                    "fixture ColumnarSpec for {} returned dtype {:?} at index {}, expected {:?}",
+                    self.producer,
+                    column.dtype(),
+                    self.index,
+                    self.expected_dtype,
+                ));
+            }
+            self.columns.push(column);
+            Ok(())
+        }
+    }
+
     impl ColumnSink {
         fn new(schema: SchemaRef, producer: &'static str) -> Self {
             let columns = Vec::with_capacity(schema.len());
@@ -40,36 +91,29 @@ pub mod dataframe {
             }
         }
 
-        pub fn push(&mut self, column: Column) -> PolarsResult<()> {
-            let index = self.columns.len();
-            let Some((expected_name, expected_dtype)) = self.schema.get_at_index(index) else {
+        #[inline]
+        pub fn next_slot(&mut self) -> PolarsResult<ColumnSlot<'_>> {
+            let Self {
+                schema,
+                columns,
+                producer,
+            } = self;
+            let index = columns.len();
+            let Some((expected_name, expected_dtype)) = schema.get_at_index(index) else {
                 return Err(polars_err!(
                     ComputeError:
                     "fixture ColumnarSpec for {} exceeded schema width {}",
-                    self.producer,
-                    self.schema.len(),
+                    producer,
+                    schema.len(),
                 ));
             };
-            if column.name() != expected_name {
-                return Err(polars_err!(
-                    ComputeError:
-                    "fixture ColumnarSpec for {} returned column `{}`, expected `{}`",
-                    self.producer,
-                    column.name(),
-                    expected_name,
-                ));
-            }
-            if column.dtype() != expected_dtype {
-                return Err(polars_err!(
-                    ComputeError:
-                    "fixture ColumnarSpec for {} returned dtype {:?}, expected {:?}",
-                    self.producer,
-                    column.dtype(),
-                    expected_dtype,
-                ));
-            }
-            self.columns.push(column);
-            Ok(())
+            Ok(ColumnSlot {
+                columns,
+                producer,
+                index,
+                expected_name,
+                expected_dtype,
+            })
         }
 
         fn finish(self, height: usize) -> PolarsResult<EncodedBatch> {

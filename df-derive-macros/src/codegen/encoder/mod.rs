@@ -19,6 +19,7 @@ mod tuple_group;
 mod vec;
 mod wrapper_access;
 
+pub(in crate::codegen) use ctx::MaterializationTarget;
 pub use ctx::{BaseCtx, LeafCardinality, LeafCtx, RowReplay, build_encoder};
 pub use nested_leaf::{NestedLeafCtx, build_nested_encoder};
 pub use stringy::struct_type_tokens;

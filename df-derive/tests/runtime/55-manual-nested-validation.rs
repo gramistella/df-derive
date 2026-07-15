@@ -51,7 +51,9 @@ impl ColumnarSpec for BadHeightInner {
     {
         let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = (0..=rows.len() as i64).collect();
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())
     }
 }
 
@@ -67,9 +69,10 @@ impl ColumnarSpec for ExtraColumnInner {
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
-        let extras = vec![2_i64; rows.len()];
-        sink.push(Series::new("value".into(), values).into())?;
-        sink.push(Series::new("extra".into(), extras).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())?;
+        sink.next_slot().map(drop)
     }
 }
 
@@ -85,7 +88,9 @@ impl ColumnarSpec for MissingColumnInner {
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())
     }
 }
 
@@ -102,8 +107,10 @@ impl ColumnarSpec for ReorderedColumnsInner {
         let rows: Vec<&Self> = rows.collect();
         let labels = vec![String::from("wrong-order"); rows.len()];
         let values = vec![1_i64; rows.len()];
-        sink.push(Series::new("label".into(), labels).into())?;
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let result = slot.commit(Series::new("label".into(), labels).into());
+        let _ = values;
+        result
     }
 }
 
@@ -119,7 +126,9 @@ impl ColumnarSpec for BadDtypeInner {
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![String::from("wrong-dtype"); rows.len()];
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())
     }
 }
 
@@ -134,7 +143,9 @@ impl ColumnarSpec for PartialConsumptionInner {
         I: RowCursor<Item = &'a Self>,
     {
         let values: Vec<i64> = rows.next().map(|_| 1).into_iter().collect();
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())
     }
 }
 
@@ -151,8 +162,12 @@ impl ColumnarSpec for ValidInner {
         let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = rows.iter().map(|row| row.value).collect();
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
-        sink.push(Series::new("value".into(), values).into())?;
-        sink.push(Series::new("label".into(), labels).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())?;
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), labels);
+        slot.commit(column.into())
     }
 }
 

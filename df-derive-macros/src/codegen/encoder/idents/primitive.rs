@@ -7,6 +7,10 @@ pub(in crate::codegen) fn primitive_buf(idx: usize) -> Ident {
     format_ident!("__df_derive_buf_{}", idx)
 }
 
+pub(in crate::codegen) fn output_slot(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
+    scope.fresh(&format!("__df_derive_slot_{idx}"))
+}
+
 pub(in crate::codegen) fn primitive_validity(idx: usize) -> Ident {
     format_ident!("__df_derive_val_{}", idx)
 }
@@ -17,10 +21,6 @@ pub(in crate::codegen) fn primitive_row_idx(scope: GeneratedIdentScope<'_>, idx:
 
 pub(in crate::codegen) fn primitive_str_scratch(idx: usize) -> Ident {
     format_ident!("__df_derive_str_{}", idx)
-}
-
-pub(in crate::codegen) fn vec_field_series(idx: usize) -> Ident {
-    format_ident!("__df_derive_field_series_{}", idx)
 }
 
 pub(in crate::codegen) fn multi_option_local(idx: usize) -> Ident {

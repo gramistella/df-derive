@@ -126,16 +126,13 @@ pub struct FieldColumn {
 }
 
 impl FieldColumn {
+    #[cfg(test)]
     pub fn name(&self) -> &str {
         self.common.name()
     }
 
     pub const fn leaf_spec(&self) -> &TerminalLeafSpec {
         self.common.leaf_spec()
-    }
-
-    pub const fn nested_name_policy(&self) -> &NestedNamePolicy {
-        self.common.nested_name_policy()
     }
 
     pub const fn source(&self) -> &FieldSource {

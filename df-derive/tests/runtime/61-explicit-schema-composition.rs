@@ -27,7 +27,9 @@ impl ColumnarSpec for CountingInner {
     {
         CHILD_ENCODINGS.fetch_add(1, Ordering::SeqCst);
         let values: Vec<u32> = rows.map(|row| row.value).collect();
-        sink.push(Series::new("value".into(), values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), values);
+        slot.commit(column.into())
     }
 }
 

@@ -121,7 +121,7 @@ pub(super) fn validity_into_option(validity: &syn::Ident, pa_root: &TokenStream)
 }
 
 pub(super) fn string_chunked_series(
-    name: &str,
+    name: &TokenStream,
     arr_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -133,7 +133,7 @@ pub(super) fn string_chunked_series(
 }
 
 pub(super) fn binary_chunked_series(
-    name: &str,
+    name: &TokenStream,
     arr_expr: &TokenStream,
     pp: &TokenStream,
 ) -> TokenStream {
@@ -144,8 +144,16 @@ pub(super) fn binary_chunked_series(
     }
 }
 
-pub(super) fn named_from_buf(name: &str, buf: &syn::Ident, pp: &TokenStream) -> TokenStream {
+pub(super) fn named_from_buf(
+    name: &TokenStream,
+    buf: &syn::Ident,
+    pp: &TokenStream,
+) -> TokenStream {
     quote! { <#pp::Series as #pp::NamedFrom<_, _>>::new(#name.into(), &#buf) }
+}
+
+pub(super) fn output_name(ctx: &LeafCtx<'_>) -> TokenStream {
+    ctx.materialization.output_name()
 }
 
 pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKind) -> LeafArm {
@@ -155,7 +163,7 @@ pub(super) fn numeric_leaf(ctx: &LeafCtx<'_>, kind: NumericKind, arm: LeafArmKin
     let native = &info.native;
     let chunked = &info.chunked;
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
 
@@ -222,14 +230,14 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
 
     match arm {
         LeafArmKind::Bare => {
             let bare_push = quote! { #buf.push_value_ignore_validity((#access).as_str()); };
-            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
+            let bare_series = string_chunked_series(&name, &quote! { #buf.freeze() }, pp);
             LeafArm {
                 decls: vec![mbva_decl(&buf, pa_root, ctx)],
                 push: bare_push,
@@ -254,7 +262,7 @@ pub(super) fn string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let series = string_chunked_series(
-                name,
+                &name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
@@ -279,7 +287,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
 
@@ -287,7 +295,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
         LeafArmKind::Bare => {
             let bytes = bytes_ref_expr(&quote! { &(#access) });
             let bare_push = quote! { #buf.push_value_ignore_validity(#bytes); };
-            let bare_series = binary_chunked_series(name, &quote! { #buf.freeze() }, pp);
+            let bare_series = binary_chunked_series(&name, &quote! { #buf.freeze() }, pp);
             LeafArm {
                 decls: vec![mbva_bytes_decl(&buf, pa_root, ctx)],
                 push: bare_push,
@@ -314,7 +322,7 @@ pub(super) fn binary_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let series = binary_chunked_series(
-                name,
+                &name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
@@ -420,14 +428,14 @@ pub(super) fn bool_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
 
     match arm {
         LeafArmKind::Bare => {
             let bare_push = quote! { #buf.push({ #access }); };
-            let bare_series = named_from_buf(name, &buf, pp);
+            let bare_series = named_from_buf(&name, &buf, pp);
             LeafArm {
                 decls: vec![vec_decl(&buf, &quote! { bool }, ctx)],
                 push: bare_push,
@@ -504,7 +512,7 @@ pub(super) fn decimal_leaf(
     arm: LeafArmKind,
 ) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let int128 = ctx.paths.int128_chunked();
     let p = precision as usize;
@@ -587,13 +595,19 @@ fn mapped_cast_leaf(
     arm: LeafArmKind,
 ) -> LeafArm {
     let buf = idents::primitive_buf(ctx.base.idx);
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let push = mapped_push(ctx, leaf, arm);
-    let dtype = leaf.dtype(ctx.paths);
-    let series_new = named_from_buf(name, &buf, ctx.paths.prelude());
+    let dtype = ctx.materialization.schema_slot_ident().map_or_else(
+        || {
+            let dtype = leaf.dtype(ctx.paths);
+            quote! { &#dtype }
+        },
+        |output_slot| quote! { #output_slot.dtype() },
+    );
+    let series_new = named_from_buf(&name, &buf, ctx.paths.prelude());
     let series_finish = quote! {{
         let mut s = #series_new;
-        s = s.cast(&#dtype)?;
+        s = s.cast(#dtype)?;
         s
     }};
     match arm {
@@ -620,7 +634,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
     let scratch = idents::primitive_str_scratch(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
     let scratch_decl =
@@ -642,7 +656,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
                     #buf.push_value_ignore_validity(#scratch.as_str());
                 }
             };
-            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
+            let bare_series = string_chunked_series(&name, &quote! { #buf.freeze() }, pp);
             LeafArm {
                 decls: vec![mbva_decl(&buf, pa_root, ctx), scratch_decl],
                 push: bare_push,
@@ -676,7 +690,7 @@ pub(super) fn as_string_leaf(ctx: &LeafCtx<'_>, arm: LeafArmKind) -> LeafArm {
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let series = string_chunked_series(
-                name,
+                &name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );
@@ -702,14 +716,14 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
     let buf = idents::primitive_buf(ctx.base.idx);
     let validity = idents::primitive_validity(ctx.base.idx);
     let access = ctx.base.access;
-    let name = ctx.base.name;
+    let name = output_name(ctx);
     let pp = ctx.paths.prelude();
     let pa_root = ctx.paths.polars_arrow_root();
     match arm {
         LeafArmKind::Bare => {
             let bare_value = super::stringy_value_expr(base, access, super::StringyExprKind::Bare);
             let bare_push = quote! { #buf.push_value_ignore_validity(#bare_value); };
-            let bare_series = string_chunked_series(name, &quote! { #buf.freeze() }, pp);
+            let bare_series = string_chunked_series(&name, &quote! { #buf.freeze() }, pp);
             LeafArm {
                 decls: vec![mbva_decl(&buf, pa_root, ctx)],
                 push: bare_push,
@@ -736,7 +750,7 @@ pub(super) fn as_str_leaf(ctx: &LeafCtx<'_>, base: &StringyBase, arm: LeafArmKin
             };
             let valid_opt = validity_into_option(&validity, pa_root);
             let series = string_chunked_series(
-                name,
+                &name,
                 &quote! { #buf.freeze().with_validity(#valid_opt) },
                 pp,
             );

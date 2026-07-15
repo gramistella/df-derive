@@ -67,7 +67,9 @@
 pub mod dataframe {
     use std::sync::Arc;
 
-    use polars::prelude::{Column, DataFrame, PolarsResult, Schema, SchemaRef, polars_err};
+    use polars::prelude::{
+        Column, DataFrame, DataType, PlSmallStr, PolarsResult, Schema, SchemaRef, polars_err,
+    };
 
     #[cfg(feature = "rust_decimal")]
     const DECIMAL128_MAX_SCALE: u32 = 38;
@@ -125,6 +127,71 @@ pub mod dataframe {
         producer: &'static str,
     }
 
+    /// The next schema position reserved for one output column.
+    ///
+    /// A slot borrows its sink until it is either committed or dropped. A
+    /// failed commit leaves the sink at the same schema position, so an
+    /// encoder cannot accidentally skip a declared column.
+    #[doc(hidden)]
+    #[must_use]
+    pub struct ColumnSlot<'a> {
+        columns: &'a mut Vec<Column>,
+        producer: &'static str,
+        index: usize,
+        expected_name: &'a PlSmallStr,
+        expected_dtype: &'a DataType,
+    }
+
+    impl ColumnSlot<'_> {
+        /// Returns the schema-authoritative name for this output position.
+        #[must_use]
+        #[inline]
+        pub const fn name(&self) -> &PlSmallStr {
+            self.expected_name
+        }
+
+        /// Returns the schema-authoritative data type for this output position.
+        #[must_use]
+        #[inline]
+        pub const fn dtype(&self) -> &DataType {
+            self.expected_dtype
+        }
+
+        /// Commits a column after validating it against this schema position.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error for a name or data-type mismatch. The sink is not
+        /// advanced when validation fails.
+        #[inline]
+        pub fn commit(self, column: Column) -> PolarsResult<()> {
+            if column.name() != self.expected_name {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned column `{}` at index {}, expected `{}`",
+                    self.producer,
+                    column.name(),
+                    self.index,
+                    self.expected_name,
+                ));
+            }
+            if column.dtype() != self.expected_dtype {
+                return Err(polars_err!(
+                    ComputeError:
+                    "df-derive: ColumnarSpec for {} returned dtype {:?} for column `{}` at index {}, expected {:?}",
+                    self.producer,
+                    column.dtype(),
+                    column.name(),
+                    self.index,
+                    self.expected_dtype,
+                ));
+            }
+
+            self.columns.push(column);
+            Ok(())
+        }
+    }
+
     impl ColumnSink {
         /// Creates an empty sink for `schema`.
         #[must_use]
@@ -137,50 +204,37 @@ pub mod dataframe {
             }
         }
 
-        /// Appends one column after checking its declared position, name, and
-        /// data type.
+        /// Reserves the next declared output position.
         ///
         /// # Errors
         ///
-        /// Returns an error for an undeclared extra column or a positional
-        /// name/data-type mismatch.
-        pub fn push(&mut self, column: Column) -> PolarsResult<()> {
-            let index = self.columns.len();
-            let Some((expected_name, expected_dtype)) = self.schema.get_at_index(index) else {
+        /// Returns an error when every declared schema position already has a
+        /// committed column.
+        #[inline]
+        pub fn next_slot(&mut self) -> PolarsResult<ColumnSlot<'_>> {
+            let Self {
+                schema,
+                columns,
+                producer,
+            } = self;
+            let producer = *producer;
+            let index = columns.len();
+            let Some((expected_name, expected_dtype)) = schema.get_at_index(index) else {
                 return Err(polars_err!(
                     ComputeError:
-                    "df-derive: ColumnarSpec for {} returned column `{}` at index {}, exceeding schema width {}",
-                    self.producer,
-                    column.name(),
+                    "df-derive: ColumnarSpec for {} requested column slot at index {}, exceeding schema width {}",
+                    producer,
                     index,
-                    self.schema.len(),
+                    schema.len(),
                 ));
             };
-
-            if column.name() != expected_name {
-                return Err(polars_err!(
-                    ComputeError:
-                    "df-derive: ColumnarSpec for {} returned column `{}` at index {}, expected `{}`",
-                    self.producer,
-                    column.name(),
-                    index,
-                    expected_name,
-                ));
-            }
-            if column.dtype() != expected_dtype {
-                return Err(polars_err!(
-                    ComputeError:
-                    "df-derive: ColumnarSpec for {} returned dtype {:?} for column `{}` at index {}, expected {:?}",
-                    self.producer,
-                    column.dtype(),
-                    column.name(),
-                    index,
-                    expected_dtype,
-                ));
-            }
-
-            self.columns.push(column);
-            Ok(())
+            Ok(ColumnSlot {
+                columns,
+                producer,
+                index,
+                expected_name,
+                expected_dtype,
+            })
         }
 
         /// Finalizes the sink against the actual number of yielded rows.
@@ -514,8 +568,10 @@ pub mod dataframe {
     ///
     /// `build_schema` must be value-independent and stable across calls.
     /// `encode_columns` must always emit exactly that ordered schema. The
-    /// checked boundary enforces width, order, names, data types, and actual
-    /// row height for each individual batch; it cannot prove that separate
+    /// `encode_columns` must acquire each schema position through
+    /// [`ColumnSink::next_slot`] and commit it through [`ColumnSlot::commit`].
+    /// The checked boundary enforces width, order, names, data types, and
+    /// actual row height for each individual batch; it cannot prove that separate
     /// calls to `build_schema` return the same declaration.
     #[doc(hidden)]
     pub trait ColumnarSpec: Sized {
@@ -862,7 +918,9 @@ pub mod dataframe {
                 I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<i64> = rows.map(|row| row.0).collect();
-                sink.push(Series::new("value".into(), values).into())
+                let slot = sink.next_slot()?;
+                let column = Series::new(slot.name().clone(), values);
+                slot.commit(column.into())
             }
         }
 
@@ -879,7 +937,9 @@ pub mod dataframe {
                 I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<i64> = rows.next().map(|row| row.0).into_iter().collect();
-                sink.push(Series::new("value".into(), values).into())
+                let slot = sink.next_slot()?;
+                let column = Series::new(slot.name().clone(), values);
+                slot.commit(column.into())
             }
         }
 
@@ -912,7 +972,9 @@ pub mod dataframe {
                 I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<&str> = rows.map(|row| row.0).collect();
-                sink.push(Series::new("value".into(), values).into())
+                let slot = sink.next_slot()?;
+                let column = Series::new(slot.name().clone(), values);
+                slot.commit(column.into())
             }
         }
 
@@ -1033,30 +1095,63 @@ pub mod dataframe {
         }
 
         #[test]
-        fn sink_rejects_extra_reordered_mistyped_and_missing_columns() -> PolarsResult<()> {
+        fn sink_slots_reject_extra_reordered_mistyped_and_missing_columns() -> PolarsResult<()> {
             let expected = schema([("value", DataType::Int64)]);
 
             let mut reordered = ColumnSink::new(expected.clone(), "Reordered");
+            let slot = reordered.next_slot()?;
             assert_error_contains(
-                reordered.push(Series::new("other".into(), [1_i64]).into()),
+                slot.commit(Series::new("other".into(), [1_i64]).into()),
                 "returned column `other`",
             );
+            assert_eq!(reordered.columns.len(), 0);
 
             let mut mistyped = ColumnSink::new(expected.clone(), "Mistyped");
+            let slot = mistyped.next_slot()?;
             assert_error_contains(
-                mistyped.push(Series::new("value".into(), ["wrong"]).into()),
+                slot.commit(Series::new("value".into(), ["wrong"]).into()),
                 "returned dtype",
             );
+            assert_eq!(mistyped.columns.len(), 0);
 
             let mut extra = ColumnSink::new(expected.clone(), "Extra");
-            extra.push(Series::new("value".into(), [1_i64]).into())?;
-            assert_error_contains(
-                extra.push(Series::new("extra".into(), [2_i64]).into()),
-                "schema width 1",
-            );
+            let slot = extra.next_slot()?;
+            assert_eq!(slot.name().as_str(), "value");
+            assert_eq!(slot.dtype(), &DataType::Int64);
+            slot.commit(Series::new("value".into(), [1_i64]).into())?;
+            assert_error_contains(extra.next_slot(), "schema width 1");
 
             let missing = ColumnSink::new(expected, "Missing");
             assert_error_contains(missing.finish(1), "returned schema width 0");
+            Ok(())
+        }
+
+        #[test]
+        fn failed_slot_commit_can_retry_the_same_schema_position() -> PolarsResult<()> {
+            let expected = schema([("value", DataType::Int64)]);
+            let mut sink = ColumnSink::new(expected, "Retry");
+
+            let dropped = sink.next_slot()?;
+            assert_eq!(dropped.name().as_str(), "value");
+            drop(dropped);
+
+            let slot = sink.next_slot()?;
+            assert_error_contains(
+                slot.commit(Series::new("wrong".into(), [1_i64]).into()),
+                "expected `value`",
+            );
+
+            let slot = sink.next_slot()?;
+            assert_error_contains(
+                slot.commit(Series::new("value".into(), ["wrong dtype"]).into()),
+                "returned dtype",
+            );
+
+            let slot = sink.next_slot()?;
+            assert_eq!(slot.name().as_str(), "value");
+            let column = Series::new(slot.name().clone(), [1_i64]);
+            slot.commit(column.into())?;
+            sink.finish(1)?;
             Ok(())
         }
 

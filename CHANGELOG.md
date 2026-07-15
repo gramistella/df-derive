@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Breaking for manual and custom runtimes**: `ColumnSink::push` is replaced
+  by `ColumnSink::next_slot` and the returned `ColumnSlot::{name, dtype,
+  commit}` contract. Generated encoders now take authoritative output metadata
+  from the schema position they are about to commit, while a failed or dropped
+  slot leaves that position available for retry.
 - **Breaking**: `Columnar::columnar_to_dataframe(&[Self])` and
   `Columnar::columnar_from_refs(&[&Self])` were replaced by
   `Columnar::encode`, which accepts any `IntoIterator<Item = &Self>`.

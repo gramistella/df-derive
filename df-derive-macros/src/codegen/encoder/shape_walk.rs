@@ -276,6 +276,47 @@ pub(super) struct LayerWrap<'a> {
     pub freeze_decl: TokenStream,
 }
 
+#[derive(Clone)]
+pub(super) enum ListAssemblyTarget {
+    SchemaSlot(syn::Ident),
+    Intermediate,
+}
+
+impl ListAssemblyTarget {
+    pub(super) fn schema_slot(output_slot: &syn::Ident) -> Self {
+        Self::SchemaSlot(output_slot.clone())
+    }
+
+    pub(super) const fn intermediate() -> Self {
+        Self::Intermediate
+    }
+}
+
+impl From<&super::ctx::MaterializationTarget> for ListAssemblyTarget {
+    fn from(target: &super::ctx::MaterializationTarget) -> Self {
+        target
+            .schema_slot_ident()
+            .map_or(Self::Intermediate, |output_slot| {
+                Self::schema_slot(output_slot)
+            })
+    }
+}
+
+pub(super) struct ListAssemblySeed {
+    pub payload: TokenStream,
+    pub arrow_dtype: TokenStream,
+    pub logical_dtype: TokenStream,
+}
+
+pub(super) struct ListAssembly<'a, 'layer> {
+    pub seed: ListAssemblySeed,
+    pub layers: &'a NonEmpty<LayerWrap<'layer>>,
+    pub target: ListAssemblyTarget,
+    pub pp: &'a TokenStream,
+    pub pa_root: &'a TokenStream,
+    pub arr_id_for_layer: &'a dyn Fn(usize) -> syn::Ident,
+}
+
 pub(super) fn shape_freeze_validity_bitmaps(
     shape: &VecLayers,
     layers: &[LayerIdents],
@@ -373,15 +414,20 @@ pub(super) fn freeze_validity_bitmap(
     }
 }
 
-pub(super) fn shape_assemble_list_stack(
-    seed: TokenStream,
-    seed_dtype: TokenStream,
-    layers: &NonEmpty<LayerWrap<'_>>,
-    leaf_logical_dtype: TokenStream,
-    pp: &TokenStream,
-    pa_root: &TokenStream,
-    arr_id_for_layer: &dyn Fn(usize) -> syn::Ident,
-) -> TokenStream {
+pub(super) fn shape_assemble_list_stack(assembly: ListAssembly<'_, '_>) -> TokenStream {
+    let ListAssembly {
+        seed:
+            ListAssemblySeed {
+                payload: seed,
+                arrow_dtype: seed_dtype,
+                logical_dtype: leaf_logical_dtype,
+            },
+        layers,
+        target,
+        pp,
+        pa_root,
+        arr_id_for_layer,
+    } = assembly;
     let depth = layers.len();
     let mut block: Vec<TokenStream> = Vec::with_capacity(depth * 2);
     let mut prev_payload = seed;
@@ -417,13 +463,23 @@ pub(super) fn shape_assemble_list_stack(
         leaf_logical_dtype,
         depth.saturating_sub(1),
     );
+    let (output_name, output_dtype) = match target {
+        ListAssemblyTarget::SchemaSlot(output_slot) => (
+            quote! { #output_slot.name().clone() },
+            quote! { #output_slot.dtype() },
+        ),
+        ListAssemblyTarget::Intermediate => (
+            quote! { "".into() },
+            quote! { &#pp::DataType::List(::std::boxed::Box::new(#helper_logical)) },
+        ),
+    };
     let outer = arr_id_for_layer(0);
     quote! {
         #(#block)*
         #pp::Series::from_chunk_and_dtype(
-            "".into(),
+            #output_name,
             ::std::boxed::Box::new(#outer) as #pp::ArrayRef,
-            &#pp::DataType::List(::std::boxed::Box::new(#helper_logical)),
+            #output_dtype,
         )?
     }
 }

@@ -119,7 +119,7 @@ impl ColumnarSpec for T {
 ```
 
 `build_schema` composes names and dtypes directly; schema inspection no longer
-encodes an empty batch. `encode_columns` writes through a schema-bound sink.
+encodes an empty batch. `encode_columns` writes through schema-bound slots.
 `RowCursor` is a hidden unsafe sibling runtime trait extending `Iterator` with
 exact yielded-row counting and replay operations. Each generated
 `ColumnarSpec` advertises whether it requires row replay. The blanket general-
@@ -129,8 +129,10 @@ encoders enable capture before consuming their first row. Slice-backed and
 nested reference-slice cursors replay their yielded prefix directly without
 another row-reference buffer. The runtime blanket APIs own the caller's input:
 `Columnar::encode` counts rows from a general one-shot iterator, while the
-slice extension forwards the slice's known length directly. `ColumnSink` then
-checks width, ordered names, dtypes, and every column height before producing
+slice extension forwards the slice's known length directly. Each
+`ColumnSink::next_slot` exposes the authoritative output name and dtype, and
+`ColumnSlot::commit` checks the materialized column before advancing. The sink
+then checks width and every column height before producing
 an `EncodedBatch`. Public conversion constructs the outer `DataFrame`; nested
 encoders consume a child batch's validated columns directly without
 constructing and dismantling a child frame. `ToDataFrame` and the slice
@@ -187,17 +189,20 @@ impl ColumnarSpec for Trade {
             size.push(item.size);
         }
 
+        let slot = sink.next_slot()?;
         let s = IntoSeries::into_series(StringChunked::with_chunk(
-            "symbol".into(),
+            slot.name().clone(),
             symbol.freeze(),
         ));
-        sink.push(s.into())?;
+        slot.commit(s.into())?;
 
-        let s = IntoSeries::into_series(Float64Chunked::from_vec("price".into(), price));
-        sink.push(s.into())?;
+        let slot = sink.next_slot()?;
+        let s = IntoSeries::into_series(Float64Chunked::from_vec(slot.name().clone(), price));
+        slot.commit(s.into())?;
 
-        let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
-        sink.push(s.into())
+        let slot = sink.next_slot()?;
+        let s = IntoSeries::into_series(UInt64Chunked::from_vec(slot.name().clone(), size));
+        slot.commit(s.into())
     }
 }
 ```
@@ -474,7 +479,8 @@ Scalar-only numeric/bool derives do not need `polars-arrow`.
 
 A custom trait identity must own its checked boundary: compatible
 `RowCursor` and `ColumnarSpec` traits; blanket `Columnar` and `ToDataFrame`
-traits; a `ColumnSink` whose only generated-code operation is public `push`;
+traits; a `ColumnSink` with public `next_slot`; a returned `ColumnSlot` with
+public `name`, `dtype`, and consuming `commit` operations;
 and an `EncodedBatch` whose generated-code operation is public
 `into_columns`. `Columnar` must provide the general iterator boundary plus the
 specialized slice and reference-slice boundaries used by generated nested

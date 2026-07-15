@@ -214,7 +214,9 @@ impl ColumnarSpec for f64 {
         I: RowCursor<Item = &'a Self>,
     {
         let values: Vec<Self> = rows.copied().collect();
-        sink.push(Series::new("value".into(), &values).into())
+        let slot = sink.next_slot()?;
+        let column = Series::new(slot.name().clone(), &values);
+        slot.commit(column.into())
     }
 }
 

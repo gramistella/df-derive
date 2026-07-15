@@ -7,10 +7,9 @@
 use proc_macro2::TokenStream;
 
 use crate::codegen::planner::PrimitiveListPlan;
-use crate::ir::NestedNamePolicy;
-
 pub(super) struct PrimitiveListCommon {
     pub(super) row_capacity: syn::Ident,
+    pub(super) materialization: super::ctx::MaterializationTarget,
     pub(super) storage_decls: TokenStream,
     pub(super) leaf_arr_expr: TokenStream,
     pub(super) extra_imports: TokenStream,
@@ -76,11 +75,10 @@ impl
 #[derive(Clone, Copy)]
 pub(super) struct CollectThenBulk<'a> {
     pub row_capacity: &'a syn::Ident,
+    pub ident_scope: super::idents::GeneratedIdentScope<'a>,
     pub sink: &'a syn::Ident,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a syn::Path,
     pub columnar_spec_trait: &'a syn::Path,
-    pub name: &'a str,
-    pub name_policy: &'a NestedNamePolicy,
     pub idx: usize,
 }

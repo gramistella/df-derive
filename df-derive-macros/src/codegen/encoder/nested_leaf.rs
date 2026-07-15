@@ -20,7 +20,6 @@
 //! materialization phase renames each validated inner column for the parent
 //! path and writes it through the call site's `ColumnSink`.
 
-use crate::ir::NestedNamePolicy;
 use crate::ir::WrapperShape;
 use proc_macro2::TokenStream;
 
@@ -38,7 +37,8 @@ use crate::codegen::external_paths::ExternalPaths;
 /// `<#ty as #columnar_spec_trait>::build_schema`).
 pub struct NestedLeafCtx<'a> {
     pub base: BaseCtx<'a>,
-    pub name_policy: &'a NestedNamePolicy,
+    pub ident_scope: super::idents::GeneratedIdentScope<'a>,
+    pub sink: &'a syn::Ident,
     pub ty: &'a TokenStream,
     pub columnar_trait: &'a syn::Path,
     pub columnar_spec_trait: &'a syn::Path,
@@ -49,12 +49,11 @@ impl<'a> From<&NestedLeafCtx<'a>> for CollectThenBulk<'a> {
     fn from(ctx: &NestedLeafCtx<'a>) -> Self {
         Self {
             row_capacity: ctx.base.row_capacity,
-            sink: ctx.base.sink,
+            ident_scope: ctx.ident_scope,
+            sink: ctx.sink,
             ty: ctx.ty,
             columnar_trait: ctx.columnar_trait,
             columnar_spec_trait: ctx.columnar_spec_trait,
-            name: ctx.base.name,
-            name_policy: ctx.name_policy,
             idx: ctx.base.idx,
         }
     }

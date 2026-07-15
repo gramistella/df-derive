@@ -61,10 +61,9 @@ pub(super) fn wrap_option_access_chain_primitive(
         base: BaseCtx {
             access: &local_access,
             row_capacity: ctx.base.row_capacity,
-            sink: ctx.base.sink,
             idx: ctx.base.idx,
-            name: ctx.base.name,
         },
+        materialization: ctx.materialization.clone(),
         primitive_list_plan: ctx.primitive_list_plan,
         row_replay: ctx.row_replay,
         cardinality: ctx.cardinality,
@@ -91,6 +90,7 @@ pub(super) fn wrap_option_access_chain_primitive(
             #push
         },
         series,
+        ctx.materialization.output_slot().clone(),
     )
 }
 
@@ -107,7 +107,7 @@ fn wrap_option_access_chain_as_str(
     access: &AccessChain,
 ) -> SeriesPlan {
     let buf = idents::primitive_buf(ctx.base.idx);
-    let name = ctx.base.name;
+    let output_name = super::leaf::output_name(ctx);
     let orig_access = ctx.base.access;
     let collapsed_ref = access_chain_to_ref(&quote! { &(#orig_access) }, access).expr;
     let value = super::stringy_value_expr(
@@ -116,10 +116,11 @@ fn wrap_option_access_chain_as_str(
         super::StringyExprKind::CollapsedOption,
     );
     let push = quote! { #buf.push(#value); };
-    let finish_series = named_from_buf(name, &buf, ctx.paths.prelude());
+    let finish_series = named_from_buf(&output_name, &buf, ctx.paths.prelude());
     SeriesPlan::leaf(
         vec![vec_decl(&buf, &quote! { ::std::option::Option<&str> }, ctx)],
         push,
         finish_series,
+        ctx.materialization.output_slot().clone(),
     )
 }

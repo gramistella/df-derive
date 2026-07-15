@@ -58,10 +58,6 @@ pub(in crate::codegen) fn tuple_output_series(scope: GeneratedIdentScope<'_>) ->
     scope.fresh("__df_derive_tuple_series")
 }
 
-pub(in crate::codegen) fn tuple_output_named(scope: GeneratedIdentScope<'_>) -> Ident {
-    scope.fresh("__df_derive_tuple_named")
-}
-
 pub(in crate::codegen) fn tuple_logical_dtype(scope: GeneratedIdentScope<'_>) -> Ident {
     scope.fresh("__df_derive_t_logical_dtype")
 }

@@ -17,7 +17,7 @@ use crate::bench_support::configure_criterion;
 use crate::tuple_replay_boundary::{
     make_tuple_replay_boundary, make_tuple_replay_boundary_minus_one,
 };
-use df_derive::dataframe::ToDataFrameVec;
+use df_derive::dataframe::{Columnar, ToDataFrameVec};
 
 const N_ROWS: usize = 100_000;
 
@@ -248,8 +248,17 @@ fn bench_cost_model_passes(c: &mut Criterion) {
     group.bench_function("flat_32_scalar_fields", |b| {
         b.iter(|| std::hint::black_box(&flat).to_dataframe().unwrap());
     });
+    group.bench_function("flat_32_scalar_fields_streaming", |b| {
+        b.iter(|| <FlatThirtyTwo as Columnar>::encode(std::hint::black_box(flat.iter())).unwrap());
+    });
     group.bench_function("tuple_8x4_scalar_elements", |b| {
         b.iter(|| std::hint::black_box(&tuple_heavy).to_dataframe().unwrap());
+    });
+    group.bench_function("tuple_8x4_scalar_elements_streaming", |b| {
+        b.iter(|| {
+            <TupleEightByFour as Columnar>::encode(std::hint::black_box(tuple_heavy.iter()))
+                .unwrap()
+        });
     });
     group.bench_function("tuple_replay_boundary_minus_one", |b| {
         b.iter(|| {

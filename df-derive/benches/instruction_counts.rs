@@ -10,7 +10,7 @@ use crate::tuple_replay_boundary::{
     TupleReplayBoundary, TupleReplayBoundaryMinusOne, make_tuple_replay_boundary,
     make_tuple_replay_boundary_minus_one,
 };
-use df_derive::dataframe::ToDataFrameVec;
+use df_derive::dataframe::{Columnar, ToDataFrameVec};
 
 const N_NUMERIC_ROWS: usize = 10_000;
 const N_NESTED_USERS: usize = 5_000;
@@ -178,6 +178,18 @@ where
 
     // Criterion keeps benchmark fixtures alive outside each iteration; do the
     // same here so the one-shot count is focused on conversion, not fixture drop.
+    std::mem::forget(rows);
+
+    shape
+}
+
+fn convert_rows_streaming<T>(rows: Vec<T>) -> (usize, usize)
+where
+    T: Columnar,
+{
+    let df = <T as Columnar>::encode(black_box(rows.iter())).unwrap();
+    let shape = black_box(df).shape();
+
     std::mem::forget(rows);
 
     shape
@@ -534,6 +546,12 @@ fn bench_flat_scalar_control(rows: Vec<FlatScalarControl>) -> (usize, usize) {
 }
 
 #[library_benchmark]
+#[bench::flat_scalar_control_streaming(generate_flat_scalar_control())]
+fn bench_flat_scalar_control_streaming(rows: Vec<FlatScalarControl>) -> (usize, usize) {
+    convert_rows_streaming(rows)
+}
+
+#[library_benchmark]
 #[bench::tuple_scalar_grouped(generate_tuple_scalar_rows())]
 fn bench_tuple_scalar_grouped(rows: Vec<TupleScalarRow>) -> (usize, usize) {
     convert_rows(rows)
@@ -555,6 +573,12 @@ fn bench_tuple_replay_boundary(rows: Vec<TupleReplayBoundary>) -> (usize, usize)
 #[bench::wide_tuple_scalar_replayed(generate_wide_tuple_scalar_rows())]
 fn bench_wide_tuple_scalar_replayed(rows: Vec<WideTupleScalarRow>) -> (usize, usize) {
     convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::wide_tuple_scalar_replayed_streaming(generate_wide_tuple_scalar_rows())]
+fn bench_wide_tuple_scalar_replayed_streaming(rows: Vec<WideTupleScalarRow>) -> (usize, usize) {
+    convert_rows_streaming(rows)
 }
 
 #[library_benchmark]
@@ -606,6 +630,12 @@ fn bench_vec_vec_i32(rows: Vec<VecVecI32Row>) -> (usize, usize) {
 }
 
 #[library_benchmark]
+#[bench::vec_vec_i32_streaming(generate_vec_vec_i32_rows())]
+fn bench_vec_vec_i32_streaming(rows: Vec<VecVecI32Row>) -> (usize, usize) {
+    convert_rows_streaming(rows)
+}
+
+#[library_benchmark]
 #[bench::vec_vec_opt_i32(generate_vec_vec_opt_i32_rows())]
 fn bench_vec_vec_opt_i32(rows: Vec<VecVecOptI32Row>) -> (usize, usize) {
     convert_rows(rows)
@@ -621,10 +651,12 @@ library_benchmark_group!(
         bench_as_binary_tiny,
         bench_as_binary_medium,
         bench_flat_scalar_control,
+        bench_flat_scalar_control_streaming,
         bench_tuple_scalar_grouped,
         bench_tuple_replay_boundary_minus_one,
         bench_tuple_replay_boundary,
         bench_wide_tuple_scalar_replayed,
+        bench_wide_tuple_scalar_replayed_streaming,
         bench_nested_struct_list_control,
         bench_tuple_list_grouped
     ]
@@ -639,6 +671,7 @@ library_benchmark_group!(
         bench_vec_opt_i32,
         bench_vec_vec_bool,
         bench_vec_vec_i32,
+        bench_vec_vec_i32_streaming,
         bench_vec_vec_opt_i32
     ]
 );

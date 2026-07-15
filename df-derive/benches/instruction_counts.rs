@@ -123,6 +123,11 @@ struct NestedStructListControl {
 }
 
 #[derive(ToDataFrame)]
+struct NestedTupleReplayBoundary {
+    nested: TupleReplayBoundary,
+}
+
+#[derive(ToDataFrame)]
 struct TupleListRow {
     items: Vec<(i64, i64, i64, i64)>,
 }
@@ -381,6 +386,13 @@ fn generate_nested_struct_list_control() -> Vec<NestedStructListControl> {
         .collect()
 }
 
+fn generate_nested_tuple_replay_boundary() -> Vec<NestedTupleReplayBoundary> {
+    make_tuple_replay_boundary(N_NUMERIC_ROWS)
+        .into_iter()
+        .map(|nested| NestedTupleReplayBoundary { nested })
+        .collect()
+}
+
 fn generate_tuple_list_rows() -> Vec<TupleListRow> {
     (0..N_NUMERIC_ROWS)
         .map(|row| TupleListRow {
@@ -588,6 +600,12 @@ fn bench_nested_struct_list_control(rows: Vec<NestedStructListControl>) -> (usiz
 }
 
 #[library_benchmark]
+#[bench::nested_tuple_replay_boundary(generate_nested_tuple_replay_boundary())]
+fn bench_nested_tuple_replay_boundary(rows: Vec<NestedTupleReplayBoundary>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
 #[bench::tuple_list_grouped(generate_tuple_list_rows())]
 fn bench_tuple_list_grouped(rows: Vec<TupleListRow>) -> (usize, usize) {
     convert_rows(rows)
@@ -658,6 +676,7 @@ library_benchmark_group!(
         bench_wide_tuple_scalar_replayed,
         bench_wide_tuple_scalar_replayed_streaming,
         bench_nested_struct_list_control,
+        bench_nested_tuple_replay_boundary,
         bench_tuple_list_grouped
     ]
 );

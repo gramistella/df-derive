@@ -15,7 +15,7 @@ mod bench_support;
 mod tuple_replay_boundary;
 use crate::bench_support::configure_criterion;
 use crate::tuple_replay_boundary::{
-    make_tuple_replay_boundary, make_tuple_replay_boundary_minus_one,
+    TupleReplayBoundary, make_tuple_replay_boundary, make_tuple_replay_boundary_minus_one,
 };
 use df_derive::dataframe::{Columnar, ToDataFrameVec};
 
@@ -27,6 +27,11 @@ struct Quad {
     b: i64,
     c: i64,
     d: i64,
+}
+
+#[derive(ToDataFrame)]
+struct NestedTupleReplayBoundary {
+    nested: TupleReplayBoundary,
 }
 
 #[derive(ToDataFrame, Clone)]
@@ -236,6 +241,13 @@ fn make_nested_heavy() -> Vec<NestedEightByFour> {
     (0..N_ROWS).map(nested_row).collect()
 }
 
+fn make_nested_tuple_replay() -> Vec<NestedTupleReplayBoundary> {
+    make_tuple_replay_boundary(N_ROWS)
+        .into_iter()
+        .map(|nested| NestedTupleReplayBoundary { nested })
+        .collect()
+}
+
 fn bench_cost_model_passes(c: &mut Criterion) {
     let flat = make_flat();
     let tuple_heavy = make_tuple_heavy();
@@ -243,6 +255,7 @@ fn bench_cost_model_passes(c: &mut Criterion) {
     let tuple_replay_boundary = make_tuple_replay_boundary(N_ROWS);
     let mixed_tuple_heavy = make_mixed_tuple_heavy();
     let nested_heavy = make_nested_heavy();
+    let nested_tuple_replay = make_nested_tuple_replay();
 
     let mut group = c.benchmark_group("cost_model_passes");
     group.bench_function("flat_32_scalar_fields", |b| {
@@ -283,6 +296,13 @@ fn bench_cost_model_passes(c: &mut Criterion) {
     });
     group.bench_function("nested_8x4_scalar_fields", |b| {
         b.iter(|| std::hint::black_box(&nested_heavy).to_dataframe().unwrap());
+    });
+    group.bench_function("nested_tuple_replay_boundary", |b| {
+        b.iter(|| {
+            std::hint::black_box(&nested_tuple_replay)
+                .to_dataframe()
+                .unwrap()
+        });
     });
     group.finish();
 }

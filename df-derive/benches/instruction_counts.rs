@@ -3,9 +3,16 @@ use std::hint::black_box;
 use df_derive::ToDataFrame;
 use gungraun::prelude::*;
 
+#[path = "support/scalar_policy_boundaries.rs"]
+mod scalar_policy_boundaries;
 #[path = "support/tuple_replay_boundary.rs"]
 mod tuple_replay_boundary;
 
+use crate::scalar_policy_boundaries::{
+    FlatThirtyTwoScalarFields, SeventeenScalarTupleTerminals, SixteenOneElementTupleFields,
+    make_flat_thirty_two_scalar_fields, make_seventeen_scalar_tuple_terminals,
+    make_sixteen_one_element_tuple_fields,
+};
 use crate::tuple_replay_boundary::{
     TupleReplayBoundary, TupleReplayBoundaryMinusOne, make_tuple_replay_boundary,
     make_tuple_replay_boundary_minus_one,
@@ -564,6 +571,20 @@ fn bench_flat_scalar_control_streaming(rows: Vec<FlatScalarControl>) -> (usize, 
 }
 
 #[library_benchmark]
+#[bench::flat_32_named_scalar_fields(make_flat_thirty_two_scalar_fields(N_NUMERIC_ROWS))]
+fn bench_flat_32_named_scalar_fields(rows: Vec<FlatThirtyTwoScalarFields>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::flat_32_named_scalar_fields_streaming(make_flat_thirty_two_scalar_fields(N_NUMERIC_ROWS))]
+fn bench_flat_32_named_scalar_fields_streaming(
+    rows: Vec<FlatThirtyTwoScalarFields>,
+) -> (usize, usize) {
+    convert_rows_streaming(rows)
+}
+
+#[library_benchmark]
 #[bench::tuple_scalar_grouped(generate_tuple_scalar_rows())]
 fn bench_tuple_scalar_grouped(rows: Vec<TupleScalarRow>) -> (usize, usize) {
     convert_rows(rows)
@@ -579,6 +600,38 @@ fn bench_tuple_replay_boundary_minus_one(rows: Vec<TupleReplayBoundaryMinusOne>)
 #[bench::tuple_replay_boundary(make_tuple_replay_boundary(N_NUMERIC_ROWS))]
 fn bench_tuple_replay_boundary(rows: Vec<TupleReplayBoundary>) -> (usize, usize) {
     convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_16_one_element_fields(make_sixteen_one_element_tuple_fields(N_NUMERIC_ROWS))]
+fn bench_tuple_16_one_element_fields(rows: Vec<SixteenOneElementTupleFields>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_16_one_element_fields_streaming(make_sixteen_one_element_tuple_fields(
+    N_NUMERIC_ROWS
+))]
+fn bench_tuple_16_one_element_fields_streaming(
+    rows: Vec<SixteenOneElementTupleFields>,
+) -> (usize, usize) {
+    convert_rows_streaming(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_17_scalar_terminals(make_seventeen_scalar_tuple_terminals(N_NUMERIC_ROWS))]
+fn bench_tuple_17_scalar_terminals(rows: Vec<SeventeenScalarTupleTerminals>) -> (usize, usize) {
+    convert_rows(rows)
+}
+
+#[library_benchmark]
+#[bench::tuple_17_scalar_terminals_streaming(make_seventeen_scalar_tuple_terminals(
+    N_NUMERIC_ROWS
+))]
+fn bench_tuple_17_scalar_terminals_streaming(
+    rows: Vec<SeventeenScalarTupleTerminals>,
+) -> (usize, usize) {
+    convert_rows_streaming(rows)
 }
 
 #[library_benchmark]
@@ -670,9 +723,15 @@ library_benchmark_group!(
         bench_as_binary_medium,
         bench_flat_scalar_control,
         bench_flat_scalar_control_streaming,
+        bench_flat_32_named_scalar_fields,
+        bench_flat_32_named_scalar_fields_streaming,
         bench_tuple_scalar_grouped,
         bench_tuple_replay_boundary_minus_one,
         bench_tuple_replay_boundary,
+        bench_tuple_16_one_element_fields,
+        bench_tuple_16_one_element_fields_streaming,
+        bench_tuple_17_scalar_terminals,
+        bench_tuple_17_scalar_terminals_streaming,
         bench_wide_tuple_scalar_replayed,
         bench_wide_tuple_scalar_replayed_streaming,
         bench_nested_struct_list_control,

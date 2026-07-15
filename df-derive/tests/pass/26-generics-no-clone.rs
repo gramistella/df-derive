@@ -6,7 +6,9 @@
 // macro can be applied to a struct whose generic argument is not `Clone`.
 
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{ColumnSink, ColumnarSpec, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{
+    ColumnSink, ColumnarSpec, RowCursor, ToDataFrame, ToDataFrameVec,
+};
 use polars::prelude::*;
 
 // Nested-path payload: implements the low-level schema/column specification,
@@ -27,7 +29,7 @@ impl ColumnarSpec for NoClonePayload {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let vals: Vec<i64> = rows.map(|row| row.value).collect();
         sink.push(Series::new("value".into(), &vals).into())

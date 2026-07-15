@@ -672,7 +672,7 @@ fn lower_primitive_list(
                     ctx.base.idx,
                 ),
                 row: row_replay.row.clone(),
-                replay_rows: row_replay.rows.clone(),
+                replay: (*row_replay.replay).clone(),
                 write_leaf,
             },
             Some(_) | None => PrimitiveListSchedule::DeferredSegments {

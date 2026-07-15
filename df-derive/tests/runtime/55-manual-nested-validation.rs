@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{ColumnSink, Columnar, ColumnarSpec};
+use df_derive::dataframe::{ColumnSink, Columnar, ColumnarSpec, RowCursor};
 use polars::prelude::*;
 
 #[derive(Clone)]
@@ -47,7 +47,7 @@ impl ColumnarSpec for BadHeightInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = (0..=rows.len() as i64).collect();
@@ -63,7 +63,7 @@ impl ColumnarSpec for ExtraColumnInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
@@ -81,7 +81,7 @@ impl ColumnarSpec for MissingColumnInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![1_i64; rows.len()];
@@ -97,7 +97,7 @@ impl ColumnarSpec for ReorderedColumnsInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let labels = vec![String::from("wrong-order"); rows.len()];
@@ -115,7 +115,7 @@ impl ColumnarSpec for BadDtypeInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let values = vec![String::from("wrong-dtype"); rows.len()];
@@ -131,7 +131,7 @@ impl ColumnarSpec for PartialConsumptionInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let values: Vec<i64> = rows.next().map(|_| 1).into_iter().collect();
         sink.push(Series::new("value".into(), values).into())
@@ -146,7 +146,7 @@ impl ColumnarSpec for ValidInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let rows: Vec<&Self> = rows.collect();
         let values: Vec<i64> = rows.iter().map(|row| row.value).collect();

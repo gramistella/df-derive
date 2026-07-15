@@ -70,10 +70,6 @@ pub(in crate::codegen) fn rows_param(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "rows")
 }
 
-pub(in crate::codegen) fn replay_rows(scope: GeneratedIdentScope<'_>) -> Ident {
-    scope.fresh("__df_derive_replay_rows")
-}
-
 pub(in crate::codegen) fn row_capacity(generics: &Generics) -> Ident {
     fresh_generic_ident(generics, "__df_derive_row_capacity")
 }
@@ -158,7 +154,6 @@ mod tests {
                 __DfDeriveRows,
                 const __DfDeriveRows_1: usize,
                 const rows: usize,
-                const __df_derive_replay_rows: usize,
                 const __df_derive_sink: usize,
                 const __df_derive_row_upper_bound: usize,
                 const __df_derive_input_rows_exact: usize,
@@ -170,10 +165,6 @@ mod tests {
         assert_eq!(row_iter_param(&generics), "__DfDeriveRows_2");
         assert_eq!(row_lifetime(&generics).to_string(), "'__df_derive_row_1");
         assert_eq!(rows_param(&generics), "rows_1");
-        assert_eq!(
-            replay_rows(GeneratedIdentScope::new(&generics)),
-            "__df_derive_replay_rows_1"
-        );
         assert_eq!(row_capacity(&generics), "__df_derive_row_capacity");
         assert_eq!(
             row_upper_bound(GeneratedIdentScope::new(&generics)),

@@ -12,6 +12,11 @@ struct EncodeParts {
     requires_replay: bool,
 }
 
+struct EncodeColumnsMethod {
+    body: TokenStream,
+    requires_replay: bool,
+}
+
 /// Walk every source field and concatenate its declaration, per-row, and
 /// materialization phases. Tuple fields contribute one recursive push tree,
 /// regardless of how many terminal columns they contain.
@@ -19,7 +24,7 @@ fn prepare_encode_parts(
     ir: &StructIR,
     config: &super::MacroConfig,
     it_ident: &syn::Ident,
-    replay_rows: &syn::Ident,
+    replay: &TokenStream,
     replay_static_tuples: bool,
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
@@ -37,7 +42,7 @@ fn prepare_encode_parts(
                 terminal_start: terminal_idx,
                 group_start: group_idx,
                 row: it_ident,
-                replay_rows,
+                replay,
                 replay_static_tuples,
                 row_capacity,
                 sink,
@@ -74,11 +79,12 @@ fn encode_columns_method_body(
     rows: &syn::Ident,
     row_capacity: &syn::Ident,
     sink: &syn::Ident,
-) -> TokenStream {
+) -> EncodeColumnsMethod {
     let ident_scope = idents::GeneratedIdentScope::new(&ir.generics);
     let row_upper_bound = idents::row_upper_bound(ident_scope);
     let input_rows_exact = idents::input_rows_exact(ident_scope);
-    let replay_rows = idents::replay_rows(ident_scope);
+    let row_cursor = &config.runtime.row_cursor;
+    let replay = quote! { #row_cursor::replay(&*#rows) };
     let replay_static_tuples = should_replay_static_tuples(ir);
     let EncodeParts {
         decls,
@@ -89,46 +95,49 @@ fn encode_columns_method_body(
         ir,
         config,
         it_ident,
-        &replay_rows,
+        &replay,
         replay_static_tuples,
         row_capacity,
         sink,
     );
 
-    if requires_replay {
-        return quote! {
+    let body = if requires_replay {
+        quote! {
             let (#row_capacity, #row_upper_bound) =
                 ::core::iter::Iterator::size_hint(&*#rows);
             let #input_rows_exact: bool =
                 #row_upper_bound == ::std::option::Option::Some(#row_capacity);
             let _ = #input_rows_exact;
-            let mut #replay_rows: ::std::vec::Vec<_> =
-                ::std::vec::Vec::with_capacity(#row_capacity);
+            #row_cursor::enable_replay(#rows, #row_capacity);
             #(#decls)*
             for #it_ident in #rows.by_ref() {
-                #replay_rows.push(#it_ident);
                 #(#pushes)*
                 let _ = #it_ident;
             }
-            let #row_capacity: usize = #replay_rows.len();
+            let #row_capacity: usize = #row_cursor::yielded(&*#rows);
             #(#builders)*
             ::std::result::Result::Ok(())
-        };
-    }
-
-    quote! {
-        let (#row_capacity, #row_upper_bound) =
-            ::core::iter::Iterator::size_hint(&*#rows);
-        let #input_rows_exact: bool =
-            #row_upper_bound == ::std::option::Option::Some(#row_capacity);
-        let _ = #input_rows_exact;
-        #(#decls)*
-        for #it_ident in #rows.by_ref() {
-            #(#pushes)*
-            let _ = #it_ident;
         }
-        #(#builders)*
-        ::std::result::Result::Ok(())
+    } else {
+        quote! {
+            let (#row_capacity, #row_upper_bound) =
+                ::core::iter::Iterator::size_hint(&*#rows);
+            let #input_rows_exact: bool =
+                #row_upper_bound == ::std::option::Option::Some(#row_capacity);
+            let _ = #input_rows_exact;
+            #(#decls)*
+            for #it_ident in #rows.by_ref() {
+                #(#pushes)*
+                let _ = #it_ident;
+            }
+            #(#builders)*
+            ::std::result::Result::Ok(())
+        }
+    };
+
+    EncodeColumnsMethod {
+        body,
+        requires_replay,
     }
 }
 
@@ -188,6 +197,7 @@ pub fn generate_columnar_spec_impl(ir: &StructIR, config: &super::MacroConfig) -
     let struct_name = &ir.name;
     let columnar_spec_trait = &config.runtime.columnar_spec;
     let column_sink_type = &config.runtime.column_sink;
+    let row_cursor_trait = &config.runtime.row_cursor;
     let pp = config.external_paths.prelude();
     let it_ident = idents::populator_iter();
     let row_iter_param = idents::row_iter_param(&ir.generics);
@@ -199,12 +209,16 @@ pub fn generate_columnar_spec_impl(ir: &StructIR, config: &super::MacroConfig) -
         super::bounds::impl_parts_with_bounds(ir, config);
 
     let schema_body = build_schema_method_body(ir, config);
-    let encode_columns_body =
-        encode_columns_method_body(ir, config, &it_ident, &rows, &row_capacity, &sink);
+    let EncodeColumnsMethod {
+        body: encode_columns_body,
+        requires_replay,
+    } = encode_columns_method_body(ir, config, &it_ident, &rows, &row_capacity, &sink);
 
     quote! {
         #[automatically_derived]
         impl #impl_generics #columnar_spec_trait for #struct_name #ty_generics #where_clause {
+            const REQUIRES_ROW_REPLAY: bool = #requires_replay;
+
             fn build_schema() -> #pp::PolarsResult<#pp::SchemaRef> {
                 #schema_body
             }
@@ -215,7 +229,7 @@ pub fn generate_columnar_spec_impl(ir: &StructIR, config: &super::MacroConfig) -
             ) -> #pp::PolarsResult<()>
             where
                 Self: #row_lifetime,
-                #row_iter_param: ::core::iter::Iterator<Item = &#row_lifetime Self>,
+                #row_iter_param: #row_cursor_trait<Item = &#row_lifetime Self>,
             {
                 #encode_columns_body
             }

@@ -85,7 +85,7 @@ pub(in crate::codegen) fn impl_parts_with_bounds(
     let display_bound: syn::TypeParamBound =
         syn::parse2(quote! { ::core::fmt::Display }).expect("Display should parse as bound");
     // No `Clone` bound: nested emitters buffer references and route through
-    // `Columnar::encode_batch`, while primitive branches borrow directly
+    // `Columnar::encode_ref_batch`, while primitive branches borrow directly
     // from the shared row-loop binding. A user with a non-`Clone` payload
     // (e.g. `T: Columnar` only) can derive `ToDataFrame` on a struct holding
     // `T` without that bound leaking from the macro.

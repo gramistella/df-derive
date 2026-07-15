@@ -1,4 +1,4 @@
-error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
+error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `RowCursor`, `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
   --> tests/fail/138-fail-mixed-runtime-overrides.rs:11:5
    |
 11 |     columnar = "core::dataframe::Columnar"
@@ -10,7 +10,7 @@ error: `trait` override involved in the mixed runtime pair
 10 |     trait = "df_derive::dataframe::ToDataFrame",
    |     ^^^^^
 
-error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
+error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `RowCursor`, `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
   --> tests/fail/138-fail-mixed-runtime-overrides.rs:20:5
    |
 20 |     columnar = "custom_runtime::MyColumnarTrait"
@@ -22,7 +22,7 @@ error: `trait` override involved in the mixed runtime pair
 19 |     trait = "df_derive::dataframe::ToDataFrame",
    |     ^^^^^
 
-error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
+error: `trait` and `columnar` overrides cannot mix the built-in dataframe runtime with a custom runtime; `RowCursor`, `ColumnarSpec`, `ColumnSink`, and the blanket `Columnar` / `ToDataFrame` APIs must come from one compatible runtime
   --> tests/fail/138-fail-mixed-runtime-overrides.rs:29:5
    |
 29 |     columnar = "df_derive::dataframe::Columnar"

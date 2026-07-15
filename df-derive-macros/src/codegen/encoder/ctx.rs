@@ -38,7 +38,7 @@ pub struct BaseCtx<'a> {
 #[derive(Clone, Copy)]
 pub struct RowReplay<'a> {
     pub row: &'a syn::Ident,
-    pub rows: &'a syn::Ident,
+    pub replay: &'a TokenStream,
 }
 
 /// Relates one primitive-leaf push to the source iterator.

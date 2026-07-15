@@ -28,7 +28,9 @@ mod row_traits {
 mod batch_traits {
     use super::*;
 
-    pub use super::runtime_support::dataframe::{ColumnSink, Columnar, ColumnarSpec};
+    pub use super::runtime_support::dataframe::{
+        ColumnSink, Columnar, ColumnarSpec, RowCursor,
+    };
 
     pub trait MyToDataFrameVec {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;

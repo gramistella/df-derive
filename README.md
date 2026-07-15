@@ -102,6 +102,8 @@ implementation:
 
 ```rust,ignore
 impl ColumnarSpec for T {
+    const REQUIRES_ROW_REPLAY: bool = /* generated policy */;
+
     fn build_schema() -> PolarsResult<SchemaRef>;
 
     fn encode_columns<'a, I>(
@@ -110,19 +112,27 @@ impl ColumnarSpec for T {
     ) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>;
+        I: RowCursor<Item = &'a Self>;
 }
 ```
 
 `build_schema` composes names and dtypes directly; schema inspection no longer
 encodes an empty batch. `encode_columns` writes through a schema-bound sink.
-The runtime blanket APIs own the caller's input: `Columnar::encode` counts rows
-from a general one-shot iterator, while the slice extension forwards the
-slice's known length directly. `ColumnSink` then checks width, ordered names,
-dtypes, and every column height before producing an `EncodedBatch`. Public
-conversion constructs the outer `DataFrame`; nested encoders consume a child
-batch's validated columns directly without constructing and dismantling a
-child frame. `ToDataFrame` and the slice extension remain blanket APIs.
+`RowCursor` is a hidden unsafe sibling runtime trait extending `Iterator` with
+exact yielded-row counting and replay operations. Each generated
+`ColumnarSpec` advertises whether it requires row replay. The blanket general-
+iterator boundary selects a compact streaming cursor for non-replaying shapes
+and a reference-buffering cursor for replaying shapes; generated replaying
+encoders enable capture before consuming their first row. Slice-backed and
+nested reference-slice cursors replay their yielded prefix directly without
+another row-reference buffer. The runtime blanket APIs own the caller's input:
+`Columnar::encode` counts rows from a general one-shot iterator, while the
+slice extension forwards the slice's known length directly. `ColumnSink` then
+checks width, ordered names, dtypes, and every column height before producing
+an `EncodedBatch`. Public conversion constructs the outer `DataFrame`; nested
+encoders consume a child batch's validated columns directly without
+constructing and dismantling a child frame. `ToDataFrame` and the slice
+extension remain blanket APIs.
 
 ## Representative Generated Code
 
@@ -132,7 +142,7 @@ shortened with imports, rustc's `vec!` expansion is omitted, and
 compiler-generated helper blocks are removed.
 
 ```rust,ignore
-use df_derive::dataframe::{ColumnSink, ColumnarSpec};
+use df_derive::dataframe::{ColumnSink, ColumnarSpec, RowCursor};
 use df_derive::dataframe::__private::{
     polars::prelude::{
         DataType, Float64Chunked, IntoSeries, PolarsResult, Schema, SchemaRef,
@@ -143,6 +153,8 @@ use df_derive::dataframe::__private::{
 
 #[automatically_derived]
 impl ColumnarSpec for Trade {
+    const REQUIRES_ROW_REPLAY: bool = false;
+
     fn build_schema() -> PolarsResult<SchemaRef> {
         let fields = [
             ("symbol".into(), DataType::String),
@@ -160,7 +172,7 @@ impl ColumnarSpec for Trade {
     ) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let row_capacity = rows.size_hint().0;
         let mut symbol = MutableBinaryViewArray::<str>::with_capacity(row_capacity);
@@ -459,11 +471,17 @@ array builders, such as list, nullable primitive, string, or binary columns.
 Scalar-only numeric/bool derives do not need `polars-arrow`.
 
 A custom trait identity must own its checked boundary: compatible
-`ColumnarSpec`, blanket `Columnar`, and `ToDataFrame` traits; a `ColumnSink`
-whose only generated-code operation is public `push`; and an `EncodedBatch`
-whose generated-code operation is public `into_columns`. Sink construction
-and finalization stay private to the blanket `Columnar` implementation, so a
-manual `ColumnarSpec` cannot swap in a sink bound to a different schema. The
+`RowCursor` and `ColumnarSpec` traits; blanket `Columnar` and `ToDataFrame`
+traits; a `ColumnSink` whose only generated-code operation is public `push`;
+and an `EncodedBatch` whose generated-code operation is public
+`into_columns`. `Columnar` must provide the general iterator boundary plus the
+specialized slice and reference-slice boundaries used by generated nested
+encoders. Sink construction and finalization stay private to the blanket
+`Columnar` implementation, so a manual `ColumnarSpec` cannot swap in a sink
+bound to a different schema. The derive sets `REQUIRES_ROW_REPLAY`
+automatically; a manual `ColumnarSpec` that invokes `enable_replay` or `replay`
+must set it to `true` so the general-iterator boundary selects the buffering
+cursor. The
 [compile-checked local runtime fixture](df-derive/tests/support/local_runtime.rs)
 is the complete reference implementation.
 
@@ -564,10 +582,16 @@ prefer `rows.as_slice().to_dataframe()`: the slice extension uses the known
 row count directly. Use `T::encode(...)` when the input is a general iterator.
 
 Generated code consumes the caller's source iterator once. For selected
-infallible primitive-list and wide scalar-tuple shapes, it may buffer row or
-leaf-segment references and replay them internally to allocate exact column
-storage and keep hot loops narrow. Fallible conversions and user-defined work
-remain in the source pass, so an error does not consume later rows.
+infallible primitive-list and wide scalar-tuple shapes, it may replay row or
+leaf-segment references internally to allocate exact column storage and keep
+hot loops narrow. Slice conversion replays directly from the source slice;
+generated nested encoders replay directly from the child-reference slice they
+already collected. A general one-shot iterator captures yielded row references
+only when its shape requests replay. Fallible conversions and user-defined
+work on direct fields remain in the source pass, so their errors do not consume
+later source rows. Nested children are batch-encoded after their references are
+collected: a child error stops later child evaluation, but the parent source
+iterator has already been consumed.
 
 The generated hot path is shape-dependent. Primitive scalar fields share a
 row loop. Nested fields collect references and call the child's checked batch
@@ -576,11 +600,12 @@ temporary child `DataFrame`. Tuple siblings also share source resolution,
 list traversal, offsets, and validity before materializing their individual
 columns.
 
-Replay uses temporary references rather than cloning values. When selected,
-it may allocate one shared row-reference vector proportional to the number of
-yielded rows and per-terminal segment-reference vectors proportional to the
-number of non-empty leaf segments. Large one-shot iterators should account for
-that temporary pointer storage.
+Replay uses temporary references rather than cloning values. A replaying
+general iterator allocates one shared row-reference vector proportional to the
+number of yielded rows. Slice-backed and nested reference-slice cursors do not
+allocate that additional row buffer. Selected leaves may still allocate
+segment-reference vectors proportional to the number of non-empty segments.
+Large one-shot iterators should account for that temporary pointer storage.
 
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted

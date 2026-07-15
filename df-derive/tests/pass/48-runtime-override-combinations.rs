@@ -7,7 +7,9 @@ mod runtime_support;
 mod custom_runtime {
     use super::*;
 
-    pub use super::runtime_support::dataframe::{ColumnSink, Columnar as MyColumnar, ColumnarSpec};
+    pub use super::runtime_support::dataframe::{
+        ColumnSink, Columnar as MyColumnar, ColumnarSpec, RowCursor,
+    };
 
     pub trait MyToDataFrame: MyColumnar {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
@@ -55,7 +57,7 @@ mod custom_runtime {
 mod columnar_only_runtime {
     pub use super::custom_runtime::{
         ColumnSink, ColumnarSpec, MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
-        MyToDataFrame as ToDataFrame,
+        MyToDataFrame as ToDataFrame, RowCursor,
     };
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Primitive leaves write typed storage at either element or source-segment
 //! granularity. Nested struct and generic leaves collect references and
-//! materialize via `Columnar::encode_batch`.
+//! materialize via `Columnar::encode_ref_batch`.
 
 use proc_macro2::TokenStream;
 
@@ -42,13 +42,13 @@ pub(super) enum PrimitiveListSchedule {
         writer: ImmediatePrimitiveWriter,
         leaf_offsets_post_push: TokenStream,
     },
-    /// Replay the shared source-row references after exact list cardinality is
-    /// known. This bounds staging by the input row count for deep lists.
+    /// Replay the runtime cursor after exact list cardinality is known. General
+    /// iterators stage at most the input row count; slices replay in place.
     DeferredRows {
         shape_counts: syn::Ident,
         leaf_offsets_post_push: TokenStream,
         row: syn::Ident,
-        replay_rows: syn::Ident,
+        replay: TokenStream,
         write_leaf: TokenStream,
     },
     /// Record stable leaf-Vec references when no enclosing row replay is

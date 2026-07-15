@@ -42,18 +42,19 @@ pub(in crate::codegen) struct TupleFieldEmitParams<'a> {
     pub terminal_start: usize,
     pub group_start: usize,
     pub row: &'a syn::Ident,
-    pub replay_rows: &'a syn::Ident,
+    pub replay: &'a TokenStream,
     pub replay_static_tuples: bool,
     pub row_capacity: &'a syn::Ident,
     pub sink: &'a syn::Ident,
 }
 
-// Below this width, avoiding an internal row-reference buffer is cheaper than
-// replaying the input once per safe scalar column. At and above it, one giant
-// row-wise push loop creates enough live buffer state to lose decisively to
-// narrow column-at-a-time loops. The `tuple_replay_boundary_minus_one` and
-// `tuple_replay_boundary` Criterion/Gungraun cases own this policy boundary;
-// the matching codegen test pins the exact branch.
+// Below this width, one fused source pass is cheaper than setting up and
+// revisiting the runtime row cursor once per safe scalar column. At and above
+// it, one giant row-wise push loop creates enough live buffer state to lose
+// decisively to narrow column-at-a-time loops. The
+// `tuple_replay_boundary_minus_one` and `tuple_replay_boundary`
+// Criterion/Gungraun cases own this policy boundary; the matching codegen test
+// pins the exact branch.
 pub(in crate::codegen) const REPLAY_STATIC_TUPLE_MIN_TERMINALS: usize = 16;
 
 #[derive(Clone)]
@@ -126,7 +127,7 @@ struct TupleBuilder<'a> {
     config: &'a MacroConfig,
     ident_scope: GeneratedIdentScope<'a>,
     row: &'a syn::Ident,
-    replay_rows: &'a syn::Ident,
+    replay: &'a TokenStream,
     row_capacity: &'a syn::Ident,
     sink: &'a syn::Ident,
     replay_static_terminals: bool,
@@ -514,7 +515,7 @@ impl TupleBuilder<'_> {
         }
 
         let row = self.row;
-        let rows = self.replay_rows;
+        let replay = self.replay;
         let sink = self.sink;
         let output_series = idents::tuple_output_series(self.ident_scope);
         let output_named = idents::tuple_output_named(self.ident_scope);
@@ -534,7 +535,7 @@ impl TupleBuilder<'_> {
         }
         self.builders.push(quote! {{
             #(#declarations)*
-            for #row in #rows.iter().copied() {
+            for #row in #replay {
                 #(#pushes)*
             }
             #(#outputs)*
@@ -623,7 +624,7 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         terminal_start,
         group_start,
         row,
-        replay_rows,
+        replay,
         replay_static_tuples,
         row_capacity,
         sink,
@@ -635,7 +636,7 @@ pub(in crate::codegen) fn build_tuple_field_emit(
         config,
         ident_scope,
         row,
-        replay_rows,
+        replay,
         row_capacity,
         sink,
         replay_static_terminals: replay_static_tuples,

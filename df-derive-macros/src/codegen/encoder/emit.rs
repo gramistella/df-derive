@@ -344,7 +344,7 @@ fn primitive_list_emit(
             shape_counts,
             leaf_offsets_post_push,
             row,
-            replay_rows,
+            replay,
             write_leaf,
         } => {
             let push = emitter.row_count(shape_counts);
@@ -365,7 +365,7 @@ fn primitive_list_emit(
                         #storage_decls
                         #exact_offsets_decls
                         #exact_validity_decls
-                        for #row in #replay_rows.iter().copied() {
+                        for #row in #replay {
                             #fill_row
                         }
                         #materialize

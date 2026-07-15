@@ -32,7 +32,7 @@ use crate::codegen::external_paths::ExternalPaths;
 
 /// Per-call-site context for nested-struct/generic encoders. Carries the
 /// type-as-path expression and the fully-qualified trait paths used in UFCS
-/// calls (`<#ty as #columnar_trait>::encode_batch`,
+/// calls (`<#ty as #columnar_trait>::encode_ref_batch`,
 /// `<#ty as #columnar_spec_trait>::build_schema`).
 pub struct NestedLeafCtx<'a> {
     pub base: BaseCtx<'a>,

@@ -5,7 +5,9 @@ use polars::prelude::*;
 use std::marker::PhantomData;
 #[path = "../support/local_runtime.rs"]
 mod core;
-use crate::core::dataframe::{ColumnSink, ColumnarSpec, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{
+    ColumnSink, ColumnarSpec, RowCursor, ToDataFrame, ToDataFrameVec,
+};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
@@ -209,7 +211,7 @@ impl ColumnarSpec for f64 {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         let values: Vec<Self> = rows.copied().collect();
         sink.push(Series::new("value".into(), &values).into())

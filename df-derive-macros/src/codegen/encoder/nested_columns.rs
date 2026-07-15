@@ -151,8 +151,8 @@ pub(super) fn nested_batch_decl(
     flat: &syn::Ident,
 ) -> TokenStream {
     quote! {
-        let #columns = <#ty as #columnar_trait>::encode_batch(
-            #flat.iter().copied(),
+        let #columns = <#ty as #columnar_trait>::encode_ref_batch(
+            #flat.as_slice(),
         )?.into_columns();
     }
 }

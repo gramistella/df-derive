@@ -11,7 +11,9 @@ use df_derive::dataframe as paft_traits; // Alias for clarity
 mod my_traits {
     use super::*; // Access PolarsResult, etc.
 
-    pub use super::custom_runtime_support::dataframe::{ColumnSink, Columnar, ColumnarSpec};
+    pub use super::custom_runtime_support::dataframe::{
+        ColumnSink, Columnar, ColumnarSpec, RowCursor,
+    };
 
     // This is our custom convenience trait, blanket-implemented from Columnar.
     pub trait MyToDataFrame: Columnar {

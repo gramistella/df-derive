@@ -22,12 +22,16 @@ All notable changes to this project will be documented in this file.
   `Vec<(String, DataType)>`.
 - **Breaking for manual and custom runtimes**: the derive now implements only
   hidden `ColumnarSpec::{build_schema, encode_columns}`. The selected runtime
-  must provide compatible sibling `ColumnarSpec` and `ColumnSink` items, a
-  checked batch boundary exposing its validated columns, and blanket
-  `Columnar` and `ToDataFrame` implementations.
+  must provide compatible sibling `RowCursor`, `ColumnarSpec`, and
+  `ColumnSink` items; checked general-iterator, slice, and reference-slice
+  batch boundaries exposing validated columns; and blanket `Columnar` and
+  `ToDataFrame` implementations. `ColumnarSpec::encode_columns` now accepts a
+  `RowCursor` rather than an arbitrary `Iterator`, and its
+  `REQUIRES_ROW_REPLAY` policy selects the general-iterator cursor.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling
-  `ColumnarSpec`, `ColumnSink`, and `Decimal128Encode` paths are inferred.
+  `RowCursor`, `ColumnarSpec`, `ColumnSink`, and `Decimal128Encode` paths are
+  inferred.
 - Tuple fields retain their hierarchy through execution planning rather than
   being flattened into projection-specific terminal-column variants.
 - Primitive-list plans represent reserved element writes and whole-segment
@@ -42,10 +46,13 @@ All notable changes to this project will be documented in this file.
 - Generated frame height now comes from the rows actually yielded by the
   caller. Iterator `size_hint()` values are allocation hints only; inaccurate
   exact-looking hints no longer misalign optional string, binary, or boolean
-  validity buffers.
-- Fallible primitive conversions and user-defined display or decimal work
-  remain in source-row order, so an error from those operations does not
-  evaluate or consume later input rows.
+  validity buffers. Replay setup reuses the already observed lower bound
+  instead of querying a user iterator's `size_hint()` again.
+- Fallible primitive conversions and user-defined display or decimal work on
+  direct fields remain in source-row order, so an error does not evaluate or
+  consume later input rows. Nested children are encoded after the parent has
+  collected their references; child errors stop later child evaluation after
+  the parent iterator has been consumed.
 - Generated method parameters, schema locals, replay bindings, and deep
   tuple/list helpers are freshened against user type, const, and lifetime
   generics.
@@ -59,11 +66,16 @@ All notable changes to this project will be documented in this file.
 - Derived types now contain one hidden `ColumnarSpec` implementation with one
   explicit schema builder and one column encoder. Runtime blanket
   implementations provide the public single-value, slice, and iterator APIs.
-- The caller's source iterator is traversed once. Shapes that need replay may
-  share one buffered set of row references and use per-terminal leaf-segment
-  reference buffers; safe terminal work may revisit those references after
-  the source iterator is exhausted. Values are not cloned, but temporary
-  pointer storage scales with yielded rows or non-empty leaf segments.
+- The caller's source iterator is traversed once. Shapes that need replay use
+  a shared row cursor and may use per-terminal leaf-segment reference buffers;
+  safe terminal work may revisit those references after the source iterator
+  is exhausted. Slice-backed cursors replay the source slice directly, and
+  nested child encoders replay the reference slice already collected by their
+  parent instead of allocating a duplicate row-reference vector. General
+  one-shot iterators still capture yielded references when replay is needed.
+  The generated replay policy keeps non-replaying general iterators on a
+  compact counting cursor and selects the buffering cursor only for replaying
+  shapes. Values are not cloned.
 - Primitive lists use effect-aware schedules. Safe leaves choose exact-count
   deferred fills where profitable, bare deep boolean segments flatten
   contiguously and pack once, and fallible or user-defined leaves fill during
@@ -71,19 +83,21 @@ All notable changes to this project will be documented in this file.
 - Tuple siblings share source resolution, list traversal, offsets, and
   validity. Wide safe terminals replay in bounded lanes, while fallible
   terminals preserve source evaluation order.
-- `[T]::to_dataframe()` slice conversion uses its known row count directly.
+- `[T]::to_dataframe()` slice conversion uses its known row count directly and
+  can replay selected shapes without allocating a row-reference buffer.
   Concrete derived types cache their `SchemaRef` in a `OnceLock`; generic
   schemas remain monomorphization-dependent and are rebuilt.
 - Empty structs and unit payloads preserve height without a temporary null
   column. Nested composition consumes validated child columns without
   constructing and dismantling an intermediate child `DataFrame`.
-- Against the released v0.4.0 tag in isolated Criterion runs, seven of nine
-  selected list benchmarks improved by approximately 3.2–24.9%; the other two
-  had overlapping confidence intervals. All-safe wide tuples improved by
-  49.6% and mixed Decimal tuples by 38.8%. No elapsed-time regression was
-  measured.
-- Nested `Vec<Vec<bool>>` improved by 14.9% in elapsed time while its Gungraun
-  instruction count remained 13.4% above v0.4.0; instruction-count parity is
+- Against the released v0.4.0 tag in isolated Criterion runs, no elapsed-time
+  regression was measured across the selected list and cost-model matrix.
+  Seven of nine list cases improved while the other two had overlapping
+  confidence intervals; final representative runs put deep `i32` and nullable
+  `i32` lists about 36–37% faster. All-safe wide tuples were about 50% faster,
+  with mixed Decimal tuples also materially faster.
+- Nested `Vec<Vec<bool>>` remained materially faster in elapsed time while its
+  Gungraun instruction count stayed above v0.4.0; instruction-count parity is
   therefore not claimed for that case.
 
 ### Migration
@@ -99,8 +113,10 @@ All notable changes to this project will be documented in this file.
   methods instead of destructuring a `Vec<(String, DataType)>`.
 - Default `value.to_dataframe()` and `slice.to_dataframe()` call sites are
   unchanged. Manual and custom runtimes must move schema and column production
-  into `ColumnarSpec` and route output through their checked sink/batch
-  boundary.
+  into `ColumnarSpec`, implement the sibling `RowCursor` contract, set
+  `REQUIRES_ROW_REPLAY = true` whenever their encoder invokes replay, and route
+  general iterators, slices, and nested reference slices through their checked
+  sink/batch boundaries.
 
 ## [0.4.0] - 2026-06-29
 

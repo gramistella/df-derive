@@ -108,3 +108,6 @@ mod schema_cache;
 
 #[path = "runtime/67-nanosecond-datetime-error-consumption.rs"]
 mod nanosecond_datetime_error_consumption;
+
+#[path = "runtime/68-custom-runtime-row-replay.rs"]
+mod custom_runtime_row_replay;

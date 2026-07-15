@@ -1,5 +1,6 @@
 use df_derive::ToDataFrame;
 use df_derive::dataframe::{Columnar, ToDataFrameVec};
+use std::cell::Cell;
 
 #[derive(ToDataFrame)]
 struct MisreportedHintRow {
@@ -14,28 +15,32 @@ struct MisreportedHintRow {
     nested: Vec<Vec<Option<i32>>>,
 }
 
-struct MisreportedExact<'a, T> {
-    inner: std::slice::Iter<'a, T>,
+struct MisreportedExact<'rows, 'counter, T> {
+    inner: std::slice::Iter<'rows, T>,
     claimed_len: usize,
+    size_hint_calls: &'counter Cell<usize>,
 }
 
-impl<'a, T> MisreportedExact<'a, T> {
-    fn new(rows: &'a [T], claimed_len: usize) -> Self {
+impl<'rows, 'counter, T> MisreportedExact<'rows, 'counter, T> {
+    fn new(rows: &'rows [T], claimed_len: usize, size_hint_calls: &'counter Cell<usize>) -> Self {
         Self {
             inner: rows.iter(),
             claimed_len,
+            size_hint_calls,
         }
     }
 }
 
-impl<'a, T> Iterator for MisreportedExact<'a, T> {
-    type Item = &'a T;
+impl<'rows, T> Iterator for MisreportedExact<'rows, '_, T> {
+    type Item = &'rows T;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
+        self.size_hint_calls
+            .set(self.size_hint_calls.get().saturating_add(1));
         (self.claimed_len, Some(self.claimed_len))
     }
 }
@@ -71,11 +76,18 @@ fn scalar_nullable_bitmaps_tolerate_incorrect_exact_size_hints() {
     let expected = rows.as_slice().to_dataframe().unwrap();
 
     for claimed_len in [0, 1, rows.len(), rows.len() + 5] {
-        let actual = MisreportedHintRow::encode(MisreportedExact::new(&rows, claimed_len))
-            .unwrap_or_else(|error| panic!("claimed_len={claimed_len}: {error}"));
+        let size_hint_calls = Cell::new(0);
+        let actual =
+            MisreportedHintRow::encode(MisreportedExact::new(&rows, claimed_len, &size_hint_calls))
+                .unwrap_or_else(|error| panic!("claimed_len={claimed_len}: {error}"));
         assert!(
             actual.equals_missing(&expected),
             "claimed_len={claimed_len}\nactual={actual:?}\nexpected={expected:?}",
+        );
+        assert_eq!(
+            size_hint_calls.get(),
+            1,
+            "claimed_len={claimed_len}: replay setup must reuse the observed lower bound",
         );
     }
 }

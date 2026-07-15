@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use df_derive::ToDataFrame;
-use df_derive::dataframe::{ColumnSink, ColumnarSpec, ToDataFrame as _};
+use df_derive::dataframe::{ColumnSink, ColumnarSpec, RowCursor, ToDataFrame as _};
 use polars::prelude::*;
 
 static CHILD_ENCODINGS: AtomicUsize = AtomicUsize::new(0);
@@ -23,7 +23,7 @@ impl ColumnarSpec for CountingInner {
     fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
     where
         Self: 'a,
-        I: Iterator<Item = &'a Self>,
+        I: RowCursor<Item = &'a Self>,
     {
         CHILD_ENCODINGS.fetch_add(1, Ordering::SeqCst);
         let values: Vec<u32> = rows.map(|row| row.value).collect();

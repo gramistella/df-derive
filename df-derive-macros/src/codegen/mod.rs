@@ -49,6 +49,7 @@ mod tests {
         MacroConfig {
             runtime: config::RuntimeSurfacePaths {
                 columnar: syn::parse_quote!(crate::dataframe::Columnar),
+                row_cursor: syn::parse_quote!(crate::dataframe::RowCursor),
                 columnar_spec: syn::parse_quote!(crate::dataframe::ColumnarSpec),
                 column_sink: syn::parse_quote!(crate::dataframe::ColumnSink),
                 decimal128_encode: syn::parse_quote!(crate::dataframe::Decimal128Encode),
@@ -73,6 +74,17 @@ mod tests {
 
     fn generated(input: &syn::DeriveInput) -> String {
         generate_code(&parse_ir(input), &test_config()).to_string()
+    }
+
+    fn enable_replay_call() -> String {
+        let row_capacity = encoder::idents::row_capacity(&syn::Generics::default());
+        format!("crate :: dataframe :: RowCursor :: enable_replay (rows , {row_capacity})")
+    }
+
+    fn assert_replay_policy(generated: &str, requires_replay: bool) {
+        let policy = format!("const REQUIRES_ROW_REPLAY : bool = {requires_replay}");
+        assert_eq!(generated.matches(&policy).count(), 1, "{generated}");
+        assert!(!generated.contains("record_for_replay"), "{generated}");
     }
 
     #[test]
@@ -139,7 +151,9 @@ mod tests {
         ));
         assert!(!empty.contains("DataFrame"), "{empty}");
         assert!(!empty.contains("Iterator :: collect"), "{empty}");
+        assert!(!empty.contains("record_for_replay"), "{empty}");
         assert_eq!(empty.matches("in rows . by_ref ()").count(), 1, "{empty}");
+        assert_replay_policy(&empty, false);
 
         let non_empty = generated(&syn::parse_quote! {
             struct Row {
@@ -148,6 +162,8 @@ mod tests {
         });
         let sink = encoder::idents::column_sink_param(&syn::Generics::default());
         assert!(non_empty.contains(&format!("{sink} . push")), "{non_empty}");
+        assert!(!non_empty.contains("record_for_replay"), "{non_empty}");
+        assert_replay_policy(&non_empty, false);
 
         for generated in [&empty, &non_empty] {
             assert!(!generated.contains("DataFrame :: new"), "{generated}");
@@ -208,7 +224,12 @@ mod tests {
                 inner: Inner,
             }
         });
-        assert!(nested.contains("Columnar > :: encode_batch"), "{nested}");
+        assert!(
+            nested.contains("Columnar > :: encode_ref_batch"),
+            "{nested}"
+        );
+        assert!(nested.contains(". as_slice ()"), "{nested}");
+        assert!(!nested.contains(". iter () . copied ()"), "{nested}");
         assert!(nested.contains(". into_columns ()"), "{nested}");
         assert!(
             nested.contains("ColumnarSpec > :: build_schema"),
@@ -223,7 +244,7 @@ mod tests {
             }
         });
         assert!(
-            tuple_nested.contains("Columnar > :: encode_batch"),
+            tuple_nested.contains("Columnar > :: encode_ref_batch"),
             "{tuple_nested}"
         );
         assert!(tuple_nested.contains(". into_columns ()"), "{tuple_nested}");
@@ -242,17 +263,16 @@ mod tests {
                 generic: T,
             }
         });
-        let generics = syn::Generics::default();
-        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
-        let replay_rows = encoder::idents::replay_rows(scope).to_string();
-        let row = encoder::idents::populator_iter().to_string();
-        let replay_push = format!("{replay_rows} . push ({row})");
-        let replay_loop = format!("in {replay_rows} . iter () . copied ()");
+        let row_cursor = "crate :: dataframe :: RowCursor";
+        let replay_loop = format!("in {row_cursor} :: replay (& * rows)");
+        let enable_replay = enable_replay_call();
 
         assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
+        assert_eq!(mixed.matches("Iterator :: size_hint").count(), 1, "{mixed}");
         assert!(!mixed.contains("Iterator :: collect"), "{mixed}");
-        assert_eq!(mixed.matches(&replay_push).count(), 1, "{mixed}");
+        assert_eq!(mixed.matches(&enable_replay).count(), 1, "{mixed}");
         assert!(mixed.contains(&replay_loop), "{mixed}");
+        assert_replay_policy(&mixed, true);
     }
 
     #[test]
@@ -265,8 +285,6 @@ mod tests {
         });
         let generics = syn::Generics::default();
         let scope = encoder::idents::GeneratedIdentScope::new(&generics);
-        let replay_rows = encoder::idents::replay_rows(scope).to_string();
-        let row = encoder::idents::populator_iter().to_string();
         let shallow_segments = encoder::idents::vec_leaf_segments(scope, 0).to_string();
         let deep_segments = encoder::idents::vec_leaf_segments(scope, 1).to_string();
         let deep_counts = encoder::idents::vec_shape_counts(scope, 1).to_string();
@@ -274,7 +292,9 @@ mod tests {
         let set_prepared_bitmap = encoder::idents::set_prepared_bitmap(scope).to_string();
         let unsafe_push_reserved = format!("unsafe fn {push_reserved}");
         let unsafe_set_prepared_bitmap = format!("unsafe fn {set_prepared_bitmap}");
-        let replay_push = format!("{replay_rows} . push ({row})");
+        let row_cursor = "crate :: dataframe :: RowCursor";
+        let enable_replay = enable_replay_call();
+        let replay = format!("{row_cursor} :: replay (& * rows)");
 
         assert_eq!(
             deferred.matches("in rows . by_ref ()").count(),
@@ -292,7 +312,9 @@ mod tests {
         assert_eq!(deferred.matches(". checked_add").count(), 4, "{deferred}");
         assert!(deferred.contains(&shallow_segments), "{deferred}");
         assert!(!deferred.contains(&deep_segments), "{deferred}");
-        assert_eq!(deferred.matches(&replay_push).count(), 1, "{deferred}");
+        assert_eq!(deferred.matches(&enable_replay).count(), 1, "{deferred}");
+        assert_eq!(deferred.matches(&replay).count(), 1, "{deferred}");
+        assert_replay_policy(&deferred, true);
         assert!(deferred.contains(&unsafe_push_reserved), "{deferred}");
         assert!(deferred.contains(&unsafe_set_prepared_bitmap), "{deferred}");
         assert_eq!(deferred.matches("debug_assert !").count(), 2, "{deferred}");
@@ -349,7 +371,9 @@ mod tests {
             .expect("generated ColumnarSpec impl")..];
         assert!(!immediate_impl.contains(". checked_add"), "{immediate}");
         assert!(immediate_impl.contains(". reserve"), "{immediate}");
-        assert!(!immediate.contains(&replay_rows), "{immediate}");
+        assert!(!immediate.contains(&enable_replay), "{immediate}");
+        assert!(!immediate.contains(&replay), "{immediate}");
+        assert_replay_policy(&immediate, false);
     }
 
     #[test]
@@ -454,66 +478,66 @@ mod tests {
         });
 
         let generics = syn::Generics::default();
-        let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
-        let replay_rows = encoder::idents::replay_rows(ident_scope);
         let row_capacity = encoder::idents::row_capacity(&generics);
-        let row = encoder::idents::populator_iter();
+        let row_cursor = "crate :: dataframe :: RowCursor";
+        let replay = format!("in {row_cursor} :: replay (& * rows)");
+        let enable_replay = enable_replay_call();
+        let yielded = format!("{row_cursor} :: yielded (& * rows)");
 
-        assert!(!narrow.contains(&replay_rows.to_string()), "{narrow}");
+        assert!(!narrow.contains(&enable_replay), "{narrow}");
+        assert!(!narrow.contains(&replay), "{narrow}");
+        assert_eq!(narrow.matches("in rows . by_ref ()").count(), 1, "{narrow}");
+        assert_replay_policy(&narrow, false);
         assert_eq!(wide.matches("in rows . by_ref ()").count(), 1, "{wide}");
         assert_eq!(
-            wide.matches(&format!("in {replay_rows} . iter () . copied ()"))
-                .count(),
+            wide.matches(&replay).count(),
             8,
             "each four-terminal sibling group must share one replay lane: {wide}",
         );
         assert_eq!(
-            wide.matches(&format!("{replay_rows} . push ({row})"))
-                .count(),
+            wide.matches(&enable_replay).count(),
             1,
-            "the one-shot input must be buffered exactly once: {wide}",
+            "the one-shot input must enable replay exactly once: {wide}",
         );
         assert!(
-            wide.contains(&format!(
-                "let {row_capacity} : usize = {replay_rows} . len ()"
-            )),
-            "replayed columns must allocate from the exact buffered length: {wide}",
+            wide.contains(&format!("let {row_capacity} : usize = {yielded}")),
+            "replayed columns must allocate from the exact yielded length: {wide}",
         );
         assert!(!wide.contains("Iterator :: collect"), "{wide}");
+        assert_replay_policy(&wide, true);
 
         assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
         assert_eq!(
-            mixed
-                .matches(&format!("in {replay_rows} . iter () . copied ()"))
-                .count(),
+            mixed.matches(&replay).count(),
             2,
             "the sixteen infallible mixed-tuple terminals should use two lanes: {mixed}",
         );
         assert_eq!(
-            mixed
-                .matches(&format!("{replay_rows} . push ({row})"))
-                .count(),
+            mixed.matches(&enable_replay).count(),
             1,
-            "the mixed tuple must still buffer the source once: {mixed}",
+            "the mixed tuple must still enable source replay once: {mixed}",
         );
         assert!(
             mixed.contains("try_to_i128_mantissa"),
             "the Decimal terminal must remain on its fallible path: {mixed}",
         );
+        assert_replay_policy(&mixed, true);
         assert_eq!(
-            mixed_structural
-                .matches(&format!("in {replay_rows} . iter () . copied ()"))
-                .count(),
+            mixed_structural.matches(&replay).count(),
             2,
             "only the two row-aligned scalar sibling groups should replay: {mixed_structural}",
         );
         assert_eq!(
-            mixed_structural
-                .matches(&format!("{replay_rows} . push ({row})"))
-                .count(),
+            mixed_structural.matches(&enable_replay).count(),
             1,
-            "structural siblings must share the one source buffer: {mixed_structural}",
+            "structural siblings must share one replay-enabled source: {mixed_structural}",
         );
+        assert_eq!(
+            mixed_structural.matches("in rows . by_ref ()").count(),
+            1,
+            "{mixed_structural}",
+        );
+        assert_replay_policy(&mixed_structural, true);
     }
 
     #[test]
@@ -537,29 +561,40 @@ mod tests {
             }
         });
 
-        let generics = syn::Generics::default();
-        let ident_scope = encoder::idents::GeneratedIdentScope::new(&generics);
-        let replay_rows = encoder::idents::replay_rows(ident_scope);
-        let row = encoder::idents::populator_iter();
+        let row_cursor = "crate :: dataframe :: RowCursor";
+        let replay = format!("in {row_cursor} :: replay (& * rows)");
+        let enable_replay = enable_replay_call();
 
         assert!(
-            !boundary_minus_one.contains(&replay_rows.to_string()),
+            !boundary_minus_one.contains(&enable_replay),
             "fifteen tuple terminals must stay on the fused source pass: {boundary_minus_one}",
         );
+        assert!(
+            !boundary_minus_one.contains(&replay),
+            "{boundary_minus_one}"
+        );
         assert_eq!(
-            boundary
-                .matches(&format!("in {replay_rows} . iter () . copied ()"))
-                .count(),
+            boundary_minus_one.matches("in rows . by_ref ()").count(),
+            1,
+            "{boundary_minus_one}",
+        );
+        assert_replay_policy(&boundary_minus_one, false);
+        assert_eq!(
+            boundary.matches(&replay).count(),
             2,
             "sixteen consecutive terminals must replay in two eight-wide lanes: {boundary}",
         );
         assert_eq!(
-            boundary
-                .matches(&format!("{replay_rows} . push ({row})"))
-                .count(),
+            boundary.matches(&enable_replay).count(),
             1,
-            "the boundary shape must buffer its source exactly once: {boundary}",
+            "the boundary shape must enable source replay exactly once: {boundary}",
         );
+        assert_eq!(
+            boundary.matches("in rows . by_ref ()").count(),
+            1,
+            "{boundary}",
+        );
+        assert_replay_policy(&boundary, true);
     }
 
     #[test]

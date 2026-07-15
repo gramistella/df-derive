@@ -221,20 +221,63 @@ pub mod dataframe {
         }
     }
 
-    struct CountingIterator<I> {
+    /// Iterator boundary understood by generated encoders that may need to
+    /// revisit already yielded row references.
+    ///
+    /// General iterators that need replay use a dedicated cursor that captures
+    /// references as it advances. Slice-backed cursors can replay their yielded
+    /// prefix directly without allocating a second reference buffer.
+    ///
+    /// # Safety
+    ///
+    /// `yielded` must report the exact number of items successfully returned by
+    /// `Iterator::next`. After `enable_replay` returns successfully, `replay`
+    /// must yield exactly those successful source items once each and in source
+    /// order. Generated encoders rely on this contract to uphold exact-capacity
+    /// unsafe writes.
+    #[doc(hidden)]
+    pub unsafe trait RowCursor: Iterator {
+        /// A fresh iterator over the rows yielded so far, in source order.
+        type Replay<'cursor>: Iterator<Item = Self::Item>
+        where
+            Self: 'cursor;
+
+        /// Enables replay before the first source row is requested.
+        ///
+        /// `capacity` is the lower bound already observed by generated code;
+        /// implementations must not query `size_hint` again.
+        fn enable_replay(&mut self, capacity: usize);
+
+        /// Returns a fresh iterator over the rows yielded since replay was
+        /// enabled.
+        fn replay(&self) -> Self::Replay<'_>;
+
+        /// Returns the number of rows yielded from the source cursor.
+        fn yielded(&self) -> usize;
+    }
+
+    struct StreamingCursor<I>
+    where
+        I: Iterator,
+    {
         inner: I,
         yielded: usize,
     }
 
-    impl<I> CountingIterator<I> {
+    impl<I> StreamingCursor<I>
+    where
+        I: Iterator,
+    {
+        #[inline]
         const fn new(inner: I) -> Self {
             Self { inner, yielded: 0 }
         }
     }
 
-    impl<I> Iterator for CountingIterator<I>
+    impl<I> Iterator for StreamingCursor<I>
     where
         I: Iterator,
+        I::Item: Copy,
     {
         type Item = I::Item;
 
@@ -248,6 +291,213 @@ pub mod dataframe {
         #[inline]
         fn size_hint(&self) -> (usize, Option<usize>) {
             self.inner.size_hint()
+        }
+    }
+
+    unsafe impl<I> RowCursor for StreamingCursor<I>
+    where
+        I: Iterator,
+        I::Item: Copy,
+    {
+        type Replay<'cursor>
+            = std::iter::Empty<I::Item>
+        where
+            Self: 'cursor;
+
+        #[cold]
+        #[inline(never)]
+        fn enable_replay(&mut self, _capacity: usize) {
+            panic!("df-derive: compact streaming cursor does not support row replay");
+        }
+
+        #[inline]
+        fn replay(&self) -> Self::Replay<'_> {
+            std::iter::empty()
+        }
+
+        #[inline]
+        fn yielded(&self) -> usize {
+            self.yielded
+        }
+    }
+
+    struct ReplayStreamingCursor<I>
+    where
+        I: Iterator,
+    {
+        inner: I,
+        yielded: usize,
+        replay: Option<Vec<I::Item>>,
+    }
+
+    impl<I> ReplayStreamingCursor<I>
+    where
+        I: Iterator,
+    {
+        #[inline]
+        const fn new(inner: I) -> Self {
+            Self {
+                inner,
+                yielded: 0,
+                replay: None,
+            }
+        }
+    }
+
+    impl<I> Iterator for ReplayStreamingCursor<I>
+    where
+        I: Iterator,
+        I::Item: Copy,
+    {
+        type Item = I::Item;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            let item = self.inner.next()?;
+            match &mut self.replay {
+                Some(replay) => replay.push(item),
+                None => self.yielded += 1,
+            }
+            Some(item)
+        }
+
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    unsafe impl<I> RowCursor for ReplayStreamingCursor<I>
+    where
+        I: Iterator,
+        I::Item: Copy,
+    {
+        type Replay<'cursor>
+            = std::iter::Copied<std::slice::Iter<'cursor, I::Item>>
+        where
+            Self: 'cursor;
+
+        #[inline]
+        fn enable_replay(&mut self, capacity: usize) {
+            assert!(
+                self.yielded == 0 && self.replay.is_none(),
+                "df-derive: row replay must be enabled before iteration",
+            );
+            self.replay = Some(Vec::with_capacity(capacity));
+        }
+
+        #[inline]
+        fn replay(&self) -> Self::Replay<'_> {
+            self.replay
+                .as_ref()
+                .expect("df-derive: row replay requested before it was enabled")
+                .iter()
+                .copied()
+        }
+
+        #[inline]
+        fn yielded(&self) -> usize {
+            self.replay.as_ref().map_or(self.yielded, Vec::len)
+        }
+    }
+
+    struct SliceCursor<'row, T> {
+        original: &'row [T],
+        remaining: std::slice::Iter<'row, T>,
+    }
+
+    impl<'row, T> SliceCursor<'row, T> {
+        #[inline]
+        fn new(rows: &'row [T]) -> Self {
+            Self {
+                original: rows,
+                remaining: rows.iter(),
+            }
+        }
+    }
+
+    impl<'row, T> Iterator for SliceCursor<'row, T> {
+        type Item = &'row T;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            self.remaining.next()
+        }
+
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.remaining.size_hint()
+        }
+    }
+
+    unsafe impl<'row, T> RowCursor for SliceCursor<'row, T> {
+        type Replay<'cursor>
+            = std::slice::Iter<'row, T>
+        where
+            Self: 'cursor;
+
+        #[inline]
+        fn enable_replay(&mut self, _capacity: usize) {}
+
+        #[inline]
+        fn replay(&self) -> Self::Replay<'_> {
+            let original: &'row [T] = self.original;
+            original[..self.yielded()].iter()
+        }
+
+        #[inline]
+        fn yielded(&self) -> usize {
+            self.original.len() - self.remaining.len()
+        }
+    }
+
+    struct RefSliceCursor<'slice, 'row, T> {
+        original: &'slice [&'row T],
+        remaining: std::iter::Copied<std::slice::Iter<'slice, &'row T>>,
+    }
+
+    impl<'slice, 'row, T> RefSliceCursor<'slice, 'row, T> {
+        #[inline]
+        fn new(rows: &'slice [&'row T]) -> Self {
+            Self {
+                original: rows,
+                remaining: rows.iter().copied(),
+            }
+        }
+    }
+
+    impl<'row, T> Iterator for RefSliceCursor<'_, 'row, T> {
+        type Item = &'row T;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            self.remaining.next()
+        }
+
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.remaining.size_hint()
+        }
+    }
+
+    unsafe impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
+        type Replay<'cursor>
+            = std::iter::Copied<std::slice::Iter<'slice, &'row T>>
+        where
+            Self: 'cursor;
+
+        #[inline]
+        fn enable_replay(&mut self, _capacity: usize) {}
+
+        #[inline]
+        fn replay(&self) -> Self::Replay<'_> {
+            let original: &'slice [&'row T] = self.original;
+            original[..self.yielded()].iter().copied()
+        }
+
+        #[inline]
+        fn yielded(&self) -> usize {
+            self.original.len() - self.remaining.len()
         }
     }
 
@@ -269,6 +519,10 @@ pub mod dataframe {
     /// calls to `build_schema` return the same declaration.
     #[doc(hidden)]
     pub trait ColumnarSpec: Sized {
+        /// Whether general iterator inputs require buffered row replay.
+        #[doc(hidden)]
+        const REQUIRES_ROW_REPLAY: bool = false;
+
         /// Builds this type's complete ordered schema without encoding rows.
         ///
         /// # Errors
@@ -284,7 +538,25 @@ pub mod dataframe {
         fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
         where
             Self: 'a,
-            I: Iterator<Item = &'a Self>;
+            I: RowCursor<Item = &'a Self>;
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "the cursor type must specialize away before entering generated row loops"
+    )]
+    #[inline(always)]
+    fn encode_streaming_cursor<'row, T, C>(
+        mut rows: C,
+        sink: &mut ColumnSink,
+    ) -> PolarsResult<usize>
+    where
+        T: ColumnarSpec + 'row,
+        C: RowCursor<Item = &'row T>,
+    {
+        T::encode_columns(&mut rows, sink)?;
+        rows.by_ref().for_each(drop);
+        Ok(rows.yielded())
     }
 
     /// Checked columnar batch API supplied for every [`ColumnarSpec`].
@@ -308,12 +580,14 @@ pub mod dataframe {
         {
             let schema = <Self as ColumnarSpec>::build_schema()?;
             let mut sink = ColumnSink::new(schema, std::any::type_name::<Self>());
-            let mut rows = CountingIterator::new(rows.into_iter());
+            let rows = rows.into_iter();
+            let height = if <Self as ColumnarSpec>::REQUIRES_ROW_REPLAY {
+                encode_streaming_cursor::<Self, _>(ReplayStreamingCursor::new(rows), &mut sink)?
+            } else {
+                encode_streaming_cursor::<Self, _>(StreamingCursor::new(rows), &mut sink)?
+            };
 
-            <Self as ColumnarSpec>::encode_columns(&mut rows, &mut sink)?;
-            rows.by_ref().for_each(drop);
-
-            sink.finish(rows.yielded)
+            sink.finish(height)
         }
 
         /// Encodes a slice without counting rows that already have a known
@@ -327,9 +601,31 @@ pub mod dataframe {
         fn encode_slice(rows: &[Self]) -> PolarsResult<EncodedBatch> {
             let schema = <Self as ColumnarSpec>::build_schema()?;
             let mut sink = ColumnSink::new(schema, std::any::type_name::<Self>());
-            let mut row_iter = rows.iter();
+            let mut row_iter = SliceCursor::new(rows);
 
             <Self as ColumnarSpec>::encode_columns(&mut row_iter, &mut sink)?;
+
+            sink.finish(rows.len())
+        }
+
+        /// Encodes a slice of row references without allocating another
+        /// reference buffer when generated child encoders need replay.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if schema construction, value encoding, or batch
+        /// validation fails.
+        #[doc(hidden)]
+        fn encode_ref_batch<'row>(rows: &[&'row Self]) -> PolarsResult<EncodedBatch>
+        where
+            Self: 'row,
+        {
+            let schema = <Self as ColumnarSpec>::build_schema()?;
+            let mut sink = ColumnSink::new(schema, std::any::type_name::<Self>());
+            let mut row_iter = RefSliceCursor::new(rows);
+
+            <Self as ColumnarSpec>::encode_columns(&mut row_iter, &mut sink)?;
+            row_iter.by_ref().for_each(drop);
 
             sink.finish(rows.len())
         }
@@ -418,7 +714,7 @@ pub mod dataframe {
         fn encode_columns<'a, I>(_rows: &mut I, _sink: &mut ColumnSink) -> PolarsResult<()>
         where
             Self: 'a,
-            I: Iterator<Item = &'a Self>,
+            I: RowCursor<Item = &'a Self>,
         {
             Ok(())
         }
@@ -535,6 +831,24 @@ pub mod dataframe {
             );
         }
 
+        struct ObservableSizeHint<'rows, 'observer, T> {
+            inner: std::slice::Iter<'rows, T>,
+            calls: &'observer Cell<usize>,
+        }
+
+        impl<'rows, T> Iterator for ObservableSizeHint<'rows, '_, T> {
+            type Item = &'rows T;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.inner.next()
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                self.calls.set(self.calls.get() + 1);
+                self.inner.size_hint()
+            }
+        }
+
         struct Valid(i64);
 
         impl ColumnarSpec for Valid {
@@ -545,7 +859,7 @@ pub mod dataframe {
             fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
             where
                 Self: 'a,
-                I: Iterator<Item = &'a Self>,
+                I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<i64> = rows.map(|row| row.0).collect();
                 sink.push(Series::new("value".into(), values).into())
@@ -562,7 +876,7 @@ pub mod dataframe {
             fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
             where
                 Self: 'a,
-                I: Iterator<Item = &'a Self>,
+                I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<i64> = rows.next().map(|row| row.0).into_iter().collect();
                 sink.push(Series::new("value".into(), values).into())
@@ -579,7 +893,7 @@ pub mod dataframe {
             fn encode_columns<'a, I>(_rows: &mut I, _sink: &mut ColumnSink) -> PolarsResult<()>
             where
                 Self: 'a,
-                I: Iterator<Item = &'a Self>,
+                I: RowCursor<Item = &'a Self>,
             {
                 Err(polars_err!(ComputeError: "intentional encoder error"))
             }
@@ -595,7 +909,7 @@ pub mod dataframe {
             fn encode_columns<'a, I>(rows: &mut I, sink: &mut ColumnSink) -> PolarsResult<()>
             where
                 Self: 'a,
-                I: Iterator<Item = &'a Self>,
+                I: RowCursor<Item = &'a Self>,
             {
                 let values: Vec<&str> = rows.map(|row| row.0).collect();
                 sink.push(Series::new("value".into(), values).into())
@@ -616,6 +930,12 @@ pub mod dataframe {
         fn checked_boundary_drains_successful_partial_consumers_before_validating_height() {
             let rows = [ConsumesOnlyOne(1), ConsumesOnlyOne(2)];
             assert_error_contains(ConsumesOnlyOne::encode_batch(&rows), "returned height 1");
+
+            let refs = [&rows[0], &rows[1]];
+            assert_error_contains(
+                ConsumesOnlyOne::encode_ref_batch(&refs),
+                "returned height 1",
+            );
         }
 
         #[test]
@@ -629,6 +949,87 @@ pub mod dataframe {
                 "intentional encoder error",
             );
             assert_eq!(yielded.get(), 0);
+        }
+
+        #[test]
+        fn slice_cursor_replays_the_yielded_prefix_without_buffering() {
+            let rows = [10_i32, 20, 30];
+            let mut cursor = SliceCursor::new(&rows);
+            cursor.enable_replay(rows.len());
+
+            assert_eq!(cursor.next(), Some(&10));
+            assert_eq!(cursor.next(), Some(&20));
+            assert_eq!(cursor.yielded(), 2);
+
+            let replay: std::slice::Iter<'_, i32> = cursor.replay();
+            assert_eq!(replay.copied().collect::<Vec<_>>(), [10, 20]);
+        }
+
+        #[test]
+        fn reference_slice_cursor_replays_original_row_references() {
+            let rows = [10_i32, 20, 30];
+            let refs = [&rows[0], &rows[1], &rows[2]];
+            let mut cursor = RefSliceCursor::new(&refs);
+            cursor.enable_replay(refs.len());
+
+            assert_eq!(cursor.next(), Some(&10));
+            assert_eq!(cursor.next(), Some(&20));
+            assert_eq!(cursor.yielded(), 2);
+
+            let replay: std::iter::Copied<std::slice::Iter<'_, &'_ i32>> = cursor.replay();
+            assert_eq!(replay.copied().collect::<Vec<_>>(), [10, 20]);
+        }
+
+        #[test]
+        fn streaming_cursor_observes_size_hint_once_and_counts_yielded_rows() {
+            let rows = [10_i32, 20, 30];
+            let size_hint_calls = Cell::new(0);
+            let source = ObservableSizeHint {
+                inner: rows.iter(),
+                calls: &size_hint_calls,
+            };
+            let mut cursor = StreamingCursor::new(source);
+
+            let (capacity, upper_bound) = cursor.size_hint();
+            assert_eq!((capacity, upper_bound), (rows.len(), Some(rows.len())));
+            cursor.by_ref().for_each(drop);
+
+            assert_eq!(size_hint_calls.get(), 1);
+            assert_eq!(cursor.yielded(), rows.len());
+            let replay: std::iter::Empty<&i32> = cursor.replay();
+            assert_eq!(replay.count(), 0);
+        }
+
+        #[test]
+        fn replay_streaming_cursor_observes_size_hint_once_and_replays_yielded_rows() {
+            let rows = [10_i32, 20, 30];
+            let size_hint_calls = Cell::new(0);
+            let source = ObservableSizeHint {
+                inner: rows.iter(),
+                calls: &size_hint_calls,
+            };
+            let mut cursor = ReplayStreamingCursor::new(source);
+
+            let (capacity, upper_bound) = cursor.size_hint();
+            assert_eq!((capacity, upper_bound), (rows.len(), Some(rows.len())));
+            cursor.enable_replay(capacity);
+            cursor.by_ref().for_each(drop);
+
+            assert_eq!(size_hint_calls.get(), 1);
+            assert_eq!(cursor.yielded(), rows.len());
+            let replay: std::iter::Copied<std::slice::Iter<'_, &'_ i32>> = cursor.replay();
+            assert_eq!(replay.copied().collect::<Vec<_>>(), rows);
+        }
+
+        #[test]
+        #[should_panic(expected = "row replay must be enabled before iteration")]
+        fn replay_streaming_cursor_rejects_late_enablement() {
+            let rows = [10_i32, 20];
+            let mut cursor = ReplayStreamingCursor::new(rows.iter());
+
+            assert_eq!(cursor.next(), Some(&10));
+            assert_eq!(cursor.yielded(), 1);
+            cursor.enable_replay(rows.len());
         }
 
         #[test]

@@ -11,6 +11,9 @@ use super::external_paths;
 pub struct RuntimeSurfacePaths {
     /// Fully-qualified path to the `Columnar` trait.
     pub columnar: syn::Path,
+    /// Fully-qualified path to the hidden `RowCursor` trait used by generated
+    /// encoders that replay source rows.
+    pub row_cursor: syn::Path,
     /// Fully-qualified path to the hidden `ColumnarSpec` trait implemented by
     /// generated code.
     pub columnar_spec: syn::Path,
@@ -84,6 +87,7 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
         (None, Some(override_)) => attrs::rebase_last_segment(&override_.value, "Columnar"),
         (None, None) => attrs::runtime_trait_path(&default_df_mod, "Columnar"),
     };
+    let row_cursor = attrs::rebase_last_segment(&columnar, "RowCursor");
     let columnar_spec = attrs::rebase_last_segment(&columnar, "ColumnarSpec");
     let column_sink = attrs::rebase_last_segment(&columnar, "ColumnSink");
     let decimal128_encode = attrs.decimal128_encode.as_ref().map_or_else(
@@ -107,6 +111,7 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
     Ok(MacroConfig {
         runtime: RuntimeSurfacePaths {
             columnar,
+            row_cursor,
             columnar_spec,
             column_sink,
             decimal128_encode,
@@ -132,6 +137,10 @@ mod tests {
 
         let config = build_macro_config(&input).expect("runtime override should parse");
 
+        assert_eq!(
+            config.runtime.row_cursor.to_token_stream().to_string(),
+            "custom_runtime :: RowCursor",
+        );
         assert_eq!(
             config.runtime.columnar_spec.to_token_stream().to_string(),
             "custom_runtime :: ColumnarSpec",

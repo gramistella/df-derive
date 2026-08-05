@@ -12,8 +12,8 @@ repository = "https://github.com/gramistella/df-derive"
 homepage = "https://github.com/gramistella/df-derive"
 
 [workspace.dependencies]
-polars = { version = "0.54", default-features = false }
-polars-arrow = "0.54"
+polars = { version = "0.55", default-features = false }
+polars-arrow = "0.55"
 rust_decimal = { version = "1.42", default-features = false }
 df-derive-core = { version = "0.4", path = "df-derive-core", default-features = false }
 df-derive-macros = { version = "0.4", path = "df-derive-macros" }

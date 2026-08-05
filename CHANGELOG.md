@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-08-14
+
+### Changed
+
+- **Breaking**: generated code and the default runtime now target `polars`
+  v0.55 and `polars-arrow` v0.55. Downstream crates using generated impls
+  should use `polars = "0.55"`.
+
 ## [0.4.0] - 2026-06-29
 
 ### Changed

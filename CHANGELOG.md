@@ -9,13 +9,14 @@ All notable changes to this project will be documented in this file.
 - **Breaking**: `Columnar::encode<B: RowBatch<Self> + ?Sized>` is now the
   single generated runtime primitive. The two slice-specific columnar methods
   and generated `ToDataFrame` implementations were removed.
+- **Breaking**: generated code and the default runtime now target `polars`
+  v0.55 and `polars-arrow` v0.55. Downstream crates using generated impls
+  should use `polars = "0.55"`.
+- **Breaking**: the minimum supported Rust version is now 1.95.
 - **Breaking for custom runtimes**: runtimes must provide `RowBatch` beside
   `Columnar` and blanket-implement `ToDataFrame` for `T: Columnar`.
   `ToDataFrame::{to_dataframe, empty_dataframe, schema}` now derive from
   `Columnar::encode`; `schema()` returns Polars `SchemaRef`.
-- **Breaking**: generated code and the default runtime now target `polars`
-  v0.55 and `polars-arrow` v0.55. Downstream crates using generated impls
-  should use `polars = "0.55"`.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling runtime
   trait paths are inferred.

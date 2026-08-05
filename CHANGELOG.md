@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
   `Columnar` and blanket-implement `ToDataFrame` for `T: Columnar`.
   `ToDataFrame::{to_dataframe, empty_dataframe, schema}` now derive from
   `Columnar::encode`; `schema()` returns Polars `SchemaRef`.
+- **Breaking**: generated code and the default runtime now target `polars`
+  v0.55 and `polars-arrow` v0.55. Downstream crates using generated impls
+  should use `polars = "0.55"`.
 - Generic nested payload bounds now require only `Columnar`. A standalone
   `columnar = "..."` runtime override is accepted and its sibling runtime
   trait paths are inferred.

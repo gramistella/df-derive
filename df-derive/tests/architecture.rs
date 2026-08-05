@@ -358,7 +358,7 @@ mod core {
 
 fn polars_deps() -> &'static str {
     r#"
-polars = { version = "0.54", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }
+polars = { version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }
 "#
 }
 
@@ -781,8 +781,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-polars = { version = "0.54", default-features = false }
-polars-arrow = { version = "0.54", default-features = false }
+polars = { version = "0.55", default-features = false }
+polars-arrow = { version = "0.55", default-features = false }
 "#,
             ),
             ("paft-utils/src/lib.rs", paft_utils_runtime.as_str()),
@@ -805,8 +805,8 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.54", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.54" }}
+polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.55" }}
 
 [[example]]
 name = "unannotated"
@@ -858,8 +858,8 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.54", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.54" }}
+polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.55" }}
 
 [[example]]
 name = "unannotated"
@@ -1013,7 +1013,7 @@ publish = false
 [dependencies]
 df-derive-core = {{ path = "{}" }}
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.54", default-features = false }}
+polars = {{ version = "0.55", default-features = false }}
 "#,
         toml_path(&root.join("df-derive-core")),
         toml_path(&root.join("df-derive-macros")),
@@ -1085,7 +1085,7 @@ publish = false
 
 [dependencies]
 dfd = {{ package = "df-derive", path = "{}" }}
-pl = {{ package = "polars", version = "0.54", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pl = {{ package = "polars", version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
 time_crate = {{ package = "chrono", version = "0.4" }}
 "#,
         toml_path(root),
@@ -1212,8 +1212,8 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.54", default-features = false, features = ["dtype-decimal"] }}
-polars-arrow = {{ version = "0.54", default-features = false }}
+polars = {{ version = "0.55", default-features = false, features = ["dtype-decimal"] }}
+polars-arrow = {{ version = "0.55", default-features = false }}
 rust_decimal = "1.42"
 "#,
         toml_path(&root.join("df-derive-macros")),
@@ -1287,8 +1287,8 @@ publish = false
 
 [dependencies]
 df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.54", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.54" }}
+polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
+pa = {{ package = "polars-arrow", version = "0.55" }}
 "#,
         toml_path(&root.join("df-derive-macros")),
     );

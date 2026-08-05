@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **Breaking**: generated code and the default runtime now target `polars`
   v0.55 and `polars-arrow` v0.55. Downstream crates using generated impls
   should use `polars = "0.55"`.
+- **Breaking**: the minimum supported Rust version is now 1.95.
 
 ## [0.4.0] - 2026-06-29
 

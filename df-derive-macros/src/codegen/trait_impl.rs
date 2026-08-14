@@ -19,7 +19,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                 }
 
                 fn empty_dataframe() -> #pp::PolarsResult<#pp::DataFrame> {
-                    #pp::DataFrame::new_infer_height(::std::vec![])
+                    ::std::result::Result::Ok(#pp::DataFrame::empty_with_height(0))
                 }
 
                 fn schema() -> #pp::PolarsResult<::std::vec::Vec<(::std::string::String, #pp::DataType)>> {
@@ -85,7 +85,7 @@ pub fn generate_trait_impl(ir: &StructIR, config: &super::MacroConfig) -> TokenS
                     all_series.extend(#empty_series_creations);
                 )*
                 #unique_name_validation
-                #pp::DataFrame::new_infer_height(all_series)
+                #pp::DataFrame::new(0, all_series)
             }
 
             fn schema() -> #pp::PolarsResult<::std::vec::Vec<(::std::string::String, #pp::DataType)>> {

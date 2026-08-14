@@ -29,7 +29,7 @@ types, duration types, byte blobs, and decimal backends.
 
 ```toml
 [dependencies]
-df-derive = "0.4"
+df-derive = "0.5"
 polars = "0.55"
 
 # If your models use these types:
@@ -432,7 +432,7 @@ Without overrides, the macro discovers a `dataframe` module in this order:
 
 Discovery uses `proc_macro_crate::crate_name`, so dependency renames are
 respected. For example, a dependency declared as
-`dfd = { package = "df-derive", version = "0.4" }` is emitted as
+`dfd = { package = "df-derive", version = "0.5" }` is emitted as
 `::dfd::dataframe`.
 
 The final `crate::core::dataframe` fallback is for legacy/local runtimes in
@@ -458,8 +458,8 @@ Use the macro crate directly with the shared core runtime:
 
 ```toml
 [dependencies]
-df-derive-core = "0.4"
-df-derive-macros = "0.4"
+df-derive-core = "0.5"
+df-derive-macros = "0.5"
 polars = "0.55"
 ```
 
@@ -518,7 +518,7 @@ and `df-derive-core`.
 To disable it:
 
 ```toml
-df-derive = { version = "0.4", default-features = false }
+df-derive = { version = "0.5", default-features = false }
 ```
 
 Custom decimal backends should implement `Decimal128Encode` and use

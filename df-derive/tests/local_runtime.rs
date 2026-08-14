@@ -4,7 +4,7 @@
 
 #[allow(dead_code)]
 pub mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
 
     pub trait ToDataFrame {
         fn to_dataframe(&self) -> PolarsResult<DataFrame>;
@@ -37,21 +37,13 @@ pub mod dataframe {
         }
     }
 
-    fn zero_column_dataframe_with_height(n: usize) -> PolarsResult<DataFrame> {
-        let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
-            .extend_constant(AnyValue::Null, n)?;
-        let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-        df.drop_in_place("_dummy")?;
-        Ok(df)
-    }
-
     impl ToDataFrame for () {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(1)
+            Ok(DataFrame::empty_with_height(1))
         }
 
         fn empty_dataframe() -> PolarsResult<DataFrame> {
-            DataFrame::new_infer_height(vec![])
+            Ok(DataFrame::empty_with_height(0))
         }
 
         fn schema() -> PolarsResult<Vec<(String, DataType)>> {
@@ -61,11 +53,11 @@ pub mod dataframe {
 
     impl Columnar for () {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
+            Ok(DataFrame::empty_with_height(items.len()))
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
+            Ok(DataFrame::empty_with_height(items.len()))
         }
     }
 

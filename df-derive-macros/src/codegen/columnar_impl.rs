@@ -84,17 +84,11 @@ fn columnar_method_body(
         #(#builders)*
         #unique_name_validation
         if #columns.is_empty() {
-            let num_rows = items.len();
-            let dummy = #pp::Series::new_empty(
-                "_dummy".into(),
-                &#pp::DataType::Null,
-            )
-            .extend_constant(#pp::AnyValue::Null, num_rows)?;
-            let mut df = #pp::DataFrame::new_infer_height(::std::vec![dummy.into()])?;
-            df.drop_in_place("_dummy")?;
-            return ::std::result::Result::Ok(df);
+            return ::std::result::Result::Ok(
+                #pp::DataFrame::empty_with_height(items.len())
+            );
         }
-        #pp::DataFrame::new_infer_height(#columns)
+        #pp::DataFrame::new(items.len(), #columns)
     }
 }
 

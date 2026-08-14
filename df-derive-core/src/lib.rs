@@ -29,8 +29,8 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive-core = "0.4"
-//! df-derive-macros = "0.4"
+//! df-derive-core = "0.5"
+//! df-derive-macros = "0.5"
 //! polars = "0.55"
 //! ```
 //!
@@ -62,7 +62,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod dataframe {
-    use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, Series};
+    use polars::prelude::{DataFrame, DataType, PolarsResult};
 
     #[cfg(feature = "rust_decimal")]
     const DECIMAL128_MAX_SCALE: u32 = 38;
@@ -119,27 +119,18 @@ pub mod dataframe {
         }
     }
 
-    fn zero_column_dataframe_with_height(n: usize) -> PolarsResult<DataFrame> {
-        let dummy = Series::new_empty("_dummy".into(), &DataType::Null)
-            .extend_constant(AnyValue::Null, n)?;
-        let mut df = DataFrame::new_infer_height(vec![dummy.into()])?;
-        df.drop_in_place("_dummy")?;
-        Ok(df)
-    }
-
     // Unit-type support for generic payloads such as `Wrapper<()>`. Direct
     // derived fields of type `()` are rejected by df-derive, but a generic
     // field instantiated as `()` contributes zero columns. The
     // `to_dataframe` / `columnar_to_dataframe` paths must still produce a
-    // DataFrame with the correct row count, so we use a temporary dummy
-    // column that is dropped immediately after construction.
+    // DataFrame with the correct row count.
     impl ToDataFrame for () {
         fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(1)
+            Ok(DataFrame::empty_with_height(1))
         }
 
         fn empty_dataframe() -> PolarsResult<DataFrame> {
-            DataFrame::new_infer_height(vec![])
+            Ok(DataFrame::empty_with_height(0))
         }
 
         fn schema() -> PolarsResult<Vec<(String, DataType)>> {
@@ -149,11 +140,11 @@ pub mod dataframe {
 
     impl Columnar for () {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
+            Ok(DataFrame::empty_with_height(items.len()))
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-            zero_column_dataframe_with_height(items.len())
+            Ok(DataFrame::empty_with_height(items.len()))
         }
     }
 

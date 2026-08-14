@@ -11,6 +11,17 @@ All notable changes to this project will be documented in this file.
   should use `polars = "0.55"`.
 - **Breaking**: the minimum supported Rust version is now 1.95.
 
+### Fixed
+
+- Generated DataFrames now pass the expected row count to Polars' explicit
+  height constructor, so column-height mismatches are rejected instead of
+  allowing the first column to choose the frame height implicitly.
+
+### Performance
+
+- Empty structs and unit payloads now use `DataFrame::empty_with_height`
+  directly instead of allocating and then dropping a temporary null column.
+
 ## [0.4.0] - 2026-06-29
 
 ### Changed
@@ -221,6 +232,7 @@ Yanked due to polars breaking change, use 0.2.0 instead.
 
 - Initial public release.
 
+[0.5.0]: https://github.com/gramistella/df-derive/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gramistella/df-derive/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/gramistella/df-derive/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gramistella/df-derive/compare/v0.2.0...v0.3.0

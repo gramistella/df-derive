@@ -5,7 +5,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.4"
+//! df-derive = "0.5"
 //! polars = "0.55"
 //! ```
 //!

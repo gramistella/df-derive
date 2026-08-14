@@ -5,8 +5,8 @@
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.4"
-//! polars = "0.54"
+//! df-derive = "0.5"
+//! polars = "0.55"
 //! ```
 //!
 //! The default facade hides the macro's `polars-arrow` implementation

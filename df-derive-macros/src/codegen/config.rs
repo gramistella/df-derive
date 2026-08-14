@@ -20,9 +20,22 @@ pub struct RuntimeSurfacePaths {
     /// Fully-qualified path to the hidden `ColumnSink` checked-composition
     /// boundary whose slots provide authoritative output metadata.
     pub column_sink: syn::Path,
+    /// Fully-qualified path to the runtime-owned exact-storage helpers used
+    /// by generated primitive-list encoders.
+    pub encode_support: syn::Path,
     /// Fully-qualified path to the `Decimal128Encode` trait used by Decimal
     /// fields.
     pub decimal128_encode: syn::Path,
+}
+
+fn encode_support_path(columnar: &syn::Path) -> syn::Path {
+    let mut path = columnar.clone();
+    let _ = path.segments.pop();
+    path.segments
+        .push(syn::PathSegment::from(format_ident!("__private")));
+    path.segments
+        .push(syn::PathSegment::from(format_ident!("encode")));
+    path
 }
 
 /// Macro-wide configuration for generated code
@@ -90,6 +103,7 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
     let row_cursor = attrs::rebase_last_segment(&columnar, "RowCursor");
     let columnar_spec = attrs::rebase_last_segment(&columnar, "ColumnarSpec");
     let column_sink = attrs::rebase_last_segment(&columnar, "ColumnSink");
+    let encode_support = encode_support_path(&columnar);
     let decimal128_encode = attrs.decimal128_encode.as_ref().map_or_else(
         || attrs::rebase_last_segment(&columnar, "Decimal128Encode"),
         |override_| override_.value.clone(),
@@ -114,6 +128,7 @@ pub fn build_macro_config(ast: &DeriveInput) -> syn::Result<MacroConfig> {
             row_cursor,
             columnar_spec,
             column_sink,
+            encode_support,
             decimal128_encode,
         },
         external_paths,
@@ -150,12 +165,31 @@ mod tests {
             "custom_runtime :: ColumnSink",
         );
         assert_eq!(
+            config.runtime.encode_support.to_token_stream().to_string(),
+            "custom_runtime :: __private :: encode",
+        );
+        assert_eq!(
             config
                 .runtime
                 .decimal128_encode
                 .to_token_stream()
                 .to_string(),
             "custom_runtime :: Decimal128Encode",
+        );
+    }
+
+    #[test]
+    fn encode_support_preserves_crate_and_absolute_path_roots() {
+        let crate_path = encode_support_path(&syn::parse_quote!(crate::runtime::Columnar));
+        let absolute_path = encode_support_path(&syn::parse_quote!(::runtime::Columnar));
+
+        assert_eq!(
+            crate_path.to_token_stream().to_string(),
+            "crate :: runtime :: __private :: encode",
+        );
+        assert_eq!(
+            absolute_path.to_token_stream().to_string(),
+            ":: runtime :: __private :: encode",
         );
     }
 }

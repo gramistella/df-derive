@@ -65,11 +65,11 @@ pub(super) fn wrap_option_access_chain_primitive(
         },
         materialization: ctx.materialization.clone(),
         primitive_list_plan: ctx.primitive_list_plan,
-        row_replay: ctx.row_replay,
         cardinality: ctx.cardinality,
         ident_scope: ctx.ident_scope,
         input_rows_exact: ctx.input_rows_exact,
         decimal128_encode_trait: ctx.decimal128_encode_trait,
+        encode_support: ctx.encode_support,
         paths: ctx.paths,
     };
     let LeafArm {

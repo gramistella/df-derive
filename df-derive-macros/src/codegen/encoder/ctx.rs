@@ -15,12 +15,6 @@ pub struct BaseCtx<'a> {
     pub idx: usize,
 }
 
-#[derive(Clone, Copy)]
-pub struct RowReplay<'a> {
-    pub row: &'a syn::Ident,
-    pub replay: &'a TokenStream,
-}
-
 /// Relates one primitive-leaf push to the source iterator.
 ///
 /// Only row-aligned leaves may seed validity from an exact iterator size
@@ -83,11 +77,11 @@ pub struct LeafCtx<'a> {
     pub base: BaseCtx<'a>,
     pub(in crate::codegen) materialization: MaterializationTarget,
     pub primitive_list_plan: Option<PrimitiveListPolicy>,
-    pub row_replay: Option<RowReplay<'a>>,
     pub cardinality: LeafCardinality,
     pub ident_scope: GeneratedIdentScope<'a>,
     pub input_rows_exact: &'a syn::Ident,
     pub decimal128_encode_trait: &'a syn::Path,
+    pub encode_support: &'a syn::Path,
     pub paths: &'a ExternalPaths,
 }
 

@@ -154,11 +154,11 @@ impl TupleBuilder<'_> {
             },
             materialization: super::ctx::MaterializationTarget::schema_slot(&output_slot),
             primitive_list_plan: None,
-            row_replay: None,
             cardinality: LeafCardinality::InputRows,
             ident_scope: self.ident_scope,
             input_rows_exact: &input_rows_exact,
             decimal128_encode_trait: &self.config.runtime.decimal128_encode,
+            encode_support: &self.config.runtime.encode_support,
             paths: &self.config.external_paths,
         };
         let encoder = build_encoder_with_option_receiver(leaf, wrapper, &ctx, None);
@@ -366,9 +366,7 @@ impl TupleBuilder<'_> {
                     primitive_list_plan: crate::codegen::planner::PrimitiveListPolicy::for_wrapper(
                         leaf,
                         &effective_wrapper,
-                        crate::codegen::planner::RowReplayCapability::Unavailable,
                     ),
-                    row_replay: None,
                     cardinality: if prefix.is_empty()
                         && matches!(&effective_wrapper, WrapperShape::Leaf(_))
                     {
@@ -379,6 +377,7 @@ impl TupleBuilder<'_> {
                     ident_scope: self.ident_scope,
                     input_rows_exact: &input_rows_exact,
                     decimal128_encode_trait: &self.config.runtime.decimal128_encode,
+                    encode_support: &self.config.runtime.encode_support,
                     paths: &self.config.external_paths,
                 };
                 let option_receiver = (input_optional && copied_access.is_none())

@@ -39,48 +39,14 @@ fn layer_idents(field_idx: usize, nested: bool, layer_idx: usize) -> LayerIdents
     LayerIdents::new(namespace, layer_idx)
 }
 
-fn element_leaf_body<'a>(
-    shape: &'a VecLayers,
-    leaf_bind: &'a syn::Ident,
-    write_leaf: &'a TokenStream,
-    prepare_segment: Option<&'a TokenStream>,
+fn segment_leaf_body<'a>(
+    leaf_segment: &'a syn::Ident,
+    fill_segment: &'a TokenStream,
 ) -> impl Fn(&TokenStream) -> TokenStream + 'a {
     move |vec_bind: &TokenStream| -> TokenStream {
-        let segment_prelude = prepare_segment.map(|prepare_segment| {
-            let additional = idents::leaf_reserve_len();
-            quote! {
-                let #additional: usize = #vec_bind.len();
-                #prepare_segment
-            }
-        });
-        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
-            quote! {
-                #segment_prelude
-                for #leaf_bind in #vec_bind.iter() {
-                    #write_leaf
-                }
-            }
-        } else {
-            let raw_bind = idents::leaf_value_raw();
-            let chain_ref = access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
-            let resolved = chain_ref.expr;
-            if chain_ref.has_option {
-                quote! {
-                    #segment_prelude
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind: ::std::option::Option<_> = #resolved;
-                        #write_leaf
-                    }
-                }
-            } else {
-                quote! {
-                    #segment_prelude
-                    for #raw_bind in #vec_bind.iter() {
-                        let #leaf_bind = #resolved;
-                        #write_leaf
-                    }
-                }
-            }
+        quote! {
+            let #leaf_segment = (#vec_bind).as_slice();
+            #fill_segment
         }
     }
 }
@@ -290,8 +256,8 @@ fn primitive_list_emit(
     pp: &TokenStream,
     idx: usize,
 ) -> SeriesPlan {
-    let leaf_bind = idents::leaf_value();
     let common = encoding.common();
+    let leaf_segment = &common.leaf_segment;
     let emitter = ShapeEmitter::vec(ShapeEmitterParts {
         row_capacity: &common.row_capacity,
         shape,
@@ -301,6 +267,7 @@ fn primitive_list_emit(
         pa_root,
     });
     let offsets_decls = emitter.offsets_decls();
+    let grouped_outer_offsets_decls = emitter.grouped_outer_offsets_decls();
     let validity_decls = emitter.validity_decls();
     let materialize = primitive_list_materialize(common, &emitter, idx, pp);
     let storage_decls = &common.storage_decls;
@@ -308,13 +275,8 @@ fn primitive_list_emit(
 
     match encoding {
         PrimitiveListPlan::StreamReserved(plan) => {
-            let leaf_body = element_leaf_body(
-                shape,
-                &leaf_bind,
-                &plan.write_leaf,
-                Some(&plan.prepare_segment),
-            );
-            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_push);
+            let leaf_body = segment_leaf_body(leaf_segment, &plan.fill_segment);
+            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_fill);
             SeriesPlan::new(
                 vec![InitOp::new(quote! {
                     #extra_imports
@@ -329,15 +291,8 @@ fn primitive_list_emit(
             )
         }
         PrimitiveListPlan::BulkSegments(plan) => {
-            let binding = &plan.binding;
-            let write = &plan.write;
-            let leaf_body = |vec_bind: &TokenStream| {
-                quote! {
-                    let #binding: &::std::vec::Vec<_> = #vec_bind;
-                    #write
-                }
-            };
-            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_push);
+            let leaf_body = segment_leaf_body(leaf_segment, &plan.fill_segment);
+            let push = emitter.row_push(&leaf_body, &plan.leaf_offsets_post_fill);
             SeriesPlan::new(
                 vec![InitOp::new(quote! {
                     #extra_imports
@@ -351,74 +306,60 @@ fn primitive_list_emit(
                 common.materialization.output_slot().clone(),
             )
         }
-        PrimitiveListPlan::ReplayRows(plan) => {
-            let shape_counts = &plan.shape_counts;
-            let row = &plan.row;
-            let replay = &plan.replay;
-            let push = emitter.row_count(shape_counts);
-            let fill_segment = element_leaf_body(shape, &leaf_bind, &plan.write_leaf, None);
-            let fill_row = emitter.row_push(&fill_segment, &plan.leaf_offsets_post_push);
-            let exact_offsets_decls = emitter.exact_offsets_decls(shape_counts);
-            let exact_validity_decls = emitter.exact_validity_decls(shape_counts);
-            let cardinality_count = shape.depth() + 1;
-            SeriesPlan::new(
-                vec![InitOp::new(quote! {
-                    #extra_imports
-                    let mut #shape_counts: [usize; #cardinality_count] =
-                        [0; #cardinality_count];
-                })],
-                ScanOp::new(push),
-                vec![PostScanOp::replay_rows(quote! {
-                    #storage_decls
-                    #exact_offsets_decls
-                    #exact_validity_decls
-                    for #row in #replay {
-                        #fill_row
-                    }
-                })],
-                quote! {{ #materialize }},
-                common.materialization.output_slot().clone(),
-            )
-        }
         PrimitiveListPlan::CaptureSegments(plan) => {
+            let encode_support = &plan.encode_support;
             let leaf_count = &plan.leaf_count;
             let leaf_segments = &plan.leaf_segments;
-            let leaf_segment = &plan.leaf_segment;
+            let row_capacity = &common.row_capacity;
             let collect_segment = |vec_bind: &TokenStream| {
                 quote! {
                     let #leaf_segment: &::std::vec::Vec<_> = #vec_bind;
-                    #leaf_count = #leaf_count.checked_add(#leaf_segment.len()).ok_or_else(||
+                    #leaf_count = #leaf_segments.capture(#leaf_segment).ok_or_else(||
                         #pp::polars_err!(
                             ComputeError:
                             "df-derive: flattened list element count exceeds usize range",
                         )
                     )?;
-                    if !#leaf_segment.is_empty() {
-                        #leaf_segments.push(#leaf_segment);
-                    }
                 }
             };
             let push = emitter.row_push(&collect_segment, &quote! { #leaf_count });
-            let fill_segment = element_leaf_body(shape, &leaf_bind, &plan.write_leaf, None);
-            let fill_segment = fill_segment(&quote! { #leaf_segment });
-            let fill_leaf_storage = quote! {
-                for #leaf_segment in #leaf_segments {
-                    #fill_segment
-                }
-            };
+            let fill_segment = &plan.fill_segment;
             SeriesPlan::new(
                 vec![InitOp::new(quote! {
                     #extra_imports
                     let mut #leaf_count: usize = 0;
-                    let mut #leaf_segments: ::std::vec::Vec<_> =
-                        ::std::vec::Vec::new();
+                    let mut #leaf_segments =
+                        #encode_support::CapturedSegments::with_capacity(#row_capacity);
                     #offsets_decls
                     #validity_decls
                 })],
                 ScanOp::new(push),
                 vec![PostScanOp::new(quote! {
                     #storage_decls
-                    #fill_leaf_storage
+                    #fill_segment
+                })],
+                quote! {{ #materialize }},
+                common.materialization.output_slot().clone(),
+            )
+        }
+        PrimitiveListPlan::CaptureGroups(plan) => {
+            let encode_support = &plan.encode_support;
+            let leaf_groups = &plan.leaf_groups;
+            let row_capacity = &common.row_capacity;
+            let push = emitter.row_push_grouped(leaf_groups);
+            let fill_group = &plan.fill_group;
+            SeriesPlan::new(
+                vec![InitOp::new(quote! {
+                    #extra_imports
+                    let mut #leaf_groups =
+                        #encode_support::CapturedSegmentGroups::with_capacity(#row_capacity);
+                    #grouped_outer_offsets_decls
+                    #validity_decls
+                })],
+                ScanOp::new(push),
+                vec![PostScanOp::new(quote! {
+                    #storage_decls
+                    #fill_group
                 })],
                 quote! {{ #materialize }},
                 common.materialization.output_slot().clone(),

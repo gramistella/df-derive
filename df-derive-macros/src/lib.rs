@@ -15,7 +15,8 @@
 //! Custom runtimes must expose canonical `RowCursor`, `ColumnarSpec`, and
 //! `ColumnSink` siblings beside the selected `Columnar` path. Its public
 //! `next_slot` result must expose `name`, `dtype`, and consuming `commit`
-//! operations. Custom runtimes also provide the checked `EncodedBatch`
+//! operations, and primitive-list derives use the sibling hidden
+//! `__private::encode` exact-storage module. Custom runtimes also provide the checked `EncodedBatch`
 //! returned by their blanket `Columnar`
 //! implementation.
 //! Without runtime overrides, discovery tries `df-derive`, `df-derive-core`,
@@ -73,6 +74,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///   path; the `Columnar` and `Decimal128Encode` paths are inferred by replacing
 ///   the last path segment. The resolved `Columnar` module must also expose
 ///   canonical sibling `RowCursor`, `ColumnarSpec`, and `ColumnSink` items.
+///   Primitive-list fields additionally require that module's hidden
+///   `__private::encode` storage contract.
 ///   Optionally, set
 ///   `Columnar` explicitly with
 ///   `#[df_derive(columnar = "path::Columnar")]`; its sibling `RowCursor`,

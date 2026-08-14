@@ -130,6 +130,374 @@ fn cargo_tree_fixture_with_files(
     String::from_utf8(output.stdout).expect("cargo tree stdout is valid UTF-8")
 }
 
+fn runtime_encode_support_source() -> &'static str {
+    r#"
+        pub mod encode {
+            use super::polars_arrow::bitmap::{Bitmap, MutableBitmap};
+
+            pub struct CapturedSegments<'source, S> {
+                segments: Vec<&'source Vec<S>>,
+                len: usize,
+            }
+
+            impl<'source, S> CapturedSegments<'source, S> {
+                pub fn new() -> Self {
+                    Self { segments: Vec::new(), len: 0 }
+                }
+
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self { segments: Vec::with_capacity(capacity), len: 0 }
+                }
+
+                pub fn capture(&mut self, source: &'source Vec<S>) -> Option<usize> {
+                    let len = self.len.checked_add(source.len())?;
+                    if !source.is_empty() { self.segments.push(source); }
+                    self.len = len;
+                    Some(len)
+                }
+
+                pub fn len(&self) -> usize { self.len }
+
+                pub fn visit(&self, mut visit: impl FnMut(&S)) {
+                    for segment in &self.segments {
+                        for item in segment.iter() { visit(item); }
+                    }
+                }
+            }
+
+            pub struct CapturedSegmentGroups<'source, S> {
+                groups: Vec<&'source Vec<Vec<S>>>,
+                len: usize,
+                segment_count: usize,
+            }
+
+            impl<'source, S> CapturedSegmentGroups<'source, S> {
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self {
+                        groups: Vec::with_capacity(capacity),
+                        len: 0,
+                        segment_count: 0,
+                    }
+                }
+
+                pub fn capture_group(&mut self, source: &'source Vec<Vec<S>>) -> Option<()> {
+                    let segment_count = self.segment_count.checked_add(source.len())?;
+                    segment_count.checked_add(1)?;
+                    let mut len = self.len;
+                    for segment in source {
+                        len = len.checked_add(segment.len())?;
+                    }
+                    <i64 as std::convert::TryFrom<usize>>::try_from(len).ok()?;
+                    if !source.is_empty() { self.groups.push(source); }
+                    self.len = len;
+                    self.segment_count = segment_count;
+                    Some(())
+                }
+
+                pub fn len(&self) -> usize { self.len }
+
+                pub fn segment_count(&self) -> usize { self.segment_count }
+
+                pub fn visit_segments(&self, mut visit: impl FnMut(&Vec<S>)) -> Vec<i64> {
+                    let mut offsets = Vec::with_capacity(self.segment_count + 1);
+                    offsets.push(0);
+                    let mut len = 0usize;
+                    for group in &self.groups {
+                        for segment in group.iter() {
+                            visit(segment);
+                            len += segment.len();
+                            offsets.push(len as i64);
+                        }
+                    }
+                    assert_eq!(len, self.len);
+                    assert_eq!(offsets.len(), self.segment_count + 1);
+                    offsets
+                }
+            }
+
+            pub struct ExactBuffer<T> {
+                values: Vec<T>,
+                exact_len: Option<usize>,
+            }
+
+            impl<T> ExactBuffer<T> {
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self { values: Vec::with_capacity(capacity), exact_len: None }
+                }
+
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self { values: Vec::with_capacity(len), exact_len: Some(len) }
+                }
+
+                fn prepare_segment(&mut self, additional: usize) {
+                    let end = self.values.len().checked_add(additional).unwrap();
+                    if let Some(exact_len) = self.exact_len {
+                        assert!(end <= exact_len);
+                    } else {
+                        self.values.reserve(additional);
+                    }
+                }
+
+                pub fn extend_segment<S>(&mut self, source: &[S], mut map: impl FnMut(&S) -> T) {
+                    self.prepare_segment(source.len());
+                    self.values.extend(source.iter().map(&mut map));
+                }
+
+                pub fn try_extend_segment<S, E>(&mut self, source: &[S], mut map: impl FnMut(&S) -> Result<T, E>) -> Result<(), E> {
+                    self.prepare_segment(source.len());
+                    for value in source { self.values.push(map(value)?); }
+                    Ok(())
+                }
+
+                pub fn extend_captured<S>(&mut self, source: &CapturedSegments<'_, S>, mut map: impl FnMut(&S) -> T) {
+                    self.prepare_segment(source.len);
+                    for segment in &source.segments {
+                        self.values.extend(segment.iter().map(&mut map));
+                    }
+                }
+
+                pub fn extend_copied_captured(&mut self, source: &CapturedSegments<'_, T>) where T: Copy {
+                    self.prepare_segment(source.len);
+                    for segment in &source.segments {
+                        self.values.extend_from_slice(segment);
+                    }
+                }
+
+                pub fn extend_grouped<S>(&mut self, source: &CapturedSegmentGroups<'_, S>, mut map: impl FnMut(&S) -> T) -> Vec<i64> {
+                    self.prepare_segment(source.len);
+                    source.visit_segments(|segment| {
+                        self.values.extend(segment.iter().map(&mut map));
+                    })
+                }
+
+                pub fn extend_copied_grouped(&mut self, source: &CapturedSegmentGroups<'_, T>) -> Vec<i64> where T: Copy {
+                    self.prepare_segment(source.len);
+                    source.visit_segments(|segment| self.values.extend_from_slice(segment))
+                }
+
+                pub fn extend_nullable_segment<S>(&mut self, validity: &mut PreparedValidity, source: &[S], mut map: impl FnMut(&S) -> (T, bool)) {
+                    let start = self.values.len();
+                    self.prepare_segment(source.len());
+                    validity.prepare_segment(start, source.len());
+                    for value in source {
+                        let (value, valid) = map(value);
+                        self.values.push(value);
+                        validity.commit(valid);
+                    }
+                }
+
+                pub fn extend_nullable_captured<S>(&mut self, validity: &mut PreparedValidity, source: &CapturedSegments<'_, S>, mut map: impl FnMut(&S) -> Option<T>) where T: Default {
+                    let start = self.values.len();
+                    self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    for segment in &source.segments {
+                        for value in segment.iter() {
+                            match map(value) {
+                                Some(value) => { self.values.push(value); validity.commit(true); }
+                                None => { self.values.push(T::default()); validity.commit(false); }
+                            }
+                        }
+                    }
+                }
+
+                pub fn extend_nullable_options_captured(&mut self, validity: &mut PreparedValidity, source: &CapturedSegments<'_, Option<T>>) where T: Copy + Default {
+                    self.extend_nullable_captured(validity, source, |value| *value);
+                }
+
+                pub fn extend_nullable_grouped<S>(&mut self, validity: &mut PreparedValidity, source: &CapturedSegmentGroups<'_, S>, mut map: impl FnMut(&S) -> Option<T>) -> Vec<i64> where T: Default {
+                    let start = self.values.len();
+                    self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    source.visit_segments(|segment| {
+                        for value in segment {
+                            match map(value) {
+                                Some(value) => { self.values.push(value); validity.commit(true); }
+                                None => { self.values.push(T::default()); validity.commit(false); }
+                            }
+                        }
+                    })
+                }
+
+                pub fn extend_nullable_options_grouped(&mut self, validity: &mut PreparedValidity, source: &CapturedSegmentGroups<'_, Option<T>>) -> Vec<i64> where T: Copy + Default {
+                    self.extend_nullable_grouped(validity, source, |value| *value)
+                }
+
+                pub fn try_extend_nullable_segment<S, E>(&mut self, validity: &mut PreparedValidity, source: &[S], mut map: impl FnMut(&S) -> Result<(T, bool), E>) -> Result<(), E> {
+                    let start = self.values.len();
+                    self.prepare_segment(source.len());
+                    validity.prepare_segment(start, source.len());
+                    for value in source {
+                        let (value, valid) = map(value)?;
+                        self.values.push(value);
+                        validity.commit(valid);
+                    }
+                    Ok(())
+                }
+
+                pub fn len(&self) -> usize { self.values.len() }
+
+                pub fn finish(self) -> Vec<T> {
+                    if let Some(exact_len) = self.exact_len { assert_eq!(self.values.len(), exact_len); }
+                    self.values
+                }
+            }
+
+            pub struct PreparedValidity {
+                bitmap: MutableBitmap,
+                initialized: usize,
+                exact_len: Option<usize>,
+            }
+
+            impl PreparedValidity {
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self { bitmap: MutableBitmap::with_capacity(capacity), initialized: 0, exact_len: None }
+                }
+
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self { bitmap: MutableBitmap::from_len_set(len), initialized: 0, exact_len: Some(len) }
+                }
+
+                fn prepare_segment(&mut self, values_len: usize, additional: usize) {
+                    assert_eq!(values_len, self.initialized);
+                    let end = self.initialized.checked_add(additional).unwrap();
+                    if let Some(exact_len) = self.exact_len {
+                        assert!(end <= exact_len);
+                    } else if self.bitmap.len() < end {
+                        self.bitmap.extend_constant(end - self.bitmap.len(), true);
+                    }
+                }
+
+                fn commit(&mut self, valid: bool) {
+                    if !valid { self.bitmap.set(self.initialized, false); }
+                    self.initialized += 1;
+                }
+
+                pub fn extend_segment<S>(&mut self, values_len: usize, source: &[S], mut map: impl FnMut(&S) -> bool) {
+                    self.prepare_segment(values_len, source.len());
+                    for value in source { let valid = map(value); self.commit(valid); }
+                }
+
+                pub fn extend_captured<S>(&mut self, values_len: usize, source: &CapturedSegments<'_, S>, mut map: impl FnMut(&S) -> bool) {
+                    self.prepare_segment(values_len, source.len);
+                    for segment in &source.segments {
+                        for value in segment.iter() { let valid = map(value); self.commit(valid); }
+                    }
+                }
+
+                pub fn extend_grouped<S>(&mut self, values_len: usize, source: &CapturedSegmentGroups<'_, S>, mut map: impl FnMut(&S) -> bool) -> Vec<i64> {
+                    self.prepare_segment(values_len, source.len);
+                    source.visit_segments(|segment| {
+                        for value in segment { let valid = map(value); self.commit(valid); }
+                    })
+                }
+
+                pub fn try_extend_segment<S, E>(&mut self, values_len: usize, source: &[S], mut map: impl FnMut(&S) -> Result<bool, E>) -> Result<(), E> {
+                    self.prepare_segment(values_len, source.len());
+                    for value in source { let valid = map(value)?; self.commit(valid); }
+                    Ok(())
+                }
+
+                pub fn finish(mut self, actual_len: usize) -> Option<Bitmap> {
+                    assert_eq!(actual_len, self.initialized);
+                    if let Some(exact_len) = self.exact_len { assert_eq!(self.initialized, exact_len); }
+                    self.bitmap.resize(actual_len, true);
+                    self.bitmap.into()
+                }
+            }
+
+            pub struct PreparedBooleanValues {
+                bitmap: MutableBitmap,
+                initialized: usize,
+            }
+
+            impl PreparedBooleanValues {
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self { bitmap: MutableBitmap::from_len_zeroed(len), initialized: 0 }
+                }
+
+                fn prepare_segment(&self, additional: usize) {
+                    assert!(self.initialized.checked_add(additional).unwrap() <= self.bitmap.len());
+                }
+
+                pub fn extend_segment<S>(&mut self, source: &[S], mut map: impl FnMut(&S) -> bool) {
+                    self.prepare_segment(source.len());
+                    for value in source {
+                        self.bitmap.set(self.initialized, map(value));
+                        self.initialized += 1;
+                    }
+                }
+
+                pub fn extend_captured<S>(&mut self, source: &CapturedSegments<'_, S>, mut map: impl FnMut(&S) -> bool) {
+                    self.prepare_segment(source.len);
+                    for segment in &source.segments {
+                        for value in segment.iter() {
+                            self.bitmap.set(self.initialized, map(value));
+                            self.initialized += 1;
+                        }
+                    }
+                }
+
+                pub fn extend_grouped<S>(&mut self, source: &CapturedSegmentGroups<'_, S>, mut map: impl FnMut(&S) -> bool) -> Vec<i64> {
+                    self.prepare_segment(source.len);
+                    source.visit_segments(|segment| {
+                        for value in segment {
+                            self.bitmap.set(self.initialized, map(value));
+                            self.initialized += 1;
+                        }
+                    })
+                }
+
+                pub fn extend_nullable_segment<S>(&mut self, validity: &mut PreparedValidity, source: &[S], mut map: impl FnMut(&S) -> (bool, bool)) {
+                    self.prepare_segment(source.len());
+                    validity.prepare_segment(self.initialized, source.len());
+                    for value in source {
+                        let (value, valid) = map(value);
+                        self.bitmap.set(self.initialized, value);
+                        validity.commit(valid);
+                        self.initialized += 1;
+                    }
+                }
+
+                pub fn extend_nullable_captured<S>(&mut self, validity: &mut PreparedValidity, source: &CapturedSegments<'_, S>, mut map: impl FnMut(&S) -> Option<bool>) {
+                    self.prepare_segment(source.len);
+                    validity.prepare_segment(self.initialized, source.len);
+                    for segment in &source.segments {
+                        for value in segment.iter() {
+                            match map(value) {
+                                Some(value) => { self.bitmap.set(self.initialized, value); validity.commit(true); }
+                                None => { validity.commit(false); }
+                            }
+                            self.initialized += 1;
+                        }
+                    }
+                }
+
+                pub fn extend_nullable_grouped<S>(&mut self, validity: &mut PreparedValidity, source: &CapturedSegmentGroups<'_, S>, mut map: impl FnMut(&S) -> Option<bool>) -> Vec<i64> {
+                    self.prepare_segment(source.len);
+                    validity.prepare_segment(self.initialized, source.len);
+                    source.visit_segments(|segment| {
+                        for value in segment {
+                            match map(value) {
+                                Some(value) => { self.bitmap.set(self.initialized, value); validity.commit(true); }
+                                None => { validity.commit(false); }
+                            }
+                            self.initialized += 1;
+                        }
+                    })
+                }
+
+                pub fn len(&self) -> usize { self.initialized }
+
+                pub fn finish(self) -> Bitmap {
+                    assert_eq!(self.initialized, self.bitmap.len());
+                    self.bitmap.into()
+                }
+            }
+
+        }
+"#
+}
+
 fn paft_like_runtime_lib() -> String {
     [
         r#"
@@ -146,8 +514,9 @@ pub mod dataframe {
     pub mod __private {
         pub use polars;
         pub use pa as polars_arrow;
-    }
 "#,
+        runtime_encode_support_source(),
+        "    }\n",
         runtime_traits_source(),
         "}\n",
     ]
@@ -291,12 +660,10 @@ fn runtime_traits_source() -> &'static str {
 
     /// Iterator boundary for generated encoders that may revisit yielded rows.
     ///
-    /// # Safety
-    ///
     /// `yielded` must equal the number of successful `next` calls. After
     /// `enable_replay`, `replay` must yield those items exactly once in source
-    /// order. Generated exact-capacity writes rely on this contract.
-    pub unsafe trait RowCursor: Iterator {
+    /// order. Runtime storage validates generated fill counts.
+    pub trait RowCursor: Iterator {
         type Replay<'cursor>: Iterator<Item = Self::Item>
         where
             Self: 'cursor;
@@ -346,7 +713,7 @@ fn runtime_traits_source() -> &'static str {
         }
     }
 
-    unsafe impl<I> RowCursor for StreamingCursor<I>
+    impl<I> RowCursor for StreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -412,7 +779,7 @@ fn runtime_traits_source() -> &'static str {
         }
     }
 
-    unsafe impl<I> RowCursor for ReplayStreamingCursor<I>
+    impl<I> RowCursor for ReplayStreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -469,7 +836,7 @@ fn runtime_traits_source() -> &'static str {
         }
     }
 
-    unsafe impl<'row, T> RowCursor for SliceCursor<'row, T> {
+    impl<'row, T> RowCursor for SliceCursor<'row, T> {
         type Replay<'cursor>
             = std::slice::Iter<'row, T>
         where
@@ -513,7 +880,7 @@ fn runtime_traits_source() -> &'static str {
         }
     }
 
-    unsafe impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
+    impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
         type Replay<'cursor>
             = std::iter::Copied<std::slice::Iter<'slice, &'row T>>
         where
@@ -682,8 +1049,9 @@ pub mod dataframe {
     pub mod __private {
         pub use polars;
         pub use polars_arrow;
-    }
 "#,
+        runtime_encode_support_source(),
+        "    }\n",
         runtime_traits_source(),
         "}\n",
     ]
@@ -721,8 +1089,9 @@ mod core {
         pub mod __private {
             pub use polars;
             pub use pa as polars_arrow;
-        }
 "#,
+        runtime_encode_support_source(),
+        "        }\n",
         runtime_traits_source(),
         "    }\n}\n",
     ]
@@ -1676,15 +2045,47 @@ use crate::core::dataframe::ToDataFrame as _;
 "#,
         runtime.as_str(),
         r#"
+struct Label(&'static str);
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
 #[derive(ToDataFrame)]
 struct Local {
     id: u32,
     name: String,
+    nullable_numbers: Vec<Option<i32>>,
+    nullable_flags: Vec<Option<bool>>,
+    deep_numbers: Vec<Vec<Option<i32>>>,
+    #[df_derive(as_string)]
+    labels: Vec<Option<Label>>,
 }
 
 fn main() -> polars::prelude::PolarsResult<()> {
-    let df = Local { id: 1, name: "local".into() }.to_dataframe()?;
-    assert_eq!(df.shape(), (1, 2));
+    let row = Local {
+        id: 1,
+        name: "local".into(),
+        nullable_numbers: vec![Some(10), None, Some(30)],
+        nullable_flags: vec![Some(true), None, Some(false)],
+        deep_numbers: vec![vec![Some(1), None], vec![], vec![Some(3)]],
+        labels: vec![Some(Label("alpha")), None, Some(Label("omega"))],
+    };
+    let df = row.to_dataframe()?;
+    assert_eq!(df.shape(), (1, 6));
+
+    let empty = Local {
+        id: 2,
+        name: "empty".into(),
+        nullable_numbers: vec![],
+        nullable_flags: vec![],
+        deep_numbers: vec![],
+        labels: vec![],
+    };
+    let batch = crate::core::dataframe::Columnar::encode([&row, &empty])?;
+    assert_eq!(batch.shape(), (2, 6));
     Ok(())
 }
 "#,

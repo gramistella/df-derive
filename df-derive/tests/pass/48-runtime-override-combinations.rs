@@ -7,6 +7,7 @@ mod runtime_support;
 mod custom_runtime {
     use super::*;
 
+    pub use super::runtime_support::dataframe::__private;
     pub use super::runtime_support::dataframe::{
         ColumnSink, Columnar as MyColumnar, ColumnarSpec, RowCursor,
     };
@@ -55,6 +56,7 @@ mod custom_runtime {
 }
 
 mod columnar_only_runtime {
+    pub use super::custom_runtime::__private;
     pub use super::custom_runtime::{
         ColumnSink, ColumnarSpec, MyColumnar as Columnar, MyDecimal128Encode as Decimal128Encode,
         MyToDataFrame as ToDataFrame, RowCursor,
@@ -91,6 +93,7 @@ struct CustomColumnarOnly {
     id: u32,
     #[df_derive(decimal(precision = 18, scale = 2))]
     amount: custom_runtime::CustomDecimal,
+    values: Vec<Option<i32>>,
 }
 
 fn main() {
@@ -112,8 +115,9 @@ fn main() {
     let custom_columnar_only = CustomColumnarOnly {
         id: 4,
         amount: custom_runtime::CustomDecimal(4250),
+        values: vec![Some(1), None, Some(3)],
     };
     assert_columnar::<CustomColumnarOnly>();
     let df = columnar_only_runtime::ToDataFrame::to_dataframe(&custom_columnar_only).unwrap();
-    assert_eq!(df.shape(), (1, 2));
+    assert_eq!(df.shape(), (1, 3));
 }

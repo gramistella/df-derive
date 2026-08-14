@@ -12,45 +12,42 @@ pub(super) struct PrimitiveListCommon {
     pub(super) materialization: super::ctx::MaterializationTarget,
     pub(super) storage_decls: TokenStream,
     pub(super) leaf_arr_expr: TokenStream,
+    pub(super) leaf_segment: syn::Ident,
     pub(super) extra_imports: TokenStream,
     pub(super) leaf_logical_dtype: TokenStream,
 }
 
 pub(super) struct StreamPrimitiveList {
     pub(super) common: PrimitiveListCommon,
-    pub(super) prepare_segment: TokenStream,
-    pub(super) write_leaf: TokenStream,
-    pub(super) leaf_offsets_post_push: TokenStream,
+    pub(super) fill_segment: TokenStream,
+    pub(super) leaf_offsets_post_fill: TokenStream,
 }
 
 pub(super) struct CapturedPrimitiveList {
     pub(super) common: PrimitiveListCommon,
+    pub(super) encode_support: syn::Path,
     pub(super) leaf_count: syn::Ident,
     pub(super) leaf_segments: syn::Ident,
-    pub(super) leaf_segment: syn::Ident,
-    pub(super) write_leaf: TokenStream,
+    pub(super) fill_segment: TokenStream,
 }
 
-pub(super) struct ReplayedPrimitiveList {
+pub(super) struct GroupedPrimitiveList {
     pub(super) common: PrimitiveListCommon,
-    pub(super) shape_counts: syn::Ident,
-    pub(super) leaf_offsets_post_push: TokenStream,
-    pub(super) row: syn::Ident,
-    pub(super) replay: TokenStream,
-    pub(super) write_leaf: TokenStream,
+    pub(super) encode_support: syn::Path,
+    pub(super) leaf_groups: syn::Ident,
+    pub(super) fill_group: TokenStream,
 }
 
 pub(super) struct BulkPrimitiveList {
     pub(super) common: PrimitiveListCommon,
-    pub(super) binding: syn::Ident,
-    pub(super) write: TokenStream,
-    pub(super) leaf_offsets_post_push: TokenStream,
+    pub(super) fill_segment: TokenStream,
+    pub(super) leaf_offsets_post_fill: TokenStream,
 }
 
 pub(super) type PrimitiveListEncoding = PrimitiveListPlan<
     StreamPrimitiveList,
     CapturedPrimitiveList,
-    ReplayedPrimitiveList,
+    GroupedPrimitiveList,
     BulkPrimitiveList,
 >;
 
@@ -58,7 +55,7 @@ impl
     PrimitiveListPlan<
         StreamPrimitiveList,
         CapturedPrimitiveList,
-        ReplayedPrimitiveList,
+        GroupedPrimitiveList,
         BulkPrimitiveList,
     >
 {
@@ -66,7 +63,7 @@ impl
         match self {
             Self::StreamReserved(plan) => &plan.common,
             Self::CaptureSegments(plan) => &plan.common,
-            Self::ReplayRows(plan) => &plan.common,
+            Self::CaptureGroups(plan) => &plan.common,
             Self::BulkSegments(plan) => &plan.common,
         }
     }

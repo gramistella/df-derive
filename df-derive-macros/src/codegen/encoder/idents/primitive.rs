@@ -35,24 +35,12 @@ pub(in crate::codegen) fn leaf_value_raw() -> Ident {
     format_ident!("__df_derive_v_raw")
 }
 
-pub(in crate::codegen) fn leaf_value_mapped() -> Ident {
-    format_ident!("__df_derive_v_mapped")
-}
-
 pub(in crate::codegen) fn leaf_reserve_len() -> Ident {
     format_ident!("__df_derive_leaf_reserve_len")
 }
 
-pub(in crate::codegen) fn vec_leaf_idx(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
-    scope.fresh(&format!("__df_derive_leaf_idx_{idx}"))
-}
-
 pub(in crate::codegen) fn vec_leaf_count(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
     scope.fresh(&format!("__df_derive_leaf_count_{idx}"))
-}
-
-pub(in crate::codegen) fn vec_shape_counts(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
-    scope.fresh(&format!("__df_derive_shape_counts_{idx}"))
 }
 
 pub(in crate::codegen) fn vec_leaf_segments(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
@@ -63,8 +51,12 @@ pub(in crate::codegen) fn vec_leaf_segment(scope: GeneratedIdentScope<'_>, idx: 
     scope.fresh(&format!("__df_derive_leaf_segment_{idx}"))
 }
 
-pub(in crate::codegen) fn vec_validity_growth(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
-    scope.fresh(&format!("__df_derive_validity_growth_{idx}"))
+pub(in crate::codegen) fn prepared_len(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
+    scope.fresh(&format!("__df_derive_prepared_len_{idx}"))
+}
+
+pub(in crate::codegen) fn prepared_validity(scope: GeneratedIdentScope<'_>, idx: usize) -> Ident {
+    scope.fresh(&format!("__df_derive_prepared_validity_{idx}"))
 }
 
 pub(in crate::codegen) fn leaf_arr() -> Ident {

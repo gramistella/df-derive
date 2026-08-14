@@ -60,7 +60,7 @@ pub(in crate::codegen) fn build_field_emit(
                 config,
                 ident_scope,
                 terminal_start,
-                encoder::RowReplay { row, replay },
+                row,
                 row_capacity,
                 sink,
             );
@@ -99,7 +99,7 @@ fn build_field_column_emit(
     config: &super::MacroConfig,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
-    row_replay: encoder::RowReplay<'_>,
+    row: &Ident,
     row_capacity: &Ident,
     sink: &Ident,
 ) -> EncodePlan {
@@ -111,7 +111,7 @@ fn build_field_column_emit(
                 config,
                 ident_scope,
                 idx,
-                row_replay.row,
+                row,
                 &type_path,
                 row_capacity,
                 sink,
@@ -122,7 +122,7 @@ fn build_field_column_emit(
             config,
             ident_scope,
             idx,
-            row_replay,
+            row,
             leaf,
             row_capacity,
             sink,
@@ -164,12 +164,12 @@ fn build_primitive_emit(
     config: &super::MacroConfig,
     ident_scope: idents::GeneratedIdentScope<'_>,
     idx: usize,
-    row_replay: encoder::RowReplay<'_>,
+    row: &Ident,
     leaf: PrimitiveLeaf<'_>,
     row_capacity: &Ident,
     sink: &Ident,
 ) -> EncodePlan {
-    let access = super::source_access::field_column_access(column, row_replay.row);
+    let access = super::source_access::field_column_access(column, row);
     let input_rows_exact = idents::input_rows_exact(ident_scope);
     let output_slot = idents::output_slot(ident_scope, idx);
     let leaf_ctx = LeafCtx {
@@ -182,9 +182,7 @@ fn build_primitive_emit(
         primitive_list_plan: super::planner::PrimitiveListPolicy::for_wrapper(
             leaf,
             column.wrapper_shape(),
-            super::planner::RowReplayCapability::Direct,
         ),
-        row_replay: Some(row_replay),
         cardinality: match column.wrapper_shape() {
             WrapperShape::Leaf(_) => LeafCardinality::InputRows,
             WrapperShape::Vec(_) => LeafCardinality::Dynamic,
@@ -192,6 +190,7 @@ fn build_primitive_emit(
         ident_scope,
         input_rows_exact: &input_rows_exact,
         decimal128_encode_trait: &config.runtime.decimal128_encode,
+        encode_support: &config.runtime.encode_support,
         paths: &config.external_paths,
     };
     let SeriesPlan {

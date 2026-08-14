@@ -1,22 +1,13 @@
-//! Encoding policy decisions shared by column lowering and support emission.
+//! Encoding policy decisions shared by column and tuple lowering.
 //!
 //! This module chooses an execution shape; emitters remain responsible for
 //! rendering that shape. Keeping the policy here prevents runtime replay,
-//! helper generation, and hot-loop width from being inferred independently.
+//! storage selection, and hot-loop width from being inferred independently.
 
 use crate::ir::{
     FieldPlan, PrimitiveLeaf, StructIR, TerminalLeafRoute, TupleField, TupleNode, TupleNodeKind,
     VecLayers, WrapperShape,
 };
-
-/// Whether a primitive list may revisit the caller's rows after the source
-/// pass. Ordinary tuple-list lowering is deliberately unavailable because its
-/// projected access may name locals owned by the fused scan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::codegen) enum RowReplayCapability {
-    Direct,
-    Unavailable,
-}
 
 /// The sole primitive-list scheduling definition.
 ///
@@ -24,13 +15,14 @@ pub(in crate::codegen) enum RowReplayCapability {
 /// each unit with the distinct render payload required by that branch, so an
 /// encoded plan cannot contain ingredients for a different branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::codegen) enum PrimitiveListPlan<Stream = (), Capture = (), Replay = (), Bulk = ()> {
+pub(in crate::codegen) enum PrimitiveListPlan<Stream = (), Capture = (), Group = (), Bulk = ()> {
     /// Evaluate the leaf in the source pass and grow reserved storage.
     StreamReserved(Stream),
     /// Capture stable innermost list references and fill after the source pass.
     CaptureSegments(Capture),
-    /// Count the complete list shape, then revisit source rows for exact fill.
-    ReplayRows(Replay),
+    /// Capture stable penultimate list groups and fill their segments after
+    /// the source pass.
+    CaptureGroups(Group),
     /// Append real innermost Boolean slices through a whole-segment API.
     BulkSegments(Bulk),
 }
@@ -41,19 +33,14 @@ impl PrimitiveListPlan<(), (), (), ()> {
     pub(in crate::codegen) fn for_wrapper(
         leaf: PrimitiveLeaf<'_>,
         wrapper: &WrapperShape,
-        replay: RowReplayCapability,
     ) -> Option<Self> {
         match wrapper {
-            WrapperShape::Vec(shape) => Some(Self::select(leaf, shape, replay)),
+            WrapperShape::Vec(shape) => Some(Self::select(leaf, shape)),
             WrapperShape::Leaf(_) => None,
         }
     }
 
-    pub(in crate::codegen) fn select(
-        leaf: PrimitiveLeaf<'_>,
-        shape: &VecLayers,
-        replay: RowReplayCapability,
-    ) -> Self {
+    pub(in crate::codegen) fn select(leaf: PrimitiveLeaf<'_>, shape: &VecLayers) -> Self {
         if matches!(leaf, PrimitiveLeaf::Bool)
             && !shape.has_inner_option()
             && shape.depth() >= 2
@@ -64,104 +51,11 @@ impl PrimitiveListPlan<(), (), (), ()> {
         if !leaf.evaluation_effect().allows_replay() {
             return Self::StreamReserved(());
         }
-        if shape.depth() >= 2 && replay == RowReplayCapability::Direct {
-            Self::ReplayRows(())
-        } else {
-            Self::CaptureSegments(())
+        if shape.depth() >= 2 && shape.layers[shape.depth() - 1].access.is_empty() {
+            return Self::CaptureGroups(());
         }
+        Self::CaptureSegments(())
     }
-
-    pub(in crate::codegen) const fn uses_exact_deferred_storage(self) -> bool {
-        matches!(self, Self::CaptureSegments(()) | Self::ReplayRows(()))
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub(in crate::codegen) struct SupportRequirements {
-    pub push_reserved: bool,
-    pub set_prepared_bitmap: bool,
-}
-
-impl SupportRequirements {
-    fn include_primitive_list(
-        &mut self,
-        leaf: PrimitiveLeaf<'_>,
-        shape: &VecLayers,
-        replay: RowReplayCapability,
-    ) {
-        let plan = PrimitiveListPolicy::select(leaf, shape, replay);
-        self.push_reserved |= is_fixed_width_primitive(leaf);
-        self.set_prepared_bitmap |= shape.has_inner_option()
-            || (matches!(leaf, PrimitiveLeaf::Bool) && plan.uses_exact_deferred_storage());
-    }
-}
-
-const fn is_fixed_width_primitive(leaf: PrimitiveLeaf<'_>) -> bool {
-    matches!(
-        leaf,
-        PrimitiveLeaf::Numeric(_)
-            | PrimitiveLeaf::DateTime(_)
-            | PrimitiveLeaf::NaiveDateTime(_)
-            | PrimitiveLeaf::NaiveDate
-            | PrimitiveLeaf::NaiveTime
-            | PrimitiveLeaf::Duration { .. }
-            | PrimitiveLeaf::Decimal { .. }
-    )
-}
-
-pub(in crate::codegen) fn support_requirements(ir: &StructIR) -> SupportRequirements {
-    fn include(
-        needs: &mut SupportRequirements,
-        leaf: PrimitiveLeaf<'_>,
-        wrapper: &WrapperShape,
-        replay: RowReplayCapability,
-    ) {
-        if let WrapperShape::Vec(shape) = wrapper {
-            needs.include_primitive_list(leaf, shape, replay);
-        }
-    }
-
-    fn visit_tuple(node: &TupleNode, needs: &mut SupportRequirements) {
-        match node.kind() {
-            TupleNodeKind::Leaf(common) => {
-                if let TerminalLeafRoute::Primitive(leaf) = common.leaf_spec().route() {
-                    include(
-                        needs,
-                        leaf,
-                        node.wrapper_shape(),
-                        RowReplayCapability::Unavailable,
-                    );
-                }
-            }
-            TupleNodeKind::Tuple(elements) => {
-                for child in elements.iter() {
-                    visit_tuple(child, needs);
-                }
-            }
-        }
-    }
-
-    let mut needs = SupportRequirements::default();
-    for field in &ir.fields {
-        match field {
-            FieldPlan::Column(column) => {
-                if let TerminalLeafRoute::Primitive(leaf) = column.leaf_spec().route() {
-                    include(
-                        &mut needs,
-                        leaf,
-                        column.wrapper_shape(),
-                        RowReplayCapability::Direct,
-                    );
-                }
-            }
-            FieldPlan::Tuple(tuple) => {
-                for node in tuple.elements().iter() {
-                    visit_tuple(node, &mut needs);
-                }
-            }
-        }
-    }
-    needs
 }
 
 // Below this width, one fused source pass is cheaper than setting up and
@@ -286,72 +180,33 @@ mod tests {
         let mut smart_access = AccessChain::empty();
         smart_access.push(AccessStep::SmartPtr);
         let smart_deep = vec_shape(2, smart_access);
+        let mut optional_final_layer = vec_shape(2, AccessChain::empty());
+        optional_final_layer.layers[1].access = AccessChain::empty().prepend_option();
 
         assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Numeric(NumericKind::I32),
-                &deep,
-                RowReplayCapability::Direct,
-            ),
-            PrimitiveListPolicy::ReplayRows(()),
+            PrimitiveListPolicy::select(PrimitiveLeaf::Numeric(NumericKind::I32), &deep),
+            PrimitiveListPolicy::CaptureGroups(()),
         );
         assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Numeric(NumericKind::I32),
-                &shallow,
-                RowReplayCapability::Direct,
-            ),
+            PrimitiveListPolicy::select(PrimitiveLeaf::Numeric(NumericKind::I32), &shallow),
             PrimitiveListPolicy::CaptureSegments(()),
         );
         assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Numeric(NumericKind::I32),
-                &deep,
-                RowReplayCapability::Unavailable,
-            ),
-            PrimitiveListPolicy::CaptureSegments(()),
-        );
-        assert_eq!(
-            PrimitiveListPolicy::select(PrimitiveLeaf::Bool, &deep, RowReplayCapability::Direct,),
+            PrimitiveListPolicy::select(PrimitiveLeaf::Bool, &deep),
             PrimitiveListPolicy::BulkSegments(()),
         );
         assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Bool,
-                &deep,
-                RowReplayCapability::Unavailable,
-            ),
-            PrimitiveListPolicy::BulkSegments(()),
+            PrimitiveListPolicy::select(PrimitiveLeaf::Bool, &optional_deep),
+            PrimitiveListPolicy::CaptureGroups(()),
+        );
+        assert_eq!(
+            PrimitiveListPolicy::select(PrimitiveLeaf::Bool, &smart_deep),
+            PrimitiveListPolicy::CaptureGroups(()),
         );
         assert_eq!(
             PrimitiveListPolicy::select(
-                PrimitiveLeaf::Bool,
-                &optional_deep,
-                RowReplayCapability::Direct,
-            ),
-            PrimitiveListPolicy::ReplayRows(()),
-        );
-        assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Bool,
-                &optional_deep,
-                RowReplayCapability::Unavailable,
-            ),
-            PrimitiveListPolicy::CaptureSegments(()),
-        );
-        assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Bool,
-                &smart_deep,
-                RowReplayCapability::Direct,
-            ),
-            PrimitiveListPolicy::ReplayRows(()),
-        );
-        assert_eq!(
-            PrimitiveListPolicy::select(
-                PrimitiveLeaf::Bool,
-                &smart_deep,
-                RowReplayCapability::Unavailable,
+                PrimitiveLeaf::Numeric(NumericKind::I32),
+                &optional_final_layer,
             ),
             PrimitiveListPolicy::CaptureSegments(()),
         );
@@ -380,40 +235,11 @@ mod tests {
             PrimitiveLeaf::AsStr(&custom_string),
         ] {
             assert_eq!(
-                PrimitiveListPolicy::select(leaf, &deep, RowReplayCapability::Direct),
+                PrimitiveListPolicy::select(leaf, &deep),
                 PrimitiveListPolicy::StreamReserved(()),
                 "{leaf:?}",
             );
         }
-    }
-
-    #[test]
-    fn support_requirements_follow_the_selected_plan() {
-        let bulk_bool = parse_ir(&syn::parse_quote! {
-            struct BulkBool { values: Vec<Vec<bool>> }
-        });
-        let nullable_bool = parse_ir(&syn::parse_quote! {
-            struct NullableBool { values: Vec<Option<bool>> }
-        });
-        let fixed = parse_ir(&syn::parse_quote! {
-            struct Fixed { values: Vec<i32> }
-        });
-        let nullable_fixed = parse_ir(&syn::parse_quote! {
-            struct NullableFixed { values: Vec<Option<i32>> }
-        });
-
-        let bulk = support_requirements(&bulk_bool);
-        assert!(!bulk.push_reserved);
-        assert!(!bulk.set_prepared_bitmap);
-        let nullable = support_requirements(&nullable_bool);
-        assert!(!nullable.push_reserved);
-        assert!(nullable.set_prepared_bitmap);
-        let fixed = support_requirements(&fixed);
-        assert!(fixed.push_reserved);
-        assert!(!fixed.set_prepared_bitmap);
-        let nullable_fixed = support_requirements(&nullable_fixed);
-        assert!(nullable_fixed.push_reserved);
-        assert!(nullable_fixed.set_prepared_bitmap);
     }
 
     #[test]

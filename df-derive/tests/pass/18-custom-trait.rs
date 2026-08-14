@@ -1,5 +1,5 @@
 use df_derive::ToDataFrame;
-use polars::prelude::{DataFrame, DataType, PolarsResult, SchemaRef};
+use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult, SchemaRef};
 
 #[path = "../support/local_runtime.rs"]
 mod custom_runtime_support;
@@ -11,6 +11,7 @@ use df_derive::dataframe as paft_traits; // Alias for clarity
 mod my_traits {
     use super::*; // Access PolarsResult, etc.
 
+    pub use super::custom_runtime_support::dataframe::__private;
     pub use super::custom_runtime_support::dataframe::{
         ColumnSink, Columnar, ColumnarSpec, RowCursor,
     };
@@ -82,6 +83,13 @@ struct CustomInner {
 struct CustomOuter {
     inner: CustomInner,
     inners: Vec<CustomInner>,
+}
+
+#[derive(ToDataFrame)]
+#[df_derive(trait = "my_traits::MyToDataFrame", columnar = "my_traits::Columnar")]
+struct CustomPrimitiveLists {
+    numbers: Vec<Option<i32>>,
+    flags: Vec<Option<bool>>,
 }
 
 fn main() {
@@ -166,6 +174,37 @@ fn main() {
         &["inner.value", "inners.value"]
     );
     println!("✅ Custom path nested schema/empty implementation works.");
+
+    // == TEST E: Exercise the custom runtime's exact-storage contract ==
+    let primitive_lists = vec![
+        CustomPrimitiveLists {
+            numbers: vec![Some(1), None, Some(3)],
+            flags: vec![Some(true), None, Some(false)],
+        },
+        CustomPrimitiveLists {
+            numbers: vec![None, Some(5)],
+            flags: vec![Some(false), Some(true)],
+        },
+    ];
+    let primitive_df = primitive_lists.as_slice().to_dataframe().unwrap();
+    assert_eq!(primitive_df.shape(), (2, 2));
+    assert_eq!(
+        primitive_df.column("numbers").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::Int32)),
+    );
+    assert_eq!(
+        primitive_df.column("flags").unwrap().dtype(),
+        &DataType::List(Box::new(DataType::Boolean)),
+    );
+    let AnyValue::List(numbers) = primitive_df.column("numbers").unwrap().get(0).unwrap() else {
+        panic!("numbers row should be a list");
+    };
+    let AnyValue::List(flags) = primitive_df.column("flags").unwrap().get(0).unwrap() else {
+        panic!("flags row should be a list");
+    };
+    assert_eq!(numbers.null_count(), 1);
+    assert_eq!(flags.null_count(), 1);
+    println!("✅ Custom path primitive-list storage implementation works.");
 
     println!("\n✅ Side-by-side test successful!");
 }

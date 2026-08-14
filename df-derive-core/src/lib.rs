@@ -19,6 +19,8 @@
 //!   value as an `i128` mantissa rescaled to a target scale. The reference
 //!   `rust_decimal::Decimal` impl is gated behind the `rust_decimal`
 //!   feature (enabled by default).
+//! - hidden, runtime-owned exact vector and bitmap storage used by generated
+//!   primitive-list encoders.
 //! - hidden `ColumnarSpec` support for `()` — the zero-column payload behavior
 //!   used by generic `Wrapper<()>` shapes. The blanket implementations supply
 //!   `Columnar` and `ToDataFrame`.
@@ -80,6 +82,1827 @@ pub mod dataframe {
     pub mod __private {
         pub use polars;
         pub use polars_arrow;
+
+        /// Runtime-owned storage primitives used by generated list encoders.
+        ///
+        /// Their methods are safe: generated code describes the storage it
+        /// has prepared, while this module alone owns the unchecked writes
+        /// needed to retain the exact-fill fast path.
+        #[doc(hidden)]
+        pub mod encode {
+            use polars_arrow::bitmap::{Bitmap, MutableBitmap};
+
+            /// Runtime-owned references to source segments and their checked
+            /// aggregate element count.
+            ///
+            /// Private fields make the aggregate count a capability: storage
+            /// fillers can validate one complete captured schedule, then
+            /// traverse its slices without repeating range checks.
+            #[doc(hidden)]
+            pub struct CapturedSegments<'source, S> {
+                segments: Vec<&'source Vec<S>>,
+                len: usize,
+            }
+
+            impl<S> Default for CapturedSegments<'_, S> {
+                #[inline]
+                fn default() -> Self {
+                    Self {
+                        segments: Vec::new(),
+                        len: 0,
+                    }
+                }
+            }
+
+            impl<'source, S> CapturedSegments<'source, S> {
+                /// Creates an empty captured schedule.
+                #[must_use]
+                #[inline]
+                pub fn new() -> Self {
+                    Self::default()
+                }
+
+                /// Creates an empty captured schedule with storage for at
+                /// least `capacity` source segments.
+                #[must_use]
+                #[inline]
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self {
+                        segments: Vec::with_capacity(capacity),
+                        len: 0,
+                    }
+                }
+
+                /// Records one source slice and returns the new checked total.
+                ///
+                /// Returns `None` without modifying the schedule if the total
+                /// would exceed `usize`.
+                #[inline]
+                pub fn capture(&mut self, source: &'source Vec<S>) -> Option<usize> {
+                    let len = self.len.checked_add(source.len())?;
+                    if !source.is_empty() {
+                        self.segments.push(source);
+                    }
+                    self.len = len;
+                    Some(len)
+                }
+
+                /// Returns the checked aggregate element count.
+                #[must_use]
+                #[inline]
+                #[allow(
+                    clippy::len_without_is_empty,
+                    reason = "generated exact-storage declarations consume the aggregate count"
+                )]
+                pub const fn len(&self) -> usize {
+                    self.len
+                }
+
+                /// Visits captured elements in source-segment order.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated view-builder hot loops must inline the visitor"
+                )]
+                #[inline(always)]
+                pub fn visit(&self, mut visit: impl FnMut(&S)) {
+                    for segment in &self.segments {
+                        for item in *segment {
+                            visit(item);
+                        }
+                    }
+                }
+            }
+
+            /// Runtime-owned references to penultimate nested-list groups.
+            ///
+            /// A group contains the innermost `Vec<S>` segments for one list
+            /// boundary. Storing one group reference instead of every segment
+            /// keeps deep-list schedules compact while the runtime still owns
+            /// the checked aggregate leaf count.
+            #[doc(hidden)]
+            pub struct CapturedSegmentGroups<'source, S> {
+                groups: Vec<&'source Vec<Vec<S>>>,
+                len: usize,
+                segment_count: usize,
+            }
+
+            impl<'source, S> CapturedSegmentGroups<'source, S> {
+                /// Creates an empty grouped schedule with a source-derived
+                /// capacity floor.
+                #[must_use]
+                #[inline]
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self {
+                        groups: Vec::with_capacity(capacity),
+                        len: 0,
+                        segment_count: 0,
+                    }
+                }
+
+                /// Captures one penultimate group after checking its complete
+                /// aggregate leaf and segment counts.
+                ///
+                /// Returns `None` without modifying the schedule if either
+                /// count would exceed `usize` or the leaf count cannot be
+                /// represented by Arrow's `i64` list offsets.
+                #[inline]
+                pub fn capture_group(&mut self, source: &'source Vec<Vec<S>>) -> Option<()> {
+                    let segment_count = self.segment_count.checked_add(source.len())?;
+                    segment_count.checked_add(1)?;
+                    let mut len = self.len;
+                    for segment in source {
+                        len = len.checked_add(segment.len())?;
+                    }
+                    i64::try_from(len).ok()?;
+                    if !source.is_empty() {
+                        self.groups.push(source);
+                    }
+                    self.len = len;
+                    self.segment_count = segment_count;
+                    Some(())
+                }
+
+                /// Returns the checked aggregate element count.
+                #[must_use]
+                #[inline]
+                #[allow(
+                    clippy::len_without_is_empty,
+                    reason = "generated exact-storage declarations consume the aggregate count"
+                )]
+                pub const fn len(&self) -> usize {
+                    self.len
+                }
+
+                /// Returns the checked number of captured innermost segments.
+                #[must_use]
+                #[inline]
+                pub const fn segment_count(&self) -> usize {
+                    self.segment_count
+                }
+
+                /// Visits grouped segments in source order and returns their
+                /// exact Arrow list offsets.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the visitor"
+                )]
+                #[allow(
+                    clippy::cast_possible_wrap,
+                    reason = "capture_group proves every immutable leaf-count prefix fits i64"
+                )]
+                #[inline(always)]
+                pub fn visit_segments(&self, mut visit: impl FnMut(&Vec<S>)) -> Vec<i64> {
+                    let mut offsets = Vec::with_capacity(self.segment_count + 1);
+                    offsets.push(0);
+                    let mut len = 0usize;
+                    {
+                        let mut offset_fill = ExactFillGuard::new(&mut offsets);
+                        for group in &self.groups {
+                            for segment in *group {
+                                visit(segment);
+                                // `capture_group` checked the immutable aggregate
+                                // before retaining this group, so every prefix is
+                                // representable by both `usize` and `i64`.
+                                len += segment.len();
+                                offset_fill.push(len as i64);
+                            }
+                        }
+                        debug_assert_eq!(offset_fill.len(), self.segment_count + 1);
+                    }
+                    debug_assert_eq!(len, self.len);
+                    offsets
+                }
+            }
+
+            /// Publishes a partially initialized vector prefix during unwind
+            /// without making `Vec::len` part of the successful hot loop.
+            struct ExactFillGuard<'values, T> {
+                values: &'values mut Vec<T>,
+                values_ptr: *mut T,
+                initialized: usize,
+            }
+
+            impl<'values, T> ExactFillGuard<'values, T> {
+                #[inline]
+                const fn new(values: &'values mut Vec<T>) -> Self {
+                    let initialized = values.len();
+                    let values_ptr = values.as_mut_ptr();
+                    Self {
+                        values,
+                        values_ptr,
+                        initialized,
+                    }
+                }
+
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned exact-fill hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                fn push(&mut self, value: T) {
+                    debug_assert!(self.initialized < self.values.capacity());
+                    // SAFETY: the schedule range is validated before this
+                    // guard is created. Each call writes the next position,
+                    // and `Drop` publishes precisely the initialized prefix.
+                    unsafe {
+                        self.values_ptr.add(self.initialized).write(value);
+                    }
+                    self.initialized += 1;
+                }
+
+                #[inline]
+                const fn len(&self) -> usize {
+                    self.initialized
+                }
+            }
+
+            impl<T> Drop for ExactFillGuard<'_, T> {
+                #[inline]
+                fn drop(&mut self) {
+                    // SAFETY: `push` initialized every position between the
+                    // vector's original length and `initialized` exactly once.
+                    unsafe { self.values.set_len(self.initialized) };
+                }
+            }
+
+            /// Keeps prepared bitmap progress local and publishes the cursor
+            /// during unwind or successful scope exit.
+            struct PreparedBitmapFillGuard<'bitmap> {
+                bitmap: &'bitmap mut MutableBitmap,
+                published: &'bitmap mut usize,
+                cursor: usize,
+            }
+
+            impl<'bitmap> PreparedBitmapFillGuard<'bitmap> {
+                #[inline]
+                const fn new(
+                    bitmap: &'bitmap mut MutableBitmap,
+                    published: &'bitmap mut usize,
+                ) -> Self {
+                    let cursor = *published;
+                    Self {
+                        bitmap,
+                        published,
+                        cursor,
+                    }
+                }
+
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned prepared-bitmap hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                fn commit_validity(&mut self, is_valid: bool) {
+                    debug_assert!(self.cursor < self.bitmap.len());
+                    if !is_valid {
+                        // SAFETY: the complete schedule range was prepared
+                        // before this guard was created.
+                        unsafe { self.bitmap.set_unchecked(self.cursor, false) };
+                    }
+                    self.cursor += 1;
+                }
+
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned prepared-bitmap hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                fn commit_boolean(&mut self, value: bool) {
+                    debug_assert!(self.cursor < self.bitmap.len());
+                    if value {
+                        // SAFETY: the complete schedule range was prepared
+                        // before this guard was created.
+                        unsafe { self.bitmap.set_unchecked(self.cursor, true) };
+                    }
+                    self.cursor += 1;
+                }
+
+                #[inline]
+                const fn len(&self) -> usize {
+                    self.cursor
+                }
+            }
+
+            impl Drop for PreparedBitmapFillGuard<'_> {
+                #[inline]
+                fn drop(&mut self) {
+                    *self.published = self.cursor;
+                }
+            }
+
+            /// Fills native values and validity with one shared cursor.
+            struct NullableExactFillGuard<'storage, T> {
+                values: &'storage mut Vec<T>,
+                values_ptr: *mut T,
+                validity: &'storage mut MutableBitmap,
+                validity_published: &'storage mut usize,
+                cursor: usize,
+            }
+
+            impl<'storage, T> NullableExactFillGuard<'storage, T> {
+                #[inline]
+                fn new(
+                    values: &'storage mut Vec<T>,
+                    validity: &'storage mut MutableBitmap,
+                    validity_published: &'storage mut usize,
+                ) -> Self {
+                    let cursor = values.len();
+                    debug_assert_eq!(cursor, *validity_published);
+                    let values_ptr = values.as_mut_ptr();
+                    Self {
+                        values,
+                        values_ptr,
+                        validity,
+                        validity_published,
+                        cursor,
+                    }
+                }
+
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned nullable exact-fill hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                fn push(&mut self, value: T, is_valid: bool) {
+                    debug_assert!(self.cursor < self.values.capacity());
+                    debug_assert!(self.cursor < self.validity.len());
+                    // SAFETY: both complete ranges were validated before this
+                    // guard was created, and `cursor` advances once per pair.
+                    unsafe {
+                        self.values_ptr.add(self.cursor).write(value);
+                        if !is_valid {
+                            self.validity.set_unchecked(self.cursor, false);
+                        }
+                    }
+                    self.cursor += 1;
+                }
+
+                #[inline]
+                const fn len(&self) -> usize {
+                    self.cursor
+                }
+            }
+
+            impl<T> Drop for NullableExactFillGuard<'_, T> {
+                #[inline]
+                fn drop(&mut self) {
+                    // SAFETY: every position below `cursor` was initialized
+                    // exactly once by `push`.
+                    unsafe { self.values.set_len(self.cursor) };
+                    *self.validity_published = self.cursor;
+                }
+            }
+
+            /// Fills Boolean values and validity with one shared cursor.
+            struct NullableBooleanFillGuard<'storage> {
+                values: &'storage mut MutableBitmap,
+                values_published: &'storage mut usize,
+                validity: &'storage mut MutableBitmap,
+                validity_published: &'storage mut usize,
+                cursor: usize,
+            }
+
+            impl<'storage> NullableBooleanFillGuard<'storage> {
+                #[inline]
+                fn new(
+                    values: &'storage mut MutableBitmap,
+                    values_published: &'storage mut usize,
+                    validity: &'storage mut MutableBitmap,
+                    validity_published: &'storage mut usize,
+                ) -> Self {
+                    let cursor = *values_published;
+                    debug_assert_eq!(cursor, *validity_published);
+                    Self {
+                        values,
+                        values_published,
+                        validity,
+                        validity_published,
+                        cursor,
+                    }
+                }
+
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned nullable Boolean hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                fn push(&mut self, value: bool, is_valid: bool) {
+                    debug_assert!(self.cursor < self.values.len());
+                    debug_assert!(self.cursor < self.validity.len());
+                    // SAFETY: both complete bitmap ranges were validated
+                    // before this guard was created.
+                    unsafe {
+                        if value {
+                            self.values.set_unchecked(self.cursor, true);
+                        }
+                        if !is_valid {
+                            self.validity.set_unchecked(self.cursor, false);
+                        }
+                    }
+                    self.cursor += 1;
+                }
+
+                #[inline]
+                const fn len(&self) -> usize {
+                    self.cursor
+                }
+            }
+
+            impl Drop for NullableBooleanFillGuard<'_> {
+                #[inline]
+                fn drop(&mut self) {
+                    *self.values_published = self.cursor;
+                    *self.validity_published = self.cursor;
+                }
+            }
+
+            /// A vector filled from source slices through runtime-owned loops.
+            ///
+            /// Each public fill checks or acquires the complete destination
+            /// range once. The runtime can then initialize that range without
+            /// repeating a capacity check for every element. Exact buffers
+            /// additionally verify their final initialized length when
+            /// consumed.
+            #[doc(hidden)]
+            pub struct ExactBuffer<T> {
+                values: Vec<T>,
+                exact_len: Option<usize>,
+            }
+
+            impl<T> ExactBuffer<T> {
+                /// Allocates an incrementally growing buffer.
+                #[must_use]
+                #[inline]
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self {
+                        values: Vec::with_capacity(capacity),
+                        exact_len: None,
+                    }
+                }
+
+                /// Allocates storage for exactly `len` initialized values.
+                #[must_use]
+                #[inline]
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self {
+                        values: Vec::with_capacity(len),
+                        exact_len: Some(len),
+                    }
+                }
+
+                #[inline]
+                fn prepare_segment(&mut self, additional: usize) -> usize {
+                    let end = self
+                        .values
+                        .len()
+                        .checked_add(additional)
+                        .expect("df-derive: exact buffer length overflow");
+                    if let Some(exact_len) = self.exact_len {
+                        assert!(
+                            end <= exact_len,
+                            "df-derive: exact buffer segment exceeded its declared length",
+                        );
+                    } else {
+                        self.values.reserve(additional);
+                    }
+                    end
+                }
+
+                /// Initializes one position in a range proven by
+                /// `prepare_segment`.
+                ///
+                /// # Safety
+                ///
+                /// The caller must have reserved or validated the position at
+                /// `self.values.len()` and must call this at most once for each
+                /// source element in that proven range.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned generated hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                unsafe fn push_prepared(&mut self, value: T) {
+                    let initialized = self.values.len();
+                    debug_assert!(initialized < self.values.capacity());
+                    // SAFETY: upheld by the caller. The value is written
+                    // before the vector length advances, so unwinding from a
+                    // later mapper invocation drops the complete initialized
+                    // prefix exactly once.
+                    unsafe {
+                        self.values.as_mut_ptr().add(initialized).write(value);
+                        self.values.set_len(initialized + 1);
+                    }
+                }
+
+                /// Extends this buffer from one trusted-cardinality source
+                /// segment after validating its whole destination range.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the segment would overflow
+                /// `usize` or an exact buffer's declared length.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_segment<S>(&mut self, source: &[S], mut map: impl FnMut(&S) -> T) {
+                    let end = self.prepare_segment(source.len());
+                    for item in source {
+                        let value = map(item);
+                        // SAFETY: `prepare_segment` proved the complete source
+                        // range, and this loop writes exactly once per item.
+                        unsafe { self.push_prepared(value) };
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                }
+
+                /// Extends this buffer from a runtime-owned captured schedule
+                /// after validating its aggregate destination range once.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the aggregate range exceeds
+                /// an exact buffer's declared length.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_captured<S>(
+                    &mut self,
+                    source: &CapturedSegments<'_, S>,
+                    mut map: impl FnMut(&S) -> T,
+                ) {
+                    let end = self.prepare_segment(source.len);
+                    let mut fill = ExactFillGuard::new(&mut self.values);
+                    for segment in &source.segments {
+                        for item in *segment {
+                            let value = map(item);
+                            fill.push(value);
+                        }
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                }
+
+                /// Copies representation-identical values from a captured
+                /// schedule without routing each element through a mapper.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list copy loops must inline across the runtime boundary"
+                )]
+                #[inline(always)]
+                pub fn extend_copied_captured(&mut self, source: &CapturedSegments<'_, T>)
+                where
+                    T: Copy,
+                {
+                    let end = self.prepare_segment(source.len);
+                    for segment in &source.segments {
+                        for item in *segment {
+                            // SAFETY: `prepare_segment` proved the complete
+                            // captured range, and each source item is copied
+                            // exactly once.
+                            unsafe { self.push_prepared(*item) };
+                        }
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                }
+
+                /// Extends this buffer from a compact grouped schedule after
+                /// validating its aggregate destination range once.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_grouped<S>(
+                    &mut self,
+                    source: &CapturedSegmentGroups<'_, S>,
+                    mut map: impl FnMut(&S) -> T,
+                ) -> Vec<i64> {
+                    let end = self.prepare_segment(source.len);
+                    let mut fill = ExactFillGuard::new(&mut self.values);
+                    let offsets = source.visit_segments(|segment| {
+                        for item in segment {
+                            fill.push(map(item));
+                        }
+                    });
+                    debug_assert_eq!(fill.len(), end);
+                    offsets
+                }
+
+                /// Copies representation-identical values from a compact
+                /// grouped schedule and constructs its exact Arrow offsets.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list copy loops must inline across the runtime boundary"
+                )]
+                #[allow(
+                    clippy::cast_possible_wrap,
+                    reason = "capture_group proves every immutable leaf-count prefix fits i64"
+                )]
+                #[inline(always)]
+                pub fn extend_copied_grouped(
+                    &mut self,
+                    source: &CapturedSegmentGroups<'_, T>,
+                ) -> Vec<i64>
+                where
+                    T: Copy,
+                {
+                    let end = self.prepare_segment(source.len);
+                    let mut offsets = Vec::with_capacity(source.segment_count + 1);
+                    offsets.push(0);
+                    let mut len = 0usize;
+                    for group in &source.groups {
+                        for segment in *group {
+                            for item in segment {
+                                // SAFETY: `prepare_segment` proved the complete
+                                // grouped range, and each source item is copied
+                                // exactly once.
+                                unsafe { self.push_prepared(*item) };
+                            }
+                            len += segment.len();
+                            offsets.push(len as i64);
+                        }
+                    }
+                    debug_assert_eq!(offsets.len(), source.segment_count + 1);
+                    debug_assert_eq!(self.values.len(), end);
+                    debug_assert_eq!(len, source.len);
+                    offsets
+                }
+
+                /// Fallible counterpart to [`Self::extend_segment`].
+                ///
+                /// Successfully mapped values remain owned by the initialized
+                /// prefix if `map` returns an error.
+                ///
+                /// # Errors
+                ///
+                /// Returns the first mapper error without evaluating later
+                /// source values.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the segment would overflow
+                /// `usize` or an exact buffer's declared length.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn try_extend_segment<S, E>(
+                    &mut self,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> Result<T, E>,
+                ) -> Result<(), E> {
+                    let end = self.prepare_segment(source.len());
+                    for item in source {
+                        let value = map(item)?;
+                        // SAFETY: `prepare_segment` proved the complete source
+                        // range, and this loop writes at most once per item.
+                        unsafe { self.push_prepared(value) };
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                    Ok(())
+                }
+
+                /// Extends paired native values and validity from a nullable
+                /// source segment.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if either destination range is
+                /// inconsistent, overflows `usize`, or exceeds an exact
+                /// declaration.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_segment<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> (T, bool),
+                ) {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len());
+                    validity.prepare_segment(start, source.len());
+                    for item in source {
+                        let index = self.values.len();
+                        let (value, is_valid) = map(item);
+                        // SAFETY: both complete ranges were proved before the
+                        // mapper ran, and this loop advances them in lockstep.
+                        unsafe {
+                            self.push_prepared(value);
+                            validity.commit_prepared(index, is_valid);
+                        }
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                }
+
+                /// Extends paired values and validity from one captured
+                /// schedule after validating both aggregate ranges once.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if either aggregate range is
+                /// inconsistent or exceeds an exact declaration.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_captured<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegments<'_, S>,
+                    mut map: impl FnMut(&S) -> Option<T>,
+                ) where
+                    T: Default,
+                {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    let mut fill = NullableExactFillGuard::new(
+                        &mut self.values,
+                        &mut validity.bitmap,
+                        &mut validity.initialized,
+                    );
+                    for segment in &source.segments {
+                        for item in *segment {
+                            match map(item) {
+                                Some(value) => fill.push(value, true),
+                                None => fill.push(T::default(), false),
+                            }
+                        }
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                }
+
+                /// Extends paired values and validity from captured native
+                /// options without an element mapper.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated nullable primitive-list loops must inline across the runtime boundary"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_options_captured(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegments<'_, Option<T>>,
+                ) where
+                    T: Copy + Default,
+                {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    for segment in &source.segments {
+                        for item in *segment {
+                            let index = self.values.len();
+                            let (value, is_valid) = match item {
+                                Some(value) => (*value, true),
+                                None => (T::default(), false),
+                            };
+                            // SAFETY: both aggregate ranges were proved before
+                            // the loop and advance once per source item.
+                            unsafe {
+                                self.push_prepared(value);
+                                validity.commit_prepared(index, is_valid);
+                            }
+                        }
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                }
+
+                /// Extends paired values and validity from a compact grouped
+                /// schedule after validating both aggregate ranges once.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the mapper"
+                )]
+                #[allow(
+                    clippy::cast_possible_wrap,
+                    reason = "capture_group proves every immutable leaf-count prefix fits i64"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_grouped<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegmentGroups<'_, S>,
+                    mut map: impl FnMut(&S) -> Option<T>,
+                ) -> Vec<i64>
+                where
+                    T: Default,
+                {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    let mut fill = NullableExactFillGuard::new(
+                        &mut self.values,
+                        &mut validity.bitmap,
+                        &mut validity.initialized,
+                    );
+                    // Keep value, validity, and offset cursors in this one
+                    // loop. Routing the nullable path through the generic
+                    // segment visitor forces materially worse code generation.
+                    let mut offsets = Vec::with_capacity(source.segment_count + 1);
+                    offsets.push(0);
+                    let mut len = 0usize;
+                    {
+                        let mut offset_fill = ExactFillGuard::new(&mut offsets);
+                        for group in &source.groups {
+                            for segment in *group {
+                                for item in segment {
+                                    match map(item) {
+                                        Some(value) => fill.push(value, true),
+                                        None => fill.push(T::default(), false),
+                                    }
+                                }
+                                len += segment.len();
+                                offset_fill.push(len as i64);
+                            }
+                        }
+                        debug_assert_eq!(offset_fill.len(), source.segment_count + 1);
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                    debug_assert_eq!(len, source.len);
+                    offsets
+                }
+
+                /// Extends paired values and validity from grouped native
+                /// options without an element mapper.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped nullable loops must inline across the runtime boundary"
+                )]
+                #[allow(
+                    clippy::cast_possible_wrap,
+                    reason = "capture_group proves every immutable leaf-count prefix fits i64"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_options_grouped(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegmentGroups<'_, Option<T>>,
+                ) -> Vec<i64>
+                where
+                    T: Copy + Default,
+                {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    let mut offsets = Vec::with_capacity(source.segment_count + 1);
+                    offsets.push(0);
+                    let mut len = 0usize;
+                    for group in &source.groups {
+                        for segment in *group {
+                            for item in segment {
+                                let index = self.values.len();
+                                let (value, is_valid) = match item {
+                                    Some(value) => (*value, true),
+                                    None => (T::default(), false),
+                                };
+                                // SAFETY: both aggregate ranges were proved
+                                // before the loop and advance once per item.
+                                unsafe {
+                                    self.push_prepared(value);
+                                    validity.commit_prepared(index, is_valid);
+                                }
+                            }
+                            len += segment.len();
+                            offsets.push(len as i64);
+                        }
+                    }
+                    debug_assert_eq!(offsets.len(), source.segment_count + 1);
+                    debug_assert_eq!(self.values.len(), end);
+                    debug_assert_eq!(len, source.len);
+                    offsets
+                }
+
+                /// Fallible counterpart to
+                /// [`Self::extend_nullable_segment`].
+                ///
+                /// # Errors
+                ///
+                /// Returns the first mapper error without evaluating later
+                /// source values.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if either destination range is
+                /// inconsistent, overflows `usize`, or exceeds an exact
+                /// declaration.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn try_extend_nullable_segment<S, E>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> Result<(T, bool), E>,
+                ) -> Result<(), E> {
+                    let start = self.values.len();
+                    let end = self.prepare_segment(source.len());
+                    validity.prepare_segment(start, source.len());
+                    for item in source {
+                        let index = self.values.len();
+                        let (value, is_valid) = map(item)?;
+                        // SAFETY: both complete ranges were proved before the
+                        // mapper ran, and this loop advances them in lockstep.
+                        unsafe {
+                            self.push_prepared(value);
+                            validity.commit_prepared(index, is_valid);
+                        }
+                    }
+                    debug_assert_eq!(self.values.len(), end);
+                    Ok(())
+                }
+
+                /// Returns the initialized element count.
+                #[must_use]
+                #[inline]
+                #[allow(
+                    clippy::len_without_is_empty,
+                    reason = "the hidden generated-code contract only consumes the initialized count"
+                )]
+                pub const fn len(&self) -> usize {
+                    self.values.len()
+                }
+
+                /// Returns the initialized values after checking exact-fill
+                /// invariants.
+                ///
+                /// # Panics
+                ///
+                /// Panics if an exact buffer's final length differs from its
+                /// declared length.
+                #[must_use]
+                #[inline]
+                pub fn finish(self) -> Vec<T> {
+                    if let Some(exact_len) = self.exact_len {
+                        assert_eq!(
+                            self.values.len(),
+                            exact_len,
+                            "df-derive: exact buffer was not completely initialized",
+                        );
+                    }
+                    self.values
+                }
+            }
+
+            /// An all-valid bitmap whose prepared positions can be patched to
+            /// null without exposing unchecked bitmap mutation.
+            #[doc(hidden)]
+            pub struct PreparedValidity {
+                bitmap: MutableBitmap,
+                initialized: usize,
+                exact_len: Option<usize>,
+                growth_floor: usize,
+            }
+
+            impl PreparedValidity {
+                /// Allocates an initially empty, incrementally prepared
+                /// validity bitmap.
+                #[must_use]
+                #[inline]
+                pub fn with_capacity(capacity: usize) -> Self {
+                    Self {
+                        bitmap: MutableBitmap::with_capacity(capacity),
+                        initialized: 0,
+                        exact_len: None,
+                        growth_floor: capacity,
+                    }
+                }
+
+                /// Creates an all-valid bitmap with an exact final length.
+                #[must_use]
+                #[inline]
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self {
+                        bitmap: MutableBitmap::from_len_set(len),
+                        initialized: 0,
+                        exact_len: Some(len),
+                        growth_floor: 0,
+                    }
+                }
+
+                #[inline]
+                fn prepare_segment(&mut self, values_len: usize, additional: usize) -> usize {
+                    assert_eq!(
+                        values_len, self.initialized,
+                        "df-derive: validity segment did not start at its initialized endpoint",
+                    );
+                    let end = self
+                        .initialized
+                        .checked_add(additional)
+                        .expect("df-derive: validity bitmap length overflow");
+                    if let Some(exact_len) = self.exact_len {
+                        assert!(
+                            end <= exact_len,
+                            "df-derive: validity segment exceeded its declared length",
+                        );
+                    } else if self.bitmap.len() < end {
+                        let missing = end - self.bitmap.len();
+                        let growth = self.bitmap.len().max(self.growth_floor).max(additional);
+                        let available = usize::MAX - self.bitmap.len();
+                        self.bitmap
+                            .extend_constant(missing.max(growth).min(available), true);
+                    }
+                    end
+                }
+
+                /// Commits one result inside a range proved by
+                /// `prepare_segment`.
+                ///
+                /// # Safety
+                ///
+                /// `index` must equal the initialized cursor and must lie in
+                /// the range most recently proved by `prepare_segment`.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned generated hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                unsafe fn commit_prepared(&mut self, index: usize, is_valid: bool) {
+                    debug_assert_eq!(index, self.initialized);
+                    debug_assert!(index < self.bitmap.len());
+                    if !is_valid {
+                        // SAFETY: upheld by the caller.
+                        unsafe { self.bitmap.set_unchecked(index, false) };
+                    }
+                    self.initialized += 1;
+                }
+
+                /// Drives an external value builder over one source segment
+                /// while preparing and patching its paired validity range.
+                ///
+                /// The mapper must append exactly one external value and
+                /// return whether that value is valid. Finalization checks the
+                /// external builder's observed length.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the segment start or range
+                /// is invalid.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_segment<S>(
+                    &mut self,
+                    values_len: usize,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> bool,
+                ) {
+                    let end = self.prepare_segment(values_len, source.len());
+                    for item in source {
+                        let index = self.initialized;
+                        let is_valid = map(item);
+                        // SAFETY: `prepare_segment` proved the complete range,
+                        // and the mapper has completed this external value.
+                        unsafe { self.commit_prepared(index, is_valid) };
+                    }
+                    debug_assert_eq!(self.initialized, end);
+                }
+
+                /// Drives an external value builder over a captured schedule
+                /// after validating its aggregate validity range once.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the schedule start or
+                /// aggregate range is invalid.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_captured<S>(
+                    &mut self,
+                    values_len: usize,
+                    source: &CapturedSegments<'_, S>,
+                    mut map: impl FnMut(&S) -> bool,
+                ) {
+                    let end = self.prepare_segment(values_len, source.len);
+                    let mut fill =
+                        PreparedBitmapFillGuard::new(&mut self.bitmap, &mut self.initialized);
+                    for segment in &source.segments {
+                        for item in *segment {
+                            let is_valid = map(item);
+                            fill.commit_validity(is_valid);
+                        }
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                }
+
+                /// Drives an external value builder over a compact grouped
+                /// schedule after validating its aggregate validity range.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_grouped<S>(
+                    &mut self,
+                    values_len: usize,
+                    source: &CapturedSegmentGroups<'_, S>,
+                    mut map: impl FnMut(&S) -> bool,
+                ) -> Vec<i64> {
+                    let end = self.prepare_segment(values_len, source.len);
+                    let mut fill =
+                        PreparedBitmapFillGuard::new(&mut self.bitmap, &mut self.initialized);
+                    let offsets = source.visit_segments(|segment| {
+                        for item in segment {
+                            fill.commit_validity(map(item));
+                        }
+                    });
+                    debug_assert_eq!(fill.len(), end);
+                    offsets
+                }
+
+                /// Fallible counterpart to [`Self::extend_segment`].
+                ///
+                /// # Errors
+                ///
+                /// Returns the first mapper error without evaluating later
+                /// source values.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the segment start or range
+                /// is invalid.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn try_extend_segment<S, E>(
+                    &mut self,
+                    values_len: usize,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> Result<bool, E>,
+                ) -> Result<(), E> {
+                    let end = self.prepare_segment(values_len, source.len());
+                    for item in source {
+                        let index = self.initialized;
+                        let is_valid = map(item)?;
+                        // SAFETY: `prepare_segment` proved the complete range,
+                        // and the mapper has completed this external value.
+                        unsafe { self.commit_prepared(index, is_valid) };
+                    }
+                    debug_assert_eq!(self.initialized, end);
+                    Ok(())
+                }
+
+                /// Returns the prepared bitmap after checking it against the
+                /// observed value count and trimming amortized backing bits.
+                ///
+                /// # Panics
+                ///
+                /// Panics if `actual_len` differs from the initialized cursor
+                /// or an exact bitmap's declared length.
+                #[must_use]
+                #[inline]
+                pub fn finish(mut self, actual_len: usize) -> Option<Bitmap> {
+                    assert_eq!(
+                        actual_len, self.initialized,
+                        "df-derive: validity length did not match initialized values",
+                    );
+                    if let Some(exact_len) = self.exact_len {
+                        assert_eq!(
+                            self.initialized, exact_len,
+                            "df-derive: validity bitmap was not completely initialized",
+                        );
+                    }
+                    self.bitmap.resize(actual_len, true);
+                    self.bitmap.into()
+                }
+            }
+
+            /// A zeroed Boolean value bitmap filled through an owned cursor
+            /// without exposing unchecked bitmap mutation.
+            #[doc(hidden)]
+            pub struct PreparedBooleanValues {
+                bitmap: MutableBitmap,
+                initialized: usize,
+            }
+
+            impl PreparedBooleanValues {
+                /// Creates a zeroed bitmap with an exact final length.
+                #[must_use]
+                #[inline]
+                pub fn with_exact_len(len: usize) -> Self {
+                    Self {
+                        bitmap: MutableBitmap::from_len_zeroed(len),
+                        initialized: 0,
+                    }
+                }
+
+                #[inline]
+                fn prepare_segment(&self, additional: usize) -> usize {
+                    let end = self
+                        .initialized
+                        .checked_add(additional)
+                        .expect("df-derive: Boolean bitmap length overflow");
+                    assert!(
+                        end <= self.bitmap.len(),
+                        "df-derive: Boolean segment exceeded its declared length",
+                    );
+                    end
+                }
+
+                /// Commits one Boolean in a range proved by
+                /// `prepare_segment`.
+                ///
+                /// # Safety
+                ///
+                /// The initialized cursor must lie in the range most recently
+                /// proved by `prepare_segment`.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "runtime-owned generated hot loops must inline this primitive"
+                )]
+                #[inline(always)]
+                unsafe fn commit_prepared(&mut self, value: bool) {
+                    debug_assert!(self.initialized < self.bitmap.len());
+                    if value {
+                        // SAFETY: upheld by the caller.
+                        unsafe { self.bitmap.set_unchecked(self.initialized, true) };
+                    }
+                    self.initialized += 1;
+                }
+
+                /// Extends this bitmap from one trusted-cardinality source
+                /// segment after checking the whole destination range.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the segment overflows or
+                /// exceeds the declared bitmap length.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_segment<S>(&mut self, source: &[S], mut map: impl FnMut(&S) -> bool) {
+                    let end = self.prepare_segment(source.len());
+                    for item in source {
+                        let value = map(item);
+                        // SAFETY: `prepare_segment` proved the complete range,
+                        // and this loop commits exactly once per source item.
+                        unsafe { self.commit_prepared(value) };
+                    }
+                    debug_assert_eq!(self.initialized, end);
+                }
+
+                /// Extends this bitmap from a captured schedule after checking
+                /// its aggregate destination range once.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if the aggregate range exceeds
+                /// the declared bitmap length.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_captured<S>(
+                    &mut self,
+                    source: &CapturedSegments<'_, S>,
+                    mut map: impl FnMut(&S) -> bool,
+                ) {
+                    let end = self.prepare_segment(source.len);
+                    let mut fill =
+                        PreparedBitmapFillGuard::new(&mut self.bitmap, &mut self.initialized);
+                    for segment in &source.segments {
+                        for item in *segment {
+                            let value = map(item);
+                            fill.commit_boolean(value);
+                        }
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                }
+
+                /// Extends this bitmap from a compact grouped schedule after
+                /// validating its aggregate destination range once.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_grouped<S>(
+                    &mut self,
+                    source: &CapturedSegmentGroups<'_, S>,
+                    mut map: impl FnMut(&S) -> bool,
+                ) -> Vec<i64> {
+                    let end = self.prepare_segment(source.len);
+                    let mut fill =
+                        PreparedBitmapFillGuard::new(&mut self.bitmap, &mut self.initialized);
+                    let offsets = source.visit_segments(|segment| {
+                        for item in segment {
+                            fill.commit_boolean(map(item));
+                        }
+                    });
+                    debug_assert_eq!(fill.len(), end);
+                    offsets
+                }
+
+                /// Extends paired Boolean values and validity from one
+                /// nullable source segment.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if either destination range is
+                /// inconsistent, overflows, or exceeds its declaration.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_segment<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &[S],
+                    mut map: impl FnMut(&S) -> (bool, bool),
+                ) {
+                    let start = self.initialized;
+                    let end = self.prepare_segment(source.len());
+                    validity.prepare_segment(start, source.len());
+                    for item in source {
+                        let index = self.initialized;
+                        let (value, is_valid) = map(item);
+                        // SAFETY: both complete ranges were proved before the
+                        // mapper ran, and this loop advances them in lockstep.
+                        unsafe {
+                            self.commit_prepared(value);
+                            validity.commit_prepared(index, is_valid);
+                        }
+                    }
+                    debug_assert_eq!(self.initialized, end);
+                }
+
+                /// Extends paired Boolean values and validity from one
+                /// captured schedule after validating both aggregate ranges.
+                ///
+                /// # Panics
+                ///
+                /// Panics before invoking `map` if either aggregate range is
+                /// inconsistent or exceeds its declaration.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated primitive-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_captured<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegments<'_, S>,
+                    mut map: impl FnMut(&S) -> Option<bool>,
+                ) {
+                    let start = self.initialized;
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    let mut fill = NullableBooleanFillGuard::new(
+                        &mut self.bitmap,
+                        &mut self.initialized,
+                        &mut validity.bitmap,
+                        &mut validity.initialized,
+                    );
+                    for segment in &source.segments {
+                        for item in *segment {
+                            match map(item) {
+                                Some(value) => fill.push(value, true),
+                                None => fill.push(false, false),
+                            }
+                        }
+                    }
+                    debug_assert_eq!(fill.len(), end);
+                }
+
+                /// Extends paired Boolean values and validity from a compact
+                /// grouped schedule after validating both aggregate ranges.
+                #[allow(
+                    clippy::inline_always,
+                    reason = "generated grouped-list hot loops must inline the mapper"
+                )]
+                #[inline(always)]
+                pub fn extend_nullable_grouped<S>(
+                    &mut self,
+                    validity: &mut PreparedValidity,
+                    source: &CapturedSegmentGroups<'_, S>,
+                    mut map: impl FnMut(&S) -> Option<bool>,
+                ) -> Vec<i64> {
+                    let start = self.initialized;
+                    let end = self.prepare_segment(source.len);
+                    validity.prepare_segment(start, source.len);
+                    let mut fill = NullableBooleanFillGuard::new(
+                        &mut self.bitmap,
+                        &mut self.initialized,
+                        &mut validity.bitmap,
+                        &mut validity.initialized,
+                    );
+                    let offsets = source.visit_segments(|segment| {
+                        for item in segment {
+                            match map(item) {
+                                Some(value) => fill.push(value, true),
+                                None => fill.push(false, false),
+                            }
+                        }
+                    });
+                    debug_assert_eq!(fill.len(), end);
+                    offsets
+                }
+
+                /// Returns the prepared value count.
+                #[must_use]
+                #[inline]
+                #[allow(
+                    clippy::len_without_is_empty,
+                    reason = "the hidden generated-code contract only consumes the initialized count"
+                )]
+                pub const fn len(&self) -> usize {
+                    self.initialized
+                }
+
+                /// Returns the immutable value bitmap after checking length.
+                ///
+                /// # Panics
+                ///
+                /// Panics if any exact position remains uninitialized.
+                #[must_use]
+                #[inline]
+                pub fn finish(self) -> Bitmap {
+                    assert_eq!(
+                        self.initialized,
+                        self.bitmap.len(),
+                        "df-derive: prepared Boolean values were not completely initialized",
+                    );
+                    self.bitmap.into()
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use std::cell::Cell;
+                use std::rc::Rc;
+
+                use super::*;
+
+                struct DropCounter(Rc<Cell<usize>>);
+
+                impl Drop for DropCounter {
+                    fn drop(&mut self) {
+                        self.0.set(self.0.get() + 1);
+                    }
+                }
+
+                #[test]
+                fn exact_storage_supports_empty_and_zero_sized_values() {
+                    assert!(ExactBuffer::<()>::with_exact_len(0).finish().is_empty());
+
+                    let mut values = ExactBuffer::with_exact_len(3);
+                    values.extend_segment(&[(), (), ()], |()| ());
+                    assert_eq!(values.finish().len(), 3);
+
+                    assert!(PreparedValidity::with_exact_len(0).finish(0).is_none());
+                    assert_eq!(PreparedBooleanValues::with_exact_len(0).finish().len(), 0);
+                }
+
+                #[test]
+                fn exact_buffer_finishes_fully_initialized_storage() {
+                    let mut values = ExactBuffer::with_exact_len(3);
+                    values.extend_segment(&[1, 2, 3], |value| value * 10);
+
+                    assert_eq!(values.len(), 3);
+                    assert_eq!(values.finish(), [10, 20, 30]);
+                }
+
+                #[test]
+                fn captured_schedule_fills_after_one_aggregate_check() {
+                    let first = vec![10, 20];
+                    let second = vec![30, 40];
+                    let mut captured = CapturedSegments::new();
+                    assert_eq!(captured.capture(&first), Some(2));
+                    assert_eq!(captured.capture(&second), Some(4));
+                    let mut values = ExactBuffer::with_exact_len(4);
+                    values.extend_captured(&captured, |value| *value);
+
+                    assert_eq!(values.finish(), [10, 20, 30, 40]);
+                }
+
+                #[test]
+                fn captured_schedule_rejects_total_overflow_without_mutation() {
+                    let source = vec![1];
+                    let mut captured = CapturedSegments::<u8> {
+                        segments: Vec::new(),
+                        len: usize::MAX,
+                    };
+                    assert_eq!(captured.capture(&source), None);
+                    assert_eq!(captured.len(), usize::MAX);
+                    assert!(captured.segments.is_empty());
+                }
+
+                #[test]
+                fn grouped_schedule_preserves_empty_segment_offsets() {
+                    let empty_group: Vec<Vec<i32>> = Vec::new();
+                    let group = vec![vec![], vec![10, 20], vec![]];
+                    let mut captured = CapturedSegmentGroups::with_capacity(2);
+                    assert_eq!(captured.capture_group(&empty_group), Some(()));
+                    assert_eq!(captured.capture_group(&group), Some(()));
+                    assert_eq!(captured.len(), 2);
+                    assert_eq!(captured.segment_count(), 3);
+
+                    let mut values = ExactBuffer::with_exact_len(2);
+                    let offsets = values.extend_grouped(&captured, |value| *value);
+
+                    assert_eq!(offsets, [0, 0, 2, 2]);
+                    assert_eq!(values.finish(), [10, 20]);
+                }
+
+                #[test]
+                fn grouped_schedule_rejects_overflow_atomically() {
+                    let group = vec![vec![1u8]];
+                    let mut leaf_overflow = CapturedSegmentGroups {
+                        groups: Vec::new(),
+                        len: usize::MAX,
+                        segment_count: 0,
+                    };
+                    assert_eq!(leaf_overflow.capture_group(&group), None);
+                    assert_eq!(leaf_overflow.len(), usize::MAX);
+                    assert_eq!(leaf_overflow.segment_count(), 0);
+                    assert!(leaf_overflow.groups.is_empty());
+
+                    let empty_segment = vec![Vec::<u8>::new()];
+                    let mut segment_overflow = CapturedSegmentGroups {
+                        groups: Vec::new(),
+                        len: 0,
+                        segment_count: usize::MAX,
+                    };
+                    assert_eq!(segment_overflow.capture_group(&empty_segment), None);
+                    assert_eq!(segment_overflow.len(), 0);
+                    assert_eq!(segment_overflow.segment_count(), usize::MAX);
+                    assert!(segment_overflow.groups.is_empty());
+                }
+
+                #[test]
+                fn grouped_exact_fill_drops_mapper_panic_prefix_once() {
+                    let drops = Rc::new(Cell::new(0));
+                    let group = vec![vec![0, 1], vec![2]];
+                    let mut captured = CapturedSegmentGroups::with_capacity(1);
+                    assert_eq!(captured.capture_group(&group), Some(()));
+                    let mut values = ExactBuffer::with_exact_len(3);
+
+                    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        drop(values.extend_grouped(&captured, |value| {
+                            assert_ne!(*value, 1, "mapper panic");
+                            DropCounter(Rc::clone(&drops))
+                        }));
+                    }));
+                    assert!(panic.is_err());
+                    assert_eq!(values.len(), 1);
+                    assert_eq!(drops.get(), 0, "the completed prefix remains vector-owned");
+
+                    drop(values);
+                    assert_eq!(drops.get(), 1, "the initialized prefix is dropped once");
+                }
+
+                #[test]
+                fn grouped_nullable_panic_keeps_values_and_validity_synchronized() {
+                    let group = vec![vec![Some(10), None], vec![Some(30)]];
+                    let mut captured = CapturedSegmentGroups::with_capacity(1);
+                    assert_eq!(captured.capture_group(&group), Some(()));
+                    let mut values = ExactBuffer::with_exact_len(3);
+                    let mut validity = PreparedValidity::with_exact_len(3);
+
+                    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        drop(
+                            values.extend_nullable_grouped(&mut validity, &captured, |value| {
+                                assert_ne!(*value, Some(30), "mapper panic");
+                                *value
+                            }),
+                        );
+                    }));
+                    assert!(panic.is_err());
+                    assert_eq!(values.len(), 2);
+                    assert_eq!(validity.initialized, 2);
+                    assert!(validity.bitmap.get(0));
+                    assert!(!validity.bitmap.get(1));
+                }
+
+                #[test]
+                fn incremental_buffer_grows_for_each_observed_segment() {
+                    let mut values = ExactBuffer::with_capacity(0);
+                    values.extend_segment(&[10, 20], |value| *value);
+                    values.extend_segment(&[30], |value| *value);
+
+                    assert_eq!(values.finish(), [10, 20, 30]);
+                }
+
+                #[test]
+                fn exact_buffer_rejects_overfill_before_invoking_mapper() {
+                    let calls = Cell::new(0);
+                    let mut values = ExactBuffer::with_exact_len(1);
+                    values.extend_segment(&[10], |value| *value);
+
+                    let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        values.extend_segment(&[20], |value| {
+                            calls.set(calls.get() + 1);
+                            *value
+                        });
+                    }));
+                    assert!(overflow.is_err());
+                    assert_eq!(calls.get(), 0);
+                }
+
+                #[test]
+                #[should_panic(expected = "exact buffer was not completely initialized")]
+                fn exact_buffer_rejects_underfill() {
+                    let mut values = ExactBuffer::with_exact_len(2);
+                    values.extend_segment(&[10], |value| *value);
+                    drop(values.finish());
+                }
+
+                #[test]
+                #[should_panic(expected = "exact buffer length overflow")]
+                fn exact_buffer_checks_length_arithmetic_before_reserving() {
+                    let mut values = ExactBuffer::with_exact_len(1);
+                    values.extend_segment(&[()], |()| ());
+                    values.prepare_segment(usize::MAX);
+                }
+
+                #[test]
+                fn exact_buffer_drops_mapper_panic_prefix_once() {
+                    let drops = Rc::new(Cell::new(0));
+                    let mut values = ExactBuffer::with_exact_len(3);
+                    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        values.extend_segment(&[0, 1, 2], |value| {
+                            assert_ne!(*value, 1, "mapper panic");
+                            DropCounter(Rc::clone(&drops))
+                        });
+                    }));
+                    assert!(panic.is_err());
+                    assert_eq!(drops.get(), 0, "the completed prefix remains vector-owned");
+
+                    drop(values);
+                    assert_eq!(drops.get(), 1, "the initialized prefix is dropped once");
+                }
+
+                #[test]
+                fn exact_buffer_drops_fallible_mapper_prefix_once() {
+                    let drops = Rc::new(Cell::new(0));
+                    let mut values = ExactBuffer::with_exact_len(3);
+                    let result: Result<(), ()> = values.try_extend_segment(&[0, 1, 2], |value| {
+                        if *value == 2 {
+                            Err(())
+                        } else {
+                            Ok(DropCounter(Rc::clone(&drops)))
+                        }
+                    });
+                    assert!(result.is_err());
+
+                    drop(values);
+                    assert_eq!(drops.get(), 2);
+                }
+
+                #[test]
+                fn nullable_numeric_segments_fill_values_and_validity_together() {
+                    let source = [Some(10), None, Some(30)];
+                    let mut values = ExactBuffer::with_exact_len(source.len());
+                    let mut validity = PreparedValidity::with_exact_len(source.len());
+                    values.extend_nullable_segment(&mut validity, &source, |value| {
+                        value.map_or((0, false), |value| (value, true))
+                    });
+
+                    let validity = validity
+                        .finish(values.len())
+                        .expect("one null retains validity");
+                    assert_eq!(values.finish(), [10, 0, 30]);
+                    assert!(validity.get_bit(0));
+                    assert!(!validity.get_bit(1));
+                    assert!(validity.get_bit(2));
+                }
+
+                #[test]
+                fn prepared_bitmaps_patch_positions_across_machine_words() {
+                    let true_positions = [0, 63, 64, 127, 128];
+                    let null_positions = [1, 62, 65, 126, 129];
+                    let source: Vec<Option<bool>> = (0..130)
+                        .map(|index| {
+                            (!null_positions.contains(&index))
+                                .then(|| true_positions.contains(&index))
+                        })
+                        .collect();
+                    let mut values = PreparedBooleanValues::with_exact_len(130);
+                    let mut validity = PreparedValidity::with_exact_len(130);
+                    values.extend_nullable_segment(&mut validity, &source, |value| {
+                        value.map_or((false, false), |value| (value, true))
+                    });
+
+                    let values = values.finish();
+                    let validity = validity.finish(130);
+                    let validity = validity.expect("null patches retain validity");
+                    for index in true_positions {
+                        assert!(values.get_bit(index), "value bit {index}");
+                    }
+                    for index in null_positions {
+                        assert!(!validity.get_bit(index), "validity bit {index}");
+                    }
+                }
+
+                #[test]
+                fn streamed_validity_trims_amortized_backing_to_observed_values() {
+                    let source = [Some(10), None, Some(30)];
+                    let mut external_values = Vec::new();
+                    let mut validity = PreparedValidity::with_capacity(64);
+                    validity.extend_segment(external_values.len(), &source, |value| {
+                        external_values.push(value.unwrap_or_default());
+                        value.is_some()
+                    });
+
+                    let validity = validity.finish(external_values.len());
+                    let validity = validity.expect("null patch retains validity");
+                    assert_eq!(validity.len(), 3);
+                    assert!(validity.get_bit(0));
+                    assert!(!validity.get_bit(1));
+                    assert!(validity.get_bit(2));
+                }
+
+                #[test]
+                fn streamed_validity_rejects_wrong_start_before_invoking_mapper() {
+                    let calls = Cell::new(0);
+                    let mut validity = PreparedValidity::with_capacity(4);
+                    let mismatch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        validity.extend_segment(1, &[true], |_| {
+                            calls.set(calls.get() + 1);
+                            true
+                        });
+                    }));
+                    assert!(mismatch.is_err());
+                    assert_eq!(calls.get(), 0);
+                }
+
+                #[test]
+                #[should_panic(expected = "validity bitmap length overflow")]
+                fn prepared_validity_checks_length_arithmetic_before_growing() {
+                    let mut validity = PreparedValidity::with_exact_len(1);
+                    validity.extend_segment(0, &[true], |_| true);
+                    validity.prepare_segment(1, usize::MAX);
+                }
+
+                #[test]
+                fn fallible_external_validity_stops_at_error_prefix() {
+                    let mut external_values = Vec::new();
+                    let mut validity = PreparedValidity::with_capacity(3);
+                    let result: Result<(), ()> =
+                        validity.try_extend_segment(0, &[0, 1, 2], |value| {
+                            if *value == 1 {
+                                Err(())
+                            } else {
+                                external_values.push(*value);
+                                Ok(true)
+                            }
+                        });
+                    assert!(result.is_err());
+                    assert_eq!(external_values, [0]);
+                    assert!(validity.finish(external_values.len()).is_none());
+                }
+
+                #[test]
+                #[should_panic(expected = "validity bitmap was not completely initialized")]
+                fn prepared_validity_rejects_exact_underfill() {
+                    let validity = PreparedValidity::with_exact_len(2);
+                    drop(validity.finish(0));
+                }
+
+                #[test]
+                fn prepared_boolean_values_reject_overfill_before_invoking_mapper() {
+                    let calls = Cell::new(0);
+                    let mut values = PreparedBooleanValues::with_exact_len(1);
+                    values.extend_segment(&[true], |value| *value);
+                    let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        values.extend_segment(&[false], |value| {
+                            calls.set(calls.get() + 1);
+                            *value
+                        });
+                    }));
+                    assert!(overflow.is_err());
+                    assert_eq!(calls.get(), 0);
+                }
+
+                #[test]
+                #[should_panic(expected = "were not completely initialized")]
+                fn prepared_boolean_values_reject_underfill() {
+                    let mut values = PreparedBooleanValues::with_exact_len(2);
+                    values.extend_segment(&[true], |value| *value);
+                    drop(values.finish());
+                }
+            }
+        }
     }
 
     /// A schema-checked column batch produced by [`Columnar::encode_batch`].
@@ -282,15 +2105,14 @@ pub mod dataframe {
     /// references as it advances. Slice-backed cursors can replay their yielded
     /// prefix directly without allocating a second reference buffer.
     ///
-    /// # Safety
-    ///
-    /// `yielded` must report the exact number of items successfully returned by
-    /// `Iterator::next`. After `enable_replay` returns successfully, `replay`
-    /// must yield exactly those successful source items once each and in source
-    /// order. Generated encoders rely on this contract to uphold exact-capacity
-    /// unsafe writes.
+    /// Implementations must report the exact number of items successfully
+    /// returned by `Iterator::next`. After `enable_replay` returns,
+    /// `replay` must yield exactly those successful source items once each and
+    /// in source order. Runtime-owned storage validates generated fill counts,
+    /// so violating this semantic contract can produce an encoding error or
+    /// panic but cannot make generated code memory-unsafe.
     #[doc(hidden)]
-    pub unsafe trait RowCursor: Iterator {
+    pub trait RowCursor: Iterator {
         /// A fresh iterator over the rows yielded so far, in source order.
         type Replay<'cursor>: Iterator<Item = Self::Item>
         where
@@ -348,7 +2170,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<I> RowCursor for StreamingCursor<I>
+    impl<I> RowCursor for StreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -421,7 +2243,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<I> RowCursor for ReplayStreamingCursor<I>
+    impl<I> RowCursor for ReplayStreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -484,7 +2306,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<'row, T> RowCursor for SliceCursor<'row, T> {
+    impl<'row, T> RowCursor for SliceCursor<'row, T> {
         type Replay<'cursor>
             = std::slice::Iter<'row, T>
         where
@@ -534,7 +2356,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
+    impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
         type Replay<'cursor>
             = std::iter::Copied<std::slice::Iter<'slice, &'row T>>
         where

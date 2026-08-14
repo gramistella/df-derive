@@ -90,8 +90,9 @@ This repository uses a serde-like three-crate architecture:
   `Decimal128Encode for rust_decimal::Decimal` impl.
 - `df-derive-macros`: the proc-macro implementation. Power users can depend
   on this directly and target `df-derive-core`, `paft`, or a custom runtime.
-  Encoder lowering composes a phase-typed plan with one shared source scan and
-  ordered completion groups before rendering generated Rust.
+  Encoder lowering composes a phase-typed plan with a single caller-source
+  scan and, for selected shapes, ordered deferred phases before rendering
+  generated Rust.
 
 Because `df-derive-core` owns the default trait identity, models derived in
 different crates can compose as nested `ToDataFrame` types when they use the
@@ -120,8 +121,10 @@ impl ColumnarSpec for T {
 
 `build_schema` composes names and dtypes directly; schema inspection no longer
 encodes an empty batch. `encode_columns` writes through schema-bound slots.
-`RowCursor` is a hidden unsafe sibling runtime trait extending `Iterator` with
-exact yielded-row counting and replay operations. Each generated
+`RowCursor` is a hidden sibling runtime trait extending `Iterator` with exact
+yielded-row counting and replay operations. Its ordering and counting rules
+are semantic rather than memory-safety requirements because runtime-owned
+storage validates generated fill boundaries. Each generated
 `ColumnarSpec` advertises whether it requires row replay. The blanket general-
 iterator boundary selects a compact streaming cursor for non-replaying shapes
 and a reference-buffering cursor for replaying shapes; generated replaying
@@ -136,7 +139,12 @@ then checks width and every column height before producing
 an `EncodedBatch`. Public conversion constructs the outer `DataFrame`; nested
 encoders consume a child batch's validated columns directly without
 constructing and dismantling a child frame. `ToDataFrame` and the slice
-extension remain blanket APIs.
+extension remain blanket APIs. Primitive-list encoders allocate and patch
+exact storage through the selected runtime's hidden
+`__private::encode::{CapturedSegments, CapturedSegmentGroups, ExactBuffer,
+PreparedValidity, PreparedBooleanValues}` types. The captured schedules retain
+checked aggregate lengths and the storage types own exact vector and bitmap
+fills, so generated implementations do not contain unchecked writes.
 
 ## Representative Generated Code
 
@@ -399,7 +407,8 @@ struct Row {
 
 If only `trait = "x::ToDataFrame"` is provided, the macro infers the sibling
 `x::Columnar` and `x::Decimal128Encode` paths. From the resolved `Columnar`
-path it also requires canonical sibling `ColumnarSpec` and `ColumnSink` items.
+path it also requires canonical sibling `ColumnarSpec` and `ColumnSink` items,
+plus `x::__private::encode` when primitive-list storage is generated.
 The checked runtime surface conventionally exposes `EncodedBatch` there too.
 A standalone
 `columnar = "x::Columnar"` override is also supported; the macro infers its
@@ -434,8 +443,9 @@ respected. For example, a dependency declared as
 The final `crate::core::dataframe` fallback is for legacy/local runtimes in
 crates that use `df-derive-macros` directly without `df-derive`,
 `df-derive-core`, `paft-utils`, or `paft`. Any runtime reached by this default
-discovery path must expose `dataframe::__private::{polars, polars_arrow}` for
-generated-code dependency roots.
+discovery path must expose `dataframe::__private::{polars, polars_arrow,
+encode}` for generated-code dependency roots and runtime-owned primitive-list
+storage.
 
 ## Power-User Runtime Choices
 
@@ -491,7 +501,72 @@ automatically; a manual `ColumnarSpec` that invokes `enable_replay` or `replay`
 must set it to `true` so the general-iterator boundary selects the buffering
 cursor. The
 [compile-checked local runtime fixture](df-derive/tests/support/local_runtime.rs)
-is the complete reference implementation.
+shows the re-export strategy. Custom runtimes with a different Polars identity
+must implement the same hidden `__private::encode` surface; an independent
+implementation is compiled and executed by the
+[architecture fixture](df-derive/tests/architecture.rs). The required methods
+are deliberately narrow:
+
+```text
+ExactBuffer<T>:
+  with_capacity(usize), with_exact_len(usize),
+  extend_segment(&[S], map: &S -> T),
+  extend_captured(&CapturedSegments<S>, map: &S -> T),
+  extend_grouped(&CapturedSegmentGroups<S>, map: &S -> T) -> Vec<i64>,
+  try_extend_segment(&[S], map: &S -> Result<T, E>),
+  extend_nullable_segment(
+    &mut PreparedValidity, &[S], map: &S -> (T, bool)
+  ),
+  extend_nullable_captured(
+    &mut PreparedValidity, &CapturedSegments<S>, map: &S -> Option<T>
+  ) where T: Default,
+  extend_nullable_grouped(
+    &mut PreparedValidity, &CapturedSegmentGroups<S>, map: &S -> Option<T>
+  ) -> Vec<i64> where T: Default,
+  try_extend_nullable_segment(
+    &mut PreparedValidity, &[S], map: &S -> Result<(T, bool), E>
+  ),
+  len(), finish() -> Vec<T>
+PreparedValidity:
+  with_capacity(usize), with_exact_len(usize),
+  extend_segment(values_len, &[S], map: &S -> bool),
+  extend_captured(values_len, &CapturedSegments<S>, map: &S -> bool),
+  extend_grouped(
+    values_len, &CapturedSegmentGroups<S>, map: &S -> bool
+  ) -> Vec<i64>,
+  try_extend_segment(values_len, &[S], map: &S -> Result<bool, E>),
+  finish(actual_len) -> Option<Bitmap>
+PreparedBooleanValues:
+  with_exact_len(usize),
+  extend_segment(&[S], map: &S -> bool),
+  extend_captured(&CapturedSegments<S>, map: &S -> bool),
+  extend_grouped(&CapturedSegmentGroups<S>, map: &S -> bool) -> Vec<i64>,
+  extend_nullable_segment(
+    &mut PreparedValidity, &[S], map: &S -> (bool, bool)
+  ),
+  extend_nullable_captured(
+    &mut PreparedValidity, &CapturedSegments<S>, map: &S -> Option<bool>
+  ),
+  extend_nullable_grouped(
+    &mut PreparedValidity, &CapturedSegmentGroups<S>, map: &S -> Option<bool>
+  ) -> Vec<i64>,
+  len(), finish() -> Bitmap
+CapturedSegments<'a, S>:
+  new(), with_capacity(usize), capture(&'a Vec<S>) -> Option<usize>,
+  len(), visit(map: &S -> ())
+CapturedSegmentGroups<'a, S>:
+  with_capacity(usize), capture_group(&'a Vec<Vec<S>>) -> Option<()>,
+  len(), segment_count(),
+  visit_segments(map: &Vec<S> -> ()) -> Vec<i64>
+```
+
+All constructors, schedule captures, and fills above are safe. Direct fills
+validate their complete source range before evaluating the mapper; captured
+fills use the schedule's runtime-checked aggregate count. Fallible fills stop
+at the first error while retaining a valid initialized prefix. Overflow,
+overfill, underfill, and mismatched validity lengths must be checked in release
+builds. A custom runtime may instead re-export the shared implementation when
+it uses the same Polars identity.
 
 ```rust
 mod runtime; // Implements the checked contract linked above.
@@ -589,31 +664,34 @@ explicit schema before constructing the outer frame. For slices and `Vec<T>`,
 prefer `rows.as_slice().to_dataframe()`: the slice extension uses the known
 row count directly. Use `T::encode(...)` when the input is a general iterator.
 
-Generated code consumes the caller's source iterator once. For selected
-infallible primitive-list and wide scalar-tuple shapes, it may replay row or
-leaf-segment references internally to allocate exact column storage and keep
-hot loops narrow. Slice conversion replays directly from the source slice;
+Generated code consumes the caller's source iterator once. Selected infallible
+primitive-list shapes may capture segment references, or one reference per
+penultimate nested-list group, and fill exact storage after that scan. Selected
+wide scalar-tuple shapes may replay rows in bounded terminal lanes to keep hot
+loops narrow. Slice conversion replays directly from the source slice;
 generated nested encoders replay directly from the child-reference slice they
 already collected. A general one-shot iterator captures yielded row references
-only when its shape requests replay. Fallible conversions and user-defined
+only when its shape requests row replay. Fallible conversions and user-defined
 work on direct fields remain in the source pass, so their errors do not consume
 later source rows. Nested children are batch-encoded after their references are
 collected: a child error stops later child evaluation, but the parent source
 iterator has already been consumed.
 
-The generated hot path is shape-dependent. Primitive scalar fields share a
-row loop. Nested fields collect references and call the child's checked batch
-encoder; the parent consumes validated columns directly, without allocating a
-temporary child `DataFrame`. Tuple siblings also share source resolution,
-list traversal, offsets, and validity before materializing their individual
-columns.
+The generated hot path is shape-dependent. Direct primitive scalar fields
+normally share the source scan; wide safe tuple terminals may instead replay
+in bounded lanes. Nested fields collect references and call the child's checked
+batch encoder; the parent consumes validated columns directly, without
+allocating a temporary child `DataFrame`. Tuple siblings also share source
+resolution, list traversal, offsets, and validity before materializing their
+individual columns.
 
-Replay uses temporary references rather than cloning values. A replaying
-general iterator allocates one shared row-reference vector proportional to the
-number of yielded rows. Slice-backed and nested reference-slice cursors do not
-allocate that additional row buffer. Selected leaves may still allocate
-segment-reference vectors proportional to the number of non-empty segments.
-Large one-shot iterators should account for that temporary pointer storage.
+Replay and deferred list schedules use temporary references rather than
+cloning values. A replaying general iterator allocates one shared row-reference
+vector proportional to the number of yielded rows. Slice-backed and nested
+reference-slice cursors do not allocate that additional row buffer. Selected
+primitive-list leaves may allocate reference vectors proportional to the
+number of non-empty leaf segments or penultimate groups. Large one-shot
+iterators should account for that temporary pointer storage.
 
 Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
 deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted

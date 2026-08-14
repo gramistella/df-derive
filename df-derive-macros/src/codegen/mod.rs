@@ -11,7 +11,6 @@ mod planner;
 mod schema;
 mod schema_nested;
 mod source_access;
-mod support;
 mod type_deps;
 mod type_registry;
 
@@ -22,7 +21,6 @@ use quote::quote;
 pub use config::{MacroConfig, build_macro_config};
 
 pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
-    let support = support::generate_support(ir, config);
     let columnar_spec_impl = columnar_spec_impl::generate_columnar_spec_impl(ir, config);
     let eager_asserts = asserts::generate_eager_asserts(
         ir,
@@ -33,8 +31,6 @@ pub fn generate_code(ir: &StructIR, config: &MacroConfig) -> TokenStream {
     quote! {
         const _: () = {
             #eager_asserts
-
-            #support
 
             #columnar_spec_impl
         };
@@ -54,6 +50,7 @@ mod tests {
                 row_cursor: syn::parse_quote!(crate::dataframe::RowCursor),
                 columnar_spec: syn::parse_quote!(crate::dataframe::ColumnarSpec),
                 column_sink: syn::parse_quote!(crate::dataframe::ColumnSink),
+                encode_support: syn::parse_quote!(crate::dataframe::__private::encode),
                 decimal128_encode: syn::parse_quote!(crate::dataframe::Decimal128Encode),
             },
             external_paths: external_paths::default_runtime_paths(&dataframe_mod),
@@ -283,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_encoder_consumes_source_once_and_replays_selected_shapes() {
+    fn generated_encoder_consumes_source_once_and_captures_primitive_segments() {
         let mixed = generated(&syn::parse_quote! {
             struct Mixed<T> {
                 id: u32,
@@ -294,16 +291,15 @@ mod tests {
                 generic: T,
             }
         });
-        let row_cursor = "crate :: dataframe :: RowCursor";
-        let replay_loop = format!("in {row_cursor} :: replay (& * rows)");
+        let captured_segments = "crate :: dataframe :: __private :: encode :: CapturedSegments";
         let enable_replay = enable_replay_call();
 
         assert_eq!(mixed.matches("in rows . by_ref ()").count(), 1, "{mixed}");
         assert_eq!(mixed.matches("Iterator :: size_hint").count(), 1, "{mixed}");
         assert!(!mixed.contains("Iterator :: collect"), "{mixed}");
-        assert_eq!(mixed.matches(&enable_replay).count(), 1, "{mixed}");
-        assert!(mixed.contains(&replay_loop), "{mixed}");
-        assert_replay_policy(&mixed, true);
+        assert!(!mixed.contains(&enable_replay), "{mixed}");
+        assert!(mixed.contains(captured_segments), "{mixed}");
+        assert_replay_policy(&mixed, false);
     }
 
     #[test]
@@ -318,11 +314,10 @@ mod tests {
         let scope = encoder::idents::GeneratedIdentScope::new(&generics);
         let shallow_segments = encoder::idents::vec_leaf_segments(scope, 0).to_string();
         let deep_segments = encoder::idents::vec_leaf_segments(scope, 1).to_string();
-        let deep_counts = encoder::idents::vec_shape_counts(scope, 1).to_string();
-        let push_reserved = encoder::idents::push_reserved(scope).to_string();
-        let set_prepared_bitmap = encoder::idents::set_prepared_bitmap(scope).to_string();
-        let unsafe_push_reserved = format!("unsafe fn {push_reserved}");
-        let unsafe_set_prepared_bitmap = format!("unsafe fn {set_prepared_bitmap}");
+        let deep_count = encoder::idents::vec_leaf_count(scope, 1).to_string();
+        let exact_buffer = "crate :: dataframe :: __private :: encode :: ExactBuffer";
+        let prepared_validity = "crate :: dataframe :: __private :: encode :: PreparedValidity";
+        let prepared_boolean = "crate :: dataframe :: __private :: encode :: PreparedBooleanValues";
         let row_cursor = "crate :: dataframe :: RowCursor";
         let enable_replay = enable_replay_call();
         let replay = format!("{row_cursor} :: replay (& * rows)");
@@ -334,57 +329,36 @@ mod tests {
         );
         assert!(!deferred.contains("Iterator :: collect"), "{deferred}");
         assert!(
-            deferred
-                .matches("bitmap :: MutableBitmap :: from_len_set")
-                .count()
-                >= 2,
+            deferred.matches(prepared_validity).count() >= 2,
             "{deferred}",
         );
-        assert_eq!(deferred.matches(". checked_add").count(), 4, "{deferred}");
         assert!(deferred.contains(&shallow_segments), "{deferred}");
-        assert!(!deferred.contains(&deep_segments), "{deferred}");
-        assert_eq!(deferred.matches(&enable_replay).count(), 1, "{deferred}");
-        assert_eq!(deferred.matches(&replay).count(), 1, "{deferred}");
-        assert_replay_policy(&deferred, true);
-        assert!(deferred.contains(&unsafe_push_reserved), "{deferred}");
-        assert!(deferred.contains(&unsafe_set_prepared_bitmap), "{deferred}");
-        assert_eq!(deferred.matches("debug_assert !").count(), 2, "{deferred}");
-        assert!(deferred.contains("set_prepared_bitmap"), "{deferred}");
-        assert!(deferred.contains(". as_mut_ptr ()"), "{deferred}");
+        assert!(deferred.contains(&deep_segments), "{deferred}");
+        assert!(!deferred.contains(&enable_replay), "{deferred}");
+        assert!(!deferred.contains(&replay), "{deferred}");
+        assert_replay_policy(&deferred, false);
+        assert!(deferred.contains(exact_buffer), "{deferred}");
+        assert!(deferred.contains(prepared_boolean), "{deferred}");
+        assert!(!deferred.contains("unsafe"), "{deferred}");
+        assert!(!deferred.contains("as_mut_ptr"), "{deferred}");
         let derived_impl = deferred
             .find("# [automatically_derived] impl")
             .expect("generated ColumnarSpec impl");
         let deferred_impl = &deferred[derived_impl..];
-        assert_eq!(
-            deferred_impl.matches(". checked_add").count(),
-            4,
-            "{deferred}"
-        );
         assert!(
-            deferred_impl.contains(&format!("Vec :: with_capacity ({deep_counts} [2usize])")),
+            deferred_impl.contains(&format!("ExactBuffer :: with_exact_len ({deep_count})")),
             "{deferred}",
         );
-        for layer in 0..2 {
-            assert!(
-                deferred_impl.contains(&format!(
-                    "Vec :: with_capacity ({deep_counts} [{layer}usize] . saturating_add (1)"
-                )),
-                "{deferred}",
-            );
-            assert!(
-                deferred_impl.contains(&format!(
-                    "MutableBitmap :: with_capacity ({deep_counts} [{layer}usize])"
-                )),
-                "{deferred}",
-            );
-        }
         assert!(
-            deferred_impl.matches("set_prepared_bitmap").count() >= 2,
+            deferred_impl.contains(". extend_nullable_captured"),
             "{deferred}"
         );
-        assert!(deferred_impl.contains("push_reserved"), "{deferred}");
-        assert!(!deferred_impl.contains(". set ("), "{deferred}");
-        assert!(deferred_impl.contains("unsafe"), "{deferred}");
+        assert!(
+            deferred_impl.contains(". extend_nullable_options_captured"),
+            "{deferred}"
+        );
+        assert!(deferred_impl.contains(". push"), "{deferred}");
+        assert!(!deferred_impl.contains("unsafe"), "{deferred}");
 
         let immediate = generated(&syn::parse_quote! {
             struct FallibleList {
@@ -405,6 +379,57 @@ mod tests {
         assert!(!immediate.contains(&enable_replay), "{immediate}");
         assert!(!immediate.contains(&replay), "{immediate}");
         assert_replay_policy(&immediate, false);
+    }
+
+    #[test]
+    fn nullable_numeric_lists_choose_segment_or_group_capture_by_depth() {
+        let captured_segments = "crate :: dataframe :: __private :: encode :: CapturedSegments";
+        let captured_groups = "crate :: dataframe :: __private :: encode :: CapturedSegmentGroups";
+        let generics = syn::Generics::default();
+        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
+        let leaf_segments = encoder::idents::vec_leaf_segments(scope, 0).to_string();
+        let leaf_count = encoder::idents::vec_leaf_count(scope, 0).to_string();
+
+        let shallow = generated(&syn::parse_quote! {
+            struct ShallowNullableNumericList {
+                values: Vec<Option<i32>>,
+            }
+        });
+        assert!(shallow.contains(captured_segments), "{shallow}");
+        assert!(!shallow.contains(captured_groups), "{shallow}");
+        assert!(
+            shallow.contains(". extend_nullable_options_captured"),
+            "{shallow}"
+        );
+        assert!(!shallow.contains(". capture_group"), "{shallow}");
+        assert!(
+            !shallow.contains(". extend_nullable_options_grouped"),
+            "{shallow}"
+        );
+        assert!(
+            shallow.contains(&format!("ExactBuffer :: with_exact_len ({leaf_count})")),
+            "{shallow}",
+        );
+
+        let deep = generated(&syn::parse_quote! {
+            struct DeepNullableNumericList {
+                values: Vec<Vec<Option<i32>>>,
+            }
+        });
+        assert!(deep.contains(captured_groups), "{deep}");
+        assert!(!deep.contains(captured_segments), "{deep}");
+        assert!(deep.contains(". capture_group"), "{deep}");
+        assert!(deep.contains(". extend_nullable_options_grouped"), "{deep}");
+        assert!(
+            !deep.contains(". extend_nullable_options_captured"),
+            "{deep}"
+        );
+        assert!(
+            deep.contains(&format!(
+                "ExactBuffer :: with_exact_len ({leaf_segments} . len ())"
+            )),
+            "{deep}",
+        );
     }
 
     #[test]
@@ -444,8 +469,8 @@ mod tests {
         });
 
         assert!(!shallow_infallible.requirements().requires_row_replay());
-        assert!(deep_infallible.requirements().requires_row_replay());
-        assert_eq!(deep_infallible.row_replay_group_count(), 1);
+        assert!(!deep_infallible.requirements().requires_row_replay());
+        assert_eq!(deep_infallible.row_replay_group_count(), 0);
         assert!(!fallible.requirements().requires_row_replay());
         assert!(
             !tuple_boundary_minus_one
@@ -457,45 +482,36 @@ mod tests {
     }
 
     #[test]
-    fn primitive_list_helpers_are_emitted_selectively() {
-        let generics = syn::Generics::default();
-        let scope = encoder::idents::GeneratedIdentScope::new(&generics);
-        let push_reserved = encoder::idents::push_reserved(scope).to_string();
-        let set_prepared_bitmap = encoder::idents::set_prepared_bitmap(scope).to_string();
-        let unsafe_push_reserved = format!("unsafe fn {push_reserved}");
-        let unsafe_set_prepared_bitmap = format!("unsafe fn {set_prepared_bitmap}");
+    fn primitive_lists_reference_only_the_runtime_storage_their_plan_needs() {
+        let exact_buffer = "crate :: dataframe :: __private :: encode :: ExactBuffer";
+        let prepared_validity = "crate :: dataframe :: __private :: encode :: PreparedValidity";
+        let prepared_boolean = "crate :: dataframe :: __private :: encode :: PreparedBooleanValues";
         let bulk_boolean = generated(&syn::parse_quote! {
             struct BulkBooleanList {
                 values: Vec<Vec<bool>>,
             }
         });
-        assert!(!bulk_boolean.contains("push_reserved"), "{bulk_boolean}");
-        assert!(
-            !bulk_boolean.contains("set_prepared_bitmap"),
-            "{bulk_boolean}",
-        );
+        assert!(!bulk_boolean.contains(exact_buffer), "{bulk_boolean}");
+        assert!(!bulk_boolean.contains(prepared_validity), "{bulk_boolean}");
+        assert!(!bulk_boolean.contains(prepared_boolean), "{bulk_boolean}");
 
         let bitmap_only = generated(&syn::parse_quote! {
             struct ShallowBooleanList {
                 values: Vec<bool>,
             }
         });
-        assert!(!bitmap_only.contains("push_reserved"), "{bitmap_only}");
-        assert!(bitmap_only.contains("set_prepared_bitmap"), "{bitmap_only}");
+        assert!(!bitmap_only.contains(exact_buffer), "{bitmap_only}");
+        assert!(!bitmap_only.contains(prepared_validity), "{bitmap_only}");
+        assert!(bitmap_only.contains(prepared_boolean), "{bitmap_only}");
 
         let bare_numeric = generated(&syn::parse_quote! {
             struct BareNumericList {
                 values: Vec<Vec<i32>>,
             }
         });
-        assert!(
-            bare_numeric.contains(&unsafe_push_reserved),
-            "{bare_numeric}"
-        );
-        assert!(
-            !bare_numeric.contains("set_prepared_bitmap"),
-            "{bare_numeric}"
-        );
+        assert!(bare_numeric.contains(exact_buffer), "{bare_numeric}");
+        assert!(!bare_numeric.contains(prepared_validity), "{bare_numeric}");
+        assert!(!bare_numeric.contains(prepared_boolean), "{bare_numeric}");
 
         let mapped_numeric = generated(&syn::parse_quote! {
             struct MappedNumericLists {
@@ -506,14 +522,18 @@ mod tests {
                 nullable_fallible: Vec<Option<DecimalValue>>,
             }
         });
+        assert!(mapped_numeric.contains(exact_buffer), "{mapped_numeric}");
         assert!(
-            mapped_numeric.contains(&unsafe_push_reserved),
+            mapped_numeric.contains(prepared_validity),
             "{mapped_numeric}"
         );
-        assert!(
-            mapped_numeric.contains(&unsafe_set_prepared_bitmap),
-            "{mapped_numeric}",
-        );
+
+        for generated in [&bulk_boolean, &bitmap_only, &bare_numeric, &mapped_numeric] {
+            assert!(!generated.contains("unsafe fn"), "{generated}");
+            assert!(!generated.contains("as_mut_ptr"), "{generated}");
+            assert!(!generated.contains("set_unchecked"), "{generated}");
+            assert!(!generated.contains("unsafe"), "{generated}");
+        }
     }
 
     #[test]

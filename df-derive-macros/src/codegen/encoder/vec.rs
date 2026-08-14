@@ -11,10 +11,10 @@ use quote::quote;
 
 use super::emit::vec_emit_primitive;
 use super::idents;
-use super::leaf::{LeafArm, LeafArmKind, validity_into_option};
+use super::leaf::{LeafArm, LeafArmKind};
 use super::leaf_kind::{
-    BulkPrimitiveList, CapturedPrimitiveList, PrimitiveListCommon, PrimitiveListEncoding,
-    ReplayedPrimitiveList, StreamPrimitiveList,
+    BulkPrimitiveList, CapturedPrimitiveList, GroupedPrimitiveList, PrimitiveListCommon,
+    PrimitiveListEncoding, StreamPrimitiveList,
 };
 use super::{LeafCtx, leaf};
 
@@ -22,6 +22,7 @@ enum VecLeafSpec {
     Numeric {
         native: TokenStream,
         value_expr: TokenStream,
+        copy_identity: bool,
     },
     StringLike {
         value_expr: TokenStream,
@@ -43,10 +44,79 @@ struct VecLeafBuildCtx<'tokens, 'ir> {
     plan: PrimitiveListPolicy,
     ident_scope: idents::GeneratedIdentScope<'ir>,
     idx: usize,
+    shape: &'ir VecLayers,
     has_inner_option: bool,
     leaf_capacity_expr: &'tokens TokenStream,
     row_capacity: &'tokens syn::Ident,
+    leaf_segment: &'tokens syn::Ident,
+    leaf_segments: &'tokens syn::Ident,
+    grouped_offsets: &'tokens syn::Ident,
+    encode_support: &'tokens syn::Path,
     pa_root: &'tokens TokenStream,
+    pp: &'tokens TokenStream,
+}
+
+struct LeafSegmentAccess {
+    iteration_bind: syn::Ident,
+    resolve_leaf: TokenStream,
+}
+
+impl LeafSegmentAccess {
+    fn for_shape(shape: &VecLayers) -> Self {
+        let leaf_bind = idents::leaf_value();
+        if shape.inner_access.is_empty() || shape.inner_access.is_single_plain_option() {
+            return Self {
+                iteration_bind: leaf_bind,
+                resolve_leaf: TokenStream::new(),
+            };
+        }
+
+        let raw_bind = idents::leaf_value_raw();
+        let chain_ref = super::access_chain_to_ref(&quote! { #raw_bind }, &shape.inner_access);
+        let resolved = chain_ref.expr;
+        let resolve_leaf = if chain_ref.has_option {
+            quote! { let #leaf_bind: ::std::option::Option<_> = #resolved; }
+        } else {
+            quote! { let #leaf_bind = #resolved; }
+        };
+        Self {
+            iteration_bind: raw_bind,
+            resolve_leaf,
+        }
+    }
+
+    fn mapper(&self, body: &TokenStream) -> TokenStream {
+        let iteration_bind = &self.iteration_bind;
+        let resolve_leaf = &self.resolve_leaf;
+        quote! {
+            |#iteration_bind| {
+                #resolve_leaf
+                #body
+            }
+        }
+    }
+
+    fn fallible_mapper(&self, body: &TokenStream, pp: &TokenStream) -> TokenStream {
+        let iteration_bind = &self.iteration_bind;
+        let resolve_leaf = &self.resolve_leaf;
+        quote! {
+            |#iteration_bind| -> #pp::PolarsResult<_> {
+                #resolve_leaf
+                #body
+            }
+        }
+    }
+
+    fn direct_loop(&self, segment: &syn::Ident, body: &TokenStream) -> TokenStream {
+        let iteration_bind = &self.iteration_bind;
+        let resolve_leaf = &self.resolve_leaf;
+        quote! {
+            for #iteration_bind in #segment.iter() {
+                #resolve_leaf
+                #body
+            }
+        }
+    }
 }
 
 fn bool_leaf_array_tokens(
@@ -54,21 +124,26 @@ fn bool_leaf_array_tokens(
     has_inner_option: bool,
     values_ident: &syn::Ident,
     validity_ident: &syn::Ident,
+    prepared_len: &syn::Ident,
+    prepared_validity: &syn::Ident,
 ) -> TokenStream {
     if has_inner_option {
-        let valid_opt = validity_into_option(validity_ident, pa_root);
         quote! {
-            #pa_root::array::BooleanArray::new(
-                #pa_root::datatypes::ArrowDataType::Boolean,
-                ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#values_ident),
-                #valid_opt,
-            )
+            {
+                let #prepared_len = #values_ident.len();
+                let #prepared_validity = #validity_ident.finish(#prepared_len);
+                #pa_root::array::BooleanArray::new(
+                    #pa_root::datatypes::ArrowDataType::Boolean,
+                    #values_ident.finish(),
+                    #prepared_validity,
+                )
+            }
         }
     } else {
         quote! {
             #pa_root::array::BooleanArray::new(
                 #pa_root::datatypes::ArrowDataType::Boolean,
-                ::std::convert::Into::<#pa_root::bitmap::Bitmap>::into(#values_ident),
+                #values_ident.finish(),
                 ::std::option::Option::None,
             )
         }
@@ -77,22 +152,13 @@ fn bool_leaf_array_tokens(
 
 /// The element-count expression that becomes the checked list offset for the
 /// immediate schedule.
-fn leaf_offsets_post_push_tokens(
-    spec: &VecLeafSpec,
-    plan: PrimitiveListPolicy,
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-) -> TokenStream {
+fn leaf_offsets_post_push_tokens(spec: &VecLeafSpec, idx: usize) -> TokenStream {
     let flat = idents::vec_flat(idx);
     let view_buf = idents::vec_view_buf(idx);
     match spec {
         VecLeafSpec::Numeric { .. } => quote! { #flat.len() },
         VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
             quote! { #view_buf.len() }
-        }
-        VecLeafSpec::Bool if plan.uses_exact_deferred_storage() => {
-            let leaf_idx = idents::vec_leaf_idx(ident_scope, idx);
-            quote! { #leaf_idx }
         }
         VecLeafSpec::Bool => {
             let values = idents::bool_values(idx);
@@ -101,178 +167,86 @@ fn leaf_offsets_post_push_tokens(
     }
 }
 
-fn leaf_prepare_segment_tokens(
-    spec: &VecLeafSpec,
-    plan: PrimitiveListPolicy,
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-    has_inner_option: bool,
-    row_capacity: &syn::Ident,
-) -> TokenStream {
-    let additional = idents::leaf_reserve_len();
-    let validity_prepare = (has_inner_option
-        && !(matches!(spec, VecLeafSpec::Numeric { .. })
-            && matches!(plan, PrimitiveListPlan::StreamReserved(()))))
-    .then(|| {
-        let validity = idents::bool_validity(idx);
-        quote! { #validity.extend_constant(#additional, true); }
-    });
-    match spec {
-        VecLeafSpec::Numeric { .. } => {
-            let values = idents::vec_flat(idx);
-            let incremental_validity = (has_inner_option
-                && matches!(plan, PrimitiveListPlan::StreamReserved(())))
-            .then(|| {
-                let validity = idents::bool_validity(idx);
-                let growth = idents::vec_validity_growth(ident_scope, idx);
-                quote! {
-                    if #validity.len() < #values.len() + #additional {
-                        let #growth = #validity
-                            .len()
-                            .max(#row_capacity)
-                            .max(#additional);
-                        #validity.extend_constant(
-                            (#values.len() + #additional - #validity.len()).max(#growth),
-                            true,
-                        );
-                    }
-                }
-            });
-            quote! {
-                #values.reserve(#additional);
-                #validity_prepare
-                #incremental_validity
-            }
-        }
-        VecLeafSpec::StringLike { .. } | VecLeafSpec::BinaryLike { .. } => {
-            let values = idents::vec_view_buf(idx);
-            quote! {
-                #values.reserve(#additional);
-                #validity_prepare
-            }
-        }
-        VecLeafSpec::Bool => {
-            let values = idents::bool_values(idx);
-            if has_inner_option {
-                quote! {
-                    #values.extend_constant(#additional, false);
-                    #validity_prepare
-                }
-            } else {
-                TokenStream::new()
-            }
-        }
-    }
-}
-
-fn prepared_bitmap_set(
-    helper: &syn::Ident,
-    builder: &syn::Ident,
-    index: &TokenStream,
-    value: bool,
-) -> TokenStream {
-    quote! {
-        // SAFETY: generated schedules prepare the complete bitmap range before
-        // entering this element loop.
-        unsafe { #helper(&mut #builder, #index, #value); }
-    }
-}
-
-fn reserved_vec_push(helper: &syn::Ident, values: &syn::Ident, value: &TokenStream) -> TokenStream {
-    let mapped = idents::leaf_value_mapped();
-    quote! {
-        let #mapped = #value;
-        // SAFETY: generated schedules reserve this segment or allocate its
-        // exact observed cardinality before entering the element loop.
-        unsafe { #helper(&mut #values, #mapped); }
-    }
-}
-
 fn build_vec_leaf_pieces(
     spec: &VecLeafSpec,
     ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
     match spec {
-        VecLeafSpec::Numeric { native, value_expr } => numeric_leaf_pieces(native, value_expr, ctx),
+        VecLeafSpec::Numeric {
+            native,
+            value_expr,
+            copy_identity,
+        } => numeric_leaf_pieces(native, value_expr, *copy_identity, ctx),
         VecLeafSpec::StringLike {
             value_expr,
             extra_decls,
-        } => string_like_leaf_pieces(
-            value_expr,
-            extra_decls,
-            ctx.ident_scope,
-            ctx.idx,
-            ctx.has_inner_option,
-            ctx.leaf_capacity_expr,
-            ctx.pa_root,
-        ),
-        VecLeafSpec::BinaryLike { value_expr } => binary_like_leaf_pieces(
-            value_expr,
-            ctx.ident_scope,
-            ctx.idx,
-            ctx.has_inner_option,
-            ctx.leaf_capacity_expr,
-            ctx.pa_root,
-        ),
+        } => string_like_leaf_pieces(value_expr, extra_decls, ctx),
+        VecLeafSpec::BinaryLike { value_expr } => binary_like_leaf_pieces(value_expr, ctx),
         VecLeafSpec::Bool => {
             if ctx.has_inner_option {
-                bool_inner_option_leaf_pieces(
-                    ctx.ident_scope,
-                    ctx.idx,
-                    ctx.leaf_capacity_expr,
-                    ctx.pa_root,
-                )
+                bool_inner_option_leaf_pieces(ctx)
             } else {
-                bool_bare_leaf_pieces(
-                    ctx.ident_scope,
-                    ctx.idx,
-                    ctx.leaf_capacity_expr,
-                    ctx.pa_root,
-                    ctx.plan,
-                )
+                bool_bare_leaf_pieces(ctx)
             }
         }
     }
 }
 
-fn bool_bare_leaf_pieces(
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-    leaf_capacity_expr: &TokenStream,
-    pa_root: &TokenStream,
-    plan: PrimitiveListPolicy,
-) -> (TokenStream, TokenStream, TokenStream) {
+fn bool_bare_leaf_pieces(ctx: &VecLeafBuildCtx<'_, '_>) -> (TokenStream, TokenStream, TokenStream) {
+    let VecLeafBuildCtx {
+        plan,
+        ident_scope,
+        idx,
+        shape,
+        leaf_capacity_expr,
+        leaf_segment,
+        leaf_segments,
+        grouped_offsets,
+        encode_support,
+        pa_root,
+        ..
+    } = *ctx;
     let values_ident = idents::bool_values(idx);
     let validity_ident = idents::bool_validity(idx);
+    let prepared_len = idents::prepared_len(ident_scope, idx);
+    let prepared_validity = idents::prepared_validity(ident_scope, idx);
     let v = idents::leaf_value();
-    let (storage, push) = match plan {
+    let (storage, fill_segment) = match plan {
         PrimitiveListPlan::BulkSegments(()) => (
             quote! {
                 let mut #values_ident: ::std::vec::Vec<bool> =
                     ::std::vec::Vec::with_capacity(#leaf_capacity_expr);
             },
-            TokenStream::new(),
+            quote! {
+                #values_ident.extend(#leaf_segment.iter().copied());
+            },
         ),
-        PrimitiveListPlan::CaptureSegments(()) | PrimitiveListPlan::ReplayRows(()) => {
-            let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
-            let leaf_idx = idents::vec_leaf_idx(ident_scope, idx);
-            let set_true = prepared_bitmap_set(
-                &set_prepared_bitmap,
-                &values_ident,
-                &quote! { #leaf_idx },
-                true,
-            );
+        PrimitiveListPlan::CaptureSegments(()) => {
+            let access = LeafSegmentAccess::for_shape(shape);
+            let callback = access.mapper(&quote! { *#v });
             (
                 quote! {
-                    let mut #values_ident: #pa_root::bitmap::MutableBitmap =
-                        #pa_root::bitmap::MutableBitmap::from_len_zeroed(#leaf_capacity_expr);
-                    let mut #leaf_idx: usize = 0;
+                    let mut #values_ident: #encode_support::PreparedBooleanValues =
+                        #encode_support::PreparedBooleanValues::with_exact_len(
+                            #leaf_capacity_expr,
+                        );
+                },
+                quote! { #values_ident.extend_captured(&#leaf_segments, #callback); },
+            )
+        }
+        PrimitiveListPlan::CaptureGroups(()) => {
+            let access = LeafSegmentAccess::for_shape(shape);
+            let callback = access.mapper(&quote! { *#v });
+            (
+                quote! {
+                    let mut #values_ident: #encode_support::PreparedBooleanValues =
+                        #encode_support::PreparedBooleanValues::with_exact_len(
+                            #leaf_capacity_expr,
+                        );
                 },
                 quote! {
-                    if *#v {
-                        #set_true
-                    }
-                    #leaf_idx += 1;
+                    let #grouped_offsets =
+                        #values_ident.extend_grouped(&#leaf_segments, #callback);
                 },
             )
         }
@@ -285,18 +259,151 @@ fn bool_bare_leaf_pieces(
             #pa_root::array::BooleanArray::from_slice(&#values_ident)
         }
     } else {
-        bool_leaf_array_tokens(pa_root, false, &values_ident, &validity_ident)
+        bool_leaf_array_tokens(
+            pa_root,
+            false,
+            &values_ident,
+            &validity_ident,
+            &prepared_len,
+            &prepared_validity,
+        )
     };
     let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
         let #leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
     };
-    (storage, push, leaf_arr_expr)
+    (storage, fill_segment, leaf_arr_expr)
+}
+
+fn numeric_segment_fill(
+    native: &TokenStream,
+    value_expr: &TokenStream,
+    copy_identity: bool,
+    flat: &syn::Ident,
+    validity: &syn::Ident,
+    ctx: &VecLeafBuildCtx<'_, '_>,
+) -> TokenStream {
+    let VecLeafBuildCtx {
+        plan,
+        shape,
+        has_inner_option,
+        leaf_segment,
+        leaf_segments,
+        grouped_offsets,
+        pp,
+        ..
+    } = *ctx;
+    let access = LeafSegmentAccess::for_shape(shape);
+    let v = idents::leaf_value();
+    let streamed = matches!(plan, PrimitiveListPlan::StreamReserved(()));
+
+    if has_inner_option {
+        if streamed {
+            let optional_value = quote! {
+                match #v {
+                    ::std::option::Option::Some(#v) => {
+                        ({ #value_expr }, true)
+                    }
+                    ::std::option::Option::None => {
+                        (<#native as ::std::default::Default>::default(), false)
+                    }
+                }
+            };
+            let callback =
+                access.fallible_mapper(&quote! { ::std::result::Result::Ok(#optional_value) }, pp);
+            return quote! {
+                #flat.try_extend_nullable_segment(
+                    &mut #validity,
+                    #leaf_segment,
+                    #callback,
+                )?;
+            };
+        }
+        if copy_identity && shape.inner_access.is_single_plain_option() {
+            if matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+                return quote! {
+                    #flat.extend_nullable_options_captured(
+                        &mut #validity,
+                        &#leaf_segments,
+                    );
+                };
+            }
+            if matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+                return quote! {
+                    let #grouped_offsets = #flat.extend_nullable_options_grouped(
+                        &mut #validity,
+                        &#leaf_segments,
+                    );
+                };
+            }
+        }
+        let optional_value = quote! {
+            match #v {
+                ::std::option::Option::Some(#v) => {
+                    ::std::option::Option::Some({ #value_expr })
+                }
+                ::std::option::Option::None => {
+                    ::std::option::Option::None
+                }
+            }
+        };
+        let callback = access.mapper(&optional_value);
+        if matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+            return quote! {
+                #flat.extend_nullable_captured(
+                    &mut #validity,
+                    &#leaf_segments,
+                    #callback,
+                );
+            };
+        }
+        if matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+            return quote! {
+                let #grouped_offsets = #flat.extend_nullable_grouped(
+                    &mut #validity,
+                    &#leaf_segments,
+                    #callback,
+                );
+            };
+        }
+        return quote! {
+            #flat.extend_nullable_segment(
+                &mut #validity,
+                #leaf_segment,
+                #callback,
+            );
+        };
+    }
+    if streamed {
+        let callback =
+            access.fallible_mapper(&quote! { ::std::result::Result::Ok({ #value_expr }) }, pp);
+        quote! { #flat.try_extend_segment(#leaf_segment, #callback)?; }
+    } else {
+        if copy_identity && matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+            return quote! { #flat.extend_copied_captured(&#leaf_segments); };
+        }
+        if copy_identity && matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+            return quote! {
+                let #grouped_offsets = #flat.extend_copied_grouped(&#leaf_segments);
+            };
+        }
+        let callback = access.mapper(value_expr);
+        if matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+            quote! { #flat.extend_captured(&#leaf_segments, #callback); }
+        } else if matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+            quote! {
+                let #grouped_offsets = #flat.extend_grouped(&#leaf_segments, #callback);
+            }
+        } else {
+            quote! { #flat.extend_segment(#leaf_segment, #callback); }
+        }
+    }
 }
 
 fn numeric_leaf_pieces(
     native: &TokenStream,
     value_expr: &TokenStream,
+    copy_identity: bool,
     ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let VecLeafBuildCtx {
@@ -306,12 +413,15 @@ fn numeric_leaf_pieces(
         has_inner_option,
         leaf_capacity_expr,
         row_capacity,
+        encode_support,
         pa_root,
+        ..
     } = *ctx;
     let flat = idents::vec_flat(idx);
     let validity = idents::bool_validity(idx);
-    let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
+    let prepared_len = idents::prepared_len(ident_scope, idx);
+    let prepared_validity = idents::prepared_validity(ident_scope, idx);
     let incremental_validity =
         has_inner_option && matches!(plan, PrimitiveListPlan::StreamReserved(()));
     let value_capacity = if matches!(plan, PrimitiveListPlan::StreamReserved(())) {
@@ -319,92 +429,168 @@ fn numeric_leaf_pieces(
     } else {
         leaf_capacity_expr.clone()
     };
-    let push_reserved = idents::push_reserved(ident_scope);
-    let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
-    let value_push = reserved_vec_push(&push_reserved, &flat, value_expr);
-    let push = if has_inner_option {
-        let default_value = quote! { <#native as ::std::default::Default>::default() };
-        let default_push = reserved_vec_push(&push_reserved, &flat, &default_value);
-        let null_index = quote! { #flat.len() - 1 };
-        let set_null = prepared_bitmap_set(&set_prepared_bitmap, &validity, &null_index, false);
-        quote! {
-            match #v {
-                ::std::option::Option::Some(#v) => {
-                    #value_push
-                }
-                ::std::option::Option::None => {
-                    #default_push
-                    #set_null
-                }
-            }
-        }
-    } else {
-        value_push
-    };
     let storage = if incremental_validity {
         quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::with_capacity(#row_capacity);
+            let mut #flat: #encode_support::ExactBuffer<#native> =
+                #encode_support::ExactBuffer::with_capacity(#value_capacity);
+            let mut #validity: #encode_support::PreparedValidity =
+                #encode_support::PreparedValidity::with_capacity(#row_capacity);
         }
     } else if has_inner_option {
         quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
+            let mut #flat: #encode_support::ExactBuffer<#native> =
+                #encode_support::ExactBuffer::with_exact_len(#value_capacity);
+            let mut #validity: #encode_support::PreparedValidity =
+                #encode_support::PreparedValidity::with_exact_len(#leaf_capacity_expr);
+        }
+    } else if matches!(plan, PrimitiveListPlan::StreamReserved(())) {
+        quote! {
+            let mut #flat: #encode_support::ExactBuffer<#native> =
+                #encode_support::ExactBuffer::with_capacity(#value_capacity);
         }
     } else {
         quote! {
-            let mut #flat: ::std::vec::Vec<#native> =
-                ::std::vec::Vec::with_capacity(#value_capacity);
+            let mut #flat: #encode_support::ExactBuffer<#native> =
+                #encode_support::ExactBuffer::with_exact_len(#value_capacity);
         }
     };
-    let leaf_arr_expr = if incremental_validity {
-        let valid_opt = validity_into_option(&validity, pa_root);
+    let fill_segment =
+        numeric_segment_fill(native, value_expr, copy_identity, &flat, &validity, ctx);
+    let leaf_arr_expr = if has_inner_option {
         quote! {
-            #validity.resize(#flat.len(), true);
+            let #prepared_len = #flat.len();
+            let #prepared_validity = #validity.finish(#prepared_len);
             let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
                 #pa_root::array::PrimitiveArray::<#native>::new(
                     <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-                    #flat.into(),
-                    #valid_opt,
-                );
-        }
-    } else if has_inner_option {
-        let valid_opt = validity_into_option(&validity, pa_root);
-        quote! {
-            let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                #pa_root::array::PrimitiveArray::<#native>::new(
-                    <#native as #pa_root::types::NativeType>::PRIMITIVE.into(),
-                    #flat.into(),
-                    #valid_opt,
+                    #flat.finish().into(),
+                    #prepared_validity,
                 );
         }
     } else {
         quote! {
             let #leaf_arr: #pa_root::array::PrimitiveArray<#native> =
-                #pa_root::array::PrimitiveArray::<#native>::from_vec(#flat);
+                #pa_root::array::PrimitiveArray::<#native>::from_vec(#flat.finish());
         }
     };
-    (storage, push, leaf_arr_expr)
+    (storage, fill_segment, leaf_arr_expr)
+}
+
+fn view_segment_fill(
+    value_expr: &TokenStream,
+    null_value: &TokenStream,
+    view_buf: &syn::Ident,
+    validity: &syn::Ident,
+    ctx: &VecLeafBuildCtx<'_, '_>,
+) -> TokenStream {
+    let VecLeafBuildCtx {
+        plan,
+        shape,
+        has_inner_option,
+        leaf_segment,
+        leaf_segments,
+        grouped_offsets,
+        pp,
+        ..
+    } = *ctx;
+    let access = LeafSegmentAccess::for_shape(shape);
+    let v = idents::leaf_value();
+    let streamed = matches!(plan, PrimitiveListPlan::StreamReserved(()));
+
+    if has_inner_option {
+        let write_and_validity = quote! {
+            match #v {
+                ::std::option::Option::Some(#v) => {
+                    #view_buf.push_value_ignore_validity({ #value_expr });
+                    true
+                }
+                ::std::option::Option::None => {
+                    #view_buf.push_value_ignore_validity(#null_value);
+                    false
+                }
+            }
+        };
+        if streamed {
+            let callback = access.fallible_mapper(
+                &quote! { ::std::result::Result::Ok(#write_and_validity) },
+                pp,
+            );
+            return quote! {
+                #validity.try_extend_segment(
+                    #view_buf.len(),
+                    #leaf_segment,
+                    #callback,
+                )?;
+            };
+        }
+        let callback = access.mapper(&write_and_validity);
+        if matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+            return quote! {
+                #validity.extend_captured(
+                    #view_buf.len(),
+                    &#leaf_segments,
+                    #callback,
+                );
+            };
+        }
+        if matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+            return quote! {
+                let #grouped_offsets = #validity.extend_grouped(
+                    #view_buf.len(),
+                    &#leaf_segments,
+                    #callback,
+                );
+            };
+        }
+        return quote! {
+            #validity.extend_segment(
+                #view_buf.len(),
+                #leaf_segment,
+                #callback,
+            );
+        };
+    }
+
+    let push = quote! { #view_buf.push_value_ignore_validity({ #value_expr }); };
+    if matches!(plan, PrimitiveListPlan::CaptureSegments(())) {
+        let callback = access.mapper(&push);
+        return quote! { #leaf_segments.visit(#callback); };
+    }
+    if matches!(plan, PrimitiveListPlan::CaptureGroups(())) {
+        let loop_body = access.direct_loop(leaf_segment, &push);
+        return quote! {
+            let #grouped_offsets = #leaf_segments.visit_segments(|#leaf_segment| {
+                #loop_body
+            });
+        };
+    }
+    let loop_body = access.direct_loop(leaf_segment, &push);
+    let reserve = streamed.then(|| quote! { #view_buf.reserve(#leaf_segment.len()); });
+    quote! {
+        #reserve
+        #loop_body
+    }
 }
 
 fn string_like_leaf_pieces(
     value_expr: &TokenStream,
     extra_decls: &[TokenStream],
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-    has_inner_option: bool,
-    leaf_capacity_expr: &TokenStream,
-    pa_root: &TokenStream,
+    ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let VecLeafBuildCtx {
+        plan,
+        ident_scope,
+        idx,
+        has_inner_option,
+        leaf_capacity_expr,
+        encode_support,
+        pa_root,
+        ..
+    } = *ctx;
     let view_buf = idents::vec_view_buf(idx);
     let validity = idents::bool_validity(idx);
-    let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
-    let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
+    let prepared_validity = idents::prepared_validity(ident_scope, idx);
     let mut storage_parts: Vec<TokenStream> = Vec::new();
     for d in extra_decls {
         storage_parts.push(d.clone());
@@ -414,157 +600,172 @@ fn string_like_leaf_pieces(
             #pa_root::array::MutableBinaryViewArray::<str>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
+        let validity_decl = if matches!(plan, PrimitiveListPlan::StreamReserved(())) {
+            quote! {
+                let mut #validity: #encode_support::PreparedValidity =
+                    #encode_support::PreparedValidity::with_capacity(#leaf_capacity_expr);
+            }
+        } else {
+            quote! {
+                let mut #validity: #encode_support::PreparedValidity =
+                    #encode_support::PreparedValidity::with_exact_len(#leaf_capacity_expr);
+            }
         };
         storage_parts.push(quote! {
             #validity_decl
         });
     }
     let storage = quote! { #(#storage_parts)* };
-    let push = if has_inner_option {
-        let null_index = quote! { #view_buf.len() - 1 };
-        let set_null = prepared_bitmap_set(&set_prepared_bitmap, &validity, &null_index, false);
-        quote! {
-            match #v {
-                ::std::option::Option::Some(#v) => {
-                    #view_buf.push_value_ignore_validity({ #value_expr });
-                }
-                ::std::option::Option::None => {
-                    #view_buf.push_value_ignore_validity("");
-                    #set_null
-                }
-            }
-        }
-    } else {
-        quote! {
-            #view_buf.push_value_ignore_validity({ #value_expr });
-        }
-    };
+    let fill_segment = view_segment_fill(value_expr, &quote! { "" }, &view_buf, &validity, ctx);
     let leaf_arr_expr = if has_inner_option {
-        let valid_opt = validity_into_option(&validity, pa_root);
         quote! {
+            let #prepared_validity = #validity.finish(#view_buf.len());
             let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf
                 .freeze()
-                .with_validity(#valid_opt);
+                .with_validity(#prepared_validity);
         }
     } else {
         quote! {
             let #leaf_arr: #pa_root::array::Utf8ViewArray = #view_buf.freeze();
         }
     };
-    (storage, push, leaf_arr_expr)
+    (storage, fill_segment, leaf_arr_expr)
 }
 
 fn binary_like_leaf_pieces(
     value_expr: &TokenStream,
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-    has_inner_option: bool,
-    leaf_capacity_expr: &TokenStream,
-    pa_root: &TokenStream,
+    ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let VecLeafBuildCtx {
+        plan,
+        ident_scope,
+        idx,
+        has_inner_option,
+        leaf_capacity_expr,
+        encode_support,
+        pa_root,
+        ..
+    } = *ctx;
     let view_buf = idents::vec_view_buf(idx);
     let validity = idents::bool_validity(idx);
-    let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
-    let v = idents::leaf_value();
     let leaf_arr = idents::leaf_arr();
+    let prepared_validity = idents::prepared_validity(ident_scope, idx);
     let mut storage_parts: Vec<TokenStream> = Vec::new();
     storage_parts.push(quote! {
         let mut #view_buf: #pa_root::array::MutableBinaryViewArray<[u8]> =
             #pa_root::array::MutableBinaryViewArray::<[u8]>::with_capacity(#leaf_capacity_expr);
     });
     if has_inner_option {
-        let validity_decl = quote! {
-            let mut #validity: #pa_root::bitmap::MutableBitmap =
-                #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
+        let validity_decl = if matches!(plan, PrimitiveListPlan::StreamReserved(())) {
+            quote! {
+                let mut #validity: #encode_support::PreparedValidity =
+                    #encode_support::PreparedValidity::with_capacity(#leaf_capacity_expr);
+            }
+        } else {
+            quote! {
+                let mut #validity: #encode_support::PreparedValidity =
+                    #encode_support::PreparedValidity::with_exact_len(#leaf_capacity_expr);
+            }
         };
         storage_parts.push(quote! {
             #validity_decl
         });
     }
     let storage = quote! { #(#storage_parts)* };
-    let empty = quote! { &[][..] };
-    let push = if has_inner_option {
-        let null_index = quote! { #view_buf.len() - 1 };
-        let set_null = prepared_bitmap_set(&set_prepared_bitmap, &validity, &null_index, false);
-        quote! {
-            match #v {
-                ::std::option::Option::Some(#v) => {
-                    #view_buf.push_value_ignore_validity({ #value_expr });
-                }
-                ::std::option::Option::None => {
-                    #view_buf.push_value_ignore_validity(#empty);
-                    #set_null
-                }
-            }
-        }
-    } else {
-        quote! {
-            #view_buf.push_value_ignore_validity({ #value_expr });
-        }
-    };
+    let fill_segment =
+        view_segment_fill(value_expr, &quote! { &[][..] }, &view_buf, &validity, ctx);
     let leaf_arr_expr = if has_inner_option {
-        let valid_opt = validity_into_option(&validity, pa_root);
         quote! {
+            let #prepared_validity = #validity.finish(#view_buf.len());
             let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf
                 .freeze()
-                .with_validity(#valid_opt);
+                .with_validity(#prepared_validity);
         }
     } else {
         quote! {
             let #leaf_arr: #pa_root::array::BinaryViewArray = #view_buf.freeze();
         }
     };
-    (storage, push, leaf_arr_expr)
+    (storage, fill_segment, leaf_arr_expr)
 }
 
 fn bool_inner_option_leaf_pieces(
-    ident_scope: idents::GeneratedIdentScope<'_>,
-    idx: usize,
-    leaf_capacity_expr: &TokenStream,
-    pa_root: &TokenStream,
+    ctx: &VecLeafBuildCtx<'_, '_>,
 ) -> (TokenStream, TokenStream, TokenStream) {
+    let VecLeafBuildCtx {
+        ident_scope,
+        idx,
+        shape,
+        leaf_capacity_expr,
+        leaf_segment,
+        leaf_segments,
+        grouped_offsets,
+        encode_support,
+        pa_root,
+        ..
+    } = *ctx;
     let values_ident = idents::bool_values(idx);
     let validity_ident = idents::bool_validity(idx);
-    let set_prepared_bitmap = idents::set_prepared_bitmap(ident_scope);
-    let leaf_idx = idents::vec_leaf_idx(ident_scope, idx);
     let v = idents::leaf_value();
+    let prepared_len = idents::prepared_len(ident_scope, idx);
+    let prepared_validity = idents::prepared_validity(ident_scope, idx);
     let values_decl = quote! {
-        let mut #values_ident: #pa_root::bitmap::MutableBitmap =
-            #pa_root::bitmap::MutableBitmap::from_len_zeroed(#leaf_capacity_expr);
+        let mut #values_ident: #encode_support::PreparedBooleanValues =
+            #encode_support::PreparedBooleanValues::with_exact_len(#leaf_capacity_expr);
     };
     let validity_decl = quote! {
-        let mut #validity_ident: #pa_root::bitmap::MutableBitmap =
-            #pa_root::bitmap::MutableBitmap::from_len_set(#leaf_capacity_expr);
+        let mut #validity_ident: #encode_support::PreparedValidity =
+            #encode_support::PreparedValidity::with_exact_len(#leaf_capacity_expr);
     };
     let storage = quote! {
         #values_decl
         #validity_decl
-        let mut #leaf_idx: usize = 0;
     };
-    let index = quote! { #leaf_idx };
-    let value_true = prepared_bitmap_set(&set_prepared_bitmap, &values_ident, &index, true);
-    let null = prepared_bitmap_set(&set_prepared_bitmap, &validity_ident, &index, false);
-    let push = quote! {
+    let optional_value = quote! {
         match #v {
-            ::std::option::Option::Some(true) => {
-                #value_true
-            }
-            ::std::option::Option::Some(false) => {}
-            ::std::option::Option::None => {
-                #null
-            }
+            ::std::option::Option::Some(#v) => ::std::option::Option::Some(*#v),
+            ::std::option::Option::None => ::std::option::Option::None,
         }
-        #leaf_idx += 1;
     };
-    let leaf_arr_inner = bool_leaf_array_tokens(pa_root, true, &values_ident, &validity_ident);
+    let callback = LeafSegmentAccess::for_shape(shape).mapper(&optional_value);
+    let fill_segment = if matches!(ctx.plan, PrimitiveListPlan::CaptureSegments(())) {
+        quote! {
+            #values_ident.extend_nullable_captured(
+                &mut #validity_ident,
+                &#leaf_segments,
+                #callback,
+            );
+        }
+    } else if matches!(ctx.plan, PrimitiveListPlan::CaptureGroups(())) {
+        quote! {
+            let #grouped_offsets = #values_ident.extend_nullable_grouped(
+                &mut #validity_ident,
+                &#leaf_segments,
+                #callback,
+            );
+        }
+    } else {
+        quote! {
+            #values_ident.extend_nullable_segment(
+                &mut #validity_ident,
+                #leaf_segment,
+                #callback,
+            );
+        }
+    };
+    let leaf_arr_inner = bool_leaf_array_tokens(
+        pa_root,
+        true,
+        &values_ident,
+        &validity_ident,
+        &prepared_len,
+        &prepared_validity,
+    );
     let leaf_arr = idents::leaf_arr();
     let leaf_arr_expr = quote! {
         let #leaf_arr: #pa_root::array::BooleanArray = #leaf_arr_inner;
     };
-    (storage, push, leaf_arr_expr)
+    (storage, fill_segment, leaf_arr_expr)
 }
 
 fn vec_encoder(
@@ -580,19 +781,15 @@ fn vec_encoder(
 
 fn primitive_list_leaf_capacity(
     plan: PrimitiveListPolicy,
-    shape: &VecLayers,
     row_capacity: &syn::Ident,
-    shape_counts: &syn::Ident,
     leaf_count: &syn::Ident,
+    leaf_segments: &syn::Ident,
 ) -> TokenStream {
     match plan {
         PrimitiveListPlan::BulkSegments(()) => quote! { #row_capacity },
         PrimitiveListPlan::StreamReserved(()) => quote! { 0usize },
-        PrimitiveListPlan::ReplayRows(()) => {
-            let leaves = shape.depth();
-            quote! { #shape_counts[#leaves] }
-        }
         PrimitiveListPlan::CaptureSegments(()) => quote! { #leaf_count },
+        PrimitiveListPlan::CaptureGroups(()) => quote! { #leaf_segments.len() },
     }
 }
 
@@ -606,27 +803,34 @@ fn lower_primitive_list(
     let pa_root = ctx.paths.polars_arrow_root();
     let row_capacity = ctx.base.row_capacity;
     let leaf_count = idents::vec_leaf_count(ctx.ident_scope, ctx.base.idx);
-    let shape_counts = idents::vec_shape_counts(ctx.ident_scope, ctx.base.idx);
     let leaf_segments = idents::vec_leaf_segments(ctx.ident_scope, ctx.base.idx);
     let leaf_segment = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
+    let grouped_offsets = idents::vec_layer_offsets(ctx.base.idx, shape.depth().saturating_sub(1));
     let leaf_capacity_expr =
-        primitive_list_leaf_capacity(plan, shape, row_capacity, &shape_counts, &leaf_count);
+        primitive_list_leaf_capacity(plan, row_capacity, &leaf_count, &leaf_segments);
     let leaf_build_ctx = VecLeafBuildCtx {
         plan,
         ident_scope: ctx.ident_scope,
         idx: ctx.base.idx,
+        shape,
         has_inner_option: shape.has_inner_option(),
         leaf_capacity_expr: &leaf_capacity_expr,
         row_capacity,
+        leaf_segment: &leaf_segment,
+        leaf_segments: &leaf_segments,
+        grouped_offsets: &grouped_offsets,
+        encode_support: ctx.encode_support,
         pa_root,
+        pp: ctx.paths.prelude(),
     };
-    let (leaf_storage_decls, write_leaf, leaf_arr_expr) =
+    let (leaf_storage_decls, fill_segment, leaf_arr_expr) =
         build_vec_leaf_pieces(spec, &leaf_build_ctx);
     let common = PrimitiveListCommon {
         row_capacity: ctx.base.row_capacity.clone(),
         materialization: ctx.materialization.clone(),
         storage_decls: leaf_storage_decls,
         leaf_arr_expr,
+        leaf_segment: leaf_segment.clone(),
         extra_imports: TokenStream::new(),
         leaf_logical_dtype: leaf_dtype.clone(),
     };
@@ -635,69 +839,34 @@ fn lower_primitive_list(
             let VecLeafSpec::Bool = spec else {
                 unreachable!("only Boolean leaves support whole-segment writes")
             };
-            let values = idents::bool_values(ctx.base.idx);
-            let binding = idents::vec_leaf_segment(ctx.ident_scope, ctx.base.idx);
-            let write = quote! {
-                #values.extend(#binding.iter().copied());
-            };
             PrimitiveListPlan::BulkSegments(BulkPrimitiveList {
                 common,
-                binding,
-                write,
-                leaf_offsets_post_push: leaf_offsets_post_push_tokens(
-                    spec,
-                    plan,
-                    ctx.ident_scope,
-                    ctx.base.idx,
-                ),
+                fill_segment,
+                leaf_offsets_post_fill: leaf_offsets_post_push_tokens(spec, ctx.base.idx),
             })
         }
         PrimitiveListPlan::StreamReserved(()) => {
-            let prepare_segment = leaf_prepare_segment_tokens(
-                spec,
-                plan,
-                ctx.ident_scope,
-                ctx.base.idx,
-                shape.has_inner_option(),
-                ctx.base.row_capacity,
-            );
             PrimitiveListPlan::StreamReserved(StreamPrimitiveList {
                 common,
-                prepare_segment,
-                write_leaf,
-                leaf_offsets_post_push: leaf_offsets_post_push_tokens(
-                    spec,
-                    plan,
-                    ctx.ident_scope,
-                    ctx.base.idx,
-                ),
-            })
-        }
-        PrimitiveListPlan::ReplayRows(()) => {
-            let Some(row_replay) = ctx.row_replay else {
-                unreachable!("direct replay ingredients must accompany a replay-row policy")
-            };
-            PrimitiveListPlan::ReplayRows(ReplayedPrimitiveList {
-                common,
-                shape_counts,
-                leaf_offsets_post_push: leaf_offsets_post_push_tokens(
-                    spec,
-                    plan,
-                    ctx.ident_scope,
-                    ctx.base.idx,
-                ),
-                row: row_replay.row.clone(),
-                replay: row_replay.replay.clone(),
-                write_leaf,
+                fill_segment,
+                leaf_offsets_post_fill: leaf_offsets_post_push_tokens(spec, ctx.base.idx),
             })
         }
         PrimitiveListPlan::CaptureSegments(()) => {
             PrimitiveListPlan::CaptureSegments(CapturedPrimitiveList {
                 common,
+                encode_support: ctx.encode_support.clone(),
                 leaf_count,
                 leaf_segments,
-                leaf_segment,
-                write_leaf,
+                fill_segment,
+            })
+        }
+        PrimitiveListPlan::CaptureGroups(()) => {
+            PrimitiveListPlan::CaptureGroups(GroupedPrimitiveList {
+                common,
+                encode_support: ctx.encode_support.clone(),
+                leaf_groups: leaf_segments,
+                fill_group: fill_segment,
             })
         }
     }
@@ -729,6 +898,7 @@ fn mapped_numeric_plan(
         spec: VecLeafSpec::Numeric {
             native,
             value_expr: mapped_v,
+            copy_identity: false,
         },
         leaf_dtype: leaf.dtype(ctx.paths),
     }
@@ -748,6 +918,7 @@ fn vec_leaf_plan(leaf: PrimitiveLeaf<'_>, ctx: &LeafCtx<'_>) -> VecLeafPlan {
                 spec: VecLeafSpec::Numeric {
                     native: info.native,
                     value_expr,
+                    copy_identity: !kind.is_nonzero() && !kind.is_widened(),
                 },
                 leaf_dtype: leaf.dtype(ctx.paths),
             }

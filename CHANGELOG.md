@@ -17,6 +17,16 @@ All notable changes to this project will be documented in this file.
   commit}` contract. Generated encoders now take authoritative output metadata
   from the schema position they are about to commit, while a failed or dropped
   slot leaves that position available for retry.
+- **Breaking for custom runtimes with primitive list fields**: the selected
+  `Columnar` module must expose hidden
+  `__private::encode::{CapturedSegments, CapturedSegmentGroups, ExactBuffer,
+  PreparedValidity, PreparedBooleanValues}` schedule and storage primitives.
+  Generated code now calls this safe runtime-owned contract, keeping unchecked
+  implementation details outside derive output.
+- **Breaking for manual and custom runtimes**: `RowCursor` is now a safe trait.
+  Its yielded-count and replay-order rules remain required semantic behavior,
+  while runtime storage checks ensure a faulty implementation cannot violate
+  generated exact-fill memory safety.
 - **Breaking**: `Columnar::columnar_to_dataframe(&[Self])` and
   `Columnar::columnar_from_refs(&[&Self])` were replaced by
   `Columnar::encode`, which accepts any `IntoIterator<Item = &Self>`.
@@ -43,14 +53,17 @@ All notable changes to this project will be documented in this file.
   the shared source scan, and ordered post-scan/emission groups. Existing
   completion order and block scopes remain explicit while later scheduling
   policy moves behind a planner boundary.
-- Primitive-list execution strategy, helper requirements, and the empirical
+- Primitive-list execution strategy and the empirical
   static-tuple replay boundary now have one typed planner authority. Emitters
   render the selected plan instead of independently rediscovering replay and
   storage policy, and direct columns no longer need a circular replay
   preflight before they can be lowered.
-- Primitive-list plans represent reserved element writes and whole-segment
-  writes as distinct states. Generated exact-fill helpers make their unchecked
-  storage contracts explicit and retain debug assertions at the boundary.
+- Primitive-list plans distinguish source-pass fills, captured segment
+  schedules, and compact schedules that retain one reference per penultimate
+  nested-list group. Exact-fill storage, offset production, and bitmap mutation
+  now live behind safe runtime types that validate complete ranges in release
+  builds and retain final-length checks; generated implementations contain no
+  unchecked storage operations.
 
 ### Fixed
 
@@ -80,16 +93,15 @@ All notable changes to this project will be documented in this file.
 - Derived types now contain one hidden `ColumnarSpec` implementation with one
   explicit schema builder and one column encoder. Runtime blanket
   implementations provide the public single-value, slice, and iterator APIs.
-- The caller's source iterator is traversed once. Shapes that need replay use
-  a shared row cursor and may use per-terminal leaf-segment reference buffers;
-  safe terminal work may revisit those references after the source iterator
-  is exhausted. Slice-backed cursors replay the source slice directly, and
-  nested child encoders replay the reference slice already collected by their
-  parent instead of allocating a duplicate row-reference vector. General
-  one-shot iterators still capture yielded references when replay is needed.
-  The generated replay policy keeps non-replaying general iterators on a
-  compact counting cursor and selects the buffering cursor only for replaying
-  shapes. Values are not cloned.
+- The caller's source iterator is traversed once. Wide tuples that need row
+  replay use a shared cursor; selected infallible primitive lists instead
+  retain leaf-segment references or compact penultimate-group references for a
+  deferred exact fill. Slice-backed cursors replay the source slice directly,
+  and nested child encoders replay the reference slice already collected by
+  their parent instead of allocating a duplicate row-reference vector. The
+  generated policy keeps non-replaying general iterators on a compact counting
+  cursor and selects the buffering cursor only for shapes that request row
+  replay. Values are not cloned.
 - Primitive lists use effect-aware schedules. Safe leaves choose exact-count
   deferred fills where profitable, bare deep boolean segments flatten
   contiguously and pack once, and fallible or user-defined leaves fill during
@@ -104,15 +116,11 @@ All notable changes to this project will be documented in this file.
 - Empty structs and unit payloads preserve height without a temporary null
   column. Nested composition consumes validated child columns without
   constructing and dismantling an intermediate child `DataFrame`.
-- Against the released v0.4.0 tag in isolated Criterion runs, no elapsed-time
-  regression was measured across the selected list and cost-model matrix.
-  Seven of nine list cases improved while the other two had overlapping
-  confidence intervals; final representative runs put deep `i32` and nullable
-  `i32` lists about 36–37% faster. All-safe wide tuples were about 50% faster,
-  with mixed Decimal tuples also materially faster.
-- Nested `Vec<Vec<bool>>` remained materially faster in elapsed time while its
-  Gungraun instruction count stayed above v0.4.0; instruction-count parity is
-  therefore not claimed for that case.
+- Performance changes are evaluated against the released v0.4.0 tag using
+  isolated Criterion outputs by benchmark name. Deterministic Gungraun
+  instruction counts additionally guard the empirical list and tuple
+  scheduling boundaries; transient Criterion history in a shared `target`
+  directory is not used for regression decisions.
 
 ### Migration
 
@@ -130,7 +138,8 @@ All notable changes to this project will be documented in this file.
   into `ColumnarSpec`, implement the sibling `RowCursor` contract, set
   `REQUIRES_ROW_REPLAY = true` whenever their encoder invokes replay, and route
   general iterators, slices, and nested reference slices through their checked
-  sink/batch boundaries.
+  sink/batch boundaries. Primitive-list runtimes must also provide the hidden
+  `__private::encode` storage contract described above.
 
 ## [0.4.0] - 2026-06-29
 

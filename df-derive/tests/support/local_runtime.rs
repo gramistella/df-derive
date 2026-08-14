@@ -10,6 +10,15 @@ pub mod dataframe {
         Column, DataFrame, DataType, PlSmallStr, PolarsResult, Schema, SchemaRef, polars_err,
     };
 
+    #[doc(hidden)]
+    pub mod __private {
+        #[allow(
+            unused_imports,
+            reason = "only primitive-list custom-runtime fixtures exercise this contract"
+        )]
+        pub use df_derive::dataframe::__private::encode;
+    }
+
     pub struct EncodedBatch {
         height: usize,
         columns: Vec<Column>,
@@ -144,12 +153,10 @@ pub mod dataframe {
 
     /// Iterator boundary for generated encoders that may revisit yielded rows.
     ///
-    /// # Safety
-    ///
     /// `yielded` must equal the number of successful `next` calls. After
     /// `enable_replay`, `replay` must yield those items exactly once in source
-    /// order. Generated exact-capacity writes rely on this contract.
-    pub unsafe trait RowCursor: Iterator {
+    /// order. Runtime storage validates generated fill counts.
+    pub trait RowCursor: Iterator {
         type Replay<'cursor>: Iterator<Item = Self::Item>
         where
             Self: 'cursor;
@@ -196,7 +203,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<I> RowCursor for StreamingCursor<I>
+    impl<I> RowCursor for StreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -262,7 +269,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<I> RowCursor for ReplayStreamingCursor<I>
+    impl<I> RowCursor for ReplayStreamingCursor<I>
     where
         I: Iterator,
         I::Item: Copy,
@@ -319,7 +326,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<'row, T> RowCursor for SliceCursor<'row, T> {
+    impl<'row, T> RowCursor for SliceCursor<'row, T> {
         type Replay<'cursor>
             = std::slice::Iter<'row, T>
         where
@@ -363,7 +370,7 @@ pub mod dataframe {
         }
     }
 
-    unsafe impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
+    impl<'slice, 'row, T> RowCursor for RefSliceCursor<'slice, 'row, T> {
         type Replay<'cursor>
             = std::iter::Copied<std::slice::Iter<'slice, &'row T>>
         where

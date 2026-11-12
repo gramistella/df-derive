@@ -1,19 +1,18 @@
-// Focused cost-model benchmark for wide tuple and nested scalar shapes.
+// Wide rows whose columns sit in tuples and nested structs, against the same
+// columns as plain fields.
 //
-// The flat named baseline is the shape the columnar emitter handles in one
-// row loop. Tuple-heavy and nested-heavy variants have the same logical
-// column count so regressions from extra projection / nested scans are easier
-// to see in Criterion output.
+// The baseline is a flat struct of named fields. The tuple-heavy and
+// nested-heavy variants have the same number of columns, so any cost of
+// reaching a column through a tuple or a nested struct shows up as a
+// difference between them.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
-mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 const N_ROWS: usize = 100_000;
 

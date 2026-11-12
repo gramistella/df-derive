@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
 use std::net::IpAddr;
-#[path = "../common.rs"]
-mod core;
 
 #[derive(ToDataFrame)]
 struct Unsupported {

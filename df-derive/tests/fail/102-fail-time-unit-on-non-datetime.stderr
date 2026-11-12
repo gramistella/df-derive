@@ -1,7 +1,7 @@
 error[E0277]: `i64` cannot be encoded with `TemporalBuilder<Ns>`
- --> tests/fail/102-fail-time-unit-on-non-datetime.rs:8:21
+ --> tests/fail/102-fail-time-unit-on-non-datetime.rs:6:21
   |
-8 |     not_a_datetime: i64,
+6 |     not_a_datetime: i64,
   |                     ^^^ this encoding does not apply to `i64`
   |
   = help: the trait `ColumnBuilder<i64>` is not implemented for `TemporalBuilder<Ns>`
@@ -19,8 +19,8 @@ help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
 ...
   | temporal!(std::time::Duration => Duration, from_std, Ns);
   | -------------------------------------------------------- in this macro invocation
-  | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
-  | -------------------------------------------------------------------------------------------- in this macro invocation
+  | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
+  | ------------------------------------------------------------------------------------------- in this macro invocation
   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
   | --------------------------------------------------------------------------------------- in this macro invocation
   | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);

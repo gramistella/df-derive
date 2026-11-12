@@ -1,10 +1,9 @@
 // Primitive `Option<Option<T>>` coverage.
 //
-// Polars cannot represent two distinct null states, so `Some(None)` and the
-// outer `None` collapse to the same `AnyValue::Null`. The encoder collapses
-// any consecutive run of `Option`s above a primitive leaf into a single
-// validity bit; this test pins that behavior for the three representative
-// primitive shapes (Copy numeric, owning `String`, transformed `Decimal`).
+// A column has one validity bit per row, so `Some(None)` and the outer
+// `None` are the same `AnyValue::Null`: any run of `Option`s around a value
+// becomes that one bit. This test pins it for three kinds of value: a `Copy`
+// number, an owned `String`, and a `Decimal`, which is converted on the way.
 //
 // The schema entry stays `Int32` / `String` / `Decimal(p, s)` (NOT `List`)
 // because `Option` doesn't add a list layer — it's nullability folded into
@@ -13,9 +12,7 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use rust_decimal::Decimal;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame)]
 struct DoublyOptional {
@@ -110,7 +107,7 @@ fn main() {
     let empty = <[DoublyOptional] as ToDataFrameVec>::to_dataframe(&[]).unwrap();
     assert_eq!(empty.shape(), (0, 3));
 
-    // Single-row API (`to_dataframe(&self)`) hits the same encoder path.
+    // One value converts the same way.
     let single = DoublyOptional {
         nested_int: Some(Some(99)),
         nested_string: Some(Some("solo".to_string())),

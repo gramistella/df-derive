@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use chrono::{NaiveDate, NaiveTime};
 use polars::prelude::*;
@@ -342,8 +340,8 @@ fn main() {
         3_000
     );
 
-    // Confirm that a `time_unit = "ns"` field on chrono::Duration uses the
-    // ns mapping at the per-row level. A 1ms Duration in nanos = 1_000_000.
+    // A `time_unit = "ns"` field on `chrono::Duration` is stored in
+    // nanoseconds: 1 ms is 1_000_000.
     let one_ms_in_ns = chrono::Duration::milliseconds(1).num_nanoseconds().unwrap();
     assert_eq!(one_ms_in_ns, 1_000_000);
 
@@ -436,7 +434,7 @@ fn main() {
     let df_batch = batch.as_slice().to_dataframe().unwrap();
     assert_eq!(df_batch.shape(), (3, 27));
 
-    // Schema preserved through columnar path.
+    // The same schema with several rows.
     let bs = df_batch.schema();
     assert_eq!(bs.get("nd"), Some(&DataType::Date));
     assert_eq!(bs.get("nt"), Some(&DataType::Time));

@@ -1,13 +1,13 @@
 error[E0277]: `custom::Option<NotDisplay>` doesn't implement `std::fmt::Display`
-  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:14:12
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:12:12
    |
-14 |     label: custom::Option<NotDisplay>,
+12 |     label: custom::Option<NotDisplay>,
    |            ^^^^^^ unsatisfied trait bound
    |
 help: the trait `std::fmt::Display` is not implemented for `custom::Option<NotDisplay>`
-  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:6:5
+  --> tests/fail/134-fail-as-string-concrete-type-without-display.rs:4:5
    |
- 6 |     pub struct Option<T>(pub T);
+ 4 |     pub struct Option<T>(pub T);
    |     ^^^^^^^^^^^^^^^^^^^^
 help: the trait `ColumnBuilder<T>` is conditionally implemented for `DisplayBuilder`
   --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::list::{ListOffsets, wrap_columns, wrap_schema};
-use crate::dataframe::frame::child;
+use crate::dataframe::frame::{child, in_field};
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 use polars::prelude::{Column, PlSmallStr, PolarsResult};
 use polars_arrow::bitmap::Bitmap;
@@ -10,7 +10,8 @@ use polars_arrow::bitmap::Bitmap;
 /// with one entry per pair.
 ///
 /// A `BTreeMap` lists its pairs in key order. A `HashMap` lists them in its
-/// own iteration order, which is not stable between runs.
+/// own iteration order, which is not stable between runs. An empty slot is an
+/// empty map.
 pub struct MapBuilder<K, V> {
     keys: K,
     values: V,
@@ -29,16 +30,26 @@ impl<K, V> MapBuilder<K, V> {
         wrap_schema(out, start);
     }
 
-    fn with_rows<KT, VT>(rows: usize) -> Self
+    fn empty<KT, VT>() -> Self
     where
         K: ColumnBuilder<KT>,
         V: ColumnBuilder<VT>,
     {
         Self {
-            keys: K::with_capacity(rows),
-            values: V::with_capacity(rows),
-            offsets: ListOffsets::with_capacity(rows),
+            keys: K::new(),
+            values: V::new(),
+            offsets: ListOffsets::new(),
         }
+    }
+
+    fn reserve_pairs<KT, VT>(&mut self, additional: usize)
+    where
+        K: ColumnBuilder<KT>,
+        V: ColumnBuilder<VT>,
+    {
+        let pairs = self.offsets.reserve(additional);
+        self.keys.reserve(pairs);
+        self.values.reserve(pairs);
     }
 
     #[inline(always)]
@@ -52,11 +63,14 @@ impl<K, V> MapBuilder<K, V> {
     {
         let len = pairs.len();
         for (key, value) in pairs {
-            self.keys.push(key)?;
-            self.values.push(value)?;
+            if let Err(error) = self.keys.push(Some(key)) {
+                return Err(in_field(error, "key"));
+            }
+            if let Err(error) = self.values.push(Some(value)) {
+                return Err(in_field(error, "value"));
+            }
         }
-        self.offsets.push(len);
-        Ok(())
+        self.offsets.push(len)
     }
 
     fn finish_map<KT, VT>(
@@ -88,41 +102,32 @@ macro_rules! map {
                 Self::map_schema::<KT, VT>(&name, out);
             }
 
-            const LISTS: usize = 1 + K::LISTS + V::LISTS;
-
-            fn with_capacity(rows: usize) -> Self {
-                Self::with_rows::<KT, VT>(rows)
+            fn new() -> Self {
+                Self::empty::<KT, VT>()
             }
 
             #[inline(always)]
-            fn measure(value: &$map<KT, VT $(, $hasher)?>, counts: &mut [usize]) {
-                counts[0] += value.len();
-                if K::LISTS + V::LISTS > 0 {
-                    let (keys, values) = counts[1..].split_at_mut(K::LISTS);
-                    for (key, value) in value {
-                        K::measure(key, keys);
-                        V::measure(value, values);
-                    }
+            fn measure<'a, I>(&mut self, values: I)
+            where
+                $map<KT, VT $(, $hasher)?>: 'a,
+                I: Iterator<Item = Option<&'a $map<KT, VT $(, $hasher)?>>> + Clone,
+            {
+                let maps = values.flatten();
+                self.offsets.measure(maps.clone().map($map::len));
+                self.keys.measure(maps.clone().flat_map($map::keys).map(Some));
+                self.values.measure(maps.flat_map($map::values).map(Some));
+            }
+
+            fn reserve(&mut self, additional: usize) {
+                self.reserve_pairs::<KT, VT>(additional);
+            }
+
+            #[inline(always)]
+            fn push(&mut self, value: Option<&$map<KT, VT $(, $hasher)?>>) -> PolarsResult<()> {
+                match value {
+                    Some(map) => self.push_pairs(map.iter()),
+                    None => self.offsets.push(0),
                 }
-            }
-
-            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-                let (keys, values) = counts[1..].split_at(K::LISTS);
-                Self {
-                    keys: K::with_capacities(counts[0], keys),
-                    values: V::with_capacities(counts[0], values),
-                    offsets: ListOffsets::with_capacity(rows),
-                }
-            }
-
-            #[inline(always)]
-            fn push(&mut self, value: &$map<KT, VT $(, $hasher)?>) -> PolarsResult<()> {
-                self.push_pairs(value.iter())
-            }
-
-            #[inline(always)]
-            fn push_null(&mut self) {
-                self.offsets.push_empty();
             }
 
             fn finish(

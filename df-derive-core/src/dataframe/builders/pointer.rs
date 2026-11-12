@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -13,6 +14,12 @@ use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 /// produce exactly the columns `T` produces.
 pub struct PtrBuilder<B>(B);
 
+/// The slot of the value a pointer in a slot points to.
+#[inline(always)]
+fn target<P: Deref>(slot: Option<&P>) -> Option<&P::Target> {
+    slot.map(Deref::deref)
+}
+
 macro_rules! transparent_pointer {
     ($(<$($lt:lifetime,)? $t:ident> $ptr:ty $(where $bound:path)?;)*) => {$(
         impl<$($lt,)? $t, B> ColumnBuilder<$ptr> for PtrBuilder<B>
@@ -24,38 +31,35 @@ macro_rules! transparent_pointer {
                 B::schema(name, out);
             }
 
-            const LISTS: usize = B::LISTS;
-
-            fn with_capacity(rows: usize) -> Self {
-                Self(B::with_capacity(rows))
+            fn new() -> Self {
+                Self(B::new())
             }
 
             #[inline(always)]
-            fn measure(value: &$ptr, counts: &mut [usize]) {
-                B::measure(&**value, counts);
-            }
-
-            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-                Self(B::with_capacities(rows, counts))
-            }
-
-            #[inline(always)]
-            fn push(&mut self, value: &$ptr) -> PolarsResult<()> {
-                self.0.push(&**value)
-            }
-
-            #[inline(always)]
-            fn extend_from<'r, I>(&mut self, values: I) -> PolarsResult<()>
+            fn measure<'r, I>(&mut self, values: I)
             where
                 $ptr: 'r,
-                I: Iterator<Item = &'r $ptr> + Clone,
+                I: Iterator<Item = Option<&'r $ptr>> + Clone,
             {
-                self.0.extend_from(values.map(|value| &**value))
+                self.0.measure(values.map(target));
+            }
+
+            fn reserve(&mut self, additional: usize) {
+                self.0.reserve(additional);
             }
 
             #[inline(always)]
-            fn push_null(&mut self) {
-                self.0.push_null();
+            fn push(&mut self, value: Option<&$ptr>) -> PolarsResult<()> {
+                self.0.push(target(value))
+            }
+
+            #[inline(always)]
+            fn extend<'r, I>(&mut self, values: I) -> PolarsResult<()>
+            where
+                $ptr: 'r,
+                I: Iterator<Item = Option<&'r $ptr>> + Clone,
+            {
+                self.0.extend(values.map(target))
             }
 
             fn finish(

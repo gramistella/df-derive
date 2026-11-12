@@ -1,4 +1,5 @@
-// Uses the default `df-derive` facade runtime.
+// A `Vec` of structs. Each field of the inner struct becomes one list column:
+// `quotes.ts`, `quotes.open`, ...
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

@@ -1,26 +1,16 @@
-// Regression: `Vec<Vec<DerivedStruct>>` must produce a list-of-lists per
-// inner schema column, where the outer-list partitions per-outer-row and
-// the inner-list partitions per-inner-Vec, with leaves drawn from the
-// nested struct's columns.
+// `Vec<Vec<Struct>>`: every column of the nested struct becomes a list of
+// lists. The outer lists follow the rows, the inner lists follow the inner
+// `Vec`s, and the values come from the struct's fields.
 //
-// The bulk emitter for this shape flattens leaves into a single contiguous
-// slice, calls `Inner::columnar_from_refs` exactly once, then stacks two
-// `LargeListArray`s (inner-list + outer-list) per inner schema column. A
-// regression in the offset bookkeeping would either drop leaves,
-// mis-partition them between inner lists, or shift them into the wrong
-// outer row — all surface here as failed `AnyValue` assertions or wrong
-// list lengths.
+// What can go wrong is the bookkeeping of where lists end: a value dropped,
+// placed in the neighbouring inner list, or moved into the next row. Each of
+// those shows up below as a wrong value or a wrong list length.
 //
-// Schema parity: the declared schema and the runtime Series both carry
-// `List<List<inner_dtype>>` — the schema generator wraps once per `Vec`
-// wrapper depth (see also the assertion in `tests/pass/20-generics.rs`).
-//
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// The schema and the columns agree. Both are `List<List<leaf>>`, one `List`
+// for each `Vec` in the field's type, with rows and without.
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 
@@ -36,9 +26,6 @@ struct Outer {
     payload: Vec<Vec<Inner>>,
 }
 
-// Both the populated path (bulk emitter wraps twice) and the empty-parent
-// path (column dtype from `empty_dataframe()` which uses the schema-derived
-// dtype) carry `List<List<leaf>>`.
 fn nested_list_dtype_for_field_a() -> DataType {
     DataType::List(Box::new(DataType::List(Box::new(DataType::Int64))))
 }
@@ -47,20 +34,7 @@ fn nested_list_dtype_for_field_b() -> DataType {
     DataType::List(Box::new(DataType::List(Box::new(DataType::Float64))))
 }
 
-fn assert_inner_columns_populated(df: &DataFrame, expected_height: usize) {
-    assert_eq!(
-        df.column("payload.field_a").unwrap().dtype(),
-        &nested_list_dtype_for_field_a()
-    );
-    assert_eq!(
-        df.column("payload.field_b").unwrap().dtype(),
-        &nested_list_dtype_for_field_b()
-    );
-    assert_eq!(df.column("payload.field_a").unwrap().len(), expected_height);
-    assert_eq!(df.column("payload.field_b").unwrap().len(), expected_height);
-}
-
-fn assert_inner_columns_empty_path(df: &DataFrame, expected_height: usize) {
+fn assert_nested_list_columns(df: &DataFrame, expected_height: usize) {
     assert_eq!(
         df.column("payload.field_a").unwrap().dtype(),
         &nested_list_dtype_for_field_a()
@@ -82,21 +56,16 @@ fn runtime_semantics() {
     test_mixed_shapes();
 }
 
-// Zero parents: the columnar path returns an empty DataFrame with the
-// correct typed schema. The bulk emitter never enters its scan loop —
-// `columnar_from_refs` short-circuits to `empty_dataframe()`, whose
-// dtype comes from `Outer::schema()` (single `List<leaf>` wrap, since
-// the schema generator only wraps once for `has_vec`).
+// No rows: an empty frame with the full schema.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 0);
-    assert_inner_columns_empty_path(&df, 0);
+    assert_nested_list_columns(&df, 0);
 }
 
-// Every parent has `payload: Vec::new()`: outer offsets are all zero, no
-// inner lists, no leaves. Every outer row must be a present-but-empty
-// outer list. Exercises the fully-empty branch of the bulk emitter.
+// Every row has `payload: Vec::new()`: every outer list is present and
+// empty.
 fn test_all_outer_empty() {
     let rows: Vec<Outer> = (0..4)
         .map(|i| Outer {
@@ -106,7 +75,7 @@ fn test_all_outer_empty() {
         .collect();
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
-    assert_inner_columns_populated(&df, 4);
+    assert_nested_list_columns(&df, 4);
 
     for idx in 0..4 {
         let av_a = df.column("payload.field_a").unwrap().get(idx).unwrap();
@@ -122,9 +91,8 @@ fn test_all_outer_empty() {
     }
 }
 
-// Every parent has at least one inner Vec, but every inner Vec is empty.
-// Exercises the `flat.is_empty()` branch with non-trivial outer offsets:
-// the inner-list count is non-zero per row, but every inner list is empty.
+// Every row has inner `Vec`s and every one of them is empty: the outer lists
+// have length and hold empty inner lists.
 fn test_outer_with_empty_inner_vecs() {
     let rows = vec![
         Outer {
@@ -144,7 +112,7 @@ fn test_outer_with_empty_inner_vecs() {
 
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 3);
-    assert_inner_columns_populated(&df, 3);
+    assert_nested_list_columns(&df, 3);
 
     for (idx, &expected_outer_len) in expected_inner_lens.iter().enumerate() {
         let av_a = df.column("payload.field_a").unwrap().get(idx).unwrap();
@@ -188,10 +156,8 @@ fn test_outer_with_empty_inner_vecs() {
     }
 }
 
-// Every inner Vec has at least one element. Exercises the populated branch
-// of the bulk emitter on a fully-dense input: per-leaf values must match,
-// per-inner-list lengths must match, per-outer-row inner-list counts must
-// match.
+// Every inner `Vec` has at least one element: the values, the length of
+// each inner list and the number of inner lists in each row must all match.
 fn test_all_populated() {
     let rows = vec![
         Outer {
@@ -234,7 +200,7 @@ fn test_all_populated() {
 
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 2);
-    assert_inner_columns_populated(&df, 2);
+    assert_nested_list_columns(&df, 2);
 
     let expected_a: Vec<Vec<Vec<i64>>> = vec![vec![vec![10], vec![20, 30]], vec![vec![40, 50, 60]]];
     let expected_b: Vec<Vec<Vec<f64>>> =
@@ -248,11 +214,8 @@ fn test_all_populated() {
     }
 }
 
-// Mixed: empty outer, outer with all-empty inners, outer with mixed inner
-// lengths, single-element inner. Pins all four outer-row patterns the
-// emitter must handle: empty outer → no inner lists; empty inner → outer
-// list contains an empty inner list; multi-element inner → leaves group
-// correctly; partial mix → offsets stay aligned across all combinations.
+// Mixed, in one frame: an empty outer list, an outer list of empty inner
+// lists, inner lists of different lengths, and a single-element inner list.
 fn test_mixed_shapes() {
     let rows = vec![
         // Empty outer (no inner lists).
@@ -317,7 +280,7 @@ fn test_mixed_shapes() {
 
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 6);
-    assert_inner_columns_populated(&df, 6);
+    assert_nested_list_columns(&df, 6);
 
     let expected_a: Vec<Vec<Vec<i64>>> = vec![
         vec![],

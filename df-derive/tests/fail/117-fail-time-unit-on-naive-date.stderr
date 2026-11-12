@@ -1,28 +1,28 @@
 error[E0277]: `NaiveDate` cannot be encoded with `TemporalBuilder<Ms>`
-  --> tests/fail/117-fail-time-unit-on-naive-date.rs:10:11
-   |
-10 |     when: NaiveDate,
-   |           ^^^^^^^^^ this encoding does not apply to `NaiveDate`
-   |
-   = help: the trait `ColumnBuilder<NaiveDate>` is not implemented for `TemporalBuilder<Ms>`
-   = note: the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = "..."`) does not support the field's type
+ --> tests/fail/117-fail-time-unit-on-naive-date.rs:8:11
+  |
+8 |     when: NaiveDate,
+  |           ^^^^^^^^^ this encoding does not apply to `NaiveDate`
+  |
+  = help: the trait `ColumnBuilder<NaiveDate>` is not implemented for `TemporalBuilder<Ms>`
+  = note: the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = "..."`) does not support the field's type
 help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
-  --> $WORKSPACE/df-derive-core/src/dataframe/builders/temporal.rs
-   |
-   |         impl<U: Unit $(, $tz: chrono::TimeZone)?> ColumnBuilder<$ty> for TemporalBuilder<U> {
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |         |
-   |         `ColumnBuilder<DateTime<Tz>>`
-   |         `ColumnBuilder<Duration>`
-   |         `ColumnBuilder<NaiveDateTime>`
-   |         `ColumnBuilder<TimeDelta>`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/temporal.rs
+  |
+  |         impl<U: Unit $(, $tz: chrono::TimeZone)?> ColumnBuilder<$ty> for TemporalBuilder<U> {
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |         |
+  |         `ColumnBuilder<DateTime<Tz>>`
+  |         `ColumnBuilder<Duration>`
+  |         `ColumnBuilder<NaiveDateTime>`
+  |         `ColumnBuilder<TimeDelta>`
 ...
-   | temporal!(std::time::Duration => Duration, from_std, Ns);
-   | -------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
-   | -------------------------------------------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
-   | --------------------------------------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
-   | ----------------------------------------------------------------------------------- in this macro invocation
-   = note: this error originates in the macro `temporal` (in Nightly builds, run with -Z macro-backtrace for more info)
+  | temporal!(std::time::Duration => Duration, from_std, Ns);
+  | -------------------------------------------------------- in this macro invocation
+  | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
+  | ------------------------------------------------------------------------------------------- in this macro invocation
+  | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
+  | --------------------------------------------------------------------------------------- in this macro invocation
+  | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
+  | ----------------------------------------------------------------------------------- in this macro invocation
+  = note: this error originates in the macro `temporal` (in Nightly builds, run with -Z macro-backtrace for more info)

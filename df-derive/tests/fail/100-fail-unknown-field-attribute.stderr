@@ -1,5 +1,5 @@
 error: unknown field attribute; expected one of `skip`, `flatten`, `as_str`, `as_string`, `as_binary`, `decimal(...)`, `time_unit = "..."`, `with = "..."`
- --> tests/fail/100-fail-unknown-field-attribute.rs:7:17
+ --> tests/fail/100-fail-unknown-field-attribute.rs:5:17
   |
-7 |     #[df_derive(as_strg)]
+5 |     #[df_derive(as_strg)]
   |                 ^^^^^^^

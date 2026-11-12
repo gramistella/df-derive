@@ -1,11 +1,8 @@
 //! Demonstrates deep `Vec<Vec<Vec<T>>>` nesting.
 //!
-//! Each `Vec` layer becomes a `LargeListArray` wrap, so a triple-Vec column
-//! materializes as `List<List<List<T>>>` in the output frame. The derive
-//! fuses the wrapper layers into a single bulk emission, so per-row work is
-//! O(total leaf count) rather than O(layer count * leaf count).
-//!
-//! Uses the default `df-derive` facade runtime.
+//! Each `Vec` layer adds one `List` around the column's type, so a triple-Vec
+//! field is a `List(List(List(T)))` column. The elements are written once,
+//! into one buffer; each layer only adds its list offsets.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

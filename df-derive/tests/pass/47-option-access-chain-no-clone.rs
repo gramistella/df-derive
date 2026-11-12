@@ -1,15 +1,12 @@
-// Regression test for non-trivial primitive Option access chains:
-// `Option<Box<T>>` and `Option<Option<T>>` must not synthesize a hidden
-// `T: Clone` bound when the leaf can be consumed by reference.
+// `Option<Box<T>>` and `Option<Option<T>>` must not require `T: Clone`: the
+// value is encoded through a reference, wherever the wrappers put it.
 
 use chrono::{TimeZone, Utc};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use std::fmt;
 
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Decimal128Encode, ToDataFrameVec};
+use df_derive::dataframe::{Decimal128Encode, ToDataFrameVec};
 
 struct NoCloneDisplay(&'static str);
 
@@ -64,6 +61,12 @@ struct Row<T, D> {
     datetime_nested: Option<Option<chrono::DateTime<Utc>>>,
 }
 
+/// The column type of a `DateTime<Tz>` field. The value is an instant, so the
+/// column is marked as UTC.
+fn instant(unit: TimeUnit) -> DataType {
+    DataType::Datetime(unit, Some(polars::prelude::TimeZone::UTC))
+}
+
 fn main() {
     let timestamp = Utc.timestamp_millis_opt(1_700_000_000_123).unwrap();
     let rows = vec![
@@ -111,10 +114,10 @@ fn main() {
     assert_eq!(df.column("bytes_box").unwrap().dtype(), &DataType::Binary);
     assert_eq!(
         df.column("datetime_box").unwrap().dtype(),
-        &DataType::Datetime(TimeUnit::Milliseconds, None)
+        &instant(TimeUnit::Milliseconds)
     );
     assert_eq!(
         df.column("datetime_nested").unwrap().dtype(),
-        &DataType::Datetime(TimeUnit::Milliseconds, None)
+        &instant(TimeUnit::Milliseconds)
     );
 }

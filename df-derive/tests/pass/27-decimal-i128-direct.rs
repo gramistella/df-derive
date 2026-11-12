@@ -1,27 +1,19 @@
-// Lock in the direct `Decimal::mantissa() -> i128` columnar path.
+// A `Decimal` field is stored as its `i128` mantissa, rescaled to the scale
+// of the column.
 //
-// The codegen route for `Decimal` fields used to materialize each row as a
-// `String` and cast the column to `Decimal(p, s)` at the finisher. The new
-// path materializes `i128` mantissa values rescaled to the schema scale and
-// hands them to `Int128Chunked::into_decimal_unchecked(p, s)`. The original
-// `to_string + parse` round-trip went through polars's `str_to_dec128`, which
-// rounds half-to-even (banker's rounding) on scale-down. The rescale
-// arithmetic baked into `map_primitive_expr` reproduces that semantics
-// directly on the i128 mantissa, so observable values stay identical to the
-// historical path even at half-tie boundaries.
+// An earlier version formatted each value as a string and let Polars parse
+// the column, and Polars' parser (`str_to_dec128`) rounds half to even when
+// it drops digits. The mantissa arithmetic has to round the same way, so
+// that the stored values are the ones that conversion produced.
 //
-// We assert mantissa-level equality on the cells rather than re-rendering as
-// strings, because polars' `AnyValue::Decimal(mantissa, p, s)` exposes the
-// underlying `i128` directly — that's the value our codegen now writes. The
-// banker's-rounding edge cases at the bottom of `main` exercise the four
-// possible half-tie outcomes (round up to even, stay at even, round up to
-// even after a non-zero remainder, negative magnitude) so that drifting back
-// to truncation or to half-away-from-zero would fail loudly.
+// The assertions compare mantissas, which `AnyValue::Decimal(mantissa, p, s)`
+// exposes, rather than rendered strings. The edge cases at the bottom of
+// `main` cover the four outcomes of a tie (up to even, staying at even, up
+// after a non-zero remainder, and a negative value), so truncation or
+// rounding half away from zero would fail.
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
@@ -37,18 +29,17 @@ struct Row {
     // the magnitude rounds up regardless of parity).
     #[df_derive(decimal(precision = 10, scale = 2))]
     fee: Decimal,
-    // Optional column exercises the `Vec<Option<i128>>` finisher branch.
+    // An optional decimal: a nullable column.
     #[df_derive(decimal(precision = 18, scale = 6))]
     bonus: Option<Decimal>,
     // Same-scale path: schema scale matches the value's scale, so the
     // mantissa is forwarded unchanged.
     #[df_derive(decimal(precision = 18, scale = 6))]
     direct: Decimal,
-    // List exercises the `Vec<i128>` → `Series::new` → `cast(Decimal)` inner
-    // path used by `Vec<Decimal>` shapes.
+    // A list of decimals.
     #[df_derive(decimal(precision = 14, scale = 3))]
     history: Vec<Decimal>,
-    // List with optional values exercises `Vec<Option<i128>>` inner path.
+    // A list of optional decimals.
     #[df_derive(decimal(precision = 14, scale = 3))]
     nullable_history: Vec<Option<Decimal>>,
 }
@@ -101,7 +92,7 @@ fn main() {
         nullable_history: vec![Some(Decimal::new(2, 3)), None, Some(Decimal::new(0, 0))],
     };
 
-    // Single-row materialization (delegates to `Columnar::columnar_from_refs`).
+    // One value.
     let df = row.to_dataframe().unwrap();
     assert_eq!(df.height(), 1);
 
@@ -126,8 +117,7 @@ fn main() {
         &DataType::List(Box::new(DataType::Decimal(14, 3)))
     );
 
-    // Batch path also exercises the columnar `from_vec` / `from_iter_options`
-    // finishers — assert the same mantissa values come back across rows.
+    // Several rows: the same mantissas come back in every row.
     let batch = vec![row.clone(), row.clone(), row.clone()];
     let df_batch = batch.as_slice().to_dataframe().unwrap();
     assert_eq!(df_batch.height(), 3);
@@ -141,7 +131,7 @@ fn main() {
         assert_eq!(decimal_mantissa(df_batch.column("direct").unwrap().get(i).unwrap()), Some(42));
     }
 
-    // None bonus → ensure the optional finisher preserves nulls in batch.
+    // A `None` bonus in one of several rows stays null.
     let mut batch_with_null = batch.clone();
     batch_with_null[1].bonus = None;
     let df_null = batch_with_null.as_slice().to_dataframe().unwrap();
@@ -150,11 +140,10 @@ fn main() {
     assert_eq!(decimal_mantissa(bonus_col.get(1).unwrap()), None);
     assert_eq!(decimal_mantissa(bonus_col.get(2).unwrap()), Some(0));
 
-    // Banker's rounding at half-tie boundaries — drives the codegen path that
-    // used to silently truncate. Each value is constructed at scale 4 and
-    // dropped to scale 3 (or 2 for the "fee"-style cases), so the trailing
-    // digit is exactly 5 and the rounding direction depends on the parity of
-    // the truncated quotient.
+    // Rounding half to even at ties. Each value is built at scale 4 and
+    // dropped to scale 3 (or 2 for the "fee"-style cases), so the digit that
+    // goes is exactly 5 and the direction depends on whether the digit
+    // before it is even.
     let edge = EdgeRow {
         half_to_even_up: Decimal::new(98755, 4),     // 9.8755 → 9.876 (q=9875 odd → +1)
         half_to_even_stay: Decimal::new(98745, 4),   // 9.8745 → 9.874 (q=9874 even → stay)
@@ -185,10 +174,8 @@ fn main() {
         Some(-9876)
     );
 
-    // Cross-check the direct-mantissa path against polars's own
-    // `str_to_dec128` for several scale-down inputs. Both paths must agree
-    // exactly: any drift would mean the new codegen rounds differently than
-    // the historical `to_string + cast` path it replaced.
+    // Cross-check against Polars' own `str_to_dec128` for several values
+    // that lose digits. The two must agree exactly.
     let cross_check_cases: &[(Decimal, usize, usize)] = &[
         (Decimal::new(98765, 4), 10, 2),     // 9.8765 → scale 2
         (Decimal::new(98755, 4), 10, 3),     // 9.8755 → scale 3 (half-tie up)

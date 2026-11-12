@@ -1,12 +1,10 @@
-//! Generic structs (v0.3.0).
+//! Generic structs.
 //!
 //! `#[derive(ToDataFrame)]` accepts type parameters, default type parameters,
-//! and multiple generics. The macro injects `ToDataFrame + Columnar`
-//! bounds on every type parameter, so any concrete instantiation must satisfy
-//! those traits. The unit type `()` can be used as a payload to contribute
-//! zero columns.
-//!
-//! Uses the default `df-derive` facade runtime, including the unit-payload impls.
+//! and multiple generics. The generated impls require each field's type to be
+//! `Columnar`, so a parameter can stand for any supported type: a derived
+//! struct, a number, a string, a wrapper around one. The unit type `()` is a
+//! payload that contributes no columns.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
@@ -17,9 +15,8 @@ struct Meta {
     note: String,
 }
 
-// No explicit `T: Clone` bounds below — `#[derive(Clone)]` adds its own, and
-// the derive macro auto-injects `ToDataFrame + Columnar` on every type
-// parameter for the impl blocks it generates.
+// No bounds are written below. `#[derive(Clone)]` adds its own `T: Clone`,
+// and `ToDataFrame` bounds the impls it generates by the fields' types.
 
 #[derive(ToDataFrame, Clone)]
 struct Wrapper<T> {
@@ -100,8 +97,8 @@ fn main() -> polars::prelude::PolarsResult<()> {
         default_meta.to_dataframe()?
     );
 
-    // 3. Multiple generic parameters. Each parameter gets the standard bound
-    //    set (`ToDataFrame + Columnar`) injected by the macro.
+    // 3. Several generic parameters. A field of type `A` needs
+    //    `A: Columnar`, and the same goes for `B`.
     let pair = Pair {
         name: "trade-1".into(),
         left: Meta {
@@ -115,9 +112,8 @@ fn main() -> polars::prelude::PolarsResult<()> {
     };
     println!("Pair<Meta, Meta>:\n{}\n", pair.to_dataframe()?);
 
-    // 4. Option<T> and Vec<T> for generic T. Both go through the bulk
-    //    columnar path (gather/scatter for Option, flatten + slice for Vec)
-    //    when emitted by the derive.
+    // 4. Option<T> and Vec<T> for generic T: a nullable payload and a list
+    //    payload, whatever `T` is.
     let opts = vec![
         OptWrapper {
             id: 1,

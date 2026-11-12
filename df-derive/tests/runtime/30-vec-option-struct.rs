@@ -1,21 +1,13 @@
-// Regression: `Vec<Option<DerivedStruct>>` must surface inner-element
-// `None` as strict `AnyValue::Null` per inner schema column, while the
-// outer list itself stays non-null even for empty Vecs.
+// `Vec<Option<Struct>>`: a `None` element is a null in every column of the
+// nested struct, inside a list that is itself never null.
 //
-// The bulk emitter for this shape gathers `&Inner` references for each
-// `Some(v)` element, calls `Inner::columnar_from_refs` once on the gathered
-// slice, then expands each inner schema column via `Series::take(&IdxCa)`
-// over a per-element position vector. A regression that flipped the
-// per-element bit logic (treating `None` as `Some` or vice versa), or that
-// swapped `validity = None` for the outer list, would either drop nulls or
-// wreck offsets — both surface here as failed `AnyValue::Null` assertions.
-//
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// The list and its elements have separate validity. The list column has
+// none, and the flag of each element applies to all of the struct's columns.
+// The cases below are the ones where the two are easy to confuse: no rows,
+// empty lists, lists of nothing but `None`, and a mix.
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 
@@ -60,8 +52,7 @@ fn runtime_semantics() {
     test_mixed_some_none();
 }
 
-// Zero parents: the columnar path returns an empty DataFrame with the
-// correct typed schema. The bulk emitter never enters its scan loop.
+// No rows: an empty frame with the full schema.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
@@ -69,9 +60,7 @@ fn test_empty_parent_slice() {
     assert_inner_columns_typed(&df, 0);
 }
 
-// Every parent has `Vec::new()`: outer offsets are all zero, the gathered
-// slice is empty, every outer row must be a present-but-empty list (NOT
-// null). Exercises the `total == 0` branch in the bulk emitter.
+// Every row has `Vec::new()`: every list is present and empty, not null.
 fn test_all_some_but_empty_vec() {
     let rows: Vec<Outer> = (0..4)
         .map(|i| Outer {
@@ -97,10 +86,8 @@ fn test_all_some_but_empty_vec() {
     }
 }
 
-// Every parent has `vec![None, None, ...]`: outer offsets are non-zero
-// but the gathered slice is empty. Exercises the all-absent branch in the
-// bulk emitter — every inner-element slot must surface as a strict null
-// inside its outer list.
+// Every row has `vec![None, None, ...]`: the lists have length, and every
+// element in them is null.
 fn test_all_none_elements() {
     let rows = vec![
         Outer {
@@ -156,10 +143,8 @@ fn test_all_none_elements() {
     }
 }
 
-// Mixed Some/None elements: each non-null inner value must round-trip
-// correctly AND `None` positions inside the outer list must surface as
-// strict `AnyValue::Null` for each inner field. Exercises the main
-// `IdxCa` + `take` branch of the bulk emitter.
+// `Some` and `None` elements mixed: each value comes back in its place, and
+// each `None` is a null in every one of the struct's columns.
 fn test_mixed_some_none() {
     let rows = vec![
         // [Some(a), None, Some(b)] → 3 outer slots, 2 valid + 1 null

@@ -41,7 +41,7 @@ cargo run -p df-derive --example tuple
 ```
 
 ### `datetime_decimal.rs`
-Demonstrates support for `chrono::DateTime<Utc>` and `rust_decimal::Decimal` types.
+Demonstrates `chrono::DateTime<Utc>` (a `Datetime` column marked as UTC) and `rust_decimal::Decimal` fields.
 
 ```bash
 cargo run -p df-derive --example datetime_decimal
@@ -55,7 +55,7 @@ cargo run -p df-derive --example as_string
 ```
 
 ### `generics.rs`
-Demonstrates generic struct support added in v0.3.0: type-parametric structs, default type parameters, multiple generics, the unit type `()` as a zero-column payload, and depth-1 wrappers (`Option<T>` / `Vec<T>`) over a generic parameter.
+Demonstrates generic structs: type parameters, default type parameters, multiple generics, the unit type `()` as a zero-column payload, and `Option<T>` / `Vec<T>` over a generic parameter.
 
 ```bash
 cargo run -p df-derive --example generics
@@ -89,10 +89,24 @@ Demonstrates a generic struct used as a nested field (both as a flattened scalar
 cargo run -p df-derive --example nested_generics
 ```
 
+### `projection.rs`
+Shows `#[df_derive(via = "...")]`: an enum spread over several columns through a row struct, and a struct exported through a row that borrows from it.
+
+```bash
+cargo run -p df-derive --example projection
+```
+
+### `custom_builder.rs`
+Implements `ColumnBuilder` by hand (prices stored as integer cents) and selects it for individual fields with `#[df_derive(with = "...")]`.
+
+```bash
+cargo run -p df-derive --example custom_builder
+```
+
 ## What Each Example Shows
 
 - **DataFrame output**: The actual Polars DataFrame structure
 - **Schema information**: Column names and data types
 - **Different use cases**: From simple structs to complex nested data with lists
 
-The examples use the default `df-derive` facade runtime unless they are demonstrating a custom-runtime pattern.
+The examples use the `df-derive` facade crate, which re-exports the runtime next to the derive macro.

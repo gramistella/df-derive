@@ -1,5 +1,5 @@
 error: `as_str` cannot be combined with `as_binary`: a field has one encoding
- --> tests/fail/113-fail-as-binary-with-as-str.rs:7:28
+ --> tests/fail/113-fail-as-binary-with-as-str.rs:5:28
   |
-7 |     #[df_derive(as_binary, as_str)]
+5 |     #[df_derive(as_binary, as_str)]
   |                            ^^^^^^

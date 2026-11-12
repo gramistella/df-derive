@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `i32: AsRef<[u8]>` is not satisfied
- --> tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs:9:12
+ --> tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs:6:12
   |
-9 |     items: &'a [i32],
+6 |     items: &'a [i32],
   |            ^ the trait `AsRef<[u8]>` is not implemented for `i32`
   |
   = help: `PtrBuilder<B>` implements trait `ColumnBuilder<T>`:

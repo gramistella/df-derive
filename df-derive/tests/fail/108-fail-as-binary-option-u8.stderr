@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `u8: AsRef<[u8]>` is not satisfied
- --> tests/fail/108-fail-as-binary-option-u8.rs:8:15
+ --> tests/fail/108-fail-as-binary-option-u8.rs:6:15
   |
-8 |     one_byte: Option<u8>,
+6 |     one_byte: Option<u8>,
   |               ^^^^^^ the trait `AsRef<[u8]>` is not implemented for `u8`
   |
 help: the trait `ColumnBuilder<Option<T>>` is conditionally implemented for `OptionBuilder<B>`

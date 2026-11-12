@@ -14,9 +14,7 @@
 // `impl Columnar`, after which its fields need no attribute.
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 
 use polars::prelude::*;
 use rust_decimal::Decimal;
@@ -126,15 +124,13 @@ fn assert_compute_err(err: PolarsError, ctx: &str) {
 }
 
 fn main() {
-    // (3) Per-row path: `to_dataframe` on a single instance routes through
-    // the columnar pipeline, which calls the trait and surfaces None as
-    // a PolarsError::ComputeError.
+    // (3) One value: the trait returns `None`, which comes back as a
+    // `PolarsError::ComputeError`.
     let r = AlwaysFailingRow { value: Failing(Decimal::new(1, 0)) };
     let err = r.to_dataframe().expect_err("expected ComputeError on single row");
     assert_compute_err(err, "single-row");
 
-    // (3) Columnar path: same thing on a slice, exercising the bulk
-    // populator finisher.
+    // (3) A slice of values fails the same way.
     let batch = vec![AlwaysFailingRow { value: Failing(Decimal::new(2, 0)) }];
     let err = batch
         .as_slice()
@@ -171,8 +167,8 @@ fn main() {
         .expect("empty Vec<Decimal> should not call the encode trait");
     assert_eq!(df.height(), 1);
 
-    // (4) UFCS dispatch: every shape below would call the inherent method
-    // and fail if the generated code used decimal dot syntax.
+    // (4) A type with an inherent method of the same name: every shape below
+    // must call the trait's method, not the inherent one.
     let referenced = HijackDecimal(20);
     let hijack = UfcsDispatchRow {
         bare: HijackDecimal(10),

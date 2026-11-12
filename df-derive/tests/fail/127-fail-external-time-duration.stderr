@@ -1,7 +1,7 @@
 error[E0277]: `time::Duration` cannot be encoded with `TemporalBuilder<Ns>`
-  --> tests/fail/127-fail-external-time-duration.rs:12:14
+  --> tests/fail/127-fail-external-time-duration.rs:10:14
    |
-12 |     elapsed: time::Duration,
+10 |     elapsed: time::Duration,
    |              ^^^^ this encoding does not apply to `time::Duration`
    |
    = help: the trait `ColumnBuilder<time::Duration>` is not implemented for `TemporalBuilder<Ns>`
@@ -19,8 +19,8 @@ help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
 ...
    | temporal!(std::time::Duration => Duration, from_std, Ns);
    | -------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
-   | -------------------------------------------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
+   | ------------------------------------------------------------------------------------------- in this macro invocation
    | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
    | --------------------------------------------------------------------------------------- in this macro invocation
    | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);

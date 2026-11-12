@@ -1,8 +1,6 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 
 #[derive(ToDataFrame, Clone, PartialEq, Debug)]
 struct Item {
@@ -19,8 +17,7 @@ struct Container {
     custom_items: Vec<Option<Item>>,
     // An optional vec of optional primitives
     opt_vec_opt_primitive: Option<Vec<Option<i32>>>,
-    // A vec of vecs of primitives — exercises the encoder IR's stacked
-    // `LargeListArray` path for two-deep `Vec` shapes.
+    // A vec of vecs of primitives: a list of lists.
     nested_primitive: Vec<Vec<i32>>,
     // A vec of vecs of vecs — locks the recursive `ListBuilder` nesting.
     triple_nested: Vec<Vec<Vec<i32>>>,
@@ -54,11 +51,7 @@ fn main() {
     assert_eq!(schema.get("custom_items.id").unwrap(), &DataType::List(Box::new(DataType::UInt32)));
     assert_eq!(schema.get("custom_items.name").unwrap(), &DataType::List(Box::new(DataType::String)));
     assert_eq!(schema.get("opt_vec_opt_primitive").unwrap(), &DataType::List(Box::new(DataType::Int32)));
-    // The runtime DataFrame's schema reflects the actual nesting depth (one
-    // List<> per `Vec<>` layer in the field type). The macro's static
-    // `schema()` collapses to a single List<element> regardless of depth (a
-    // known limitation), but `df.schema()` here reads the column dtypes that
-    // the typed `ListBuilder` chain emits, which carry the full nesting.
+    // One `List` for each `Vec` in the field's type.
     assert_eq!(
         schema.get("nested_primitive").unwrap(),
         &DataType::List(Box::new(DataType::List(Box::new(DataType::Int32))))
@@ -96,11 +89,9 @@ fn main() {
     let vec_custom_name: Vec<Option<&str>> = ca_custom_name.iter().collect();
     assert_eq!(vec_custom_name, vec![Some("A"), None, Some("C")]);
 
-    // Verify values for Vec<Vec<i32>> — drill through the outer list to confirm
-    // each inner Series is a typed Int32, not a fallback dtype-Null Series. A
-    // regression that loses the typed `ListBuilder` path would produce one of:
-    //   - `List<Null>` (empty inner, fallback empty path)
-    //   - `Series` of `AnyValue` re-inferred to `List<List<Int32>>` mismatch
+    // Values of `Vec<Vec<i32>>`: go through the outer list and check that
+    // each inner series is `Int32`, the empty ones included. They must not
+    // come out as `List<Null>`.
     let s_nested = match df.column("nested_primitive").unwrap().get(0).unwrap() {
         AnyValue::List(inner) => inner.clone(),
         _ => panic!("Expected List AnyValue for 'nested_primitive'"),

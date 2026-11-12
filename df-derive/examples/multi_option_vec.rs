@@ -18,8 +18,6 @@
 //! `Vec<T>` itself is not nullable — only the outer-list validity bit can
 //! make a row null. So `Some(Some(vec![]))` is observably distinct from
 //! `None` / `Some(None)`: the former is an empty list, the latter is null.
-//!
-//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

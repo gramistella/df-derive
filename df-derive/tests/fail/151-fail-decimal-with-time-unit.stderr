@@ -1,5 +1,5 @@
 error: `time_unit` cannot be combined with `decimal`: a field has one encoding
- --> tests/fail/151-fail-decimal-with-time-unit.rs:7:53
+ --> tests/fail/151-fail-decimal-with-time-unit.rs:5:53
   |
-7 |     #[df_derive(decimal(precision = 10, scale = 2), time_unit = "ns")]
+5 |     #[df_derive(decimal(precision = 10, scale = 2), time_unit = "ns")]
   |                                                     ^^^^^^^^^^^^^^^^

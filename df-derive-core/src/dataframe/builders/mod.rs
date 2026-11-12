@@ -3,11 +3,13 @@
 //! These are public so a field can name one directly, either through the
 //! derive's field attributes or with `#[df_derive(with = "...")]`.
 //!
-//! The hot `push` paths are `#[inline(always)]` on purpose: a row loop only
-//! matches hand-written column code when every field push is inlined into it.
+//! The methods that append are `#[inline(always)]` on purpose. Builders nest,
+//! and a column is only filled by one tight loop when every layer between the
+//! row and the buffer is inlined into it.
 
 #![allow(clippy::inline_always)]
 
+mod bits;
 mod decimal;
 mod list;
 mod map;

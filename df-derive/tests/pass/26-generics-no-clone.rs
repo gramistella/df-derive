@@ -1,29 +1,22 @@
-// Regression test: the derive must not force `T: Clone` on a generic
-// payload type. Previously `impl_parts_with_bounds` pushed
-// `::core::clone::Clone` onto every type parameter unconditionally, even
-// though only one slow primitive-vec fallback ever cloned an element.
-// That fallback now borrows from the for-loop binding directly, so the
-// macro can be applied to a struct whose generic argument is not `Clone`.
+// The derive must not require `T: Clone` of a generic payload. An early
+// version added `Clone` to every type parameter, because one code path
+// cloned an element. Values are encoded through references, so a struct
+// whose generic argument is not `Clone` has to derive.
 
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
-// Nested-path payload: implements `ToDataFrame` + `Columnar`, deliberately
-// NOT `Clone`. Used as the generic argument for fields without a transform
-// (which route through the nested-struct encoder path).
+// A nested-struct payload: derives `ToDataFrame`, deliberately NOT `Clone`.
+// Used as the generic argument of fields that have no attribute.
 #[derive(Debug)]
 #[derive(ToDataFrame)]
 struct NoClonePayload {
     value: i64,
 }
 
-// Primitive-path payload: also NOT `Clone`, also implements `AsRef<str>` so
-// it can be used with `#[df_derive(as_str)]`. The `as_str` transform routes
-// the field through the primitive encoder path, which was the path containing
-// the `(*elem).clone()` that this test locks in as gone.
+// A string payload: also NOT `Clone`, and `AsRef<str>` so that it works with
+// `#[df_derive(as_str)]`. That attribute is where the clone used to be.
 #[derive(Debug, ToDataFrame)]
 struct NoCloneTag {
     label: String,
@@ -35,9 +28,8 @@ impl AsRef<str> for NoCloneTag {
     }
 }
 
-// Generic struct exercising the nested path across the wrapper shapes the
-// derive supports. No `T: Clone` bound declared here, and the derive must
-// not synthesize one.
+// A generic struct with the payload under every wrapper shape. No `T: Clone`
+// bound is declared here, and the derive must not add one.
 #[derive(ToDataFrame)]
 struct NestedHolder<T> {
     id: u32,
@@ -49,12 +41,10 @@ struct NestedHolder<T> {
     list_list: Vec<Vec<T>>,
 }
 
-// Same wrapper shapes, but every generic field carries `as_str` so it
-// routes through the primitive encoder path. The deep-tail shapes
-// (`Vec<Option<T>>`, `Vec<Vec<T>>`) hit the recursive fallback that used to
-// clone each element. `T: AsRef<str>` is required by the `as_str` attribute
-// itself (validated by a per-field const-fn assert in the derive); `Clone`
-// is deliberately absent to lock in the fix.
+// The same wrapper shapes with `as_str` on every generic field. The two-layer
+// shapes (`Vec<Option<T>>`, `Vec<Vec<T>>`) are the ones that used to clone
+// each element. `T: AsRef<str>` is what the attribute itself needs; `Clone`
+// is deliberately absent.
 #[derive(ToDataFrame)]
 struct PrimitiveHolder<T>
 where
@@ -107,7 +97,7 @@ fn test_nested_path_no_clone() {
         AnyValue::Int64(10)
     );
 
-    // Slice path goes through Columnar::columnar_from_refs.
+    // A slice of values.
     let items = vec![h];
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape().0, 1);
@@ -169,7 +159,7 @@ fn test_primitive_path_no_clone() {
         AnyValue::String("p")
     );
 
-    // The deep-tail shapes are the ones that previously required `T: Clone`.
+    // The two-layer shapes are the ones that once required `T: Clone`.
     let list_optional_av = df.column("list_optional").unwrap().get(0).unwrap();
     if let AnyValue::List(s) = list_optional_av {
         let vals: Vec<Option<&str>> = s.str().unwrap().iter().collect();

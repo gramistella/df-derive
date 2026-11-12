@@ -1,11 +1,10 @@
-// Smart-pointer transparency: `Box<T>`, `Rc<T>`, `Arc<T>`, and `Cow<'a, T>`
-// (with sized inner) peel transparently at parse time and produce the same
-// column shape as the inner type. Unsized `Cow<'_, str>` / `Cow<'_, [u8]>`
-// have their own semantic tests in 44-cow-unsized.rs; borrowed references
-// are covered in 45-borrowed-references.rs.
+// Smart pointers are transparent: `Box<T>`, `Rc<T>`, `Arc<T>` and
+// `Cow<'a, T>` (with a sized `T`) produce the columns `T` produces. Unsized
+// `Cow<'_, str>` / `Cow<'_, [u8]>` have their own tests in 44-cow-unsized.rs,
+// and borrowed references are covered in 45-borrowed-references.rs.
 //
-// This test pins every supported composition shape plus the previously-
-// blocked `Box<Vec<u8>>` + `as_binary` regression.
+// This test pins every supported composition, and `Box<Vec<u8>>` with
+// `as_binary`, which an earlier version rejected.
 #![allow(clippy::box_collection, clippy::redundant_allocation, clippy::vec_box)]
 
 use std::borrow::Cow;
@@ -17,7 +16,7 @@ use chrono::NaiveDate;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct Bare {

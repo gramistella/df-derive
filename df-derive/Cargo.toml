@@ -126,3 +126,7 @@ harness = false
 [[bench]]
 name = "22_cost_model_passes"
 harness = false
+
+[[bench]]
+name = "23_projection"
+harness = false

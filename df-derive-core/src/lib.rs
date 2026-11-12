@@ -18,7 +18,8 @@
 //!   provides the impl for `rust_decimal::Decimal`.
 //!
 //! The `chrono` feature (on by default) provides the `chrono` date and time
-//! impls.
+//! impls. A `chrono::DateTime<Tz>` is an instant and becomes a `Datetime`
+//! column marked as UTC; a `NaiveDateTime` becomes one with no time zone.
 
 // `polars` pulls a wide transitive dependency tree (ahash, foldhash,
 // hashbrown, windows-sys variants, …) where multiple resolved versions are

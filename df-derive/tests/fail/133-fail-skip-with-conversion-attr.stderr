@@ -1,5 +1,5 @@
 error: `skip` cannot be combined with other attributes: a skipped field produces no column
- --> tests/fail/133-fail-skip-with-conversion-attr.rs:7:17
+ --> tests/fail/133-fail-skip-with-conversion-attr.rs:5:17
   |
-7 |     #[df_derive(skip, as_str)]
+5 |     #[df_derive(skip, as_str)]
   |                 ^^^^

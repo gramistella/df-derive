@@ -1,8 +1,5 @@
-// `isize`/`usize` coverage — Polars represents these via the widened
-// `Int64`/`UInt64` lanes (no native platform-sized integer dtype). The
-// encoder applies an `as i64` / `as u64` cast at every push site so the
-// downstream chunked-array build matches the schema dtype directly. This
-// test pins:
+// `isize` and `usize`: Polars has no pointer-sized integer dtype, so they
+// are stored as `Int64` and `UInt64` on every platform. This test pins:
 //
 // - bare `isize` / `usize` (schema `Int64` / `UInt64`)
 // - `Option<isize>` / `Option<usize>` (same dtype, validity bitmap)
@@ -11,9 +8,7 @@
 
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame)]
 struct IsizeUsizeBare {

@@ -1,9 +1,7 @@
-// Empirical validation of the smart-pointer transparency overhead. Each
-// pair of structs (with vs. without smart pointers) runs through the
-// columnar `to_dataframe` path on 100k rows. The macro's deref-rewriting
-// should compile to equivalent MIR; any time delta reflects the underlying
-// layout cost of indirection (heap-allocated `Box<u64>` vs. inline `u64`),
-// not the macro overhead.
+// What smart pointers cost. Each pair of structs, with and without the
+// pointers, is converted at 100k rows. A pointer's builder only dereferences,
+// so any difference in time is the cost of the indirection itself (a
+// heap-allocated `Box<u64>` against an inline `u64`).
 //
 // `clippy::vec_box` and similar lints are suppressed because the
 // pathological smart-pointer shapes are the entire point of the benchmark.
@@ -16,10 +14,8 @@ use df_derive::ToDataFrame;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
-mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 use chrono::NaiveDate;
 use std::sync::Arc;

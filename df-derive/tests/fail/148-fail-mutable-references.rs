@@ -1,8 +1,5 @@
 use df_derive::ToDataFrame;
 
-#[path = "../common.rs"]
-mod core;
-
 #[derive(ToDataFrame)]
 struct DirectMutRef<'a> {
     field: &'a mut i32,

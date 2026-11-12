@@ -1,6 +1,4 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
 
 mod time {
     pub struct Duration;

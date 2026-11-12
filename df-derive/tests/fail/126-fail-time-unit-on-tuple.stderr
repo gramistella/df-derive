@@ -1,5 +1,5 @@
 error: encoding attributes cannot be applied to a tuple; move the value into a named struct and annotate its field
- --> tests/fail/126-fail-time-unit-on-tuple.rs:7:17
+ --> tests/fail/126-fail-time-unit-on-tuple.rs:5:17
   |
-7 |     #[df_derive(time_unit = "us")]
+5 |     #[df_derive(time_unit = "us")]
   |                 ^^^^^^^^^

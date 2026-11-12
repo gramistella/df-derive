@@ -1,4 +1,4 @@
-//! Quick-start example using the default `df-derive` facade runtime.
+//! Quick start: derive `ToDataFrame`, then convert one value and a slice.
 
 use df_derive::prelude::*;
 

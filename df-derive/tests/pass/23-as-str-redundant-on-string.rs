@@ -1,12 +1,9 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
-// `as_str` on a raw `String` field is allowed and behaves identically to
-// omitting the attribute. The codegen routes through the same deref-coerce
-// branch the bare-`String` borrowing path uses, so output equality must hold
-// for both the row-wise and columnar paths.
+// `as_str` on a `String` field is allowed and behaves exactly like leaving
+// the attribute off: the same builder encodes the value either way, so the
+// output must be equal for one value and for a slice.
 
 #[derive(ToDataFrame, Clone)]
 struct WithAttr {
@@ -51,12 +48,12 @@ fn main() {
     println!("Without attribute:\n{}", df_without);
 
     assert_eq!(df_with.schema(), df_without.schema());
-    // Row-wise input has no `None` values so plain `equals` is enough — and
-    // it's a stricter check than `equals_missing` (the latter treats null ==
-    // null, which would mask any spurious-null bug between the two paths).
+    // The single value has no `None`, so plain `equals` is enough, and it is
+    // stricter than `equals_missing`: that one treats null == null, which
+    // would hide a null that only one side produced.
     assert!(
         df_with.equals(&df_without),
-        "row-wise output diverged between with/without `as_str` on String"
+        "single-value output differs with and without `as_str` on String"
     );
 
     println!("🔄 Slice-batch (columnar) comparison...");
@@ -88,10 +85,9 @@ fn main() {
 
     assert_eq!(df_with_batch.schema(), df_without_batch.schema());
 
-    // `equals_missing` treats null == null. The columnar batch contains an
-    // explicit `None` row that exercises both `Option<String>` and
-    // `Option<Vec<String>>` shapes — `equals` (without missing-aware
-    // semantics) would reject any null, even when both sides agree.
+    // `equals_missing` treats null == null. The slice has a row of `None`s,
+    // for `Option<String>` and `Option<Vec<String>>`, and plain `equals`
+    // would reject any null even when both sides agree.
     df_with_batch.align_chunks_par();
     df_without_batch.align_chunks_par();
     assert!(

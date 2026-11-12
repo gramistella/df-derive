@@ -3,9 +3,7 @@ use polars::prelude::*;
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Status {
@@ -82,7 +80,7 @@ fn main() {
         opt_statuses: Some(vec![Status::Inactive, Status::Active]),
     };
 
-    println!("🔄 Converting single value to DataFrame (row-wise path)...");
+    println!("🔄 Converting single value to DataFrame...");
     let df = s.clone().to_dataframe().unwrap();
     assert_eq!(df.shape(), (1, 4));
 
@@ -103,7 +101,7 @@ fn main() {
     assert_list_strs(&df, "statuses", &["ACTIVE", "INACTIVE"]);
     assert_list_strs(&df, "opt_statuses", &["INACTIVE", "ACTIVE"]);
 
-    println!("🔄 Converting Vec<WithEnums> to DataFrame (columnar path)...");
+    println!("🔄 Converting Vec<WithEnums> to DataFrame...");
     let batch = vec![
         s.clone(),
         WithEnums {
@@ -184,7 +182,7 @@ fn main() {
         Some(&DataType::List(Box::new(DataType::String)))
     );
 
-    println!("\n🔄 Generic-leaf case: #[df_derive(as_str)] on a generic field type T...");
+    println!("\n🔄 #[df_derive(as_str)] on a field of generic type T...");
     test_generic_as_str();
 
     println!("\n🔄 Smart-pointer composition with #[df_derive(as_str)]...");
@@ -196,11 +194,8 @@ fn main() {
     println!("\n✅ #[df_derive(as_str)] attribute test completed successfully!");
 }
 
-// Generic-leaf `as_str`: the macro injects `T: ToDataFrame + Columnar`
-// on every type parameter (struct-level — see `impl_parts_with_bounds`), so a
-// generic field with `as_str` requires `T` to satisfy those *plus* `AsRef<str>`
-// from the const-fn assert. The test's `LabelStr` derives `ToDataFrame` to
-// supply the framework bounds and impls `AsRef<str>` for the borrowing path.
+// `as_str` on a field of generic type `T`: the attribute needs `T: AsRef<str>`
+// and nothing else of `T`.
 #[derive(ToDataFrame, Clone)]
 struct LabelStr {
     label: String,
@@ -256,8 +251,8 @@ fn test_generic_as_str() {
     assert_col_str(&df, "opt_label", "INACTIVE");
     assert_list_strs(&df, "labels", &["INACTIVE", "ACTIVE"]);
 
-    // Columnar batch with a `None` row to exercise the `Option<T>` generic
-    // path through the columnar populator.
+    // A slice with a `None` row, for the `Option<T>` field of the generic
+    // struct.
     let batch = vec![
         item.clone(),
         GenericWrap::<LabelStr> {
@@ -417,20 +412,17 @@ fn test_smart_pointer_as_str() {
     assert_eq!(nested_strings, vec![Some("nested-string"), None]);
 }
 
-// `Vec<Vec<T>>+as_str` and `Vec<Option<T>>+as_str` exercise depth-2 wrapper
-// shapes around the leaf. The `Vec<Vec<T>>` shape was previously broken by a
-// dangling-reference bug (the inner-Series `Vec<&str>` borrowed from a
-// temporary `(*elem).clone()` that dropped at the previous `;`). The
-// regression check builds the DataFrame and asserts shape/values; if codegen
-// regresses to the dangling pattern, this test fails to compile.
+// `as_str` under two wrappers: `Vec<Vec<T>>` and `Vec<Option<T>>`. The
+// attribute still applies to the innermost value, which is borrowed where it
+// sits. An early version of the derive borrowed from a temporary clone here
+// and did not compile; this struct has to keep compiling.
 #[derive(ToDataFrame, Clone)]
 struct DeepWrappers {
     #[df_derive(as_str)]
     deep: Vec<Vec<Status>>,
     #[df_derive(as_str)]
     vec_opt: Vec<Option<Status>>,
-    // Depth-3 case: locks the recursive shadow behavior of
-    // `__df_derive_elem_owned` across two levels of fallback nesting.
+    // Three layers deep.
     #[df_derive(as_str)]
     triple: Vec<Vec<Vec<Status>>>,
 }
@@ -520,10 +512,9 @@ fn test_deep_wrappers() {
         panic!("expected list for vec_opt");
     }
 
-    // Columnar batch path. Includes a fully-empty middle row plus a third
-    // row with a different intermixed Some/None pattern so the columnar
-    // codegen for `Vec<Option<T>>+as_str` is exercised across distinct
-    // null/value layouts.
+    // A slice of rows: an empty row in the middle, and a third row with a
+    // different pattern of `Some` and `None`, so that `Vec<Option<T>>` with
+    // `as_str` is seen with several layouts of nulls and values.
     let batch = vec![
         item.clone(),
         DeepWrappers {

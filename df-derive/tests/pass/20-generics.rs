@@ -1,8 +1,6 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
@@ -63,9 +61,8 @@ where
     payload: Vec<T>,
 }
 
-// Doubly-wrapped Option (depth-2). Polars Some(None) and None both surface
-// as AnyValue::Null; this verifies the encoder's two-Option collapse over
-// generic payloads still produces correct output.
+// `Option<Option<T>>`: `Some(None)` and `None` are the same null, for a
+// generic payload as for a concrete one.
 #[derive(ToDataFrame, Clone)]
 struct OptOptWrapper<T>
 where
@@ -75,8 +72,7 @@ where
     payload: Option<Option<T>>,
 }
 
-// Option<Vec<T>>: depth-2 with the inner being a Vec. Goes through the
-// generic on_vec branch with tail=[] inside an Option Some-recursion.
+// `Option<Vec<T>>`: a nullable list of a generic payload.
 #[derive(ToDataFrame, Clone)]
 struct OptVecWrapper<T>
 where
@@ -86,8 +82,7 @@ where
     payload: Option<Vec<T>>,
 }
 
-// Vec<Option<T>>: depth-2 where the outer Vec layer dispatches into the
-// generic-vec helper with tail=[Option].
+// `Vec<Option<T>>`: a list of nullable generic payloads.
 #[derive(ToDataFrame, Clone)]
 struct VecOptWrapper<T>
 where
@@ -97,8 +92,7 @@ where
     payload: Vec<Option<T>>,
 }
 
-// Vec<Vec<T>>: depth-2 with both layers being Vec. Recurses through the
-// generic-vec helper with tail=[Vec].
+// `Vec<Vec<T>>`: a list of lists of a generic payload.
 #[derive(ToDataFrame, Clone)]
 struct VecVecWrapper<T>
 where
@@ -680,11 +674,8 @@ fn test_vec_wrapped_generic() {
 fn test_doubly_wrapped_generic() {
     println!("Testing Option<Option<T>> for generic T...");
 
-    // Option<Option<T>> is the depth-2 case that the bulk overrides don't
-    // cover. The macro falls back to the per-row trait-only path. Both Some
-    // and None should produce the right schema and null behavior — Some(None)
-    // and None are indistinguishable in the resulting DataFrame (both yield a
-    // single null AnyValue), which is the documented contract.
+    // `Some(None)` and `None` cannot be told apart in the frame: both are one
+    // null. The schema is that of `T`. That is the documented contract.
     let schema = OptOptWrapper::<f64>::schema().unwrap();
     assert_eq!(
         schema,

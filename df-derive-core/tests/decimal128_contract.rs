@@ -1,6 +1,7 @@
 #![cfg(feature = "rust_decimal")]
 
-use df_derive_core::dataframe::Decimal128Encode as _;
+use df_derive_core::dataframe::builders::DecimalBuilder;
+use df_derive_core::dataframe::{ColumnBuilder, Decimal128Encode as _};
 use polars::prelude::*;
 use rust_decimal::Decimal;
 use std::str::FromStr as _;
@@ -202,28 +203,54 @@ fn polars_mantissa_at_full_precision(literal: &str, scale: usize) -> Option<i128
     }
 }
 
+/// What a `Decimal(38, S)` column built by df-derive stores for `value`, or
+/// `None` when the builder rejects it.
+fn stored_at_full_precision<const S: usize>(value: &Decimal) -> Option<i128> {
+    let mut builder = <DecimalBuilder<38, S> as ColumnBuilder<Decimal>>::new();
+    builder.push(Some(value)).ok()?;
+    let mut columns = Vec::new();
+    ColumnBuilder::<Decimal>::finish(builder, "x".into(), None, &mut columns)
+        .expect("a one-value decimal column assembles");
+    match columns[0].get(0).expect("the column holds one value") {
+        AnyValue::Decimal(mantissa, _, _) => Some(mantissa),
+        other => panic!("unexpected value in a decimal column: {other:?}"),
+    }
+}
+
 #[test]
-fn rust_decimal_reference_impl_agrees_with_polars_at_the_38_digit_limit() {
+fn decimal_columns_agree_with_polars_at_the_38_digit_limit() {
     // A Polars decimal holds at most 38 digits, so a mantissa of 10^38 or
     // more cannot be stored at any precision even though it fits in `i128`.
-    // Each case sits on one side of that limit.
-    let cases = [
-        ("0.1", 38),  // 10^37: fits
-        ("-0.1", 38), // -10^37: fits
-        ("0.9999999999999999999999999999", 38),
-        ("1", 38),  // 10^38: one digit too many
-        ("-1", 38), // -10^38
-        ("9.9999", 37),
-        ("10", 37), // 10^38
-        ("1", 37),  // 10^37: fits
+    // The trait leaves that to the builder, which knows the precision. Each
+    // case sits on one side of the limit.
+    let at_scale_38 = [
+        "0.1",  // 10^37: fits
+        "-0.1", // -10^37: fits
+        "0.9999999999999999999999999999",
+        "1",   // 10^38: one digit too many
+        "-1",  // -10^38
+        "1.7", // fits in `i128`, not in 38 digits
     ];
-    for (literal, scale) in cases {
+    for literal in at_scale_38 {
         let value = Decimal::from_str(literal).expect("literal decimal parses");
-        let actual = value.try_to_i128_mantissa(scale.try_into().expect("scale fits in u32"));
-        let expected = polars_mantissa_at_full_precision(literal, scale);
         assert_eq!(
-            actual, expected,
-            "`{literal}` at scale {scale}: df-derive and Polars disagree",
+            stored_at_full_precision::<38>(&value),
+            polars_mantissa_at_full_precision(literal, 38),
+            "`{literal}` at scale 38: df-derive and Polars disagree",
         );
     }
+    for literal in ["9.9999", "10", "-10", "1"] {
+        let value = Decimal::from_str(literal).expect("literal decimal parses");
+        assert_eq!(
+            stored_at_full_precision::<37>(&value),
+            polars_mantissa_at_full_precision(literal, 37),
+            "`{literal}` at scale 37: df-derive and Polars disagree",
+        );
+    }
+
+    // The value the limit exists for: it has an `i128` mantissa, so the
+    // trait returns it, and the builder is what turns it away.
+    let one = Decimal::from_str("1").expect("literal decimal parses");
+    assert_eq!(one.try_to_i128_mantissa(38), Some(10i128.pow(38)));
+    assert_eq!(stored_at_full_precision::<38>(&one), None);
 }

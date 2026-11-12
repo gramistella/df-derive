@@ -3,9 +3,10 @@
 //! An encoding such as `as_str` applies to the innermost value of a field.
 //! The wrapper layers around it are read from the type as written, and the
 //! builder type mirrors them: `Option<Vec<Venue>>` with `as_str` becomes
-//! `OptionBuilder<ListBuilder<StrBuilder>>`. Types the derive does not
-//! recognise as a wrapper are treated as the leaf, so a mismatch surfaces as
-//! an ordinary trait-bound error on the field.
+//! `OptionBuilder<ListBuilder<StrBuilder>>`. The innermost value of a map is
+//! its value; its keys keep the encoding of their own type. Types the derive
+//! does not recognise as a wrapper are treated as the leaf, so a mismatch
+//! surfaces as an ordinary trait-bound error on the field.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -18,6 +19,7 @@ enum Wrapper<'a> {
     Vec(&'a Type),
     Slice(&'a Type),
     Pointer(&'a Type),
+    Map { key: &'a Type, value: &'a Type },
 }
 
 fn peel(ty: &Type) -> &Type {
@@ -28,13 +30,13 @@ fn peel(ty: &Type) -> &Type {
     }
 }
 
-/// Matches `Name<T>` spelled bare or through one of its standard paths.
-fn std_generic<'a>(path: &'a syn::Path, name: &str, modules: &[&[&str]]) -> Option<&'a Type> {
+/// The type arguments of `Name<..>`, spelled bare or through one of its
+/// standard paths.
+fn std_arguments<'a>(path: &'a syn::Path, name: &str, modules: &[&[&str]]) -> Vec<&'a Type> {
     let segments: Vec<_> = path.segments.iter().collect();
-    let (last, prefix) = segments.split_last()?;
-    if last.ident != name {
-        return None;
-    }
+    let Some((last, prefix)) = segments.split_last() else {
+        return Vec::new();
+    };
     let prefix_matches = prefix.is_empty()
         || modules.iter().any(|module| {
             module.len() == prefix.len()
@@ -42,18 +44,53 @@ fn std_generic<'a>(path: &'a syn::Path, name: &str, modules: &[&[&str]]) -> Opti
                     segment.ident == expected && segment.arguments.is_none()
                 })
         });
-    if !prefix_matches {
-        return None;
+    if last.ident != name || !prefix_matches {
+        return Vec::new();
     }
     let PathArguments::AngleBracketed(arguments) = &last.arguments else {
-        return None;
+        return Vec::new();
     };
-    let mut types = arguments.args.iter().filter_map(|argument| match argument {
-        GenericArgument::Type(ty) => Some(ty),
+    arguments
+        .args
+        .iter()
+        .filter_map(|argument| match argument {
+            GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Matches a standard type with exactly one type argument.
+fn std_generic<'a>(path: &'a syn::Path, name: &str, modules: &[&[&str]]) -> Option<&'a Type> {
+    match std_arguments(path, name, modules).as_slice() {
+        [only] => Some(only),
         _ => None,
-    });
-    let first = types.next()?;
-    types.next().is_none().then_some(first)
+    }
+}
+
+/// Matches `HashMap<K, V>`, with or without a hasher, and `BTreeMap<K, V>`.
+fn std_map(path: &syn::Path) -> Option<Wrapper<'_>> {
+    let hash = std_arguments(
+        path,
+        "HashMap",
+        &[&["std", "collections"], &["std", "collections", "hash_map"]],
+    );
+    let tree = std_arguments(
+        path,
+        "BTreeMap",
+        &[
+            &["std", "collections"],
+            &["std", "collections", "btree_map"],
+            &["alloc", "collections"],
+            &["alloc", "collections", "btree_map"],
+        ],
+    );
+    match (hash.as_slice(), tree.as_slice()) {
+        ([key, value] | [key, value, _], _) | (_, [key, value]) => {
+            Some(Wrapper::Map { key, value })
+        }
+        _ => None,
+    }
 }
 
 fn wrapper(ty: &Type) -> Option<Wrapper<'_>> {
@@ -71,6 +108,9 @@ fn wrapper(ty: &Type) -> Option<Wrapper<'_>> {
             }
             if let Some(inner) = std_generic(path, "Vec", &[&["std", "vec"], &["alloc", "vec"]]) {
                 return Some(Wrapper::Vec(inner));
+            }
+            if let Some(map) = std_map(path) {
+                return Some(map);
             }
             let pointers: [(&str, &[&[&str]]); 4] = [
                 ("Box", &[&["std", "boxed"], &["alloc", "boxed"]]),
@@ -114,22 +154,34 @@ fn leaf(encoding: &Encoding, builders: &TokenStream) -> TokenStream {
 }
 
 /// Returns the builder type for `ty` under `encoding`.
-pub fn builder(ty: &Type, encoding: &Encoding, builders: &TokenStream) -> TokenStream {
+///
+/// `root` is the runtime's `dataframe` module and `builders` its `builders`
+/// module.
+pub fn builder(
+    ty: &Type,
+    encoding: &Encoding,
+    root: &TokenStream,
+    builders: &TokenStream,
+) -> TokenStream {
     let ty = peel(ty);
     // A byte sequence is the value `as_binary` encodes, not a list around it.
     let bytes = matches!(encoding, Encoding::AsBinary);
     match wrapper(ty) {
         Some(Wrapper::Option(inner)) => {
-            let inner = builder(inner, encoding, builders);
+            let inner = builder(inner, encoding, root, builders);
             quote! { #builders::OptionBuilder<#inner> }
         }
         Some(Wrapper::Vec(inner) | Wrapper::Slice(inner)) if !(bytes && is_u8(inner)) => {
-            let inner = builder(inner, encoding, builders);
+            let inner = builder(inner, encoding, root, builders);
             quote! { #builders::ListBuilder<#inner> }
         }
         Some(Wrapper::Pointer(inner)) => {
-            let inner = builder(inner, encoding, builders);
+            let inner = builder(inner, encoding, root, builders);
             quote! { #builders::PtrBuilder<#inner> }
+        }
+        Some(Wrapper::Map { key, value }) => {
+            let value = builder(value, encoding, root, builders);
+            quote! { #builders::MapBuilder<<#key as #root::Columnar>::Builder, #value> }
         }
         _ => leaf(encoding, builders),
     }
@@ -143,7 +195,8 @@ pub fn leaf_is_tuple(ty: &Type) -> bool {
             Wrapper::Option(inner)
             | Wrapper::Vec(inner)
             | Wrapper::Slice(inner)
-            | Wrapper::Pointer(inner),
+            | Wrapper::Pointer(inner)
+            | Wrapper::Map { value: inner, .. },
         ) => leaf_is_tuple(inner),
         None => matches!(ty, Type::Tuple(_)),
     }

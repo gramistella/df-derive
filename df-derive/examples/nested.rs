@@ -1,4 +1,5 @@
-// Uses the default `df-derive` facade runtime.
+// A struct inside a struct. The inner struct's columns are named with dot
+// notation: `address.street`, `address.city`, `address.zip`.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

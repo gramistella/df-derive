@@ -5,7 +5,7 @@ use polars::prelude::{
 };
 use polars_arrow::bitmap::Bitmap;
 
-use super::primitive::primitive_array;
+use super::primitive::{primitive_array, try_extend};
 use crate::dataframe::{ColumnBuilder, Columnar, Fields};
 
 #[cold]
@@ -153,7 +153,13 @@ impl Unit for Ns {
     }
 }
 
-/// Builder for instants (`Datetime(U, None)`) and durations (`Duration(U)`).
+/// Builder for `Datetime` and `Duration` columns in the unit `U`.
+///
+/// The value type decides whether a `Datetime` column has a time zone. A
+/// `chrono::DateTime<Tz>` is an instant, so its column is
+/// `Datetime(U, UTC)`: the value's own zone or offset is not kept, the
+/// instant is. A `chrono::NaiveDateTime` names no zone and neither does its
+/// column, `Datetime(U, None)`. Polars treats the two as different types.
 pub struct TemporalBuilder<U>(Vec<i64>, PhantomData<U>);
 
 /// How a temporal value maps onto [`TemporalBuilder`].
@@ -165,19 +171,30 @@ macro_rules! temporal {
                 out.push((name, temporal!(@dtype $logical U)));
             }
 
-            fn with_capacity(rows: usize) -> Self {
-                Self(Vec::with_capacity(rows), PhantomData)
+            fn new() -> Self {
+                Self(Vec::new(), PhantomData)
+            }
+
+            fn reserve(&mut self, additional: usize) {
+                self.0.reserve(additional);
             }
 
             #[inline(always)]
-            fn push(&mut self, value: &$ty) -> PolarsResult<()> {
-                self.0.push(U::$convert(value)?);
+            fn push(&mut self, value: Option<&$ty>) -> PolarsResult<()> {
+                self.0.push(match value {
+                    Some(value) => U::$convert(value)?,
+                    None => 0,
+                });
                 Ok(())
             }
 
             #[inline(always)]
-            fn push_null(&mut self) {
-                self.0.push(0);
+            fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+            where
+                $ty: 'a,
+                I: Iterator<Item = Option<&'a $ty>> + Clone,
+            {
+                try_extend(&mut self.0, values, U::$convert)
             }
 
             fn finish(
@@ -197,8 +214,16 @@ macro_rules! temporal {
             type Builder = TemporalBuilder<$default>;
         }
     };
+    (@dtype Instant $u:ident) => {
+        DataType::Datetime($u::UNIT, Some(polars::prelude::TimeZone::UTC))
+    };
     (@dtype Datetime $u:ident) => { DataType::Datetime($u::UNIT, None) };
     (@dtype Duration $u:ident) => { DataType::Duration($u::UNIT) };
+    (@series Instant $values:ident $u:ident) => {
+        $values
+            .into_datetime($u::UNIT, Some(polars::prelude::TimeZone::UTC))
+            .into_series()
+    };
     (@series Datetime $values:ident $u:ident) => {
         $values.into_datetime($u::UNIT, None).into_series()
     };
@@ -208,7 +233,7 @@ macro_rules! temporal {
 }
 
 temporal!(std::time::Duration => Duration, from_std, Ns);
-temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
+temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
 temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
 temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
 
@@ -235,25 +260,43 @@ mod chrono_impls {
     /// Days between 0001-01-01 (chrono's day 1) and the Unix epoch.
     const UNIX_EPOCH_DAY_FROM_CE: i32 = 719_163;
 
+    #[inline(always)]
+    fn days_since_epoch(date: &NaiveDate) -> i32 {
+        date.num_days_from_ce() - UNIX_EPOCH_DAY_FROM_CE
+    }
+
+    #[inline(always)]
+    fn nanos_since_midnight(time: &NaiveTime) -> i64 {
+        i64::from(time.num_seconds_from_midnight()) * 1_000_000_000 + i64::from(time.nanosecond())
+    }
+
     impl ColumnBuilder<NaiveDate> for DateBuilder {
         fn schema(name: PlSmallStr, out: &mut Fields) {
             out.push((name, DataType::Date));
         }
 
-        fn with_capacity(rows: usize) -> Self {
-            Self(Vec::with_capacity(rows))
+        fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        fn reserve(&mut self, additional: usize) {
+            self.0.reserve(additional);
         }
 
         #[inline(always)]
-        fn push(&mut self, value: &NaiveDate) -> PolarsResult<()> {
-            self.0
-                .push(value.num_days_from_ce() - UNIX_EPOCH_DAY_FROM_CE);
+        fn push(&mut self, value: Option<&NaiveDate>) -> PolarsResult<()> {
+            self.0.push(value.map(days_since_epoch).unwrap_or_default());
             Ok(())
         }
 
         #[inline(always)]
-        fn push_null(&mut self) {
-            self.0.push(0);
+        fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+        where
+            I: Iterator<Item = Option<&'a NaiveDate>> + Clone,
+        {
+            self.0
+                .extend(values.map(|value| value.map(days_since_epoch).unwrap_or_default()));
+            Ok(())
         }
 
         fn finish(
@@ -277,22 +320,29 @@ mod chrono_impls {
             out.push((name, DataType::Time));
         }
 
-        fn with_capacity(rows: usize) -> Self {
-            Self(Vec::with_capacity(rows))
+        fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        fn reserve(&mut self, additional: usize) {
+            self.0.reserve(additional);
         }
 
         #[inline(always)]
-        fn push(&mut self, value: &NaiveTime) -> PolarsResult<()> {
-            self.0.push(
-                i64::from(value.num_seconds_from_midnight()) * 1_000_000_000
-                    + i64::from(value.nanosecond()),
-            );
+        fn push(&mut self, value: Option<&NaiveTime>) -> PolarsResult<()> {
+            self.0
+                .push(value.map(nanos_since_midnight).unwrap_or_default());
             Ok(())
         }
 
         #[inline(always)]
-        fn push_null(&mut self) {
-            self.0.push(0);
+        fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+        where
+            I: Iterator<Item = Option<&'a NaiveTime>> + Clone,
+        {
+            self.0
+                .extend(values.map(|value| value.map(nanos_since_midnight).unwrap_or_default()));
+            Ok(())
         }
 
         fn finish(

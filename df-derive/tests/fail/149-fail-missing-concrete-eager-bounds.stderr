@@ -1,187 +1,62 @@
 error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:12:12
-   |
-12 |     inner: Inner,
-   |            ^^^^^ no column encoding for `Inner`
-   |
+ --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:9:12
+  |
+9 |     inner: Inner,
+  |            ^^^^^ no column encoding for `Inner`
+  |
 help: the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
+ --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:3:1
+  |
+3 | struct Inner {
+  | ^^^^^^^^^^^^
+  = note: derive `ToDataFrame` on the type, implement `Columnar` for it, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = note: the key type of a map needs one of the first two: a field attribute applies to the map's values
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
 
 error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^ no column encoding for `Inner`
-   |
-help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
-note: required because it appears within the type `_::__DfDeriveBuilder`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^
-note: required by a bound in `ColumnBuilder`
-  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
-   |
-   | pub trait ColumnBuilder<T: ?Sized>: Sized {
-   |                                     ^^^^^ required by this bound in `ColumnBuilder`
-   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^ no column encoding for `Inner`
-   |
-help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
-note: required because it appears within the type `_::__DfDeriveBuilder`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^
-note: required by a bound in `df_derive::prelude::Columnar::Builder`
-  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
-   |
-   |     type Builder: ColumnBuilder<Self>;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
-   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^ no column encoding for `Inner`
-   |
-help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
-note: required because it appears within the type `_::__DfDeriveBuilder`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^
-   = note: the return type of a function must have a statically known size
-   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^ no column encoding for `Inner`
-   |
+ --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:7:10
+  |
+7 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `Inner`
+  |
 help: the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
-   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: `Inner` cannot be stored in a DataFrame column
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^ no column encoding for `Inner`
-   |
-help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `Inner`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:6:1
-   |
- 6 | struct Inner {
-   | ^^^^^^^^^^^^
-   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
-   = help: the following other types implement trait `Columnar`:
-             &'a T
-             ()
-             (T0,)
-             (T0, T1)
-             (T0, T1, T2)
-             (T0, T1, T2, T3)
-             (T0, T1, T2, T3, T4)
-             (T0, T1, T2, T3, T4, T5)
-           and $N others
-note: required because it appears within the type `_::__DfDeriveBuilder`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:10:10
-   |
-10 | #[derive(ToDataFrame)]
-   |          ^^^^^^^^^^^
-   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+ --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:3:1
+  |
+3 | struct Inner {
+  | ^^^^^^^^^^^^
+  = note: derive `ToDataFrame` on the type, implement `Columnar` for it, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = note: the key type of a map needs one of the first two: a field attribute applies to the map's values
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `MyDecimal: Decimal128Encode` is not satisfied
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:22:13
+  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:19:13
    |
-22 |     amount: MyDecimal,
+19 |     amount: MyDecimal,
    |             ^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `Decimal128Encode` is not implemented for `MyDecimal`
-  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:15:1
+  --> tests/fail/149-fail-missing-concrete-eager-bounds.rs:12:1
    |
-15 | struct MyDecimal {
+12 | struct MyDecimal {
    | ^^^^^^^^^^^^^^^^
 help: the following other types implement trait `Decimal128Encode`
   --> $WORKSPACE/df-derive-core/src/dataframe/decimal.rs

@@ -164,7 +164,7 @@ fn columns<'a>(
                          move the value into a named struct and annotate its field",
                     ));
                 }
-                let builder = mirror::builder(ty, encoding, &runtime.builders);
+                let builder = mirror::builder(ty, encoding, root, &runtime.builders);
                 let bound = quote! { #builder: #root::ColumnBuilder<#ty> };
                 (builder, bound)
             }
@@ -206,11 +206,24 @@ struct BuilderGenerics {
     declaration: TokenStream,
     /// `<...>` where the builder type is named.
     arguments: TokenStream,
-    /// Keeps otherwise unused parameters in use.
-    marker_field: TokenStream,
-    marker_init: TokenStream,
+    /// The type of the builder's last member; see [`marker`].
+    marker: TokenStream,
     /// True when the row's lifetimes are left off the builder.
     erased: bool,
+}
+
+/// The type of the member every builder struct ends with.
+///
+/// It keeps the struct's generic parameters in use. It also comes last for a
+/// reason: whether a struct is `Sized` is decided by its last member alone.
+/// If that member were the builder of a field that cannot be encoded, the
+/// compiler would report the field again at every place that needs the
+/// builder's size. With this member last, such a field is reported at the
+/// field and once at the derive.
+fn marker(generics: &syn::Generics) -> TokenStream {
+    let lifetimes = generics.lifetimes().map(|param| &param.lifetime);
+    let type_idents = generics.type_params().map(|param| &param.ident);
+    quote! { ::core::marker::PhantomData<(#(&#lifetimes (),)* #(fn(&#type_idents),)*)> }
 }
 
 /// A type whose only generic parameters are lifetimes (and consts) gets a
@@ -218,43 +231,20 @@ struct BuilderGenerics {
 /// through it with `via`, where the row borrows from each value in turn.
 fn builder_generics(generics: &syn::Generics) -> BuilderGenerics {
     let erased = generics.type_params().next().is_none() && generics.lifetimes().next().is_some();
+    let mut kept = generics.clone();
     if erased {
-        let mut kept = generics.clone();
         kept.params = kept
             .params
             .into_iter()
             .filter(|param| !matches!(param, GenericParam::Lifetime(_)))
             .collect();
         kept.where_clause = None;
-        let (declaration, arguments, _) = kept.split_for_impl();
-        return BuilderGenerics {
-            declaration: declaration.to_token_stream(),
-            arguments: arguments.to_token_stream(),
-            marker_field: TokenStream::new(),
-            marker_init: TokenStream::new(),
-            erased,
-        };
     }
-
-    let (declaration, arguments, _) = generics.split_for_impl();
-    let lifetimes = generics.lifetimes().map(|param| &param.lifetime);
-    let type_idents = generics.type_params().map(|param| &param.ident);
-    let (marker_field, marker_init) = if generics.params.is_empty() {
-        (TokenStream::new(), TokenStream::new())
-    } else {
-        (
-            quote! {
-                __df_derive_marker:
-                    ::core::marker::PhantomData<(#(&#lifetimes (),)* #(fn(&#type_idents),)*)>,
-            },
-            quote! { __df_derive_marker: ::core::marker::PhantomData, },
-        )
-    };
+    let (declaration, arguments, _) = kept.split_for_impl();
     BuilderGenerics {
         declaration: declaration.to_token_stream(),
         arguments: arguments.to_token_stream(),
-        marker_field,
-        marker_init,
+        marker: marker(&kept),
         erased,
     }
 }
@@ -361,8 +351,7 @@ fn expand_struct(
     let BuilderGenerics {
         declaration,
         arguments,
-        marker_field,
-        marker_init,
+        marker,
         ..
     } = &builder;
     let builder_where = if builder.erased {
@@ -400,48 +389,64 @@ fn expand_struct(
             )
         })
         .collect();
-    // Runs a fallible step for one field and, on failure, names the field in
-    // the error. A flattened field adds no path segment of its own.
-    let checked = |index: usize, step: TokenStream| {
-        columns[index].segment.as_ref().map_or_else(
-            || quote! { #step?; },
-            |segment| {
-                quote! {
-                    if let ::core::result::Result::Err(error) = #step {
-                        return ::core::result::Result::Err(
-                            #root::__private::in_field(error, #segment),
-                        );
-                    }
-                }
-            },
-        )
-    };
-    let all_fields: Vec<usize> = (0..columns.len()).collect();
-    let pushes = all_fields.iter().map(|&index| {
-        let (builder, slot, member) = (&as_builder[index], slots[index], members[index]);
-        checked(
-            index,
-            quote! { #builder::push(&mut self.#slot, &value.#member) },
-        )
-    });
-    let field_passes = all_fields.iter().map(|&index| {
-        let (builder, slot, member) = (&as_builder[index], slots[index], members[index]);
-        checked(
-            index,
+    // A field of the row in a slot: where the slot is empty, so is the field.
+    // Written as a `match` rather than with `Option::map`, which would cost
+    // another closure and another instantiation for every field.
+    let field_of: Vec<_> = members
+        .iter()
+        .map(|member| {
             quote! {
-                #builder::extend_from(
-                    &mut self.#slot,
-                    ::core::iter::Iterator::map(
-                        ::core::clone::Clone::clone(&values),
-                        |value| &value.#member,
-                    ),
+                match value {
+                    ::core::option::Option::Some(value) => {
+                        ::core::option::Option::Some(&value.#member)
+                    }
+                    ::core::option::Option::None => ::core::option::Option::None,
+                }
+            }
+        })
+        .collect();
+    // The same field of every row a builder is shown.
+    let field_of_each: Vec<_> = field_of
+        .iter()
+        .map(|field| {
+            quote! {
+                ::core::iter::Iterator::map(::core::clone::Clone::clone(&values), |value| #field)
+            }
+        })
+        .collect();
+    // A failed push names the field it happened in. A flattened field adds no
+    // path segment of its own.
+    let pushes =
+        columns
+            .iter()
+            .zip(&as_builder)
+            .zip(&field_of)
+            .map(|((column, builder), field)| {
+                let slot = &column.slot;
+                let push = quote! { #builder::push(&mut self.#slot, #field) };
+                column.segment.as_ref().map_or_else(
+                    || quote! { #push?; },
+                    |segment| {
+                        quote! {
+                            if let ::core::result::Result::Err(error) = #push {
+                                return ::core::result::Result::Err(
+                                    #root::__private::in_field(error, #segment),
+                                );
+                            }
+                        }
+                    },
                 )
-            },
-        )
-    });
+            });
+    let rows = quote! {
+        #name #ty_generics: '__df_derive_rows,
+        __DfDeriveRows: ::core::iter::Iterator<
+                Item = ::core::option::Option<&'__df_derive_rows #name #ty_generics>,
+            > + ::core::clone::Clone,
+    };
 
     // A transparent wrapper is a value, not a row: it takes the name of the
     // field that holds it, so it is neither a record nor a `ToDataFrame`.
+    let encode = encode_in_place(runtime);
     let row_impls = if container.transparent.is_some() {
         TokenStream::new()
     } else {
@@ -450,7 +455,9 @@ fn expand_struct(
             impl #impl_generics #root::Record for #name #ty_generics #where_clause {}
 
             #[automatically_derived]
-            impl #impl_generics #root::ToDataFrame for #name #ty_generics #where_clause {}
+            impl #impl_generics #root::ToDataFrame for #name #ty_generics #where_clause {
+                #encode
+            }
         }
     };
 
@@ -463,7 +470,7 @@ fn expand_struct(
             #[allow(non_snake_case, dead_code)]
             #vis struct __DfDeriveBuilder #declaration #builder_where {
                 #(#slots: #builder_types,)*
-                #marker_field
+                __df_derive_marker: #marker,
             }
 
             #[automatically_derived]
@@ -477,72 +484,45 @@ fn expand_struct(
                     #(#as_builder::schema(#names, out);)*
                 }
 
-                const LISTS: usize = 0 #(+ #as_builder::LISTS)*;
-
-                fn with_capacity(rows: usize) -> Self {
+                fn new() -> Self {
                     Self {
-                        #(#slots: #as_builder::with_capacity(rows),)*
-                        #marker_init
+                        #(#slots: #as_builder::new(),)*
+                        __df_derive_marker: ::core::marker::PhantomData,
                     }
                 }
 
                 #[inline(always)]
-                fn measure(value: &#name #ty_generics, counts: &mut [usize]) {
-                    let mut at = 0usize;
-                    #(
-                        if #as_builder::LISTS > 0 {
-                            #as_builder::measure(
-                                &value.#members,
-                                &mut counts[at..at + #as_builder::LISTS],
-                            );
-                        }
-                        at += #as_builder::LISTS;
-                    )*
+                fn measure<'__df_derive_rows, __DfDeriveRows>(&mut self, values: __DfDeriveRows)
+                where
+                    #rows
+                {
+                    #(#as_builder::measure(&mut self.#slots, #field_of_each);)*
                 }
 
-                fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-                    let mut at = 0usize;
-                    let mut take = |lists: usize| {
-                        let start = at;
-                        at += lists;
-                        &counts[start..at]
-                    };
-                    Self {
-                        #(
-                            #slots: #as_builder::with_capacities(
-                                rows,
-                                take(#as_builder::LISTS),
-                            ),
-                        )*
-                        #marker_init
-                    }
+                fn reserve(&mut self, additional: usize) {
+                    #(#as_builder::reserve(&mut self.#slots, additional);)*
                 }
 
                 #[inline(always)]
-                fn push(&mut self, value: &#name #ty_generics) -> #polars::PolarsResult<()> {
+                fn push(
+                    &mut self,
+                    value: ::core::option::Option<&#name #ty_generics>,
+                ) -> #polars::PolarsResult<()> {
                     #(#pushes)*
                     ::core::result::Result::Ok(())
                 }
 
-                // One tight loop per field over the rows of the block.
+                // One loop per field over the rows of a block.
                 #[inline(always)]
-                fn extend_from<'__df_derive_rows, __DfDeriveRows>(
+                fn extend<'__df_derive_rows, __DfDeriveRows>(
                     &mut self,
                     values: __DfDeriveRows,
                 ) -> #polars::PolarsResult<()>
                 where
-                    #name #ty_generics: '__df_derive_rows,
-                    __DfDeriveRows: ::core::iter::Iterator<
-                            Item = &'__df_derive_rows #name #ty_generics,
-                        > + ::core::clone::Clone,
+                    #rows
                 {
-                    #(#field_passes)*
+                    #(#as_builder::extend(&mut self.#slots, #field_of_each)?;)*
                     ::core::result::Result::Ok(())
-                }
-
-                #[inline(always)]
-                fn push_null(&mut self) {
-                    #(#as_builder::push_null(&mut self.#slots);)*
                 }
 
                 fn finish(
@@ -564,6 +544,22 @@ fn expand_struct(
             #row_impls
         };
     })
+}
+
+/// The one `ToDataFrame` method the derive writes out.
+///
+/// Its body is what the trait's default does anyway. Written out in the impl,
+/// it is an ordinary function of the crate that defines the row type, so the
+/// encoder is compiled there once. Left to the default it would be
+/// instantiated in every crate that converts the type.
+fn encode_in_place(runtime: &Runtime) -> TokenStream {
+    let Runtime { root, polars, .. } = runtime;
+    quote! {
+        #[inline(never)]
+        fn __encode(rows: &[Self]) -> #polars::PolarsResult<#polars::DataFrame> {
+            #root::__private::encode(rows)
+        }
+    }
 }
 
 /// A type that encodes as another row type built from a reference to it.
@@ -607,12 +603,9 @@ fn expand_via(
         quote! { ::core::convert::From::from(value) }
     };
 
+    let encode = encode_in_place(runtime);
     let (declaration, arguments, _) = input.generics.split_for_impl();
-    let lifetimes = input.generics.lifetimes().map(|param| &param.lifetime);
-    let type_idents = input.generics.type_params().map(|param| &param.ident);
-    let marker = quote! {
-        ::core::marker::PhantomData<(#(&#lifetimes (),)* #(fn(&#type_idents),)*)>
-    };
+    let marker = marker(&input.generics);
 
     quote! {
         // Field types are repeated inside the generated items with their original
@@ -632,22 +625,32 @@ fn expand_via(
                     <#inner as #root::ColumnBuilder<#stored>>::schema(name, out);
                 }
 
-                fn with_capacity(rows: usize) -> Self {
+                fn new() -> Self {
                     Self(
-                        <#inner as #root::ColumnBuilder<#stored>>::with_capacity(rows),
+                        <#inner as #root::ColumnBuilder<#stored>>::new(),
                         ::core::marker::PhantomData,
                     )
                 }
 
-                #[inline(always)]
-                fn push(&mut self, value: &#name #ty_generics) -> #polars::PolarsResult<()> {
-                    let row: #row = #convert;
-                    <#inner as #root::ColumnBuilder<#row>>::push(&mut self.0, &row)
+                fn reserve(&mut self, additional: usize) {
+                    <#inner as #root::ColumnBuilder<#stored>>::reserve(&mut self.0, additional);
                 }
 
                 #[inline(always)]
-                fn push_null(&mut self) {
-                    <#inner as #root::ColumnBuilder<#stored>>::push_null(&mut self.0);
+                fn push(
+                    &mut self,
+                    value: ::core::option::Option<&#name #ty_generics>,
+                ) -> #polars::PolarsResult<()> {
+                    let row: ::core::option::Option<#row> = match value {
+                        ::core::option::Option::Some(value) => {
+                            ::core::option::Option::Some(#convert)
+                        }
+                        ::core::option::Option::None => ::core::option::Option::None,
+                    };
+                    <#inner as #root::ColumnBuilder<#row>>::push(
+                        &mut self.0,
+                        ::core::option::Option::as_ref(&row),
+                    )
                 }
 
                 fn finish(
@@ -669,7 +672,9 @@ fn expand_via(
             impl #impl_generics #root::Record for #name #ty_generics #where_clause {}
 
             #[automatically_derived]
-            impl #impl_generics #root::ToDataFrame for #name #ty_generics #where_clause {}
+            impl #impl_generics #root::ToDataFrame for #name #ty_generics #where_clause {
+                #encode
+            }
         };
     }
 }

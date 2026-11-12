@@ -1,69 +1,67 @@
-use polars::prelude::{Column, DataType, PlSmallStr, PolarsResult, Series};
+use polars::prelude::{Column, DataType, PlSmallStr, PolarsError, PolarsResult, Series};
 use polars_arrow::array::ListArray;
 use polars_arrow::bitmap::Bitmap;
-use polars_arrow::offset::OffsetsBuffer;
+use polars_arrow::offset::{Offsets, OffsetsBuffer};
 
+use crate::dataframe::frame::{extend_from_slice, first_failure, in_element};
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Wraps every column of another builder in a list.
 ///
-/// Each pushed sequence appends its elements to the inner builder and records
-/// one offset, so a sequence of structs becomes one list column per struct
-/// field, all sharing the same offsets.
+/// Each sequence appends its elements to the inner builder and records where
+/// they end, so a sequence of structs becomes one list column per struct
+/// field, all sharing the same offsets. An empty slot is an empty list.
 pub struct ListBuilder<B> {
     inner: B,
     offsets: ListOffsets,
 }
 
-/// End offsets of the lists pushed so far.
+/// Where each list ends in the buffer its elements share.
 ///
-/// The running total lives in the builder instead of being read back from the
-/// last stored offset, which would chain every push to the one before it.
+/// Arrow's own offsets type does the bookkeeping: it only ever appends an
+/// end that is at or past the one before, so the finished offsets need no
+/// validation.
 pub(super) struct ListOffsets {
-    ends: Vec<i64>,
-    total: i64,
+    ends: Offsets<i64>,
+    /// Elements counted by `measure` that `reserve` has not yet made room for.
+    measured: usize,
 }
 
 impl ListOffsets {
-    pub(super) fn with_capacity(rows: usize) -> Self {
-        let mut ends = Vec::with_capacity(rows.saturating_add(1));
-        ends.push(0);
-        Self { ends, total: 0 }
+    pub(super) fn new() -> Self {
+        Self {
+            ends: Offsets::new(),
+            measured: 0,
+        }
+    }
+
+    /// Counts the elements of lists that are about to be recorded.
+    #[inline(always)]
+    pub(super) fn measure(&mut self, lens: impl Iterator<Item = usize>) {
+        self.measured += lens.sum::<usize>();
+    }
+
+    /// Makes room for `additional` more lists and returns how many elements
+    /// were measured for them, which is the room their owner needs.
+    pub(super) fn reserve(&mut self, additional: usize) -> usize {
+        self.ends.reserve(additional);
+        std::mem::take(&mut self.measured)
     }
 
     /// Records a list of `len` elements.
     #[inline(always)]
-    #[allow(clippy::cast_possible_wrap)]
-    pub(super) fn push(&mut self, len: usize) {
-        // A total past `i64::MAX` wraps negative and is rejected as a
-        // non-monotonic offset in `finish`.
-        self.total = self.total.wrapping_add(len as i64);
-        self.ends.push(self.total);
+    pub(super) fn push(&mut self, len: usize) -> PolarsResult<()> {
+        self.ends.try_push(len)
     }
 
     /// Records one list per length.
     #[inline(always)]
-    #[allow(clippy::cast_possible_wrap)]
-    pub(super) fn extend(&mut self, lens: impl Iterator<Item = usize>) {
-        // Locals for the loop: see `fill_flat`.
-        let mut total = self.total;
-        let mut ends = std::mem::take(&mut self.ends);
-        ends.extend(lens.map(|len| {
-            total = total.wrapping_add(len as i64);
-            total
-        }));
-        self.ends = ends;
-        self.total = total;
+    pub(super) fn extend(&mut self, lens: impl Iterator<Item = usize>) -> PolarsResult<()> {
+        self.ends.try_extend_from_lengths(lens)
     }
 
-    /// Records an empty list, the placeholder for a null.
-    #[inline(always)]
-    pub(super) fn push_empty(&mut self) {
-        self.ends.push(self.total);
-    }
-
-    pub(super) fn finish(self) -> PolarsResult<OffsetsBuffer<i64>> {
-        OffsetsBuffer::try_from(self.ends)
+    pub(super) fn finish(self) -> OffsetsBuffer<i64> {
+        self.ends.into()
     }
 }
 
@@ -82,8 +80,10 @@ pub(super) fn wrap_columns(
     offsets: ListOffsets,
     validity: Option<&Bitmap>,
 ) -> PolarsResult<()> {
-    let offsets = offsets.finish()?;
+    let offsets = offsets.finish();
     for column in &mut out[start..] {
+        // A list holds its values in one array. The provided builders hand
+        // over a single chunk already; a custom one may not.
         let series = column.as_materialized_series().rechunk();
         let values = series.chunks()[0].clone();
         let list = ListArray::<i64>::try_new(
@@ -99,133 +99,127 @@ pub(super) fn wrap_columns(
     Ok(())
 }
 
-impl<B> ListBuilder<B> {
-    fn list_schema<T>(name: PlSmallStr, out: &mut Fields)
-    where
-        B: ColumnBuilder<T>,
-    {
+/// The length a slot adds to the element buffer.
+#[inline(always)]
+fn len<T>(list: Option<&[T]>) -> usize {
+    list.map_or(0, <[T]>::len)
+}
+
+/// The slot of the slice a `Vec` in a slot holds.
+#[inline(always)]
+fn as_slice<T>(list: Option<&Vec<T>>) -> Option<&[T]> {
+    list.map(Vec::as_slice)
+}
+
+/// Names the element a failed list could not append.
+#[cold]
+#[inline(never)]
+fn failed_element<T, B: ColumnBuilder<T>>(list: &[T], error: PolarsError) -> PolarsError {
+    match first_failure::<T, T, B>(list) {
+        Some((index, error)) => in_element(error, index),
+        None => error,
+    }
+}
+
+impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
+    fn schema(name: PlSmallStr, out: &mut Fields) {
         let start = out.len();
         B::schema(name, out);
         wrap_schema(out, start);
     }
 
-    fn finish_lists<T>(
+    fn new() -> Self {
+        Self {
+            inner: B::new(),
+            offsets: ListOffsets::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn measure<'a, I>(&mut self, values: I)
+    where
+        [T]: 'a,
+        I: Iterator<Item = Option<&'a [T]>> + Clone,
+    {
+        self.offsets.measure(values.clone().map(len));
+        self.inner.measure(values.flatten().flatten().map(Some));
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let elements = self.offsets.reserve(additional);
+        self.inner.reserve(elements);
+    }
+
+    #[inline(always)]
+    fn push(&mut self, value: Option<&[T]>) -> PolarsResult<()> {
+        let list = value.unwrap_or_default();
+        if let Err(error) = extend_from_slice(&mut self.inner, list) {
+            return Err(failed_element::<T, B>(list, error));
+        }
+        self.offsets.push(list.len())
+    }
+
+    // One list at a time: the elements of a list sit together in memory, and
+    // each list fills every inner buffer while it is in cache.
+    #[inline(always)]
+    fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+    where
+        [T]: 'a,
+        I: Iterator<Item = Option<&'a [T]>> + Clone,
+    {
+        for list in values.clone().flatten() {
+            extend_from_slice(&mut self.inner, list)?;
+        }
+        self.offsets.extend(values.map(len))
+    }
+
+    fn finish(
         self,
         name: PlSmallStr,
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
-    ) -> PolarsResult<()>
-    where
-        B: ColumnBuilder<T>,
-    {
+    ) -> PolarsResult<()> {
         let start = out.len();
         self.inner.finish(name, None, out)?;
         wrap_columns(out, start, self.offsets, validity)
     }
 }
 
-impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
-    fn schema(name: PlSmallStr, out: &mut Fields) {
-        Self::list_schema::<T>(name, out);
-    }
-
-    // One counter for this list's total length, then the inner builder's.
-    const LISTS: usize = 1 + B::LISTS;
-
-    fn with_capacity(rows: usize) -> Self {
-        Self {
-            inner: B::with_capacity(rows),
-            offsets: ListOffsets::with_capacity(rows),
-        }
-    }
-
-    #[inline(always)]
-    fn measure(value: &[T], counts: &mut [usize]) {
-        counts[0] += value.len();
-        if B::LISTS > 0 {
-            for element in value {
-                B::measure(element, &mut counts[1..]);
-            }
-        }
-    }
-
-    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-        Self {
-            inner: B::with_capacities(counts[0], &counts[1..]),
-            offsets: ListOffsets::with_capacity(rows),
-        }
-    }
-
-    #[inline(always)]
-    fn push(&mut self, value: &[T]) -> PolarsResult<()> {
-        self.inner.extend(value)?;
-        self.offsets.push(value.len());
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
-    where
-        [T]: 'a,
-        I: Iterator<Item = &'a [T]> + Clone,
-    {
-        self.inner.extend_flat(values.clone())?;
-        self.offsets.extend(values.map(<[T]>::len));
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn push_null(&mut self) {
-        self.offsets.push_empty();
-    }
-
-    fn finish(
-        self,
-        name: PlSmallStr,
-        validity: Option<&Bitmap>,
-        out: &mut Vec<Column>,
-    ) -> PolarsResult<()> {
-        self.finish_lists::<T>(name, validity, out)
-    }
-}
-
+/// A `Vec` is encoded as the slice it holds.
 impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
     fn schema(name: PlSmallStr, out: &mut Fields) {
-        Self::list_schema::<T>(name, out);
+        <Self as ColumnBuilder<[T]>>::schema(name, out);
     }
 
-    const LISTS: usize = <Self as ColumnBuilder<[T]>>::LISTS;
-
-    fn with_capacity(rows: usize) -> Self {
-        <Self as ColumnBuilder<[T]>>::with_capacity(rows)
-    }
-
-    #[inline(always)]
-    fn measure(value: &Vec<T>, counts: &mut [usize]) {
-        <Self as ColumnBuilder<[T]>>::measure(value.as_slice(), counts);
-    }
-
-    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-        <Self as ColumnBuilder<[T]>>::with_capacities(rows, counts)
+    fn new() -> Self {
+        <Self as ColumnBuilder<[T]>>::new()
     }
 
     #[inline(always)]
-    fn push(&mut self, value: &Vec<T>) -> PolarsResult<()> {
-        <Self as ColumnBuilder<[T]>>::push(self, value.as_slice())
-    }
-
-    #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
+    fn measure<'a, I>(&mut self, values: I)
     where
         Vec<T>: 'a,
-        I: Iterator<Item = &'a Vec<T>> + Clone,
+        I: Iterator<Item = Option<&'a Vec<T>>> + Clone,
     {
-        <Self as ColumnBuilder<[T]>>::extend_from(self, values.map(Vec::as_slice))
+        <Self as ColumnBuilder<[T]>>::measure(self, values.map(as_slice));
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        <Self as ColumnBuilder<[T]>>::reserve(self, additional);
     }
 
     #[inline(always)]
-    fn push_null(&mut self) {
-        self.offsets.push_empty();
+    fn push(&mut self, value: Option<&Vec<T>>) -> PolarsResult<()> {
+        <Self as ColumnBuilder<[T]>>::push(self, as_slice(value))
+    }
+
+    #[inline(always)]
+    fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+    where
+        Vec<T>: 'a,
+        I: Iterator<Item = Option<&'a Vec<T>>> + Clone,
+    {
+        <Self as ColumnBuilder<[T]>>::extend(self, values.map(as_slice))
     }
 
     fn finish(
@@ -234,7 +228,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
-        self.finish_lists::<T>(name, validity, out)
+        <Self as ColumnBuilder<[T]>>::finish(self, name, validity, out)
     }
 }
 

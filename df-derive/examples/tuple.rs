@@ -1,4 +1,4 @@
-// Uses the default `df-derive` facade runtime.
+// A tuple struct. Its columns are named `field_0`, `field_1`, `field_2`.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

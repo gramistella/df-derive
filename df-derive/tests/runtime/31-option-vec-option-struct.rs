@@ -1,25 +1,14 @@
-// Regression: `Option<Vec<Option<DerivedStruct>>>` must distinguish three
-// outer states (None / Some(empty) / Some(non-empty)) AND surface inner
-// `None` elements as strict `AnyValue::Null` per inner schema column.
+// `Option<Vec<Option<Struct>>>`: the list has three states (`None`,
+// `Some(vec![])`, `Some` with elements) and each element has two. All of
+// them must stay distinct in every column of the nested struct.
 //
-// The bulk emitter for this shape fuses two patterns:
-//   - the validity-bitmap outer-list pattern, which makes `None` outer rows
-//     distinct from `Some(vec![])`,
-//   - the per-element `IdxCa` scatter, which materializes inner `None` slots
-//     as null inside present outer lists.
-//
-// A regression in either half (dropped/inverted bitmap bits, mis-ordered
-// `pos` pushes, swapped offset deltas) collapses cases that must stay
-// distinct — this file pins all four runtime branches:
-// `total == 0`, `flat.is_empty() && total > 0`, `flat.len() == total`,
-// and the mixed `IdxCa` + `take` branch.
-//
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// Two validities are at work. The outer option decides whether the list is
+// null, which is what separates `None` from `Some(vec![])`. The inner option
+// decides whether an element is null inside a list that is present. The
+// cases below hold one of them fixed and vary the other, then mix both.
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 
@@ -65,8 +54,7 @@ fn runtime_semantics() {
     test_mixed_all_branches();
 }
 
-// Zero parents: the columnar path returns an empty DataFrame with the
-// correct typed schema. The bulk emitter never enters its scan loop.
+// No rows: an empty frame with the full schema.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
     let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
@@ -74,10 +62,7 @@ fn test_empty_parent_slice() {
     assert_inner_columns_typed(&df, 0);
 }
 
-// Every parent has `payload: None`: outer offsets are all zero, the gathered
-// slice is empty, validity bitmap is all-false. Every outer row must surface
-// as `AnyValue::Null` (NOT empty list). Exercises the `total == 0` branch
-// with all-null bitmap.
+// Every row has `payload: None`: every list is null, not empty.
 fn test_all_none_outer() {
     let rows: Vec<Outer> = (0..4)
         .map(|i| Outer {
@@ -103,10 +88,8 @@ fn test_all_none_outer() {
     }
 }
 
-// Every parent has `payload: Some(vec![])`: outer validity is all-true,
-// offsets all zero, gathered slice empty. Every outer row must surface as
-// `AnyValue::List(empty)` (NOT Null). Same `total == 0` branch as above but
-// with all-true bitmap.
+// Every row has `payload: Some(vec![])`: every list is present and empty,
+// not null.
 fn test_all_some_empty_outer() {
     let rows: Vec<Outer> = (0..4)
         .map(|i| Outer {
@@ -132,11 +115,8 @@ fn test_all_some_empty_outer() {
     }
 }
 
-// Every parent has `payload: Some(vec![None, None, ...])`: outer validity
-// is all-true, offsets non-zero, gathered slice empty. Inner positions are
-// all None. Exercises the `flat.is_empty() && total > 0` branch — every
-// inner-element slot must surface as a strict null inside its non-null
-// outer list.
+// Every row has `payload: Some(vec![None, None, ...])`: the lists are
+// present and have length, and every element in them is null.
 fn test_all_some_inner_all_none() {
     let rows = vec![
         Outer {
@@ -192,15 +172,11 @@ fn test_all_some_inner_all_none() {
     }
 }
 
-// Mixed: covers all three outer states (None / Some(empty) / Some(...))
-// and both inner states (Some / None). Distinct outer-row + inner-element
-// combinations are pinned to ensure the bitmap bits, offsets, and pos
-// vector stay in sync. Exercises the main `flat.len() == total` and
-// `IdxCa` + `take` branches.
+// All three list states and both element states in one frame, in an order
+// that would expose a validity flag or a list boundary that is off by one.
 fn test_mixed_all_branches() {
     let rows = vec![
-        // Some(non-empty, all Some) — exercises the `flat.len() == total` branch
-        // when this row is the only Some-with-content row.
+        // Some(non-empty, all Some).
         Outer {
             id: 0,
             payload: Some(vec![
@@ -214,22 +190,22 @@ fn test_mixed_all_branches() {
                 }),
             ]),
         },
-        // None outer — bitmap bit false, offset delta 0.
+        // None: a null list, no elements.
         Outer {
             id: 1,
             payload: None,
         },
-        // Some(vec![]) — bitmap bit true, offset delta 0.
+        // Some(vec![]): a present list, no elements.
         Outer {
             id: 2,
             payload: Some(Vec::new()),
         },
-        // Some([None]) — bitmap bit true, offset delta 1, all inner None.
+        // Some([None]): a present list of one null element.
         Outer {
             id: 3,
             payload: Some(vec![None]),
         },
-        // Some([Some, None, Some]) — exercises mixed `IdxCa` + `take`.
+        // Some([Some, None, Some]): values and a null in one list.
         Outer {
             id: 4,
             payload: Some(vec![
@@ -244,12 +220,12 @@ fn test_mixed_all_branches() {
                 }),
             ]),
         },
-        // None again — make sure repeated None doesn't drift bitmap.
+        // None again: a second null list must not shift the flags after it.
         Outer {
             id: 5,
             payload: None,
         },
-        // Some([Some]) — single-element non-null list.
+        // Some([Some]): one element, not null.
         Outer {
             id: 6,
             payload: Some(vec![Some(Inner {

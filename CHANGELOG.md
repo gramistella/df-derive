@@ -5,17 +5,24 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 Planned as 0.6.0. The runtime and the derive were rewritten around composable
-column builders. Output frames are unchanged for supported shapes, except
-where noted under "Changed".
+column builders. For every shape 0.5.0 supports, the frames hold the same
+values, and they are the same frames once the UTC time zone that
+`DateTime<Tz>` columns now carry is cast away; this was checked by encoding
+the same generated rows with both versions and comparing the results. The
+exceptions are listed under "Changed".
 
 ### Added
 
 - `Columnar` is now implemented for the supported leaf types and wrappers
   themselves, so the compiler resolves a field's encoding through trait impls.
   Type aliases, generic parameters and re-exported types behave exactly like
-  the type they stand for.
+  the type they stand for, and a generic struct can be instantiated with any
+  supported type, not only with another derived struct.
 - `ColumnBuilder<T>`, the single contract between a type and its columns, and
-  the public builders in `df_derive::dataframe::builders`.
+  the public builders in `df_derive::dataframe::builders`. A builder is filled
+  one slot at a time, a slot being a value or a null: five required methods
+  (`schema`, `new`, `reserve`, `push`, `finish`) and two with defaults that
+  exist for speed (`measure`, `extend`).
 - `T::rows_to_dataframe(iter)` accepts any iterator of `&T`.
 - A type can declare its own encoding once with `impl Columnar`, and
   `#[df_derive(transparent)]` makes a single-field wrapper encode as its field
@@ -27,14 +34,17 @@ where noted under "Changed".
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and
-  `field.value` list columns.
-- Encoding errors name the row and the field path, for example
-  `Event[1].stamp.at: ...`.
+  `field.value` list columns. An encoding attribute on a map field applies
+  to the map's values; the keys keep the encoding of their own type.
+- Encoding errors say where the value is: the row, every field on the way to
+  it and the position inside a list, as in `Order[222].legs[3].price: ...`.
+  With several bad values the error is about the first bad row.
 - A `chrono` feature (on by default) gates the `chrono` impls.
 - Newly accepted shapes: tuples nested inside `Option` and `Vec`, `Box<str>`
   and other unsized pointer targets, borrowed slices `&[T]` as lists, `()` as
   a direct field, `flatten` on optional and list-wrapped structs and on
   tuples, and `as_binary` on anything that borrows as bytes.
+- Examples for `via` projections and for a hand-written builder.
 
 ### Changed
 
@@ -47,8 +57,8 @@ where noted under "Changed".
   default bodies.
 - **Breaking**: the pluggable-runtime attributes `trait = "..."`,
   `columnar = "..."` and `decimal128_encode = "..."` are removed, along with
-  the runtime discovery order that looked for `df-derive-core`, `paft-utils`,
-  `paft` and `crate::core::dataframe`. Generated code refers to
+  the runtime discovery order, which searched a fixed list of crate names and
+  then `crate::core::dataframe`. Generated code refers to
   `::df_derive::dataframe`; a crate that re-exports the runtime elsewhere, or
   renames the dependency, uses `#[df_derive(crate = "::path")]`.
 - **Breaking**: types are no longer recognised by spelling. A type merely
@@ -56,17 +66,16 @@ where noted under "Changed".
   decimal; give it `decimal(...)` or an `impl Columnar`.
 - **Breaking**: a generic field instantiated with a primitive is a plain
   column named after the field (`payload`), not a nested one.
+- **Breaking**: the column of a `chrono::DateTime<Tz>` field is
+  `Datetime(unit, UTC)` instead of a `Datetime` with no time zone. The value
+  is an instant and the column now says so; the stored values are the same.
+  A `NaiveDateTime` column still has no time zone. Polars treats the two as
+  different types, so code that needs the previous type casts the column:
+  `column.cast(&DataType::Datetime(unit, None))`.
 - Unsupported field types are reported by the compiler as a missing
   `Columnar` impl at the field, instead of by the macro.
-
-### Fixed
-
-- The `rust_decimal` impl of `Decimal128Encode` returned a mantissa of 10^38
-  or more when scaling up, a value with more than the 38 digits a Polars
-  decimal can hold. It now returns `None`, as Polars' own conversion does.
-  The column builder already rejected such values, so no invalid decimal
-  could be stored; the change makes the trait method itself agree with
-  Polars.
+- A `DecimalBuilder<P, S>` with a precision or scale that Polars has no
+  decimal type for no longer compiles, also when it is named directly.
 
 ### Removed
 
@@ -75,18 +84,31 @@ where noted under "Changed".
 
 ### Performance
 
+Measured on one machine (an Apple Silicon laptop), against 0.5.0, with the
+Criterion suite in `df-derive/benches`: 0.66 times the time of 0.5.0 over 53
+benchmarks (geometric mean), from 10% for 32 numeric columns to 113% for
+lists of lists of two to five optional integers. The README has the tables,
+including where 0.6 is slower.
+
+- Every buffer is allocated once, at its final size. Rows are measured first,
+  a block at a time, so that the buffers behind list columns are sized
+  exactly as well.
+- Rows are appended in blocks sized for the first-level cache (4 KiB of
+  rows, and never fewer than 32 rows), and within a block each column buffer
+  is filled by its own loop. This avoids the cache contention of feeding
+  dozens of column buffers from one loop over all rows.
 - Nested structs, optional structs and lists of structs are written directly
   into the parent's column buffers; the per-field reference vectors,
   intermediate `DataFrame`s, gather for partly-null optional structs, and
   rechunk for lists are gone.
-- Slices are encoded in blocks of rows sized to fit the first-level cache
-  (16 KiB of rows), and within a block each column buffer is filled by its
-  own tight loop. This avoids the cache contention of feeding dozens of
-  column buffers from one loop over all rows.
-- Rows that contain lists are measured first, so list buffers are allocated
-  once at their final size.
-- Generated code is roughly a tenth of its previous size and is emitted once
-  instead of once per entry point.
+- Lists are appended one at a time, each as one run per buffer, instead of
+  element by element.
+- Validity and boolean values are kept as bytes while building and packed
+  into bitmaps eight at a time at the end.
+- Rescaling a `rust_decimal::Decimal` looks its power of ten up in a table
+  instead of computing it for every value.
+- Compiling: generated code is roughly a tenth of its previous size. The
+  encoder for a row type is compiled once, in the crate that defines it.
 
 ## [0.5.0] - 2026-08-14
 

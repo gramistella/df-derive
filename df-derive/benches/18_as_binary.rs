@@ -14,10 +14,8 @@ use df_derive::ToDataFrame;
 
 #[path = "support/mod.rs"]
 mod bench_support;
-#[path = "../tests/common.rs"]
-mod core;
 use crate::bench_support::configure_criterion;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrameVec;
 
 const N_ROWS: usize = 100_000;
 const TINY_LEN: usize = 8;

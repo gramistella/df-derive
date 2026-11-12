@@ -1,5 +1,5 @@
 error: `ToDataFrame` cannot be derived for an enum directly. To use it as one string column, implement `Columnar` for it or annotate fields with `#[df_derive(as_str)]` / `#[df_derive(as_string)]`; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
- --> tests/fail/97-fail-derive-on-enum.rs:6:1
+ --> tests/fail/97-fail-derive-on-enum.rs:4:1
   |
-6 | enum Status {
+4 | enum Status {
   | ^^^^

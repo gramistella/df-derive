@@ -6,7 +6,7 @@
 //! polars = "0.55"
 //! ```
 //!
-//! ```ignore
+//! ```
 //! use df_derive::prelude::*;
 //!
 //! #[derive(ToDataFrame)]
@@ -16,7 +16,15 @@
 //!     size: Option<u64>,
 //! }
 //!
+//! # fn main() -> polars::prelude::PolarsResult<()> {
+//! let trades = vec![
+//!     Trade { symbol: "AAPL".into(), price: 187.23, size: Some(100) },
+//!     Trade { symbol: "MSFT".into(), price: 411.61, size: None },
+//! ];
 //! let df = trades.as_slice().to_dataframe()?;
+//! assert_eq!(df.shape(), (2, 3));
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! The derive targets the runtime in [`dataframe`]. Any field whose type

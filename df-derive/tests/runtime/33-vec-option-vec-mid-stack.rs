@@ -1,11 +1,7 @@
-// Regression: a `[Vec, Option, Vec, ...]` wrapper stack must preserve the
-// middle `Option` as list-level validity on the inner `Vec`. Earlier
-// `normalize_wrappers` discarded any `Option` accumulated between two `Vec`
-// wraps — `Vec<Option<Vec<T>>>` produced shapes equivalent to
-// `Vec<Vec<T>>`, dropping the inner-list validity bit and silently
-// mistyping the leaf push site (the `Option::iter()` flatten in the
-// generated populator yields the inner element type directly, so a
-// dropped option layer fed `Option<T>` into a slot expecting `T`).
+// An `Option` between two `Vec`s is the validity of the inner list, and it
+// has to survive: `Vec<Option<Vec<T>>>` is not `Vec<Vec<T>>`. A version of
+// the derive once dropped that layer, which lost the nulls and handed an
+// `Option<T>` to a column that expected `T`.
 //
 // The shapes below all carry at least one mid-stack `Option`. Each row's
 // inner `Vec` is independently nullable; where the schema is
@@ -14,8 +10,8 @@
 // observes them via the `AnyValue::Null` cell and compares lengths and
 // values for the populated cases).
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 

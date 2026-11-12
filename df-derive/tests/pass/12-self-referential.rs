@@ -1,23 +1,18 @@
 // Test handling of self-referential and cyclic structures
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrameVec;
 
 // Simple self-referential structure (tree-like)
 #[derive(ToDataFrame)]
 struct TreeNode {
     id: u32,
     value: String,
-    // Note: Direct self-reference would create infinite recursion at
-    // schema()-resolution time even though `Box<T>` peels transparently
-    // for ordinary nested structs. The macro emits a recursive
-    // `<Self as ToDataFrame>::schema()` call when materializing the inner
-    // schema columns of a nested-struct field, which doesn't terminate
-    // for self-referential types. Use foreign-key fields (`parent_id`) or
-    // a separate flat representation for tree-like data.
+    // A row type cannot contain itself, directly or through `Box`: a
+    // `DataFrame` has a fixed set of columns, and the derive rejects such a
+    // field. Tree-like data uses an id field such as `parent_id`, or a
+    // separate flat type.
     parent_id: Option<u32>,
     depth: u32,
 }

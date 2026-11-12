@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 
 use chrono::{DateTime, TimeZone, Utc};
 use polars::prelude::*;
@@ -11,6 +9,12 @@ use rust_decimal::Decimal;
 struct TxRecord {
     amount: Decimal,
     ts: DateTime<Utc>,
+}
+
+/// The column type of a `DateTime<Tz>` field. The value is an instant, so the
+/// column is marked as UTC.
+fn instant(unit: TimeUnit) -> DataType {
+    DataType::Datetime(unit, Some(polars::prelude::TimeZone::UTC))
 }
 
 fn main() {
@@ -40,7 +44,7 @@ fn main() {
     println!("  - amount: {:?}", amount_dtype);
     println!("  - ts: {:?}", ts_dtype);
     assert_eq!(amount_dtype, DataType::Decimal(38, 10));
-    assert_eq!(ts_dtype, DataType::Datetime(TimeUnit::Milliseconds, None));
+    assert_eq!(ts_dtype, instant(TimeUnit::Milliseconds));
 
     // Convert to DataFrame and validate columns
     let df = tx.to_dataframe().unwrap();
@@ -51,11 +55,11 @@ fn main() {
     println!("\n📊 Resulting DataFrame:");
     println!("{}", df);
 
-    // chrono::DateTime<Tz> should materialize as Datetime(Milliseconds, None)
+    // A chrono::DateTime<Tz> is an instant: Datetime(Milliseconds, UTC)
     let ts_runtime_dtype = df.column("ts").unwrap().dtype().clone();
     println!("\n🧪 Runtime dtype checks:");
     println!("  - ts runtime dtype: {:?}", ts_runtime_dtype);
-    assert_eq!(ts_runtime_dtype, DataType::Datetime(TimeUnit::Milliseconds, None));
+    assert_eq!(ts_runtime_dtype, instant(TimeUnit::Milliseconds));
 
     // Decimal should materialize as Decimal; verify dtype
     let amount_runtime_dtype = df.column("amount").unwrap().dtype().clone();

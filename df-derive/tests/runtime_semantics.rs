@@ -16,20 +16,17 @@
     clippy::unnecessary_literal_bound
 )]
 
-#[path = "common.rs"]
-mod core;
-
 #[path = "runtime/28-option-vec-struct-validity.rs"]
 mod option_vec_struct_validity;
 
-#[path = "runtime/30-vec-option-struct-bulk.rs"]
-mod vec_option_struct_bulk;
+#[path = "runtime/30-vec-option-struct.rs"]
+mod vec_option_struct;
 
-#[path = "runtime/31-option-vec-option-struct-bulk.rs"]
-mod option_vec_option_struct_bulk;
+#[path = "runtime/31-option-vec-option-struct.rs"]
+mod option_vec_option_struct;
 
-#[path = "runtime/32-vec-vec-struct-bulk.rs"]
-mod vec_vec_struct_bulk;
+#[path = "runtime/32-vec-vec-struct.rs"]
+mod vec_vec_struct;
 
 #[path = "runtime/33-vec-option-vec-mid-stack.rs"]
 mod vec_option_vec_mid_stack;
@@ -90,3 +87,6 @@ mod flatten_field;
 
 #[path = "runtime/61-declared-encodings-and-projections.rs"]
 mod declared_encodings_and_projections;
+
+#[path = "runtime/62-instants-and-naive-datetimes.rs"]
+mod instants_and_naive_datetimes;

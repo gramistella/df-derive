@@ -1,21 +1,12 @@
-// Regression: `Option<Vec<DerivedStruct>>` None-rows must surface as
-// `AnyValue::Null`, not as an empty list.
+// `Option<Vec<Struct>>`: a `None` row is a null list, not an empty one.
 //
-// The bulk emitter for this shape builds a `LargeListArray` with a validity
-// bitmap so that a `None` outer row is distinct from `Some(vec![])`. A
-// regression that pushed `true` into the bitmap for `None` rows — or dropped
-// the bitmap entirely — would collapse both cases to an empty list. The two
-// existing checks at higher levels are too lenient
-// (`AnyValue::Null | AnyValue::List(_)` is allowed for None rows), so this
-// file pins the strict semantics: `None` ⇒ `AnyValue::Null`,
-// `Some(vec![])` ⇒ `AnyValue::List(empty)`.
-//
-// We use `Columnar::columnar_to_dataframe` directly because the bulk
-// emitters are invoked from that path; the per-row pipeline takes a
-// different code path that this test is not trying to cover.
+// `None` and `Some(vec![])` both add no elements, so only the validity of
+// the list column tells them apart. This file pins the strict reading for
+// every column of the nested struct: `None` is `AnyValue::Null`, and
+// `Some(vec![])` is an empty list.
 
-use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
 
@@ -162,7 +153,7 @@ fn test_mixed_some_none() {
 fn test_some_empty_vs_none() {
     // Rows 0, 2 → Some(vec![]) (empty list, not null)
     // Rows 1, 3 → None         (strict null)
-    // Row  4    → Some(vec![Inner{..}]) so the flat path actually fires
+    // Row  4    → Some(vec![Inner{..}]), so one list holds an element
     let rows = vec![
         Outer {
             id: 0,
@@ -197,12 +188,12 @@ fn test_some_empty_vs_none() {
         assert_eq!(
             df.column("payload.field_a").unwrap().get(none_row).unwrap(),
             AnyValue::Null,
-            "None row {none_row} must collapse to Null, not empty list"
+            "None row {none_row} must be Null, not an empty list"
         );
         assert_eq!(
             df.column("payload.field_b").unwrap().get(none_row).unwrap(),
             AnyValue::Null,
-            "None row {none_row} must collapse to Null, not empty list"
+            "None row {none_row} must be Null, not an empty list"
         );
     }
 

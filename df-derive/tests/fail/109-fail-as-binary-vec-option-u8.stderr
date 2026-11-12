@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `u8: AsRef<[u8]>` is not satisfied
- --> tests/fail/109-fail-as-binary-vec-option-u8.rs:8:12
+ --> tests/fail/109-fail-as-binary-vec-option-u8.rs:6:12
   |
-8 |     bytes: Vec<Option<u8>>,
+6 |     bytes: Vec<Option<u8>>,
   |            ^^^ the trait `AsRef<[u8]>` is not implemented for `u8`
   |
 help: `ListBuilder<B>` implements trait `ColumnBuilder<T>`

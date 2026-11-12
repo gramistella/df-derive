@@ -10,17 +10,16 @@ pub struct UnitBuilder;
 impl ColumnBuilder<()> for UnitBuilder {
     fn schema(_name: PlSmallStr, _out: &mut Fields) {}
 
-    fn with_capacity(_rows: usize) -> Self {
+    fn new() -> Self {
         Self
     }
 
-    #[inline(always)]
-    fn push(&mut self, _value: &()) -> PolarsResult<()> {
-        Ok(())
-    }
+    fn reserve(&mut self, _additional: usize) {}
 
     #[inline(always)]
-    fn push_null(&mut self) {}
+    fn push(&mut self, _value: Option<&()>) -> PolarsResult<()> {
+        Ok(())
+    }
 
     fn finish(
         self,
@@ -44,38 +43,30 @@ macro_rules! tuple {
                 $($b::schema(child(&name, $field), out);)+
             }
 
-            const LISTS: usize = 0 $(+ $b::LISTS)+;
-
-            fn with_capacity(rows: usize) -> Self {
-                ($($b::with_capacity(rows),)+)
+            fn new() -> Self {
+                ($($b::new(),)+)
             }
 
             #[inline(always)]
-            #[allow(unused_assignments)]
-            fn measure(value: &($($t,)+), counts: &mut [usize]) {
-                let mut at = 0usize;
+            fn measure<'a, I>(&mut self, values: I)
+            where
+                ($($t,)+): 'a,
+                I: Iterator<Item = Option<&'a ($($t,)+)>> + Clone,
+            {
                 $(
-                    if $b::LISTS > 0 {
-                        $b::measure(&value.$index, &mut counts[at..at + $b::LISTS]);
-                    }
-                    at += $b::LISTS;
+                    self.$index
+                        .measure(values.clone().map(|value| value.map(|value| &value.$index)));
                 )+
             }
 
-            #[allow(unused_assignments)]
-            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-                let mut at = 0usize;
-                ($({
-                    let start = at;
-                    at += $b::LISTS;
-                    $b::with_capacities(rows, &counts[start..at])
-                },)+)
+            fn reserve(&mut self, additional: usize) {
+                $(self.$index.reserve(additional);)+
             }
 
             #[inline(always)]
-            fn push(&mut self, value: &($($t,)+)) -> PolarsResult<()> {
+            fn push(&mut self, value: Option<&($($t,)+)>) -> PolarsResult<()> {
                 $(
-                    if let Err(error) = self.$index.push(&value.$index) {
+                    if let Err(error) = self.$index.push(value.map(|value| &value.$index)) {
                         return Err(in_field(error, $field));
                     }
                 )+
@@ -83,21 +74,16 @@ macro_rules! tuple {
             }
 
             #[inline(always)]
-            fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
+            fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
             where
                 ($($t,)+): 'a,
-                I: Iterator<Item = &'a ($($t,)+)> + Clone,
+                I: Iterator<Item = Option<&'a ($($t,)+)>> + Clone,
             {
                 $(
                     self.$index
-                        .extend_from(values.clone().map(|value| &value.$index))?;
+                        .extend(values.clone().map(|value| value.map(|value| &value.$index)))?;
                 )+
                 Ok(())
-            }
-
-            #[inline(always)]
-            fn push_null(&mut self) {
-                $(self.$index.push_null();)+
             }
 
             fn finish(

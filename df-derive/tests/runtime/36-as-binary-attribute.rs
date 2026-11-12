@@ -1,5 +1,5 @@
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
 #[derive(ToDataFrame, Clone)]
@@ -170,7 +170,7 @@ fn runtime_semantics() {
     let df_batch = batch.as_slice().to_dataframe().unwrap();
     assert_eq!(df_batch.shape(), (3, 5));
 
-    // Same dtypes after the columnar path.
+    // The same dtypes with several rows.
     let bschema = df_batch.schema();
     assert_eq!(bschema.get("blob"), Some(&DataType::Binary));
     assert_eq!(bschema.get("opt_blob"), Some(&DataType::Binary));

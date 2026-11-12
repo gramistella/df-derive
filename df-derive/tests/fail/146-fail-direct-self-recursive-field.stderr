@@ -1,53 +1,53 @@
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
- --> tests/fail/146-fail-direct-self-recursive-field.rs:8:12
+ --> tests/fail/146-fail-direct-self-recursive-field.rs:6:12
   |
-8 |     child: Option<Box<Node>>,
+6 |     child: Option<Box<Node>>,
   |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:14:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:12:12
    |
-14 |     child: Option<Box<Self>>,
+12 |     child: Option<Box<Self>>,
    |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:20:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:18:12
    |
-20 |     child: Option<Box<crate::CrateQualified>>,
+18 |     child: Option<Box<crate::CrateQualified>>,
    |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:26:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:24:12
    |
-26 |     child: Option<Box<self::SelfQualified>>,
+24 |     child: Option<Box<self::SelfQualified>>,
    |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:31:13
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:29:13
    |
-31 |     nested: (u64, Option<Box<TupleField>>),
+29 |     nested: (u64, Option<Box<TupleField>>),
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:35:25
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:33:25
    |
-35 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
+33 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
    |                         ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:42:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:40:12
    |
-42 |     child: Option<Box<GenericNode<T>>>,
+40 |     child: Option<Box<GenericNode<T>>>,
    |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:50:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:48:12
    |
-50 |     child: Option<Box<crate::CrateQualifiedGeneric<T>>>,
+48 |     child: Option<Box<crate::CrateQualifiedGeneric<T>>>,
    |            ^^^^^^
 
 error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:58:12
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:56:12
    |
-58 |     child: Option<Box<self::SelfQualifiedGeneric<T>>>,
+56 |     child: Option<Box<self::SelfQualifiedGeneric<T>>>,
    |            ^^^^^^

@@ -9,21 +9,15 @@
 //! (2) those instantiations compose under wrapper layers when nested into
 //! another derive.
 //!
-//! The macro injects `T: ToDataFrame + Columnar` bounds on every type
-//! parameter (no `Clone` — bulk emitters borrow from `&T`), so any concrete
-//! instantiation must be derivable. Using already-derived nested structs as
-//! the type arguments is the idiomatic fit; using primitives requires
-//! providing manual `ToDataFrame + Columnar` impls for those primitives,
-//! which the existing `quickstart` example does not do because it isn't
-//! generic.
-//!
-//! Uses the default `df-derive` facade runtime.
+//! The generated impls require each field's type to be `Columnar`, and
+//! nothing else: values are read through `&T`, so there is no `Clone` bound.
+//! Any supported type can be a type argument. Derived structs are used here
+//! because they show how the nested column names are built.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe::ToDataFrameVec as _;
 
-// Two concrete payloads to instantiate the generic with. Both derive
-// `ToDataFrame`, which the macro requires for any concrete `T`.
+// Two concrete payloads to instantiate the generic with.
 #[derive(ToDataFrame, Clone)]
 struct IntPayload {
     timestamp: i64,
@@ -36,9 +30,9 @@ struct StringPayload {
     note: String,
 }
 
-// Generic carrier struct. The macro injects `T: ToDataFrame + Columnar` on
-// its impl blocks; `#[derive(Clone)]` adds its own `T: Clone` bound. So
-// `Generic<P>` derives transparently for any `P` that satisfies all three.
+// Generic carrier struct. `ToDataFrame` needs `T: Columnar` for the `value`
+// field and `#[derive(Clone)]` adds its own `T: Clone`, so `Generic<P>` works
+// for any `P` that is both.
 #[derive(ToDataFrame, Clone)]
 struct Generic<T> {
     value: T,

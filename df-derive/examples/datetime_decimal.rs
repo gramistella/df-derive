@@ -1,8 +1,8 @@
-// Uses the default `df-derive` facade runtime.
-// `df-derive` ships the reference `Decimal128Encode for
-// rust_decimal::Decimal` impl behind the `rust_decimal` feature, which is
-// enabled by default; the codegen finds it via the auto-inferred
-// `df_derive::dataframe::Decimal128Encode` path.
+// `rust_decimal::Decimal` and `chrono::DateTime<Tz>` fields need no attribute.
+//
+// A decimal is stored as `Decimal(38, 10)`. A `DateTime<Tz>` is an instant,
+// so its column is `Datetime(Milliseconds, UTC)`; a `NaiveDateTime` would
+// give the same column with no time zone.
 
 use chrono::{DateTime, Utc};
 use df_derive::ToDataFrame;
@@ -27,7 +27,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     // Show schema to demonstrate data types
     let schema = <TxRecord as dataframe::ToDataFrame>::schema()?;
-    println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, None)):");
+    println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, UTC)):");
     for (name, dtype) in schema {
         println!("  {name}: {dtype:?}");
     }

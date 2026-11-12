@@ -1,4 +1,5 @@
-// Uses the default `df-derive` facade runtime.
+// `#[df_derive(as_string)]` stores a `Display` value as a string column, also
+// inside `Option` and `Vec`.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

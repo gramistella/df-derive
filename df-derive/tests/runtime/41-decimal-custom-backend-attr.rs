@@ -1,10 +1,10 @@
-use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 
-// A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`
-// attribute is the semantic opt-in that tells the macro to route this leaf
-// through `Decimal128Encode`.
+// A decimal type whose name says nothing about decimals. The `decimal(...)`
+// attribute is what selects the encoding, and `Decimal128Encode` is all the
+// type needs.
 #[derive(Clone)]
 struct MoneyAmount {
     mantissa: i128,

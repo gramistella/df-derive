@@ -1,6 +1,6 @@
-use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use chrono::{NaiveDate, NaiveTime};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 use std::sync::Arc;
 
@@ -65,8 +65,7 @@ struct NestedTuple {
     nested: ((i32, String), bool),
 }
 
-// 11. Regression: HashMap rejection's hint now actionable. The hint says
-// "Convert to Vec<(K, V)>"; verify the converted form compiles.
+// 11. A list of pairs: what a map looks like when it is written by hand.
 #[derive(ToDataFrame, Clone)]
 struct ConvertedHashMap {
     metadata: Vec<(String, String)>,
@@ -114,7 +113,7 @@ struct VecTupleWithOptVecElement {
     items: Vec<(Option<Vec<i32>>, String)>,
 }
 
-// 18. Optional tuple whose elements have non-Copy wrapper stacks.
+// 18. Optional tuple whose elements are wrapped, non-`Copy` values.
 #[derive(ToDataFrame, Clone)]
 #[allow(clippy::type_complexity)]
 struct OptTupleWithWrappedElements {
@@ -141,7 +140,7 @@ struct VecTupleWithOptionalElement {
     xs: Vec<(Option<i32>, String)>,
 }
 
-// 22. Borrowed string tuple elements lower to LeafSpec::AsStr without attrs.
+// 22. Borrowed string tuple elements are string columns without an attribute.
 #[derive(ToDataFrame, Clone)]
 struct BorrowedStrTupleVec<'a> {
     xs: Vec<(&'a str, i32)>,
@@ -695,8 +694,8 @@ fn runtime_semantics() {
         vec![None],
     );
 
-    // 19. Option<Box<Option<(i32, String)>>>: collapse the real access chain,
-    // not merely the number of Option layers.
+    // 19. Option<Box<Option<(i32, String)>>>: the two options combine into
+    // one null even with a `Box` between them.
     let interleaved = vec![
         OptionBoxOptionTuple {
             x: Some(Box::new(Some((11, "eleven".to_string())))),
@@ -724,8 +723,8 @@ fn runtime_semantics() {
         AnyValue::Null,
     );
 
-    // 20. Vec<Option<Box<(Vec<i32>, String)>>>: projection consumes the
-    // parent access chain once before the element's Vec layer is walked.
+    // 20. Vec<Option<Box<(Vec<i32>, String)>>>: a tuple behind an option and
+    // a box in a list, with a list of its own inside.
     let vec_interleaved = VecOptBoxTupleWithVecElement {
         items: vec![
             Some(Box::new((vec![1, 2], "left".to_string()))),
@@ -790,8 +789,8 @@ fn runtime_semantics() {
         ],
     );
 
-    // 22. Vec<(&str, i32)>: borrowed string tuple elements use the default
-    // AsStr lowering and should share the same list string emitter.
+    // 22. Vec<(&str, i32)>: a borrowed string in a tuple is a string column,
+    // in a list like any other.
     let borrowed = BorrowedStrTupleVec {
         xs: vec![("alpha", 10), ("beta", 20)],
     };

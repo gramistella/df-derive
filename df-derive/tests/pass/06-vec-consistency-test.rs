@@ -1,11 +1,8 @@
-// This test demonstrates that Vec<T> now properly flattens nested structs
-// consistently with the derive macro implementation
+// A slice of rows has the same flattened columns as a single row.
 
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
-use crate::core::dataframe::ToDataFrameVec;
+use df_derive::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrameVec;
 
 #[derive(ToDataFrame)]
 struct Address {
@@ -149,7 +146,7 @@ fn main() {
     assert_eq!(empty_df.shape(), (0, 5)); // 0 rows, 5 columns
     assert_eq!(vec_df.shape(), (2, 5)); // 2 rows, 5 columns
 
-    println!("\n✅ SUCCESS: Vec<T> implementation now properly flattens nested structs!");
+    println!("\n✅ SUCCESS: a slice flattens nested structs like a single value!");
     println!("   - Vec<T> creates same column structure as single T");
     println!("   - Nested structs are flattened with dot notation (address.street, contact.email)");
     println!("   - Optional nested fields are handled correctly");

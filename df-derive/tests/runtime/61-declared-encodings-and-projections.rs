@@ -3,12 +3,10 @@
 // types, `via` / `try_via` projections, custom builders through `with`, map
 // fields, and errors that name the row and field they came from.
 
-use crate::core::dataframe::builders::{PrimitiveBuilder, StrBuilder};
-use crate::core::dataframe::{
-    Bitmap, ColumnBuilder, Columnar, Fields, ToDataFrame, ToDataFrameVec,
-};
 use chrono::{DateTime, TimeZone, Utc};
 use df_derive::ToDataFrame;
+use df_derive::dataframe::builders::{PrimitiveBuilder, StrBuilder};
+use df_derive::dataframe::{Bitmap, ColumnBuilder, Columnar, Fields, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 
@@ -324,17 +322,18 @@ impl ColumnBuilder<f64> for Cents {
         <PrimitiveBuilder<i64> as ColumnBuilder<i64>>::schema(name, out);
     }
 
-    fn with_capacity(rows: usize) -> Self {
-        Self(ColumnBuilder::<i64>::with_capacity(rows))
+    fn new() -> Self {
+        Self(ColumnBuilder::<i64>::new())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        ColumnBuilder::<i64>::reserve(&mut self.0, additional);
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn push(&mut self, value: &f64) -> PolarsResult<()> {
-        self.0.push(&((value * 100.0).round() as i64))
-    }
-
-    fn push_null(&mut self) {
-        ColumnBuilder::<i64>::push_null(&mut self.0);
+    fn push(&mut self, value: Option<&f64>) -> PolarsResult<()> {
+        let cents = value.map(|value| (value * 100.0).round() as i64);
+        self.0.push(cents.as_ref())
     }
 
     fn finish(
@@ -431,6 +430,151 @@ fn map_field_becomes_key_and_value_lists() {
     );
 }
 
+// --- encodings on map values -----------------------------------------------------
+
+/// Counts lookups, so the map below has a hasher that is not the default.
+#[derive(Default, Clone)]
+struct Counting(std::collections::hash_map::RandomState);
+
+impl std::hash::BuildHasher for Counting {
+    type Hasher = std::collections::hash_map::DefaultHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        self.0.build_hasher()
+    }
+}
+
+#[derive(ToDataFrame)]
+struct Tagged {
+    // An encoding attribute applies to the innermost value. For a map that is
+    // its value; the keys keep the encoding of their own type, here `Side`'s.
+    #[df_derive(as_string)]
+    shown: BTreeMap<Side, f64>,
+    #[df_derive(time_unit = "ns")]
+    seen: std::collections::BTreeMap<String, DateTime<Utc>>,
+    #[df_derive(with = "Cents")]
+    prices: HashMap<String, Option<f64>>,
+    #[df_derive(as_str)]
+    hashed: HashMap<u8, Side, Counting>,
+    // The layers around a map and inside its values are kept as written.
+    #[df_derive(as_str)]
+    wrapped: Option<Vec<BTreeMap<String, Vec<Side>>>>,
+    #[df_derive(as_binary)]
+    blobs: BTreeMap<String, Vec<u8>>,
+}
+
+impl PartialOrd for Side {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Side {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+
+impl PartialEq for Side {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for Side {}
+
+#[test]
+fn an_encoding_on_a_map_applies_to_its_values() {
+    let list = |inner: DataType| DataType::List(Box::new(inner));
+    assert_eq!(
+        Tagged::schema().unwrap(),
+        vec![
+            ("shown.key".to_owned(), list(DataType::String)),
+            ("shown.value".to_owned(), list(DataType::String)),
+            ("seen.key".to_owned(), list(DataType::String)),
+            (
+                "seen.value".to_owned(),
+                list(DataType::Datetime(
+                    TimeUnit::Nanoseconds,
+                    Some(polars::prelude::TimeZone::UTC)
+                ))
+            ),
+            ("prices.key".to_owned(), list(DataType::String)),
+            ("prices.value".to_owned(), list(DataType::Int64)),
+            ("hashed.key".to_owned(), list(DataType::UInt8)),
+            ("hashed.value".to_owned(), list(DataType::String)),
+            ("wrapped.key".to_owned(), list(list(DataType::String))),
+            (
+                "wrapped.value".to_owned(),
+                list(list(list(DataType::String)))
+            ),
+            ("blobs.key".to_owned(), list(DataType::String)),
+            ("blobs.value".to_owned(), list(DataType::Binary)),
+        ]
+    );
+
+    let row = Tagged {
+        shown: BTreeMap::from([(Side::Buy, 1.5), (Side::Sell, 2.0)]),
+        seen: BTreeMap::from([(
+            "open".to_owned(),
+            Utc.timestamp_opt(1_700_000_000, 0).single().unwrap(),
+        )]),
+        prices: HashMap::from([("last".to_owned(), Some(187.23))]),
+        hashed: HashMap::from_iter([(7, Side::Sell)]),
+        wrapped: Some(vec![
+            BTreeMap::new(),
+            BTreeMap::from([("legs".to_owned(), vec![Side::Buy, Side::Sell])]),
+        ]),
+        blobs: BTreeMap::from([("raw".to_owned(), vec![0xde, 0xad])]),
+    };
+    let df = row.to_dataframe().unwrap();
+
+    let cell = |column: &str| {
+        let AnyValue::List(values) = df.column(column).unwrap().get(0).unwrap() else {
+            panic!("`{column}` is not a list column");
+        };
+        values
+    };
+    // `as_string` formats the values; the keys are `Side`'s own strings.
+    let shown: Vec<_> = cell("shown.value")
+        .str()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(shown, ["1.5", "2"]);
+    let keys: Vec<_> = cell("shown.key")
+        .str()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(keys, ["BUY", "SELL"]);
+    assert_eq!(
+        cell("prices.value").get(0).unwrap(),
+        AnyValue::Int64(18_723)
+    );
+    assert_eq!(cell("hashed.key").get(0).unwrap(), AnyValue::UInt8(7));
+    assert_eq!(
+        cell("hashed.value").get(0).unwrap(),
+        AnyValue::String("SELL")
+    );
+    assert_eq!(
+        cell("blobs.value").get(0).unwrap(),
+        AnyValue::Binary(&[0xde, 0xad])
+    );
+    assert_eq!(
+        cell("seen.value").get(0).unwrap(),
+        AnyValue::Datetime(
+            1_700_000_000_000_000_000,
+            TimeUnit::Nanoseconds,
+            Some(&polars::prelude::TimeZone::UTC)
+        )
+    );
+}
+
 // --- error context -------------------------------------------------------------
 
 #[derive(ToDataFrame)]
@@ -474,7 +618,10 @@ fn encoding_error_names_the_row_and_field() {
         history: vec![Stamp { at: fine }, Stamp { at: too_far }],
     }];
     let error = rows.as_slice().to_dataframe().unwrap_err().to_string();
-    assert!(error.contains("Event[0].history.at: "), "{error}");
+    assert!(
+        error.starts_with("Event[0].history[1].at: df-derive: DateTime<Tz> value is out of range"),
+        "{error}"
+    );
 }
 
 // --- any iterator of rows --------------------------------------------------------

@@ -1,7 +1,5 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::ToDataFrame;
+use df_derive::dataframe::ToDataFrame;
 
 #[derive(ToDataFrame)]
 struct Simple {

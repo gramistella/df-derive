@@ -2,9 +2,7 @@ use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct ZonedTimes {
@@ -33,14 +31,19 @@ fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
         .unwrap_or_else(|| panic!("column {col} missing"))
 }
 
+/// The count inside a datetime value, after checking its unit and that the
+/// value is marked as UTC whatever zone or offset it was built with.
 fn datetime_value(av: AnyValue<'_>, expected_unit: TimeUnit) -> i64 {
-    match av {
-        AnyValue::Datetime(v, unit, _) | AnyValue::DatetimeOwned(v, unit, _) => {
-            assert_eq!(unit, expected_unit, "wrong TimeUnit on AnyValue");
-            v
+    let (value, unit, zone) = match av {
+        AnyValue::Datetime(value, unit, zone) => (value, unit, zone.cloned()),
+        AnyValue::DatetimeOwned(value, unit, zone) => {
+            (value, unit, zone.map(|zone| (*zone).clone()))
         }
         other => panic!("unexpected Datetime AnyValue: {other:?}"),
-    }
+    };
+    assert_eq!(unit, expected_unit, "wrong TimeUnit on AnyValue");
+    assert_eq!(zone, Some(polars::prelude::TimeZone::UTC), "not marked as UTC");
+    value
 }
 
 fn assert_datetime(df: &DataFrame, col: &str, unit: TimeUnit, expected: i64) {
@@ -62,15 +65,17 @@ fn assert_datetime_list(
     let actual: Vec<Option<i64>> = inner
         .iter()
         .map(|av| match av {
-            AnyValue::Datetime(v, actual_unit, _) | AnyValue::DatetimeOwned(v, actual_unit, _) => {
-                assert_eq!(actual_unit, unit, "wrong TimeUnit inside list {col}");
-                Some(v)
-            }
             AnyValue::Null => None,
-            other => panic!("unexpected AnyValue inside list {col}: {other:?}"),
+            value => Some(datetime_value(value, unit)),
         })
         .collect();
     assert_eq!(actual, expected, "col {col} row {row}");
+}
+
+/// The column type of a `DateTime<Tz>` field. The value is an instant, so the
+/// column is marked as UTC.
+fn instant(unit: TimeUnit) -> DataType {
+    DataType::Datetime(unit, Some(polars::prelude::TimeZone::UTC))
 }
 
 fn main() {
@@ -107,45 +112,45 @@ fn main() {
     let schema = ZonedTimes::schema().unwrap();
     assert_eq!(
         schema_dtype(&schema, "fixed_default"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "fixed_us"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "fixed_ns"),
-        DataType::Datetime(TimeUnit::Nanoseconds, None)
+        instant(TimeUnit::Nanoseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "fixed_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Milliseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Milliseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "nullable_fixed_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Milliseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Milliseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "local_default"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "local_us"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
 
     let df = row.clone().to_dataframe().unwrap();
     assert_eq!(
         dtype(&df, "fixed_default"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
     assert_eq!(
         dtype(&df, "fixed_us"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         dtype(&df, "local_default"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
     assert_datetime(
         &df,

@@ -1,15 +1,13 @@
 use df_derive::ToDataFrame;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 use chrono::{DateTime, TimeZone, Utc};
 use polars::prelude::*;
 use rust_decimal::Decimal;
 
-// Mix every supported wrapper shape (`T`, `Option<T>`, `Vec<T>`,
-// `Option<Vec<T>>`, `Vec<Option<T>>`) so a regression in any of the wrapper-
-// aware codegen paths is caught by the schema/runtime dtype assertions below.
+// Every wrapper shape (`T`, `Option<T>`, `Vec<T>`, `Option<Vec<T>>`,
+// `Vec<Option<T>>`) under each attribute. The attribute applies to the
+// innermost value, and the dtype assertions below check that it does.
 #[derive(ToDataFrame, Clone)]
 struct OverrideEverything {
     #[df_derive(decimal(precision = 18, scale = 6))]
@@ -49,6 +47,12 @@ fn schema_dtype(schema: &[(String, DataType)], col: &str) -> DataType {
         .find(|(n, _)| n == col)
         .map(|(_, dt)| dt.clone())
         .unwrap_or_else(|| panic!("column {col} missing from schema"))
+}
+
+/// The column type of a `DateTime<Tz>` field. The value is an instant, so the
+/// column is marked as UTC.
+fn instant(unit: TimeUnit) -> DataType {
+    DataType::Datetime(unit, Some(polars::prelude::TimeZone::UTC))
 }
 
 fn main() {
@@ -91,23 +95,23 @@ fn main() {
     );
     assert_eq!(
         schema_dtype(&schema, "ts_us"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "ts_ns"),
-        DataType::Datetime(TimeUnit::Nanoseconds, None)
+        instant(TimeUnit::Nanoseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "opt_ts"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "nullable_ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "default_price"),
@@ -115,7 +119,7 @@ fn main() {
     );
     assert_eq!(
         schema_dtype(&schema, "default_ts"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
 
     // Single-row materialization preserves the schema dtypes.
@@ -136,44 +140,42 @@ fn main() {
     );
     assert_eq!(
         dtype(&df, "ts_us"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         dtype(&df, "ts_ns"),
-        DataType::Datetime(TimeUnit::Nanoseconds, None)
+        instant(TimeUnit::Nanoseconds)
     );
     assert_eq!(
         dtype(&df, "opt_ts"),
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         dtype(&df, "ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
     assert_eq!(
         dtype(&df, "nullable_ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
     assert_eq!(dtype(&df, "default_price"), DataType::Decimal(38, 10));
     assert_eq!(
         dtype(&df, "default_ts"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        instant(TimeUnit::Milliseconds)
     );
 
-    // The columnar batch path threads through different codegen than the
-    // single-row path (typed list builders, bulk emitters, etc.) — assert it
-    // produces the same dtypes on a multi-row slice.
+    // More than one row must produce the same dtypes.
     let batch = vec![row.clone(), row.clone()];
     let df_batch = batch.as_slice().to_dataframe().unwrap();
     assert_eq!(df_batch.height(), 2);
     assert_eq!(dtype(&df_batch, "price"), DataType::Decimal(18, 6));
     assert_eq!(
         dtype(&df_batch, "ts_ns"),
-        DataType::Datetime(TimeUnit::Nanoseconds, None)
+        instant(TimeUnit::Nanoseconds)
     );
     assert_eq!(
         dtype(&df_batch, "ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
     assert_eq!(
         dtype(&df_batch, "fees"),
@@ -185,7 +187,7 @@ fn main() {
     );
     assert_eq!(
         dtype(&df_batch, "nullable_ts_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Nanoseconds, None)))
+        DataType::List(Box::new(instant(TimeUnit::Nanoseconds)))
     );
 
     // The chrono call selected by `time_unit = "ns"` (`timestamp_nanos_opt`)
@@ -214,6 +216,6 @@ fn main() {
 
     // Empty dataframe also reports the override dtypes.
     let empty = OverrideEverything::empty_dataframe().unwrap();
-    assert_eq!(dtype(&empty, "ts_ns"), DataType::Datetime(TimeUnit::Nanoseconds, None));
+    assert_eq!(dtype(&empty, "ts_ns"), instant(TimeUnit::Nanoseconds));
     assert_eq!(dtype(&empty, "price"), DataType::Decimal(18, 6));
 }

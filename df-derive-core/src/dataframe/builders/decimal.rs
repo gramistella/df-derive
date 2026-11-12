@@ -3,13 +3,15 @@ use polars::prelude::{
 };
 use polars_arrow::bitmap::Bitmap;
 
-use super::primitive::primitive_array;
+use super::primitive::{primitive_array, try_extend};
 use crate::dataframe::{ColumnBuilder, Decimal128Encode, Fields};
 
 /// Builder for a `Decimal(P, S)` column from any [`Decimal128Encode`] value.
 ///
 /// This is the encoding `#[df_derive(decimal(precision = P, scale = S))]`
-/// selects.
+/// selects. A value whose mantissa at scale `S` has more than `P` digits is
+/// an error. A `P` or `S` that Polars has no decimal type for does not
+/// compile.
 pub struct DecimalBuilder<const P: usize, const S: usize>(Vec<i128>);
 
 #[cold]
@@ -34,6 +36,21 @@ fn precision_error(mantissa: i128, precision: usize, scale: usize) -> PolarsErro
     )
 }
 
+impl<const P: usize, const S: usize> DecimalBuilder<P, S> {
+    /// The value's mantissa at scale `S`, if it fits in `P` digits.
+    #[inline(always)]
+    #[allow(clippy::cast_possible_truncation)]
+    fn mantissa<T: Decimal128Encode + ?Sized>(value: &T) -> PolarsResult<i128> {
+        let Some(mantissa) = value.try_to_i128_mantissa(S as u32) else {
+            return Err(rescale_error(S));
+        };
+        if mantissa.unsigned_abs() >= 10u128.pow(P as u32) {
+            return Err(precision_error(mantissa, P, S));
+        }
+        Ok(mantissa)
+    }
+}
+
 impl<T, const P: usize, const S: usize> ColumnBuilder<T> for DecimalBuilder<P, S>
 where
     T: Decimal128Encode + ?Sized,
@@ -42,26 +59,36 @@ where
         out.push((name, DataType::Decimal(P, S)));
     }
 
-    fn with_capacity(rows: usize) -> Self {
-        Self(Vec::with_capacity(rows))
+    fn new() -> Self {
+        const {
+            assert!(
+                0 < P && P <= 38 && S <= P,
+                "`Decimal(P, S)` needs 1 <= P <= 38 and S <= P"
+            );
+        }
+        Self(Vec::new())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.0.reserve(additional);
     }
 
     #[inline(always)]
-    #[allow(clippy::cast_possible_truncation)]
-    fn push(&mut self, value: &T) -> PolarsResult<()> {
-        let Some(mantissa) = value.try_to_i128_mantissa(S as u32) else {
-            return Err(rescale_error(S));
-        };
-        if mantissa.unsigned_abs() >= 10u128.pow(P as u32) {
-            return Err(precision_error(mantissa, P, S));
-        }
-        self.0.push(mantissa);
+    fn push(&mut self, value: Option<&T>) -> PolarsResult<()> {
+        self.0.push(match value {
+            Some(value) => Self::mantissa(value)?,
+            None => 0,
+        });
         Ok(())
     }
 
     #[inline(always)]
-    fn push_null(&mut self) {
-        self.0.push(0);
+    fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
+    where
+        T: 'a,
+        I: Iterator<Item = Option<&'a T>> + Clone,
+    {
+        try_extend(&mut self.0, values, Self::mantissa)
     }
 
     fn finish(

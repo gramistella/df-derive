@@ -26,19 +26,23 @@ impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for StrBuilder {
         out.push((name, DataType::String));
     }
 
-    fn with_capacity(rows: usize) -> Self {
-        Self(MutableBinaryViewArray::with_capacity(rows))
+    fn new() -> Self {
+        Self(MutableBinaryViewArray::new())
     }
 
+    fn reserve(&mut self, additional: usize) {
+        self.0.reserve(additional);
+    }
+
+    // Two calls rather than one on a chosen string: an empty slot then
+    // appends a constant, which costs less than a value of unknown length.
     #[inline(always)]
-    fn push(&mut self, value: &T) -> PolarsResult<()> {
-        self.0.push_value_ignore_validity(value.as_ref());
+    fn push(&mut self, value: Option<&T>) -> PolarsResult<()> {
+        match value {
+            Some(value) => self.0.push_value_ignore_validity(value.as_ref()),
+            None => self.0.push_value_ignore_validity(""),
+        }
         Ok(())
-    }
-
-    #[inline(always)]
-    fn push_null(&mut self) {
-        self.0.push_value_ignore_validity("");
     }
 
     fn finish(
@@ -82,15 +86,23 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for DisplayBuilder {
         out.push((name, DataType::String));
     }
 
-    fn with_capacity(rows: usize) -> Self {
+    fn new() -> Self {
         Self {
-            values: StrBuilder(MutableBinaryViewArray::with_capacity(rows)),
+            values: StrBuilder(MutableBinaryViewArray::new()),
             scratch: String::new(),
         }
     }
 
+    fn reserve(&mut self, additional: usize) {
+        self.values.0.reserve(additional);
+    }
+
     #[inline(always)]
-    fn push(&mut self, value: &T) -> PolarsResult<()> {
+    fn push(&mut self, value: Option<&T>) -> PolarsResult<()> {
+        let Some(value) = value else {
+            self.values.0.push_value_ignore_validity("");
+            return Ok(());
+        };
         self.scratch.clear();
         if write!(self.scratch, "{value}").is_err() {
             return Err(display_error());
@@ -99,11 +111,6 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for DisplayBuilder {
             .0
             .push_value_ignore_validity(self.scratch.as_str());
         Ok(())
-    }
-
-    #[inline(always)]
-    fn push_null(&mut self) {
-        self.values.0.push_value_ignore_validity("");
     }
 
     fn finish(
@@ -127,19 +134,21 @@ impl<T: AsRef<[u8]> + ?Sized> ColumnBuilder<T> for BinaryBuilder {
         out.push((name, DataType::Binary));
     }
 
-    fn with_capacity(rows: usize) -> Self {
-        Self(MutableBinaryViewArray::with_capacity(rows))
+    fn new() -> Self {
+        Self(MutableBinaryViewArray::new())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.0.reserve(additional);
     }
 
     #[inline(always)]
-    fn push(&mut self, value: &T) -> PolarsResult<()> {
-        self.0.push_value_ignore_validity(value.as_ref());
+    fn push(&mut self, value: Option<&T>) -> PolarsResult<()> {
+        match value {
+            Some(value) => self.0.push_value_ignore_validity(value.as_ref()),
+            None => self.0.push_value_ignore_validity([0u8; 0].as_slice()),
+        }
         Ok(())
-    }
-
-    #[inline(always)]
-    fn push_null(&mut self) {
-        self.0.push_value_ignore_validity([0u8; 0].as_slice());
     }
 
     fn finish(

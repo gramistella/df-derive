@@ -1,11 +1,11 @@
 error: this key is given more than once
- --> tests/fail/145-fail-duplicate-decimal-keys.rs:9:41
+ --> tests/fail/145-fail-duplicate-decimal-keys.rs:7:41
   |
-9 |     #[df_derive(decimal(precision = 10, precision = 12, scale = 2))]
+7 |     #[df_derive(decimal(precision = 10, precision = 12, scale = 2))]
   |                                         ^^^^^^^^^
 
 error: this key is given more than once
-  --> tests/fail/145-fail-duplicate-decimal-keys.rs:15:52
+  --> tests/fail/145-fail-duplicate-decimal-keys.rs:13:52
    |
-15 |     #[df_derive(decimal(precision = 10, scale = 2, scale = 2))]
+13 |     #[df_derive(decimal(precision = 10, scale = 2, scale = 2))]
    |                                                    ^^^^^

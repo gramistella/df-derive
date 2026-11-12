@@ -1,22 +1,13 @@
-// Concrete-struct `Option<Option<Inner>>` coverage.
+// `Option<Option<Inner>>` around a concrete nested struct.
 //
-// `[]`, `[Option]`, and `[Vec]` shapes around a nested struct are served by
-// the bulk encoder fast paths. `Option<Option<Inner>>` falls through to the
-// per-row push pipeline, which is the only path that exercises the trait
-// `to_dataframe()` indirection across struct boundaries for a concrete inner
-// struct, so the shape is worth a dedicated regression test. The generic
-// equivalent already lives in `20-generics.rs` (`OptOptWrapper<T>`); this
-// file is the non-generic mirror.
-//
-// Polars cannot represent two distinct null states (the outer `None` and the
-// inner `None`), so `Some(None)` and `None` collapse to the same `AnyValue::Null`
-// at the schema level. That's the documented contract.
+// A column has one validity bit per row, so the outer `None` and the inner
+// `None` cannot both be kept: `Some(None)` and `None` are the same null in
+// every column of the nested struct. That is the documented contract. The
+// generic counterpart is `OptOptWrapper<T>` in `20-generics.rs`.
 
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../common.rs"]
-mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{ToDataFrame, ToDataFrameVec};
 
 #[derive(ToDataFrame, Clone)]
 struct Inner {
@@ -75,7 +66,7 @@ fn main() {
         panic!("expected string AnyValue, got {label0:?}");
     }
 
-    // Some(None) and None both collapse to nulls in every payload column.
+    // `Some(None)` and `None` are both null in every payload column.
     for row in [1, 2] {
         assert!(matches!(
             batch.column("payload.value").unwrap().get(row).unwrap(),
@@ -87,8 +78,7 @@ fn main() {
         ));
     }
 
-    // Single-row API exercises the same on-leaf path through
-    // `to_dataframe(&self) -> Columnar::columnar_from_refs(&[self])`.
+    // One value converts the same way as a slice of them.
     let single = OptOptInner {
         id: 42,
         payload: Some(Some(Inner {

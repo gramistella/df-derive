@@ -4,8 +4,6 @@
 //! `None` collapse to the same `Null` in the output frame. This example
 //! shows how the derive flattens the nested-struct columns and how both
 //! outer-`None` and inner-`None` rows surface as nulls.
-//!
-//! Uses the default `df-derive` facade runtime.
 
 use df_derive::ToDataFrame;
 use df_derive::dataframe;

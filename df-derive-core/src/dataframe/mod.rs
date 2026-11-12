@@ -1,10 +1,10 @@
 //! Runtime behind `#[derive(ToDataFrame)]`.
 //!
 //! Every supported field type names a [`ColumnBuilder`] through [`Columnar`].
-//! A builder owns the buffers for one or more output columns, accepts one
-//! value at a time, and hands finished columns out in schema order. Wrappers
-//! such as `Option` and `Vec` wrap the builder of the type they contain, so
-//! nested shapes are resolved by the compiler through trait impls.
+//! A builder owns the buffers of one or more output columns and hands the
+//! finished columns out in schema order. Wrappers such as `Option` and `Vec`
+//! wrap the builder of the type they contain, so nested shapes are resolved
+//! by the compiler through trait impls.
 //!
 //! [`ToDataFrame`] marks the types that are whole rows (derived structs). It
 //! adds the conversions users call; all of them run through one encoder.
@@ -26,11 +26,30 @@ pub type Fields = Vec<(PlSmallStr, DataType)>;
 
 /// Accumulates values of type `T` into one or more columns.
 ///
-/// Implementations must add exactly one slot to every column they own on each
-/// [`push`](ColumnBuilder::push) and each
-/// [`push_null`](ColumnBuilder::push_null). Null tracking belongs to the
-/// nearest enclosing [`builders::OptionBuilder`], which hands a validity
-/// bitmap down at [`finish`](ColumnBuilder::finish).
+/// A builder is filled one *slot* at a time. A slot is `Some(value)`, or
+/// `None` for a position that holds no value: the builder appends a
+/// placeholder there, and the nearest enclosing [`builders::OptionBuilder`]
+/// records the null and hands a validity bitmap down at
+/// [`finish`](ColumnBuilder::finish). Every column a builder owns gets exactly
+/// one entry per slot.
+///
+/// The life of a builder:
+///
+/// 1. [`new`](ColumnBuilder::new) creates it empty.
+/// 2. [`measure`](ColumnBuilder::measure) shows it the slots that are coming
+///    and [`reserve`](ColumnBuilder::reserve) allocates for them, so that
+///    every buffer is allocated once, at its final size.
+/// 3. [`push`](ColumnBuilder::push) appends one slot and
+///    [`extend`](ColumnBuilder::extend) appends many.
+/// 4. [`finish`](ColumnBuilder::finish) hands the columns over.
+///
+/// Step 2 is optional: a builder that was not told what is coming grows as it
+/// fills.
+///
+/// `schema`, `new`, `reserve`, `push` and `finish` are required and describe
+/// an encoding completely. `measure` and `extend` have defaults that are
+/// always correct; builders override them to be exact about memory and fast.
+/// Whether a value can be appended must not depend on the slots before it.
 #[diagnostic::on_unimplemented(
     message = "`{T}` cannot be encoded with `{Self}`",
     label = "this encoding does not apply to `{T}`",
@@ -41,85 +60,59 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// the field being described; leaves use it verbatim.
     fn schema(name: PlSmallStr, out: &mut Fields);
 
-    /// How many list-length counters [`measure`](ColumnBuilder::measure)
-    /// fills in: one per list nested anywhere inside this builder.
-    const LISTS: usize = 0;
+    /// Creates an empty builder.
+    fn new() -> Self;
 
-    /// Creates a builder sized for `rows` rows.
-    fn with_capacity(rows: usize) -> Self;
-
-    /// Adds the lengths of the lists inside `value` to `counts`, which has
-    /// [`LISTS`](ColumnBuilder::LISTS) slots.
+    /// Looks at slots that are about to be appended, ahead of
+    /// [`reserve`](ColumnBuilder::reserve).
     ///
-    /// When rows come from a slice they are measured first, so that list
-    /// buffers are allocated once at their final size. A builder without
-    /// nested lists keeps the default, which counts nothing.
+    /// A builder that holds lists adds up their lengths here, because the
+    /// number of slots alone does not say how large the buffer behind the
+    /// lists must be. Every other builder keeps the default, which does
+    /// nothing, and wrappers pass the slots on to the builders they wrap.
     #[inline(always)]
     #[allow(clippy::inline_always)]
-    fn measure(value: &T, counts: &mut [usize]) {
-        let _ = (value, counts);
+    fn measure<'a, I>(&mut self, values: I)
+    where
+        T: 'a,
+        I: Iterator<Item = Option<&'a T>> + Clone,
+    {
+        let _ = values;
     }
 
-    /// Creates a builder for `rows` rows whose lists hold `counts` elements
-    /// in total, as gathered by [`measure`](ColumnBuilder::measure).
-    #[must_use]
-    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
-        let _ = counts;
-        Self::with_capacity(rows)
-    }
+    /// Makes room for `additional` more slots, and for everything
+    /// [`measure`](ColumnBuilder::measure) has counted since the last call.
+    fn reserve(&mut self, additional: usize);
 
-    /// Appends one value.
+    /// Appends one slot.
     ///
     /// # Errors
     /// Returns an error when the value cannot be represented in the column.
-    fn push(&mut self, value: &T) -> PolarsResult<()>;
+    /// A builder made of other builders says which part of the value failed
+    /// by prefixing the error with the field's name.
+    fn push(&mut self, value: Option<&T>) -> PolarsResult<()>;
 
-    /// Appends one placeholder slot that an enclosing option records as null.
-    fn push_null(&mut self);
-
-    /// Appends every value of a slice.
+    /// Appends one slot per item, with the same result as pushing them in
+    /// order.
     ///
-    /// The slice is walked in blocks of [`block_rows`] values and each block
-    /// is handed to [`extend_from`](ColumnBuilder::extend_from), so a builder
-    /// with several buffers can fill them one at a time while the block's
-    /// rows stay in cache.
+    /// This is how rows are encoded. They are handed over a block at a time
+    /// and each field's builder receives an iterator over that field in every
+    /// row of the block, so a column is filled by one tight loop instead of
+    /// one push per row. The iterator is `Clone` because a builder with
+    /// several buffers walks it once per buffer; the blocks are small enough
+    /// to stay in cache while it does.
     ///
     /// # Errors
-    /// Returns the first error produced by [`ColumnBuilder::push`].
+    /// Returns an error when any of the values cannot be represented. Which
+    /// of them the error is about is unspecified: a caller that needs to know
+    /// pushes the values one at a time. A builder that returned an error must
+    /// not be used again.
     #[inline(always)]
     #[allow(clippy::inline_always)]
-    fn extend(&mut self, values: &[T]) -> PolarsResult<()>
-    where
-        T: Sized,
-    {
-        let block_rows = block_rows::<T>();
-        // The common case for list elements: the whole slice is one block.
-        if values.len() <= block_rows {
-            return self.extend_from(values.iter());
-        }
-        for block in values.chunks(block_rows) {
-            self.extend_from(block.iter())?;
-        }
-        Ok(())
-    }
-
-    /// Appends every value an iterator yields.
-    ///
-    /// This is how a block of rows is encoded: each field's builder is handed
-    /// an iterator over that field in every row of the block, so a simple
-    /// column is filled by one tight loop instead of one push per row. The
-    /// iterator is `Clone` because a builder with several buffers walks it
-    /// once per buffer; callers keep that cheap by passing blocks small
-    /// enough to stay in cache. The default pushes value by value.
-    ///
-    /// # Errors
-    /// Returns the first error produced by [`ColumnBuilder::push`].
-    #[inline(always)]
-    #[allow(clippy::inline_always)]
-    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
+    fn extend<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         T: 'a,
-        I: Iterator<Item = &'a T> + Clone,
+        I: Iterator<Item = Option<&'a T>> + Clone,
     {
         for value in values {
             self.push(value)?;
@@ -127,51 +120,10 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
         Ok(())
     }
 
-    /// Like [`extend_from`](ColumnBuilder::extend_from) for optional values:
-    /// appends a placeholder for each `None`. The caller records which slots
-    /// are null.
-    ///
-    /// # Errors
-    /// Returns the first error produced by [`ColumnBuilder::push`].
-    #[inline(always)]
-    #[allow(clippy::inline_always)]
-    fn extend_nullable_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
-    where
-        T: Sized + 'a,
-        I: Iterator<Item = &'a Option<T>> + Clone,
-    {
-        for value in values {
-            match value {
-                Some(value) => self.push(value)?,
-                None => self.push_null(),
-            }
-        }
-        Ok(())
-    }
-
-    /// Appends every value of every slice, in order: the elements of a list
-    /// column, one slice per row. The default appends slice by slice, which
-    /// keeps each row's elements in cache while every buffer is filled.
-    ///
-    /// # Errors
-    /// Returns the first error produced by [`ColumnBuilder::push`].
-    #[inline(always)]
-    #[allow(clippy::inline_always)]
-    fn extend_flat<'a, I>(&mut self, lists: I) -> PolarsResult<()>
-    where
-        T: Sized + 'a,
-        I: Iterator<Item = &'a [T]> + Clone,
-    {
-        for list in lists {
-            self.extend(list)?;
-        }
-        Ok(())
-    }
-
     /// Consumes the builder and appends its columns to `out`, named exactly
-    /// as [`ColumnBuilder::schema`] names them for the same `name`.
-    /// `validity`, when present, has one bit per pushed slot and applies to
-    /// every column.
+    /// as [`schema`](ColumnBuilder::schema) names them for the same `name`.
+    /// `validity`, when present, has one bit per slot and applies to every
+    /// column.
     ///
     /// # Errors
     /// Returns an error if a column cannot be assembled.
@@ -183,23 +135,6 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     ) -> PolarsResult<()>;
 }
 
-/// How many values of type `T` are encoded per block.
-///
-/// A slice is encoded block by block, one buffer at a time within a block.
-/// The block is sized in bytes rather than rows so that its rows fit in the
-/// first-level data cache of any current CPU with room to spare, whatever
-/// the row type: large rows get short blocks, small rows long ones. Values
-/// behind pointers (strings, lists) are not counted.
-#[must_use]
-pub const fn block_rows<T>() -> usize {
-    let size = ::core::mem::size_of::<T>();
-    if size == 0 {
-        return usize::MAX;
-    }
-    let rows = frame::BLOCK_BYTES / size;
-    if rows == 0 { 1 } else { rows }
-}
-
 /// A type that can be stored in `DataFrame` columns.
 ///
 /// Implemented for the supported leaf types and wrappers, and by
@@ -208,7 +143,8 @@ pub const fn block_rows<T>() -> usize {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be stored in a DataFrame column",
     label = "no column encoding for `{Self}`",
-    note = "derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`"
+    note = "derive `ToDataFrame` on the type, implement `Columnar` for it, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`",
+    note = "the key type of a map needs one of the first two: a field attribute applies to the map's values"
 )]
 pub trait Columnar {
     /// The builder used when no field-level encoding is chosen.
@@ -238,10 +174,14 @@ pub trait ToDataFrame: Record + Sized {
     /// # Errors
     /// Returns an error if a field cannot be encoded.
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        frame::encode_slice(::core::slice::from_ref(self))
+        Self::__encode(::core::slice::from_ref(self))
     }
 
-    /// Converts borrowed rows into a `DataFrame` in one pass.
+    /// Converts borrowed rows into a `DataFrame`.
+    ///
+    /// Use this when the rows are not in one slice: scattered references, a
+    /// filtered view, a map's values. A slice or `Vec` of rows converts
+    /// directly with [`ToDataFrameVec::to_dataframe`].
     ///
     /// # Errors
     /// Returns an error naming the row and field that could not be encoded.
@@ -250,7 +190,8 @@ pub trait ToDataFrame: Record + Sized {
         Self: 'a,
         I: IntoIterator<Item = &'a Self>,
     {
-        frame::encode(rows)
+        let rows: Vec<&Self> = rows.into_iter().collect();
+        frame::encode::<Self, &Self>(&rows)
     }
 
     /// Returns a zero-row `DataFrame` with this type's schema.
@@ -258,7 +199,7 @@ pub trait ToDataFrame: Record + Sized {
     /// # Errors
     /// Returns an error if the schema has duplicate column names.
     fn empty_dataframe() -> PolarsResult<DataFrame> {
-        frame::encode_slice::<Self>(&[])
+        Self::__encode(&[])
     }
 
     /// Returns this type's column names and dtypes, in column order.
@@ -267,6 +208,17 @@ pub trait ToDataFrame: Record + Sized {
     /// Returns an error if the schema has duplicate column names.
     fn schema() -> PolarsResult<Vec<(String, DataType)>> {
         frame::schema::<Self>()
+    }
+
+    /// Encodes a slice of rows: where the conversions above end up.
+    ///
+    /// The derive writes this method out instead of inheriting it, for the
+    /// sake of where it is compiled. Written in the impl, the encoder for a
+    /// row type is built once, in the crate that defines the type. Inherited,
+    /// it would be built again in every crate that converts one.
+    #[doc(hidden)]
+    fn __encode(rows: &[Self]) -> PolarsResult<DataFrame> {
+        frame::encode::<Self, Self>(rows)
     }
 }
 
@@ -281,7 +233,7 @@ pub trait ToDataFrameVec {
 
 impl<T: ToDataFrame> ToDataFrameVec for [T] {
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        frame::encode_slice(self)
+        T::__encode(self)
     }
 }
 
@@ -291,10 +243,21 @@ impl ToDataFrame for () {}
 /// Items generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
+    pub use polars;
+    pub use polars_arrow;
+
     pub use super::frame::{child, conversion_error, in_field};
 
     /// Compile-time check that a flattened field is a record.
     pub const fn assert_record<T: ?Sized + super::Record>() {}
-    pub use polars;
-    pub use polars_arrow;
+
+    /// The body of a derived `ToDataFrame::__encode`.
+    ///
+    /// # Errors
+    /// Returns an error naming the row and field that could not be encoded.
+    pub fn encode<T: super::Columnar>(
+        rows: &[T],
+    ) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+        super::frame::encode::<T, T>(rows)
+    }
 }

@@ -1,13 +1,13 @@
 error[E0277]: the trait bound `custom::Option<NotAsRef>: AsRef<str>` is not satisfied
-  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:14:12
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:12:12
    |
-14 |     label: custom::Option<NotAsRef>,
+12 |     label: custom::Option<NotAsRef>,
    |            ^^^^^^ unsatisfied trait bound
    |
 help: the trait `AsRef<str>` is not implemented for `custom::Option<NotAsRef>`
-  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:6:5
+  --> tests/fail/132-fail-as-str-concrete-type-without-as-ref.rs:4:5
    |
- 6 |     pub struct Option<T>(pub T);
+ 4 |     pub struct Option<T>(pub T);
    |     ^^^^^^^^^^^^^^^^^^^^
 help: the trait `ColumnBuilder<T>` is conditionally implemented for `StrBuilder`
   --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs

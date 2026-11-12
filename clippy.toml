@@ -1,0 +1,10 @@
+# `clippy::multiple_crate_versions` (part of `clippy::cargo`, denied by
+# `just lint`) is kept on so new duplicates in the dependency graph fail CI.
+#
+# `syn` is the one exception: the ecosystem is mid-migration from syn 2 to
+# syn 3. Polars 0.55's proc-macro dependencies (`strum_macros`, `num-derive`,
+# `zerocopy-derive`) still use syn 2 while `serde_derive` and
+# `bytemuck_derive` use syn 3, so both versions are in the graph regardless of
+# which one `df-derive-macros` picks. Remove this once Polars' side has moved
+# and `df-derive-macros` has followed.
+allowed-duplicate-crates = ["syn"]

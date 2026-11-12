@@ -272,7 +272,7 @@ mod tests {
     fn does_not_peel_wrappers_with_extra_generic_arguments() {
         let analyzed = analyze_with_generics(&syn::parse_quote!(Option<T, U>), &["T", "U"]);
 
-        assert!(analyzed.wrappers.is_empty());
+        assert_eq!(analyzed.wrappers, []);
         assert!(matches!(analyzed.base, AnalyzedBase::Struct(_)));
     }
 
@@ -280,7 +280,7 @@ mod tests {
     fn does_not_treat_malformed_cow_as_semantic_base() {
         let analyzed = analyze(&syn::parse_quote!(std::borrow::Cow<'a, str, Extra>));
 
-        assert!(analyzed.wrappers.is_empty());
+        assert_eq!(analyzed.wrappers, []);
         assert!(matches!(analyzed.base, AnalyzedBase::Struct(_)));
     }
 

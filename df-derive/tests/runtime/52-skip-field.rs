@@ -90,7 +90,7 @@ fn runtime_semantics() {
     };
     let all_df = all.to_dataframe().unwrap();
     assert_eq!(all_df.shape(), (1, 0));
-    assert!(AllSkipped::schema().unwrap().is_empty());
+    assert_eq!(AllSkipped::schema().unwrap(), []);
     assert_eq!(AllSkipped::empty_dataframe().unwrap().shape(), (0, 0));
     assert_eq!(
         vec![

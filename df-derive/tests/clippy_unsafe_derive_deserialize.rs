@@ -1,33 +1,17 @@
 // Regression: `#[derive(ToDataFrame)]` paired with `#[derive(Deserialize)]`
 // must not trip `clippy::unsafe_derive_deserialize`.
 //
-// Earlier versions of the macro emitted `unsafe { Series::from_chunks_and_dtype_unchecked(..) }`
-// directly inside the `Columnar::columnar_from_refs` impl method on the
-// user's struct. Clippy walks impl blocks of `Deserialize`-able types
-// looking for `unsafe`, and that placement caused the lint to fire on every
-// `Decimal`-bearing struct downstream that paired
-// `#[derive(ToDataFrame, Deserialize)]`. The fix hoists the `unsafe` call
-// into a free helper function emitted at the top of the per-derive
-// `const _: () = { ... };` scope; the lint now finds no `unsafe` inside the
-// user type's impls.
+// Clippy walks the impl blocks of `Deserialize`-able types looking for
+// `unsafe`. Early versions of the macro emitted an `unsafe` block inside an
+// impl on the user's struct, which fired the lint on every downstream type
+// deriving both traits. Generated code now contains no `unsafe` at all, and
+// neither does the runtime it calls.
 //
 // This file is compiled directly by `cargo build`/`cargo clippy` (not via
-// `trybuild`), so the file-level `#![deny(...)]` actually fires under
-// `cargo clippy` — `just lint` will fail if the macro ever inlines the
-// `unsafe` back into an impl method on `Self`.
-//
-// Both bulk-emit shapes that use the unsafe call are exercised:
-// - `Vec<DerivedStruct>` (the `gen_bulk_vec` path)
-// - `Option<Vec<DerivedStruct>>` (the `gen_bulk_option_vec` path)
-// — paired with a `Decimal` field, the shape that surfaced the original
-// downstream report.
-//
-// Also covers `Option<String>` — the direct-view fast path for that shape
-// uses a `MutableBitmap` for validity. An earlier draft used the unsafe
-// `set_unchecked` to flip the per-row bit, which would have re-introduced
-// `unsafe` into the user's impl method. The current code uses the safe
-// `MutableBitmap::set` (bounds-checked, no `unsafe` keyword) so this lint
-// does not fire on `Option<String>` fields either.
+// `trybuild`), so the file-level `#![deny(...)]` fires under `just lint` if
+// the derive ever emits `unsafe` into an impl on `Self` again. The shapes
+// below are the ones that used to need it: lists of derived structs, an
+// optional list of them, a decimal field and an optional string.
 
 #![deny(clippy::unsafe_derive_deserialize)]
 

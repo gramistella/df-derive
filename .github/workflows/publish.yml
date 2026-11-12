@@ -70,12 +70,13 @@ jobs:
           cargo test --locked -p df-derive-core --all-features -- --nocapture &&
           cargo test --locked -p df-derive-macros --all-features -- --nocapture &&
           cargo test --locked -p df-derive --lib --all-features -- --nocapture &&
+          cargo test --locked -p df-derive --doc --all-features -- --nocapture &&
           cargo test --locked -p df-derive
           --test clippy_unsafe_derive_deserialize
-          --test codegen_path_centralization
+          --test composite_shapes
+          --test differential
           --test generated_lint_hygiene
-          --test idents_centralization
-          --test local_runtime
+          --test workflow_test_targets
           --all-features -- --nocapture
 
       - name: Check package contents

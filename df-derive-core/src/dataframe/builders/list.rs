@@ -41,6 +41,18 @@ impl ListOffsets {
         self.ends.push(self.total);
     }
 
+    /// Records one list per length.
+    #[inline(always)]
+    #[allow(clippy::cast_possible_wrap)]
+    pub(super) fn extend(&mut self, lens: impl Iterator<Item = usize>) {
+        let mut total = self.total;
+        self.ends.extend(lens.map(|len| {
+            total = total.wrapping_add(len as i64);
+            total
+        }));
+        self.total = total;
+    }
+
     /// Records an empty list, the placeholder for a null.
     #[inline(always)]
     pub(super) fn push_empty(&mut self) {
@@ -116,6 +128,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
 
     // One counter for this list's total length, then the inner builder's.
     const LISTS: usize = 1 + B::LISTS;
+    const STREAMS: usize = 1 + B::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         Self {
@@ -149,6 +162,29 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
     }
 
     #[inline(always)]
+    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    where
+        [T]: 'a,
+        I: Iterator<Item = &'a [T]> + Clone,
+    {
+        // The inner builder is moved into a local for the loop. As a field
+        // of `self` its buffer lengths are re-read from memory on every
+        // append; as a local the compiler can keep them in registers.
+        let mut inner = std::mem::replace(&mut self.inner, B::with_capacity(0));
+        let mut result = Ok(());
+        for value in values.clone() {
+            if let Err(error) = inner.extend(value) {
+                result = Err(error);
+                break;
+            }
+        }
+        self.inner = inner;
+        result?;
+        self.offsets.extend(values.map(<[T]>::len));
+        Ok(())
+    }
+
+    #[inline(always)]
     fn push_null(&mut self) {
         self.offsets.push_empty();
     }
@@ -169,6 +205,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
     }
 
     const LISTS: usize = <Self as ColumnBuilder<[T]>>::LISTS;
+    const STREAMS: usize = <Self as ColumnBuilder<[T]>>::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         <Self as ColumnBuilder<[T]>>::with_capacity(rows)
@@ -186,6 +223,15 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
     #[inline(always)]
     fn push(&mut self, value: &Vec<T>) -> PolarsResult<()> {
         <Self as ColumnBuilder<[T]>>::push(self, value.as_slice())
+    }
+
+    #[inline(always)]
+    fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    where
+        Vec<T>: 'a,
+        I: Iterator<Item = &'a Vec<T>> + Clone,
+    {
+        <Self as ColumnBuilder<[T]>>::extend_from(self, values.map(Vec::as_slice), narrow)
     }
 
     #[inline(always)]

@@ -8,27 +8,28 @@ use super::{ColumnBuilder, Columnar, Fields};
 /// through nested builders. Replaced before the error reaches the caller.
 const PATH_END: char = '\u{1f}';
 
-/// Encodes rows from any iterator in one pass. List buffers grow as needed.
-pub(super) fn encode<'a, T, I>(rows: I) -> PolarsResult<DataFrame>
-where
-    T: Columnar + 'a,
-    I: IntoIterator<Item = &'a T>,
-{
-    let rows = rows.into_iter();
-    let builder = <T::Builder as ColumnBuilder<T>>::with_capacity(rows.size_hint().0);
-    fill(builder, rows)
-}
-
 /// List counters kept on the stack. A row type with at most this many nested
-/// lists is measured without a heap allocation, and the compiler can keep the
-/// running totals in registers.
+/// lists is measured without a heap allocation.
 const INLINE_LISTS: usize = 8;
 
-/// Encodes a slice. Rows that contain lists are measured first so every list
-/// buffer is allocated once at its final size.
+/// Rows up to this many bytes are encoded one field at a time: each pass
+/// reads a small stride and fills a single column with a tight loop.
+pub(super) const SMALL_ROW: usize = 64;
+
+/// The most buffers one pass over larger rows writes to. Feeding many column
+/// buffers from a single loop makes them compete for the same cache sets, so
+/// wide rows are encoded a few fields per pass.
+pub const PASS_STREAMS: usize = 8;
+
+/// Encodes a slice.
+///
+/// Rows that contain lists are measured first so every list buffer is
+/// allocated once at its final size. The rows are then appended in bulk; if
+/// that fails, they are encoded again row by row, which is the path that
+/// knows which row and field the error came from.
 pub(super) fn encode_slice<T: Columnar>(rows: &[T]) -> PolarsResult<DataFrame> {
     let lists = <T::Builder as ColumnBuilder<T>>::LISTS;
-    let builder = if lists == 0 {
+    let mut builder = if lists == 0 {
         <T::Builder as ColumnBuilder<T>>::with_capacity(rows.len())
     } else if lists <= INLINE_LISTS {
         let mut counts = [0usize; INLINE_LISTS];
@@ -43,16 +44,27 @@ pub(super) fn encode_slice<T: Columnar>(rows: &[T]) -> PolarsResult<DataFrame> {
         }
         <T::Builder as ColumnBuilder<T>>::with_capacities(rows.len(), &counts)
     };
-    fill(builder, rows.iter())
+    if let Err(error) = builder.extend_from(rows.iter(), super::is_narrow::<T>()) {
+        return Err(locate(rows, error));
+    }
+    finish::<T>(builder, rows.len())
 }
 
-#[inline(always)]
-#[allow(clippy::inline_always)]
-fn fill<'a, T, I>(mut builder: T::Builder, rows: I) -> PolarsResult<DataFrame>
+/// Finds the row and field of a bulk encoding error by encoding row by row.
+#[cold]
+#[inline(never)]
+fn locate<T: Columnar>(rows: &[T], error: PolarsError) -> PolarsError {
+    encode(rows).err().unwrap_or(error)
+}
+
+/// Encodes rows from any iterator in one pass. List buffers grow as needed.
+pub(super) fn encode<'a, T, I>(rows: I) -> PolarsResult<DataFrame>
 where
     T: Columnar + 'a,
-    I: Iterator<Item = &'a T>,
+    I: IntoIterator<Item = &'a T>,
 {
+    let rows = rows.into_iter();
+    let mut builder = <T::Builder as ColumnBuilder<T>>::with_capacity(rows.size_hint().0);
     let mut height = 0usize;
     for row in rows {
         if let Err(error) = builder.push(row) {
@@ -60,6 +72,10 @@ where
         }
         height += 1;
     }
+    finish::<T>(builder, height)
+}
+
+fn finish<T: Columnar>(builder: T::Builder, height: usize) -> PolarsResult<DataFrame> {
     let mut columns = Vec::new();
     builder.finish(PlSmallStr::EMPTY, None, &mut columns)?;
     if columns.is_empty() {

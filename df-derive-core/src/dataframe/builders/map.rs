@@ -89,6 +89,7 @@ macro_rules! map {
             }
 
             const LISTS: usize = 1 + K::LISTS + V::LISTS;
+            const STREAMS: usize = 1 + K::STREAMS + V::STREAMS;
 
             fn with_capacity(rows: usize) -> Self {
                 Self::with_rows::<KT, VT>(rows)

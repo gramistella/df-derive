@@ -1,18 +1,22 @@
 use polars::prelude::{Column, PlSmallStr, PolarsResult};
-use polars_arrow::bitmap::{Bitmap, BitmapBuilder};
+use polars_arrow::bitmap::Bitmap;
 use polars_arrow::compute::utils::combine_validities_and;
 
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
-/// Adds a validity bitmap on top of another builder.
+/// Adds null tracking on top of another builder.
 ///
-/// A `None` pushes a placeholder into the inner builder and a cleared bit
-/// here. At `finish` the bitmap is combined with any validity handed down
-/// from an outer option and applied to every inner column, so nested options
-/// collapse to one null per slot.
+/// A `None` pushes a placeholder into the inner builder and `false` here. At
+/// `finish` the flags are packed into a bitmap, combined with any validity
+/// handed down from an outer option, and applied to every inner column, so
+/// nested options collapse to one null per slot.
+///
+/// Validity is kept as one byte per slot while building and packed once at
+/// the end. Appending a byte is a plain vector push, and a whole slice of
+/// options can be appended with one tight loop.
 pub struct OptionBuilder<B> {
     inner: B,
-    validity: BitmapBuilder,
+    valid: Vec<bool>,
 }
 
 impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
@@ -21,11 +25,12 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     }
 
     const LISTS: usize = B::LISTS;
+    const STREAMS: usize = 1 + B::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         Self {
             inner: B::with_capacity(rows),
-            validity: BitmapBuilder::with_capacity(rows),
+            valid: Vec::with_capacity(rows),
         }
     }
 
@@ -39,7 +44,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     fn with_capacities(rows: usize, counts: &[usize]) -> Self {
         Self {
             inner: B::with_capacities(rows, counts),
-            validity: BitmapBuilder::with_capacity(rows),
+            valid: Vec::with_capacity(rows),
         }
     }
 
@@ -47,18 +52,28 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     fn push(&mut self, value: &Option<T>) -> PolarsResult<()> {
         if let Some(value) = value {
             self.inner.push(value)?;
-            self.validity.push(true);
+            self.valid.push(true);
         } else {
             self.inner.push_null();
-            self.validity.push(false);
+            self.valid.push(false);
         }
         Ok(())
     }
 
     #[inline(always)]
+    fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    where
+        Option<T>: 'a,
+        I: Iterator<Item = &'a Option<T>> + Clone,
+    {
+        self.valid.extend(values.clone().map(Option::is_some));
+        self.inner.extend_nullable_from(values, narrow)
+    }
+
+    #[inline(always)]
     fn push_null(&mut self) {
         self.inner.push_null();
-        self.validity.push(false);
+        self.valid.push(false);
     }
 
     fn finish(
@@ -67,7 +82,10 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
-        let own = self.validity.into_opt_validity();
+        let own = self
+            .valid
+            .contains(&false)
+            .then(|| Bitmap::from(self.valid));
         let combined = combine_validities_and(validity, own.as_ref());
         self.inner.finish(name, combined.as_ref(), out)
     }

@@ -1,7 +1,7 @@
 use polars::prelude::{Column, PlSmallStr, PolarsResult};
 use polars_arrow::bitmap::Bitmap;
 
-use crate::dataframe::frame::{child, in_field};
+use crate::dataframe::frame::{PASS_STREAMS, child, in_field};
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Builder for `()`, which contributes no columns.
@@ -9,6 +9,8 @@ pub struct UnitBuilder;
 
 impl ColumnBuilder<()> for UnitBuilder {
     fn schema(_name: PlSmallStr, _out: &mut Fields) {}
+
+    const STREAMS: usize = 0;
 
     fn with_capacity(_rows: usize) -> Self {
         Self
@@ -45,6 +47,7 @@ macro_rules! tuple {
             }
 
             const LISTS: usize = 0 $(+ $b::LISTS)+;
+            const STREAMS: usize = 0 $(+ $b::STREAMS)+;
 
             fn with_capacity(rows: usize) -> Self {
                 ($($b::with_capacity(rows),)+)
@@ -78,6 +81,25 @@ macro_rules! tuple {
                     if let Err(error) = self.$index.push(&value.$index) {
                         return Err(in_field(error, $field));
                     }
+                )+
+                Ok(())
+            }
+
+            #[inline(always)]
+            fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+            where
+                ($($t,)+): 'a,
+                I: Iterator<Item = &'a ($($t,)+)> + Clone,
+            {
+                if !narrow && 0 $(+ $b::STREAMS)+ <= PASS_STREAMS {
+                    for value in values {
+                        $(self.$index.push(&value.$index)?;)+
+                    }
+                    return Ok(());
+                }
+                $(
+                    self.$index
+                        .extend_from(values.clone().map(|value| &value.$index), narrow)?;
                 )+
                 Ok(())
             }

@@ -89,7 +89,7 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for DisplayBuilder {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, value: &T) -> PolarsResult<()> {
         self.scratch.clear();
         if write!(self.scratch, "{value}").is_err() {

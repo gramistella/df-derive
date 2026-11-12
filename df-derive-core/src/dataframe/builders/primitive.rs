@@ -4,7 +4,7 @@ use polars::prelude::{
     BooleanChunked, Column, DataType, IntoSeries, PlSmallStr, PolarsResult, Series,
 };
 use polars_arrow::array::{BooleanArray, PrimitiveArray};
-use polars_arrow::bitmap::{Bitmap, BitmapBuilder};
+use polars_arrow::bitmap::Bitmap;
 use polars_arrow::datatypes::ArrowDataType;
 use polars_arrow::types::NativeType;
 
@@ -68,6 +68,26 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
         Ok(())
     }
 
+    #[inline(always)]
+    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    where
+        P: 'a,
+        I: Iterator<Item = &'a P> + Clone,
+    {
+        self.0.extend(values.copied());
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn extend_nullable_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    where
+        P: 'a,
+        I: Iterator<Item = &'a Option<P>> + Clone,
+    {
+        self.0.extend(values.map(|value| value.unwrap_or_default()));
+        Ok(())
+    }
+
     fn finish(
         self,
         name: PlSmallStr,
@@ -115,6 +135,16 @@ macro_rules! converted {
             #[inline(always)]
             fn push_null(&mut self) {
                 self.0.push(<$as>::default());
+            }
+
+            #[inline(always)]
+            fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+            where
+                $ty: 'a,
+                I: Iterator<Item = &'a $ty> + Clone,
+            {
+                self.0.extend(values.map(|$value| $convert));
+                Ok(())
             }
 
             fn finish(
@@ -172,7 +202,10 @@ mod pointer_sized {
 }
 
 /// Builder for a boolean column.
-pub struct BoolBuilder(BitmapBuilder);
+///
+/// Values are kept as one byte each while building and packed into a bitmap
+/// once at the end.
+pub struct BoolBuilder(Vec<bool>);
 
 impl ColumnBuilder<bool> for BoolBuilder {
     fn schema(name: PlSmallStr, out: &mut Fields) {
@@ -180,7 +213,7 @@ impl ColumnBuilder<bool> for BoolBuilder {
     }
 
     fn with_capacity(rows: usize) -> Self {
-        Self(BitmapBuilder::with_capacity(rows))
+        Self(Vec::with_capacity(rows))
     }
 
     #[inline(always)]
@@ -194,14 +227,38 @@ impl ColumnBuilder<bool> for BoolBuilder {
         self.0.push(false);
     }
 
+    #[inline(always)]
+    fn extend(&mut self, values: &[bool]) -> PolarsResult<()> {
+        self.0.extend_from_slice(values);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    where
+        I: Iterator<Item = &'a bool> + Clone,
+    {
+        self.0.extend(values.copied());
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn extend_nullable_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    where
+        I: Iterator<Item = &'a Option<bool>> + Clone,
+    {
+        self.0.extend(values.map(|value| value.unwrap_or_default()));
+        Ok(())
+    }
+
     fn finish(
         self,
         name: PlSmallStr,
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
-        let array =
-            BooleanArray::try_new(ArrowDataType::Boolean, self.0.freeze(), validity.cloned())?;
+        let values = Bitmap::from(self.0);
+        let array = BooleanArray::try_new(ArrowDataType::Boolean, values, validity.cloned())?;
         out.push(BooleanChunked::with_chunk(name, array).into_series().into());
         Ok(())
     }

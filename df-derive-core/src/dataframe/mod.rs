@@ -92,7 +92,12 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     where
         T: Sized,
     {
-        for block in values.chunks(block_rows::<T>()) {
+        let block_rows = block_rows::<T>();
+        // The common case for list elements: the whole slice is one block.
+        if values.len() <= block_rows {
+            return self.extend_from(values.iter());
+        }
+        for block in values.chunks(block_rows) {
             self.extend_from(block.iter())?;
         }
         Ok(())

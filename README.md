@@ -307,10 +307,9 @@ then select it with `with = "..."` or make it the type's default with
 `impl Columnar`. A builder can wrap one of the provided builders and delegate
 to it.
 
-The remaining methods and constants have defaults and exist for speed:
-`extend_from` appends a whole column's worth of values at once, `measure` and
-`with_capacities` let list buffers be allocated at their final size, and
-`STREAMS` tells a parent how many buffers the builder writes to.
+The remaining methods have defaults and exist for speed: `extend_from`
+appends a block of values at once, and `measure` with `with_capacities` lets
+list buffers be allocated at their final size.
 
 ## Features
 
@@ -335,6 +334,22 @@ generated against an earlier release.
 
 Performance is continuously monitored with
 [Bencher](https://bencher.dev/perf/df-derive).
+
+### How slices are encoded
+
+A slice is encoded in blocks of rows, and within a block each column buffer
+is filled by its own loop. Only one buffer is written at a time, and a
+block's rows are read from memory once and from cache after that. Filling
+many column buffers from a single loop over all rows is much slower for wide
+rows, because the buffers compete for the same cache sets.
+
+A block holds 16 KiB of rows, half of the smallest first-level data cache in
+common use, so the scheme does not depend on a particular CPU. On the one
+machine it was measured on (Apple Silicon), 16 KiB and 128 KiB blocks
+performed within about 5% of each other across flat, wide, nested, optional
+and string-heavy rows. Blocks of 2 KiB were up to 40% slower on very wide
+rows, and 1 MiB blocks, larger than the cache, were 40% to 110% slower on
+wide and numeric rows.
 
 ## Examples
 

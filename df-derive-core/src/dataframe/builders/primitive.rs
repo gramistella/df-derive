@@ -105,7 +105,7 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
     }
 
     #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         P: 'a,
         I: Iterator<Item = &'a P> + Clone,
@@ -115,7 +115,7 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
     }
 
     #[inline(always)]
-    fn extend_nullable_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    fn extend_nullable_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         P: 'a,
         I: Iterator<Item = &'a Option<P>> + Clone,
@@ -184,7 +184,7 @@ macro_rules! converted {
             }
 
             #[inline(always)]
-            fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+            fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
             where
                 $ty: 'a,
                 I: Iterator<Item = &'a $ty> + Clone,
@@ -280,7 +280,7 @@ impl ColumnBuilder<bool> for BoolBuilder {
     }
 
     #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         I: Iterator<Item = &'a bool> + Clone,
     {
@@ -289,7 +289,7 @@ impl ColumnBuilder<bool> for BoolBuilder {
     }
 
     #[inline(always)]
-    fn extend_nullable_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    fn extend_nullable_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         I: Iterator<Item = &'a Option<bool>> + Clone,
     {

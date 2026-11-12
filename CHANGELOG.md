@@ -59,6 +59,15 @@ where noted under "Changed".
 - Unsupported field types are reported by the compiler as a missing
   `Columnar` impl at the field, instead of by the macro.
 
+### Fixed
+
+- The `rust_decimal` impl of `Decimal128Encode` returned a mantissa of 10^38
+  or more when scaling up, a value with more than the 38 digits a Polars
+  decimal can hold. It now returns `None`, as Polars' own conversion does.
+  The column builder already rejected such values, so no invalid decimal
+  could be stored; the change makes the trait method itself agree with
+  Polars.
+
 ### Removed
 
 - The `proc-macro-crate` dependency and its transitive TOML parser.
@@ -70,10 +79,10 @@ where noted under "Changed".
   into the parent's column buffers; the per-field reference vectors,
   intermediate `DataFrame`s, gather for partly-null optional structs, and
   rechunk for lists are gone.
-- Slices are encoded a few columns at a time. Small rows are filled one field
-  per pass with tight loops; wide rows take as many neighbouring fields per
-  pass as fit a limit of eight buffers, which avoids the cache contention of
-  feeding dozens of column buffers from one loop.
+- Slices are encoded in blocks of rows sized to fit the first-level cache
+  (16 KiB of rows), and within a block each column buffer is filled by its
+  own tight loop. This avoids the cache contention of feeding dozens of
+  column buffers from one loop over all rows.
 - Rows that contain lists are measured first, so list buffers are allocated
   once at their final size.
 - Generated code is roughly a tenth of its previous size and is emitted once

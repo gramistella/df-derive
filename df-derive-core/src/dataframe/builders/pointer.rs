@@ -25,7 +25,6 @@ macro_rules! transparent_pointer {
             }
 
             const LISTS: usize = B::LISTS;
-            const STREAMS: usize = B::STREAMS;
 
             fn with_capacity(rows: usize) -> Self {
                 Self(B::with_capacity(rows))
@@ -46,12 +45,12 @@ macro_rules! transparent_pointer {
             }
 
             #[inline(always)]
-            fn extend_from<'r, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+            fn extend_from<'r, I>(&mut self, values: I) -> PolarsResult<()>
             where
                 $ptr: 'r,
                 I: Iterator<Item = &'r $ptr> + Clone,
             {
-                self.0.extend_from(values.map(|value| &**value), narrow)
+                self.0.extend_from(values.map(|value| &**value))
             }
 
             #[inline(always)]

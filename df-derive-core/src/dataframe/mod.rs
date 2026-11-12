@@ -45,11 +45,6 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// fills in: one per list nested anywhere inside this builder.
     const LISTS: usize = 0;
 
-    /// How many buffers one [`push`](ColumnBuilder::push) writes to. A row
-    /// loop that feeds too many buffers at once is slow, so wide rows are
-    /// encoded a few fields at a time; this is what "too many" is counted in.
-    const STREAMS: usize = 1;
-
     /// Creates a builder sized for `rows` rows.
     fn with_capacity(rows: usize) -> Self;
 
@@ -84,6 +79,11 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
 
     /// Appends every value of a slice.
     ///
+    /// The slice is walked in blocks of [`block_rows`] values and each block
+    /// is handed to [`extend_from`](ColumnBuilder::extend_from), so a builder
+    /// with several buffers can fill them one at a time while the block's
+    /// rows stay in cache.
+    ///
     /// # Errors
     /// Returns the first error produced by [`ColumnBuilder::push`].
     #[inline(always)]
@@ -92,33 +92,30 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     where
         T: Sized,
     {
-        self.extend_from(values.iter(), is_narrow::<T>())
+        for block in values.chunks(block_rows::<T>()) {
+            self.extend_from(block.iter())?;
+        }
+        Ok(())
     }
 
     /// Appends every value an iterator yields.
     ///
-    /// This is how a slice of rows is encoded: each field's builder is handed
-    /// an iterator over that field in every row, so a simple column is filled
-    /// by one tight loop instead of one push per row. The iterator is `Clone`
-    /// because a builder with several buffers may walk it more than once. The
-    /// default pushes value by value; builders override it where they can do
-    /// better.
-    ///
-    /// `narrow` says the rows being walked are small (see [`is_narrow`]), so
-    /// walking them once per column is cheap. Otherwise a builder with many
-    /// buffers should fill a few of them per walk: enough to keep the number
-    /// of walks down, few enough that the buffers do not compete for cache.
+    /// This is how a block of rows is encoded: each field's builder is handed
+    /// an iterator over that field in every row of the block, so a simple
+    /// column is filled by one tight loop instead of one push per row. The
+    /// iterator is `Clone` because a builder with several buffers walks it
+    /// once per buffer; callers keep that cheap by passing blocks small
+    /// enough to stay in cache. The default pushes value by value.
     ///
     /// # Errors
     /// Returns the first error produced by [`ColumnBuilder::push`].
     #[inline(always)]
     #[allow(clippy::inline_always)]
-    fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         T: 'a,
         I: Iterator<Item = &'a T> + Clone,
     {
-        let _ = narrow;
         for value in values {
             self.push(value)?;
         }
@@ -133,12 +130,11 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// Returns the first error produced by [`ColumnBuilder::push`].
     #[inline(always)]
     #[allow(clippy::inline_always)]
-    fn extend_nullable_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    fn extend_nullable_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         T: Sized + 'a,
         I: Iterator<Item = &'a Option<T>> + Clone,
     {
-        let _ = narrow;
         for value in values {
             match value {
                 Some(value) => self.push(value)?,
@@ -182,10 +178,21 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     ) -> PolarsResult<()>;
 }
 
-/// Whether rows of type `T` are small enough to be walked once per column.
+/// How many values of type `T` are encoded per block.
+///
+/// A slice is encoded block by block, one buffer at a time within a block.
+/// The block is sized in bytes rather than rows so that its rows fit in the
+/// first-level data cache of any current CPU with room to spare, whatever
+/// the row type: large rows get short blocks, small rows long ones. Values
+/// behind pointers (strings, lists) are not counted.
 #[must_use]
-pub const fn is_narrow<T>() -> bool {
-    ::core::mem::size_of::<T>() <= frame::SMALL_ROW
+pub const fn block_rows<T>() -> usize {
+    let size = ::core::mem::size_of::<T>();
+    if size == 0 {
+        return usize::MAX;
+    }
+    let rows = frame::BLOCK_BYTES / size;
+    if rows == 0 { 1 } else { rows }
 }
 
 /// A type that can be stored in `DataFrame` columns.
@@ -279,7 +286,7 @@ impl ToDataFrame for () {}
 /// Items generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use super::frame::{PASS_STREAMS, child, conversion_error, in_field};
+    pub use super::frame::{child, conversion_error, in_field};
 
     /// Compile-time check that a flattened field is a record.
     pub const fn assert_record<T: ?Sized + super::Record>() {}

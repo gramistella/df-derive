@@ -188,3 +188,42 @@ fn decimal128_encode_delegates_through_references() {
     assert_eq!(by_ref.try_to_i128_mantissa(2), Some(102));
     assert_eq!(by_ref_ref.try_to_i128_mantissa(3), Some(103));
 }
+
+/// What Polars itself stores for `literal` cast to `Decimal(38, scale)`:
+/// the mantissa, or `None` when the value does not fit in 38 digits.
+fn polars_mantissa_at_full_precision(literal: &str, scale: usize) -> Option<i128> {
+    let cast = Series::new("x".into(), &[literal.to_string()])
+        .cast(&DataType::Decimal(38, scale))
+        .ok()?;
+    match cast.get(0).expect("polars produced an empty series") {
+        AnyValue::Decimal(mantissa, _, _) => Some(mantissa),
+        AnyValue::Null => None,
+        other => panic!("unexpected value for `{literal}` at scale {scale}: {other:?}"),
+    }
+}
+
+#[test]
+fn rust_decimal_reference_impl_agrees_with_polars_at_the_38_digit_limit() {
+    // A Polars decimal holds at most 38 digits, so a mantissa of 10^38 or
+    // more cannot be stored at any precision even though it fits in `i128`.
+    // Each case sits on one side of that limit.
+    let cases = [
+        ("0.1", 38),  // 10^37: fits
+        ("-0.1", 38), // -10^37: fits
+        ("0.9999999999999999999999999999", 38),
+        ("1", 38),  // 10^38: one digit too many
+        ("-1", 38), // -10^38
+        ("9.9999", 37),
+        ("10", 37), // 10^38
+        ("1", 37),  // 10^37: fits
+    ];
+    for (literal, scale) in cases {
+        let value = Decimal::from_str(literal).expect("literal decimal parses");
+        let actual = value.try_to_i128_mantissa(scale.try_into().expect("scale fits in u32"));
+        let expected = polars_mantissa_at_full_precision(literal, scale);
+        assert_eq!(
+            actual, expected,
+            "`{literal}` at scale {scale}: df-derive and Polars disagree",
+        );
+    }
+}

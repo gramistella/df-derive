@@ -25,7 +25,6 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     }
 
     const LISTS: usize = B::LISTS;
-    const STREAMS: usize = 1 + B::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         Self {
@@ -61,13 +60,13 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     }
 
     #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         Option<T>: 'a,
         I: Iterator<Item = &'a Option<T>> + Clone,
     {
         self.valid.extend(values.clone().map(Option::is_some));
-        self.inner.extend_nullable_from(values, narrow)
+        self.inner.extend_nullable_from(values)
     }
 
     #[inline(always)]

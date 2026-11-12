@@ -200,66 +200,6 @@ fn columns<'a>(
     Ok(columns)
 }
 
-/// Splits a run of fields into walks over the rows.
-///
-/// A run whose buffers number at most the runtime's limit is filled by one
-/// loop that pushes every field of the run. A larger run is halved and each
-/// half decided the same way; a single field takes the rows itself, which
-/// lets a nested struct split its own fields. The buffer counts are
-/// associated constants, so the compiler keeps only the chosen branch.
-fn passes(
-    run: &[usize],
-    as_builder: &[TokenStream],
-    slots: &[&syn::Ident],
-    members: &[&Member],
-    checked: &dyn Fn(usize, TokenStream) -> TokenStream,
-    root: &TokenStream,
-) -> TokenStream {
-    let alone = |index: usize| {
-        let (builder, slot, member) = (&as_builder[index], slots[index], members[index]);
-        checked(
-            index,
-            quote! {
-                #builder::extend_from(
-                    &mut self.#slot,
-                    ::core::iter::Iterator::map(
-                        ::core::clone::Clone::clone(&values),
-                        |value| &value.#member,
-                    ),
-                    narrow,
-                )
-            },
-        )
-    };
-    match run {
-        [] => TokenStream::new(),
-        [index] => alone(*index),
-        _ => {
-            let builders: Vec<_> = run.iter().map(|&index| &as_builder[index]).collect();
-            let pushes = run.iter().map(|&index| {
-                let (builder, slot, member) = (&as_builder[index], slots[index], members[index]);
-                checked(
-                    index,
-                    quote! { #builder::push(&mut self.#slot, &value.#member) },
-                )
-            });
-            let (left, right) = run.split_at(run.len() / 2);
-            let left = passes(left, as_builder, slots, members, checked, root);
-            let right = passes(right, as_builder, slots, members, checked, root);
-            quote! {
-                if 0 #(+ #builders::STREAMS)* <= #root::__private::PASS_STREAMS {
-                    for value in ::core::clone::Clone::clone(&values) {
-                        #(#pushes)*
-                    }
-                } else {
-                    #left
-                    #right
-                }
-            }
-        }
-    }
-}
-
 /// The generic parameters of the builder struct, and how they are written.
 struct BuilderGenerics {
     /// `<...>` on the builder's declaration.
@@ -495,12 +435,10 @@ fn expand_struct(
                         ::core::clone::Clone::clone(&values),
                         |value| &value.#member,
                     ),
-                    narrow,
                 )
             },
         )
     });
-    let passes = passes(&all_fields, &as_builder, &slots, &members, &checked, root);
 
     // A transparent wrapper is a value, not a row: it takes the name of the
     // field that holds it, so it is neither a record nor a `ToDataFrame`.
@@ -540,7 +478,6 @@ fn expand_struct(
                 }
 
                 const LISTS: usize = 0 #(+ #as_builder::LISTS)*;
-                const STREAMS: usize = 0 #(+ #as_builder::STREAMS)*;
 
                 fn with_capacity(rows: usize) -> Self {
                     Self {
@@ -587,11 +524,11 @@ fn expand_struct(
                     ::core::result::Result::Ok(())
                 }
 
+                // One tight loop per field over the rows of the block.
                 #[inline(always)]
                 fn extend_from<'__df_derive_rows, __DfDeriveRows>(
                     &mut self,
                     values: __DfDeriveRows,
-                    narrow: bool,
                 ) -> #polars::PolarsResult<()>
                 where
                     #name #ty_generics: '__df_derive_rows,
@@ -599,14 +536,7 @@ fn expand_struct(
                             Item = &'__df_derive_rows #name #ty_generics,
                         > + ::core::clone::Clone,
                 {
-                    if narrow {
-                        // Small rows: one tight loop per field.
-                        #(#field_passes)*
-                    } else {
-                        // Larger rows: as many neighbouring fields per walk
-                        // as the buffer limit allows.
-                        #passes
-                    }
+                    #(#field_passes)*
                     ::core::result::Result::Ok(())
                 }
 

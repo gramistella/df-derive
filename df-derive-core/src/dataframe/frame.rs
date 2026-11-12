@@ -12,21 +12,22 @@ const PATH_END: char = '\u{1f}';
 /// lists is measured without a heap allocation.
 const INLINE_LISTS: usize = 8;
 
-/// Rows up to this many bytes are encoded one field at a time: each pass
-/// reads a small stride and fills a single column with a tight loop.
-pub(super) const SMALL_ROW: usize = 64;
-
-/// The most buffers one pass over larger rows writes to. Feeding many column
-/// buffers from a single loop makes them compete for the same cache sets, so
-/// wide rows are encoded a few fields per pass.
-pub const PASS_STREAMS: usize = 8;
+/// Bytes of rows encoded per block.
+///
+/// Within a block every column buffer is filled by its own loop, so only one
+/// buffer is being written at a time and the block's rows are read from
+/// memory once and from cache afterwards. Half of a 32 KiB first-level data
+/// cache, the smallest in common use, leaves the other half for the buffer
+/// being written. The exact value matters little; the README's benchmark
+/// section records how results vary with it.
+pub(super) const BLOCK_BYTES: usize = 16 * 1024;
 
 /// Encodes a slice.
 ///
 /// Rows that contain lists are measured first so every list buffer is
-/// allocated once at its final size. The rows are then appended in bulk; if
-/// that fails, they are encoded again row by row, which is the path that
-/// knows which row and field the error came from.
+/// allocated once at its final size. The rows are then appended block by
+/// block; if that fails, they are encoded again row by row, which is the
+/// path that knows which row and field the error came from.
 pub(super) fn encode_slice<T: Columnar>(rows: &[T]) -> PolarsResult<DataFrame> {
     let lists = <T::Builder as ColumnBuilder<T>>::LISTS;
     let mut builder = if lists == 0 {
@@ -44,7 +45,7 @@ pub(super) fn encode_slice<T: Columnar>(rows: &[T]) -> PolarsResult<DataFrame> {
         }
         <T::Builder as ColumnBuilder<T>>::with_capacities(rows.len(), &counts)
     };
-    if let Err(error) = builder.extend_from(rows.iter(), super::is_narrow::<T>()) {
+    if let Err(error) = builder.extend(rows) {
         return Err(locate(rows, error));
     }
     finish::<T>(builder, rows.len())

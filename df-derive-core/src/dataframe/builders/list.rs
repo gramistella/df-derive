@@ -131,7 +131,6 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
 
     // One counter for this list's total length, then the inner builder's.
     const LISTS: usize = 1 + B::LISTS;
-    const STREAMS: usize = 1 + B::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         Self {
@@ -165,7 +164,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
     }
 
     #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I, _narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         [T]: 'a,
         I: Iterator<Item = &'a [T]> + Clone,
@@ -196,7 +195,6 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
     }
 
     const LISTS: usize = <Self as ColumnBuilder<[T]>>::LISTS;
-    const STREAMS: usize = <Self as ColumnBuilder<[T]>>::STREAMS;
 
     fn with_capacity(rows: usize) -> Self {
         <Self as ColumnBuilder<[T]>>::with_capacity(rows)
@@ -217,12 +215,12 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
     }
 
     #[inline(always)]
-    fn extend_from<'a, I>(&mut self, values: I, narrow: bool) -> PolarsResult<()>
+    fn extend_from<'a, I>(&mut self, values: I) -> PolarsResult<()>
     where
         Vec<T>: 'a,
         I: Iterator<Item = &'a Vec<T>> + Clone,
     {
-        <Self as ColumnBuilder<[T]>>::extend_from(self, values.map(Vec::as_slice), narrow)
+        <Self as ColumnBuilder<[T]>>::extend_from(self, values.map(Vec::as_slice))
     }
 
     #[inline(always)]

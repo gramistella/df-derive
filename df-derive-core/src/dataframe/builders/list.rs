@@ -45,11 +45,14 @@ impl ListOffsets {
     #[inline(always)]
     #[allow(clippy::cast_possible_wrap)]
     pub(super) fn extend(&mut self, lens: impl Iterator<Item = usize>) {
+        // Locals for the loop: see `fill_flat`.
         let mut total = self.total;
-        self.ends.extend(lens.map(|len| {
+        let mut ends = std::mem::take(&mut self.ends);
+        ends.extend(lens.map(|len| {
             total = total.wrapping_add(len as i64);
             total
         }));
+        self.ends = ends;
         self.total = total;
     }
 
@@ -167,19 +170,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
         [T]: 'a,
         I: Iterator<Item = &'a [T]> + Clone,
     {
-        // The inner builder is moved into a local for the loop. As a field
-        // of `self` its buffer lengths are re-read from memory on every
-        // append; as a local the compiler can keep them in registers.
-        let mut inner = std::mem::replace(&mut self.inner, B::with_capacity(0));
-        let mut result = Ok(());
-        for value in values.clone() {
-            if let Err(error) = inner.extend(value) {
-                result = Err(error);
-                break;
-            }
-        }
-        self.inner = inner;
-        result?;
+        self.inner.extend_flat(values.clone())?;
         self.offsets.extend(values.map(<[T]>::len));
         Ok(())
     }

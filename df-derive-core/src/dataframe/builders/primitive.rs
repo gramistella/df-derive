@@ -27,6 +27,42 @@ pub(super) fn primitive_array<P: NativeType>(
     PrimitiveArray::try_new(P::PRIMITIVE.into(), values.into(), validity.cloned())
 }
 
+/// Below this many lists, appending them one by one is cheaper than sizing
+/// the destination first.
+const FLAT_FILL_MIN_LISTS: usize = 16;
+
+/// Appends every element of every list.
+///
+/// With many lists the destination is grown once to its final length and
+/// written through a local slice, so the loop carries no vector bookkeeping
+/// from one list to the next.
+#[inline(always)]
+pub(super) fn fill_flat<'a, P, I>(out: &mut Vec<P>, lists: I)
+where
+    P: Copy + Default + 'a,
+    I: Iterator<Item = &'a [P]> + Clone,
+{
+    if lists.size_hint().0 < FLAT_FILL_MIN_LISTS {
+        for list in lists {
+            out.extend_from_slice(list);
+        }
+        return;
+    }
+    let total: usize = lists.clone().map(<[P]>::len).sum();
+    let start = out.len();
+    out.resize(start + total, P::default());
+    let mut rest = &mut out[start..];
+    for list in lists {
+        let (head, tail) = rest.split_at_mut(list.len());
+        // An element loop, not `copy_from_slice`: rows usually hold a few
+        // elements, where an inlined loop beats a call to `memcpy`.
+        for (slot, value) in head.iter_mut().zip(list) {
+            *slot = *value;
+        }
+        rest = tail;
+    }
+}
+
 /// Builder for a column of native numeric values.
 pub struct PrimitiveBuilder<P>(Vec<P>);
 
@@ -85,6 +121,16 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
         I: Iterator<Item = &'a Option<P>> + Clone,
     {
         self.0.extend(values.map(|value| value.unwrap_or_default()));
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn extend_flat<'a, I>(&mut self, lists: I) -> PolarsResult<()>
+    where
+        P: 'a,
+        I: Iterator<Item = &'a [P]> + Clone,
+    {
+        fill_flat(&mut self.0, lists);
         Ok(())
     }
 
@@ -248,6 +294,15 @@ impl ColumnBuilder<bool> for BoolBuilder {
         I: Iterator<Item = &'a Option<bool>> + Clone,
     {
         self.0.extend(values.map(|value| value.unwrap_or_default()));
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn extend_flat<'a, I>(&mut self, lists: I) -> PolarsResult<()>
+    where
+        I: Iterator<Item = &'a [bool]> + Clone,
+    {
+        fill_flat(&mut self.0, lists);
         Ok(())
     }
 

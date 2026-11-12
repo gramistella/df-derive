@@ -67,6 +67,7 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
 
     /// Creates a builder for `rows` rows whose lists hold `counts` elements
     /// in total, as gathered by [`measure`](ColumnBuilder::measure).
+    #[must_use]
     fn with_capacities(rows: usize, counts: &[usize]) -> Self {
         let _ = counts;
         Self::with_capacity(rows)
@@ -147,6 +148,25 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
         Ok(())
     }
 
+    /// Appends every value of every slice, in order: the elements of a list
+    /// column, one slice per row. The default appends slice by slice, which
+    /// keeps each row's elements in cache while every buffer is filled.
+    ///
+    /// # Errors
+    /// Returns the first error produced by [`ColumnBuilder::push`].
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn extend_flat<'a, I>(&mut self, lists: I) -> PolarsResult<()>
+    where
+        T: Sized + 'a,
+        I: Iterator<Item = &'a [T]> + Clone,
+    {
+        for list in lists {
+            self.extend(list)?;
+        }
+        Ok(())
+    }
+
     /// Consumes the builder and appends its columns to `out`, named exactly
     /// as [`ColumnBuilder::schema`] names them for the same `name`.
     /// `validity`, when present, has one bit per pushed slot and applies to
@@ -164,10 +184,7 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
 
 /// Whether rows of type `T` are small enough to be walked once per column.
 #[must_use]
-pub const fn is_narrow<T: ?Sized>() -> bool
-where
-    T: Sized,
-{
+pub const fn is_narrow<T>() -> bool {
     ::core::mem::size_of::<T>() <= frame::SMALL_ROW
 }
 

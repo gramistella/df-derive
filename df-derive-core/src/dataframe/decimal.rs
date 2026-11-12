@@ -1,6 +1,11 @@
 #[cfg(feature = "rust_decimal")]
 const DECIMAL128_MAX_SCALE: u32 = 38;
 
+/// Mantissas at or beyond this magnitude need more than the 38 digits a
+/// Polars decimal can hold.
+#[cfg(feature = "rust_decimal")]
+const DECIMAL128_MANTISSA_LIMIT: u128 = 10u128.pow(DECIMAL128_MAX_SCALE);
+
 /// Converts a decimal value into its `i128` mantissa at a target scale.
 ///
 /// Implement this for a decimal type to store it in a Polars `Decimal`
@@ -9,7 +14,8 @@ const DECIMAL128_MAX_SCALE: u32 = 38;
 /// `None` surfaces as a compute error naming the row and field.
 pub trait Decimal128Encode {
     /// Returns the mantissa after rescaling `self` to `target_scale`, or
-    /// `None` if the conversion would overflow.
+    /// `None` if the result cannot be stored: it overflows `i128`, or its
+    /// magnitude reaches 10^38, the limit of a Polars decimal.
     fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
 }
 
@@ -39,11 +45,14 @@ impl Decimal128Encode for rust_decimal::Decimal {
         let source_scale = self.scale();
         let mantissa: i128 = self.mantissa();
         if source_scale == target_scale {
+            // A `rust_decimal` mantissa has 96 bits, well under the limit.
             return Some(mantissa);
         }
         if source_scale < target_scale {
             let pow = 10i128.pow(target_scale - source_scale);
-            return mantissa.checked_mul(pow);
+            return mantissa
+                .checked_mul(pow)
+                .filter(|scaled| scaled.unsigned_abs() < DECIMAL128_MANTISSA_LIMIT);
         }
         // Scale down on the unsigned magnitude, round half-to-even, then
         // restore the sign.

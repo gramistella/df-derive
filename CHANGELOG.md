@@ -66,10 +66,16 @@ where noted under "Changed".
 
 ### Performance
 
-- Every conversion is a single pass over the rows. Nested structs, optional
-  structs and lists of structs are written directly into the parent's column
-  buffers; the per-field reference vectors, intermediate `DataFrame`s, gather
-  for partly-null optional structs, and rechunk for lists are gone.
+- Nested structs, optional structs and lists of structs are written directly
+  into the parent's column buffers; the per-field reference vectors,
+  intermediate `DataFrame`s, gather for partly-null optional structs, and
+  rechunk for lists are gone.
+- Slices are encoded a few columns at a time. Small rows are filled one field
+  per pass with tight loops; wide rows take as many neighbouring fields per
+  pass as fit a limit of eight buffers, which avoids the cache contention of
+  feeding dozens of column buffers from one loop.
+- Rows that contain lists are measured first, so list buffers are allocated
+  once at their final size.
 - Generated code is roughly a tenth of its previous size and is emitted once
   instead of once per entry point.
 

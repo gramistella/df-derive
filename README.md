@@ -56,8 +56,8 @@ For a derived type `T`, through the `ToDataFrame` trait:
 | `T::empty_dataframe()` | zero rows, full schema |
 | `T::schema()` | column names and dtypes, in order |
 
-Every conversion makes one pass over the rows and writes each field straight
-into its column buffer.
+Every conversion writes each field straight into its column buffer, with no
+intermediate frames or per-field copies of the rows.
 
 ## How It Works
 
@@ -299,12 +299,18 @@ return `None` when the value does not fit. Then either annotate fields with
 
 ## Custom Builders
 
-`ColumnBuilder<T>` is the whole contract between a type and its columns:
-describe the schema, push a value, push a placeholder for a null, and hand the
-finished columns out. Implement it to store a type in a way the built-in
-encodings do not cover, then select it with `with = "..."` or make it the
-type's default with `impl Columnar`. A builder can wrap one of the provided
-builders and delegate to it.
+`ColumnBuilder<T>` is the whole contract between a type and its columns. It
+has five required methods: describe the schema, create a builder, push a
+value, push a placeholder for a null, and hand the finished columns out.
+Implement it to store a type in a way the built-in encodings do not cover,
+then select it with `with = "..."` or make it the type's default with
+`impl Columnar`. A builder can wrap one of the provided builders and delegate
+to it.
+
+The remaining methods and constants have defaults and exist for speed:
+`extend_from` appends a whole column's worth of values at once, `measure` and
+`with_capacities` let list buffers be allocated at their final size, and
+`STREAMS` tells a parent how many buffers the builder writes to.
 
 ## Features
 

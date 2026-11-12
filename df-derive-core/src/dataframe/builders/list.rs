@@ -3,7 +3,7 @@ use polars_arrow::array::ListArray;
 use polars_arrow::bitmap::Bitmap;
 use polars_arrow::offset::{Offsets, OffsetsBuffer};
 
-use crate::dataframe::{ColumnBuilder, Columnar, Fields};
+use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Wraps every column of another builder in a list.
 ///
@@ -15,6 +15,38 @@ pub struct ListBuilder<B> {
     offsets: Offsets<i64>,
 }
 
+/// Wraps the dtypes of `out[start..]` in `List`.
+pub(super) fn wrap_schema(out: &mut Fields, start: usize) {
+    for (_, dtype) in &mut out[start..] {
+        let inner = std::mem::replace(dtype, DataType::Null);
+        *dtype = DataType::List(Box::new(inner));
+    }
+}
+
+/// Wraps the columns `out[start..]` in list columns that share `offsets`.
+pub(super) fn wrap_columns(
+    out: &mut [Column],
+    start: usize,
+    offsets: Offsets<i64>,
+    validity: Option<&Bitmap>,
+) -> PolarsResult<()> {
+    let offsets: OffsetsBuffer<i64> = offsets.into();
+    for column in &mut out[start..] {
+        let series = column.as_materialized_series().rechunk();
+        let values = series.chunks()[0].clone();
+        let list = ListArray::<i64>::try_new(
+            ListArray::<i64>::default_datatype(values.dtype().clone()),
+            offsets.clone(),
+            values,
+            validity.cloned(),
+        )?;
+        let dtype = DataType::List(Box::new(series.dtype().clone()));
+        *column =
+            Series::from_chunk_and_dtype(series.name().clone(), Box::new(list), &dtype)?.into();
+    }
+    Ok(())
+}
+
 impl<B> ListBuilder<B> {
     fn list_schema<T>(name: PlSmallStr, out: &mut Fields)
     where
@@ -22,10 +54,7 @@ impl<B> ListBuilder<B> {
     {
         let start = out.len();
         B::schema(name, out);
-        for (_, dtype) in &mut out[start..] {
-            let inner = std::mem::replace(dtype, DataType::Null);
-            *dtype = DataType::List(Box::new(inner));
-        }
+        wrap_schema(out, start);
     }
 
     fn finish_lists<T>(
@@ -39,21 +68,7 @@ impl<B> ListBuilder<B> {
     {
         let start = out.len();
         self.inner.finish(name, None, out)?;
-        let offsets: OffsetsBuffer<i64> = self.offsets.into();
-        for column in &mut out[start..] {
-            let series = column.as_materialized_series().rechunk();
-            let values = series.chunks()[0].clone();
-            let list = ListArray::<i64>::try_new(
-                ListArray::<i64>::default_datatype(values.dtype().clone()),
-                offsets.clone(),
-                values,
-                validity.cloned(),
-            )?;
-            let dtype = DataType::List(Box::new(series.dtype().clone()));
-            *column =
-                Series::from_chunk_and_dtype(series.name().clone(), Box::new(list), &dtype)?.into();
-        }
-        Ok(())
+        wrap_columns(out, start, self.offsets, validity)
     }
 }
 
@@ -126,3 +141,6 @@ impl<T: Columnar> Columnar for Vec<T> {
 impl<T: Columnar> Columnar for [T] {
     type Builder = ListBuilder<T::Builder>;
 }
+
+impl<T: Record> Record for Vec<T> {}
+impl<T: Record> Record for [T] {}

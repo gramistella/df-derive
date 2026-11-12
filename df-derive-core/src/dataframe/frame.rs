@@ -27,7 +27,7 @@ where
     if columns.is_empty() {
         return Ok(DataFrame::empty_with_height(height));
     }
-    DataFrame::new(height, columns).map_err(|error| duplicate_columns::<T>(error))
+    DataFrame::new(height, columns).map_err(duplicate_columns::<T>)
 }
 
 pub(super) fn schema<T: Columnar>() -> PolarsResult<Vec<(String, DataType)>> {
@@ -62,6 +62,7 @@ pub fn child(parent: &PlSmallStr, field: &'static str) -> PlSmallStr {
 #[cold]
 #[inline(never)]
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn in_field(error: PolarsError, field: &'static str) -> PolarsError {
     error.wrap_msg(|message| {
         if message.contains(PATH_END) {
@@ -101,17 +102,23 @@ fn duplicate_column<T: ?Sized>(name: &str) -> PolarsError {
     )
 }
 
+/// Polars rejects duplicate column names when the frame is assembled. Report
+/// that with the same message `schema` uses, which names the column.
 #[cold]
 #[inline(never)]
-fn duplicate_columns<T: ?Sized>(error: PolarsError) -> PolarsError {
-    if let PolarsError::Duplicate(message) = &error {
-        return PolarsError::ComputeError(
-            format!(
-                "df-derive: duplicate column in the DataFrame output of {}: {message}",
-                std::any::type_name::<T>()
-            )
-            .into(),
-        );
+fn duplicate_columns<T: Columnar>(error: PolarsError) -> PolarsError {
+    if matches!(error, PolarsError::Duplicate(_))
+        && let Err(duplicate) = schema::<T>()
+    {
+        return duplicate;
     }
     error
+}
+
+/// Turns a failed `try_via` conversion into an encoding error.
+#[cold]
+#[inline(never)]
+#[must_use]
+pub fn conversion_error(error: &dyn std::fmt::Display) -> PolarsError {
+    PolarsError::ComputeError(error.to_string().into())
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
@@ -82,41 +82,6 @@ struct PrefixCollision {
     contract: CollisionChild,
     #[df_derive(flatten(prefix = "contract"))]
     key: CollisionChild,
-}
-
-#[derive(Clone)]
-struct ManualDuplicateSchema;
-
-impl ToDataFrame for ManualDuplicateSchema {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        <Self as Columnar>::columnar_from_refs(&[self])
-    }
-
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("dup".into(), &DataType::Int32).into(),
-        ])
-    }
-
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![
-            ("dup".to_owned(), DataType::Int32),
-            ("dup".to_owned(), DataType::Int32),
-        ])
-    }
-}
-
-impl Columnar for ManualDuplicateSchema {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let values = vec![1_i32; items.len()];
-        DataFrame::new_infer_height(vec![Series::new("dup".into(), values).into()])
-    }
-}
-
-#[derive(ToDataFrame, Clone)]
-struct ManualDuplicateParent {
-    #[df_derive(flatten)]
-    child: ManualDuplicateSchema,
 }
 
 fn column_names(df: &DataFrame) -> Vec<String> {
@@ -266,9 +231,4 @@ fn runtime_semantics() {
     );
     assert_compute_error_contains(TwoFlattenCollision::schema(), "duplicate column `id`");
     assert_compute_error_contains(PrefixCollision::schema(), "duplicate column `contract.id`");
-    assert_compute_error_contains(ManualDuplicateParent::schema(), "duplicate column `dup`");
-    assert_compute_error_contains(
-        ManualDuplicateParent::empty_dataframe(),
-        "duplicate column `dup`",
-    );
 }

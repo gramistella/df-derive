@@ -1,6 +1,16 @@
-error: field `one_byte` has `as_binary` but its type is a single `u8`; `as_binary` requires a `Vec<u8>` shape — bare `u8` is a single byte, not a binary blob. Wrap the field in `Vec<u8>` to opt into Binary.
- --> tests/fail/108-fail-as-binary-option-u8.rs:7:5
+error[E0277]: the trait bound `u8: AsRef<[u8]>` is not satisfied
+ --> tests/fail/108-fail-as-binary-option-u8.rs:8:15
   |
-7 | /     #[df_derive(as_binary)]
-8 | |     one_byte: Option<u8>,
-  | |________________________^
+8 |     one_byte: Option<u8>,
+  |               ^^^^^^ the trait `AsRef<[u8]>` is not implemented for `u8`
+  |
+help: the trait `ColumnBuilder<Option<T>>` is conditionally implemented for `OptionBuilder<B>`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/option.rs
+  |
+  | impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
+  | ^^^^^^^^^^^----------------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |            |
+  |            unsatisfied requirement introduced here: `BinaryBuilder: ColumnBuilder<u8>`
+  = note: required for `BinaryBuilder` to implement `ColumnBuilder<u8>`
+  = note: 1 redundant requirement hidden
+  = note: required for `OptionBuilder<BinaryBuilder>` to implement `ColumnBuilder<Option<u8>>`

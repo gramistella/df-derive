@@ -1,6 +1,14 @@
-error: field `duration` has `as_string`, but `std::time::Duration` and `core::time::Duration` do not implement `Display`; drop `as_string` to encode a Duration column, or wrap the value in a custom type that implements `Display`
- --> tests/fail/141-fail-as-string-on-std-duration.rs:7:5
+error[E0277]: `Duration` doesn't implement `std::fmt::Display`
+ --> tests/fail/141-fail-as-string-on-std-duration.rs:8:15
   |
-7 | /     #[df_derive(as_string)]
-8 | |     duration: std::time::Duration,
-  | |_________________________________^
+8 |     duration: std::time::Duration,
+  |               ^^^ the trait `std::fmt::Display` is not implemented for `Duration`
+  |
+help: the trait `ColumnBuilder<T>` is conditionally implemented for `DisplayBuilder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+  |
+  | impl<T: Display + ?Sized> ColumnBuilder<T> for DisplayBuilder {
+  | ^^^^^^^^-------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |         |
+  |         unsatisfied requirement introduced here: `Duration: std::fmt::Display`
+  = note: required for `DisplayBuilder` to implement `ColumnBuilder<Duration>`

@@ -38,12 +38,9 @@ fn std_generic<'a>(path: &'a syn::Path, name: &str, modules: &[&[&str]]) -> Opti
     let prefix_matches = prefix.is_empty()
         || modules.iter().any(|module| {
             module.len() == prefix.len()
-                && module
-                    .iter()
-                    .zip(prefix)
-                    .all(|(expected, segment)| {
-                        segment.ident == expected && segment.arguments.is_none()
-                    })
+                && module.iter().zip(prefix).all(|(expected, segment)| {
+                    segment.ident == expected && segment.arguments.is_none()
+                })
         });
     if !prefix_matches {
         return None;
@@ -67,11 +64,9 @@ fn wrapper(ty: &Type) -> Option<Wrapper<'_>> {
         Type::Slice(slice) => Some(Wrapper::Slice(&slice.elem)),
         Type::Path(path) if path.qself.is_none() => {
             let path = &path.path;
-            if let Some(inner) = std_generic(
-                path,
-                "Option",
-                &[&["std", "option"], &["core", "option"]],
-            ) {
+            if let Some(inner) =
+                std_generic(path, "Option", &[&["std", "option"], &["core", "option"]])
+            {
                 return Some(Wrapper::Option(inner));
             }
             if let Some(inner) = std_generic(path, "Vec", &[&["std", "vec"], &["alloc", "vec"]]) {
@@ -155,5 +150,48 @@ pub fn leaf_is_tuple(ty: &Type) -> bool {
             | Wrapper::Pointer(inner),
         ) => leaf_is_tuple(inner),
         None => matches!(ty, Type::Tuple(_)),
+    }
+}
+
+/// Whether `ty` contains the deriving type itself, written as `Self`, as its
+/// bare name, or as `self::Name` / `crate::Name`.
+pub fn mentions_self(ty: &Type, name: &syn::Ident) -> bool {
+    let any = |types: &mut dyn Iterator<Item = &Type>| {
+        let mut found = false;
+        for ty in types {
+            found |= mentions_self(ty, name);
+        }
+        found
+    };
+    match ty {
+        Type::Paren(inner) => mentions_self(&inner.elem, name),
+        Type::Group(inner) => mentions_self(&inner.elem, name),
+        Type::Reference(inner) => mentions_self(&inner.elem, name),
+        Type::Slice(inner) => mentions_self(&inner.elem, name),
+        Type::Array(inner) => mentions_self(&inner.elem, name),
+        Type::Ptr(inner) => mentions_self(&inner.elem, name),
+        Type::Tuple(tuple) => any(&mut tuple.elems.iter()),
+        Type::Path(path) if path.qself.is_none() => {
+            let segments: Vec<_> = path.path.segments.iter().collect();
+            let is_self = match segments.as_slice() {
+                [only] => only.ident == "Self" || only.ident == *name,
+                [scope, last] => {
+                    (scope.ident == "self" || scope.ident == "crate") && last.ident == *name
+                }
+                _ => false,
+            };
+            is_self
+                || segments.iter().any(|segment| match &segment.arguments {
+                    PathArguments::AngleBracketed(arguments) => any(&mut arguments
+                        .args
+                        .iter()
+                        .filter_map(|argument| match argument {
+                            GenericArgument::Type(ty) => Some(ty),
+                            _ => None,
+                        })),
+                    _ => false,
+                })
+        }
+        _ => false,
     }
 }

@@ -1,11 +1,5 @@
-error: field `bytes` combines `as_binary` with another override; `as_binary` produces a Binary column over a `Vec<u8>` shape and is mutually exclusive with `as_str`, `as_string`, `decimal(...)`, and `time_unit = "..."` — drop one
+error: `decimal` cannot be combined with `as_binary`: a field has one encoding
  --> tests/fail/114-fail-as-binary-with-decimal.rs:7:28
   |
 7 |     #[df_derive(as_binary, decimal(precision = 18, scale = 4))]
-  |                            ^^^^^^^
-
-error: first `as_binary` override declared here
- --> tests/fail/114-fail-as-binary-with-decimal.rs:7:17
-  |
-7 |     #[df_derive(as_binary, decimal(precision = 18, scale = 4))]
-  |                 ^^^^^^^^^
+  |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

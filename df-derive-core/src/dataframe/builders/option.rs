@@ -2,7 +2,7 @@ use polars::prelude::{Column, PlSmallStr, PolarsResult};
 use polars_arrow::bitmap::{Bitmap, BitmapBuilder};
 use polars_arrow::compute::utils::combine_validities_and;
 
-use crate::dataframe::{ColumnBuilder, Columnar, Fields};
+use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Adds a validity bitmap on top of another builder.
 ///
@@ -60,3 +60,5 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
 impl<T: Columnar> Columnar for Option<T> {
     type Builder = OptionBuilder<T::Builder>;
 }
+
+impl<T: Record> Record for Option<T> {}

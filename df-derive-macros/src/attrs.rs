@@ -8,6 +8,21 @@ use syn::{Attribute, LitInt, LitStr};
 pub struct ContainerAttrs {
     /// Path of the crate that exposes the runtime as `<path>::dataframe`.
     pub krate: syn::Path,
+    /// The type is a single-field wrapper that encodes exactly as its field.
+    pub transparent: Option<Span>,
+    /// Encode through another row type built from a reference to this one.
+    pub via: Option<Via>,
+    /// Extra where-clause predicates for the generated impls.
+    pub bounds: Vec<syn::WherePredicate>,
+}
+
+/// A projection chosen with `via = "..."` or `try_via = "..."`.
+pub struct Via {
+    /// The row type, written with `'_` for lifetimes borrowed from the value.
+    pub row: syn::Type,
+    /// Whether the conversion is `TryFrom` rather than `From`.
+    pub fallible: bool,
+    pub span: Span,
 }
 
 /// A time unit named by `time_unit = "..."`.
@@ -25,7 +40,7 @@ pub enum Encoding {
     AsBinary,
     Decimal { precision: u8, scale: u8 },
     TimeUnit(TimeUnit),
-    With(syn::Type),
+    With(Box<syn::Type>),
 }
 
 impl Encoding {
@@ -65,8 +80,40 @@ fn df_derive_attrs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
 
 pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     let mut krate: Option<syn::Path> = None;
+    let mut transparent: Option<Span> = None;
+    let mut via: Option<Via> = None;
+    let mut bounds = Vec::new();
     for attr in df_derive_attrs(attrs) {
         attr.parse_nested_meta(|meta| {
+            let fallible = meta.path.is_ident("try_via");
+            if fallible || meta.path.is_ident("via") {
+                if via.is_some() {
+                    return Err(meta.error("a type has one `via` or `try_via` projection"));
+                }
+                let span = meta.path.span();
+                let literal: LitStr = meta.value()?.parse()?;
+                via = Some(Via {
+                    row: literal.parse()?,
+                    fallible,
+                    span,
+                });
+                return Ok(());
+            }
+            if meta.path.is_ident("bound") {
+                let literal: LitStr = meta.value()?.parse()?;
+                let parsed = literal.parse_with(
+                    syn::punctuated::Punctuated::<syn::WherePredicate, syn::Token![,]>::parse_terminated,
+                )?;
+                bounds.extend(parsed);
+                return Ok(());
+            }
+            if meta.path.is_ident("transparent") {
+                if transparent.is_some() {
+                    return Err(meta.error("duplicate `transparent` attribute"));
+                }
+                transparent = Some(meta.path.span());
+                return Ok(());
+            }
             if meta.path.is_ident("crate") {
                 if krate.is_some() {
                     return Err(meta.error("duplicate `crate` attribute"));
@@ -76,12 +123,22 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
                 return Ok(());
             }
             Err(meta.error(
-                "unknown container attribute; the only one is `crate = \"path\"`",
+                "unknown container attribute; expected one of `crate = \"...\"`, `transparent`, \
+                 `via = \"...\"`, `try_via = \"...\"`, `bound = \"...\"`",
             ))
         })?;
     }
+    if let (Some(span), Some(_)) = (transparent, &via) {
+        return Err(syn::Error::new(
+            span,
+            "`transparent` cannot be combined with `via`: a projected type encodes as its row type",
+        ));
+    }
     Ok(ContainerAttrs {
         krate: krate.unwrap_or_else(|| syn::parse_quote!(::df_derive)),
+        transparent,
+        via,
+        bounds,
     })
 }
 
@@ -196,7 +253,7 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 time_unit(&meta)?
             } else if meta.path.is_ident("with") {
                 let literal: LitStr = meta.value()?.parse()?;
-                Encoding::With(literal.parse()?)
+                Encoding::With(Box::new(literal.parse()?))
             } else {
                 return Err(meta.error(
                     "unknown field attribute; expected one of `skip`, `flatten`, `as_str`, \
@@ -215,13 +272,13 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         })?;
     }
 
-    if let Some(skip) = parsed.skip {
-        if parsed.flatten.is_some() || parsed.encoding.is_some() {
-            return Err(syn::Error::new(
-                skip,
-                "`skip` cannot be combined with other attributes: a skipped field produces no column",
-            ));
-        }
+    if let Some(skip) = parsed.skip
+        && (parsed.flatten.is_some() || parsed.encoding.is_some())
+    {
+        return Err(syn::Error::new(
+            skip,
+            "`skip` cannot be combined with other attributes: a skipped field produces no column",
+        ));
     }
     if let (Some((_, flatten)), Some((encoding, _))) = (&parsed.flatten, &parsed.encoding) {
         return Err(syn::Error::new(

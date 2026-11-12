@@ -1,6 +1,28 @@
-error: field `elapsed` has `time_unit = "..."` but its base type is not `chrono::DateTime<Tz>`, `chrono::NaiveDateTime`, `std::time::Duration`, `core::time::Duration`, or `chrono::Duration`; remove the attribute or change the field type
-  --> tests/fail/127-fail-external-time-duration.rs:11:5
+error[E0277]: `time::Duration` cannot be encoded with `TemporalBuilder<Ns>`
+  --> tests/fail/127-fail-external-time-duration.rs:12:14
    |
-11 | /     #[df_derive(time_unit = "ns")]
-12 | |     elapsed: time::Duration,
-   | |___________________________^
+12 |     elapsed: time::Duration,
+   |              ^^^^ this encoding does not apply to `time::Duration`
+   |
+   = help: the trait `ColumnBuilder<time::Duration>` is not implemented for `TemporalBuilder<Ns>`
+   = note: the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = "..."`) does not support the field's type
+help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/temporal.rs
+   |
+   |         impl<U: Unit $(, $tz: chrono::TimeZone)?> ColumnBuilder<$ty> for TemporalBuilder<U> {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         `ColumnBuilder<chrono::datetime::DateTime<Tz>>`
+   |         `ColumnBuilder<chrono::naive::datetime::NaiveDateTime>`
+   |         `ColumnBuilder<chrono::time_delta::TimeDelta>`
+   |         `ColumnBuilder<std::time::Duration>`
+...
+   | temporal!(std::time::Duration => Duration, from_std, Ns);
+   | -------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
+   | -------------------------------------------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
+   | --------------------------------------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
+   | ----------------------------------------------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `temporal` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,29 +1,625 @@
-error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
  --> tests/fail/148-fail-mutable-references.rs:8:12
   |
 8 |     field: &'a mut i32,
-  |            ^^^^^^^^^^^
+  |            ^ no column encoding for `&'static mut i32`
+  |
+  = help: the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+  = note: this error originates in the macro `primitive` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
-  --> tests/fail/148-fail-mutable-references.rs:13:19
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `&'static mut i32`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  | pub trait ColumnBuilder<T: ?Sized>: Sized {
+  |                                     ^^^^^ required by this bound in `ColumnBuilder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `&'static mut i32`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  |     type Builder: ColumnBuilder<Self>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:13:12
    |
 13 |     field: Option<&'a mut String>,
-   |                   ^^^^^^^^^^^^^^
+   |            ^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
 
-error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
-  --> tests/fail/148-fail-mutable-references.rs:18:16
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   | pub trait ColumnBuilder<T: ?Sized>: Sized {
+   |                                     ^^^^^ required by this bound in `ColumnBuilder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     type Builder: ColumnBuilder<Self>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:18:12
    |
 18 |     field: Vec<&'a mut u32>,
-   |                ^^^^^^^^^^^
+   |            ^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+   = note: this error originates in the macro `primitive` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   | pub trait ColumnBuilder<T: ?Sized>: Sized {
+   |                                     ^^^^^ required by this bound in `ColumnBuilder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     type Builder: ColumnBuilder<Self>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
   --> tests/fail/148-fail-mutable-references.rs:23:12
    |
 23 |     field: &'a mut str,
-   |            ^^^^^^^^^^^
-
-error: df-derive does not support `&mut T` fields; use `&T`, an owned value, or mark the field `#[df_derive(skip)]`
-  --> tests/fail/148-fail-mutable-references.rs:29:12
+   |            ^ no column encoding for `&'static mut str`
    |
-29 |     field: &'a mut [u8],
-   |            ^^^^^^^^^^^^
+   = help: the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut str`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   | pub trait ColumnBuilder<T: ?Sized>: Sized {
+   |                                     ^^^^^ required by this bound in `ColumnBuilder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut str`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     type Builder: ColumnBuilder<Self>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `&'static mut i32`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: the return type of a function must have a statically known size
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut str`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `&'static mut i32`
+  |
+  = help: the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+  = note: this error originates in the derive macro `ToDataFrame` which comes from the expansion of the macro `primitive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut i32` cannot be stored in a DataFrame column
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `&'static mut i32`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut i32`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `i32`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+  |
+  |           impl Columnar for $ty {
+  |           ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / primitive! {
+  | |     i8 => Int8, Int8Chunked;
+  | |     i16 => Int16, Int16Chunked;
+  | |     i32 => Int32, Int32Chunked;
+... |
+  | |     f64 => Float64, Float64Chunked;
+  | | }
+  | |_- in this macro invocation
+  = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/148-fail-mutable-references.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut String` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut String`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut String`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `String`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for String {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static String`, but not for `&'static mut String`
+   = note: required for `Option<&'static mut String>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+   = note: this error originates in the derive macro `ToDataFrame` which comes from the expansion of the macro `primitive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut u32` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut u32`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut u32`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `u32`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/primitive.rs
+   |
+   |           impl Columnar for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+...
+   | / primitive! {
+   | |     i8 => Int8, Int8Chunked;
+   | |     i16 => Int16, Int16Chunked;
+   | |     i32 => Int32, Int32Chunked;
+...  |
+   | |     f64 => Float64, Float64Chunked;
+   | | }
+   | |_- in this macro invocation
+   = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
+   = note: required for `Vec<&'static mut u32>` to implement `Columnar`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut str`
+   |
+   = help: the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `&'static mut str` cannot be stored in a DataFrame column
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `&'static mut str`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `&'static mut str`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+help: the trait `Columnar` is implemented for `str`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/text.rs
+   |
+   | impl Columnar for str {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = note: `Columnar` is implemented for `&'static str`, but not for `&'static mut str`
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/148-fail-mutable-references.rs:21:10
+   |
+21 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -10,6 +10,7 @@
 
 mod decimal;
 mod list;
+mod map;
 mod option;
 mod pointer;
 mod primitive;
@@ -19,6 +20,7 @@ mod tuple;
 
 pub use decimal::DecimalBuilder;
 pub use list::ListBuilder;
+pub use map::MapBuilder;
 pub use option::OptionBuilder;
 pub use pointer::PtrBuilder;
 pub use primitive::{BoolBuilder, Primitive, PrimitiveBuilder};

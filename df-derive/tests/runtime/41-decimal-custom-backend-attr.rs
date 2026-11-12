@@ -1,11 +1,10 @@
-use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 
 // A deliberately non-`Decimal`-named backend. The explicit `decimal(...)`
 // attribute is the semantic opt-in that tells the macro to route this leaf
-// through `Decimal128Encode`; unannotated custom structs still flatten as
-// nested structs.
+// through `Decimal128Encode`.
 #[derive(Clone)]
 struct MoneyAmount {
     mantissa: i128,
@@ -31,26 +30,6 @@ impl Decimal128Encode for MoneyAmount {
                 Some(self.mantissa / pow)
             }
         }
-    }
-}
-
-impl ToDataFrame for MoneyAmount {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
-    }
-
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
-    }
-
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(Vec::new())
-    }
-}
-
-impl Columnar for MoneyAmount {
-    fn columnar_from_refs(_items: &[&Self]) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(Vec::<Column>::new())
     }
 }
 

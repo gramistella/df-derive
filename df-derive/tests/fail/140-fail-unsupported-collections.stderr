@@ -1,17 +1,449 @@
-error: df-derive does not support `BTreeSet` fields. Convert to `Vec<T>` (order will follow the set's sorted iteration order).
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
  --> tests/fail/140-fail-unsupported-collections.rs:8:13
   |
 8 |     values: BTreeSet<String>,
-  |             ^^^^^^^^^^^^^^^^
+  |             ^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
 
-error: df-derive does not support `VecDeque` fields. Convert to `Vec<T>` before assignment.
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  | pub trait ColumnBuilder<T: ?Sized>: Sized {
+  |                                     ^^^^^ required by this bound in `ColumnBuilder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  |     type Builder: ColumnBuilder<Self>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
   --> tests/fail/140-fail-unsupported-collections.rs:13:13
    |
 13 |     values: VecDeque<String>,
-   |             ^^^^^^^^^^^^^^^^
+   |             ^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
 
-error: df-derive does not support `LinkedList` fields. Convert to `Vec<T>` before assignment.
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   | pub trait ColumnBuilder<T: ?Sized>: Sized {
+   |                                     ^^^^^ required by this bound in `ColumnBuilder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     type Builder: ColumnBuilder<Self>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
   --> tests/fail/140-fail-unsupported-collections.rs:18:13
    |
 18 |     values: LinkedList<String>,
-   |             ^^^^^^^^^^^^^^^^^^
+   |             ^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   | pub trait ColumnBuilder<T: ?Sized>: Sized {
+   |                                     ^^^^^ required by this bound in `ColumnBuilder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     type Builder: ColumnBuilder<Self>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: the return type of a function must have a statically known size
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `BTreeSet<String>` cannot be stored in a DataFrame column
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `BTreeSet<String>`
+  |
+  = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `BTreeSet<String>`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+ --> tests/fail/140-fail-unsupported-collections.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `VecDeque<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `VecDeque<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `VecDeque<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:11:10
+   |
+11 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `LinkedList<String>` cannot be stored in a DataFrame column
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^ no column encoding for `LinkedList<String>`
+   |
+   = help: within `_::__DfDeriveBuilder`, the trait `Columnar` is not implemented for `LinkedList<String>`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required because it appears within the type `_::__DfDeriveBuilder`
+  --> tests/fail/140-fail-unsupported-collections.rs:16:10
+   |
+16 | #[derive(ToDataFrame)]
+   |          ^^^^^^^^^^^
+   = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

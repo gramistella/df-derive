@@ -1,6 +1,17 @@
-error: field `not_a_decimal` has `decimal(...)` but its base type is not a decimal backend candidate; `decimal(...)` applies to types named `Decimal`, custom struct types, or generic type parameters that implement `Decimal128Encode`
- --> tests/fail/101-fail-decimal-on-non-decimal.rs:7:5
+error[E0277]: the trait bound `f64: Decimal128Encode` is not satisfied
+ --> tests/fail/101-fail-decimal-on-non-decimal.rs:8:20
   |
-7 | /     #[df_derive(decimal(precision = 38, scale = 18))]
-8 | |     not_a_decimal: f64,
-  | |______________________^
+8 |     not_a_decimal: f64,
+  |                    ^^^ the trait `Decimal128Encode` is not implemented for `f64`
+  |
+help: the following other types implement trait `Decimal128Encode`
+ --> $WORKSPACE/df-derive-core/src/dataframe/decimal.rs
+  |
+  | / impl<T> Decimal128Encode for &T
+  | | where
+  | |     T: Decimal128Encode + ?Sized,
+  | |_________________________________^ `&T`
+...
+  |   impl Decimal128Encode for rust_decimal::Decimal {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rust_decimal::decimal::Decimal`
+  = note: required for `DecimalBuilder<38, 18>` to implement `ColumnBuilder<f64>`

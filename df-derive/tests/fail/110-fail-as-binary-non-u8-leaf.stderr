@@ -1,6 +1,17 @@
-error: field `ints` has `as_binary` but its base type is not `u8`; `as_binary` requires a `Vec<u8>` shape (the innermost `Vec` becomes the Binary blob). Change the field type or drop the attribute.
- --> tests/fail/110-fail-as-binary-non-u8-leaf.rs:7:5
+error[E0277]: the trait bound `i32: AsRef<[u8]>` is not satisfied
+ --> tests/fail/110-fail-as-binary-non-u8-leaf.rs:8:11
   |
-7 | /     #[df_derive(as_binary)]
-8 | |     ints: Vec<i32>,
-  | |__________________^
+8 |     ints: Vec<i32>,
+  |           ^^^ the trait `AsRef<[u8]>` is not implemented for `i32`
+  |
+help: `ListBuilder<B>` implements trait `ColumnBuilder<T>`
+ --> $WORKSPACE/df-derive-core/src/dataframe/builders/list.rs
+  |
+  | impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ColumnBuilder<[T]>`
+...
+  | impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ColumnBuilder<Vec<T>>`
+  = note: required for `BinaryBuilder` to implement `ColumnBuilder<i32>`
+  = note: 1 redundant requirement hidden
+  = note: required for `ListBuilder<BinaryBuilder>` to implement `ColumnBuilder<Vec<i32>>`

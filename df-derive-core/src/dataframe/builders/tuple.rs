@@ -2,7 +2,7 @@ use polars::prelude::{Column, PlSmallStr, PolarsResult};
 use polars_arrow::bitmap::Bitmap;
 
 use crate::dataframe::frame::{child, in_field};
-use crate::dataframe::{ColumnBuilder, Columnar, Fields};
+use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Builder for `()`, which contributes no columns.
 pub struct UnitBuilder;
@@ -77,6 +77,8 @@ macro_rules! tuple {
         impl<$($t: Columnar),+> Columnar for ($($t,)+) {
             type Builder = ($($t::Builder,)+);
         }
+
+        impl<$($t: Columnar),+> Record for ($($t,)+) {}
     )*};
 }
 

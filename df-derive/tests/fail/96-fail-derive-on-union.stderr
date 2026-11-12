@@ -1,4 +1,4 @@
-error: df-derive cannot be derived on unions; derive `ToDataFrame` on a struct
+error: `ToDataFrame` cannot be derived for unions
  --> tests/fail/96-fail-derive-on-union.rs:6:1
   |
 6 | union Bits {

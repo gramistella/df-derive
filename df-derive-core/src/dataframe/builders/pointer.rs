@@ -5,7 +5,7 @@ use std::sync::Arc;
 use polars::prelude::{Column, PlSmallStr, PolarsResult};
 use polars_arrow::bitmap::Bitmap;
 
-use crate::dataframe::{ColumnBuilder, Columnar, Fields};
+use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
 /// Encodes a pointer by encoding the value it points to.
 ///
@@ -53,6 +53,12 @@ macro_rules! transparent_pointer {
             $t: Columnar + ?Sized $(+ $bound)?,
         {
             type Builder = PtrBuilder<$t::Builder>;
+        }
+
+        impl<$($lt,)? $t> Record for $ptr
+        where
+            $t: Record + ?Sized $(+ $bound)?,
+        {
         }
     )*};
 }

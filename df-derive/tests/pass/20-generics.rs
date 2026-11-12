@@ -1,12 +1,11 @@
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-#[path = "../local_runtime.rs"]
+#[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 // Nested struct used as a generic instantiation target
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct MetaStruct {
     timestamp: i64,
     note: String,
@@ -14,7 +13,6 @@ struct MetaStruct {
 
 // Generic struct with one type parameter
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Wrapper<T>
 where
     T: Clone,
@@ -25,7 +23,6 @@ where
 
 // Default type parameter (M defaults to ())
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct DefaultMeta<M = ()>
 where
     M: Clone,
@@ -36,7 +33,6 @@ where
 
 // Multiple generics
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct Multi<A, B>
 where
     A: Clone,
@@ -49,7 +45,6 @@ where
 
 // Generic field wrapped in Option
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptWrapper<T>
 where
     T: Clone,
@@ -60,7 +55,6 @@ where
 
 // Generic field wrapped in Vec
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecWrapper<T>
 where
     T: Clone,
@@ -73,7 +67,6 @@ where
 // as AnyValue::Null; this verifies the encoder's two-Option collapse over
 // generic payloads still produces correct output.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptOptWrapper<T>
 where
     T: Clone,
@@ -85,7 +78,6 @@ where
 // Option<Vec<T>>: depth-2 with the inner being a Vec. Goes through the
 // generic on_vec branch with tail=[] inside an Option Some-recursion.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OptVecWrapper<T>
 where
     T: Clone,
@@ -97,7 +89,6 @@ where
 // Vec<Option<T>>: depth-2 where the outer Vec layer dispatches into the
 // generic-vec helper with tail=[Option].
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecOptWrapper<T>
 where
     T: Clone,
@@ -109,7 +100,6 @@ where
 // Vec<Vec<T>>: depth-2 with both layers being Vec. Recurses through the
 // generic-vec helper with tail=[Vec].
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct VecVecWrapper<T>
 where
     T: Clone,
@@ -119,7 +109,6 @@ where
 }
 
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct InnerGeneric<M>
 where
     M: Clone,
@@ -130,7 +119,6 @@ where
 
 // Outer struct that propagates its own `M` into nested generic fields.
 #[derive(ToDataFrame, Clone)]
-#[df_derive(trait = "crate::core::dataframe::ToDataFrame")]
 struct OuterPropagating<M = ()>
 where
     M: Clone,
@@ -139,28 +127,6 @@ where
     direct: InnerGeneric<M>,
     optional: Option<InnerGeneric<M>>,
     listed: Vec<InnerGeneric<M>>,
-}
-
-// Local impls of ToDataFrame/Columnar for f64 so generic instantiation with a
-// primitive can flatten via a single column. Implementing on a foreign primitive
-// is allowed because the trait is defined in this test crate.
-impl ToDataFrame for f64 {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &[*self]).into()])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new_empty("value".into(), &DataType::Float64).into()])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("value".to_string(), DataType::Float64)])
-    }
-}
-
-impl Columnar for f64 {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let owned: Vec<Self> = items.iter().map(|&&x| x).collect();
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &owned).into()])
-    }
 }
 
 fn main() {
@@ -188,7 +154,7 @@ fn test_primitive_instantiation() {
         schema,
         vec![
             ("id".into(), DataType::UInt32),
-            ("payload.value".into(), DataType::Float64),
+            ("payload".into(), DataType::Float64),
         ]
     );
 
@@ -199,7 +165,7 @@ fn test_primitive_instantiation() {
         AnyValue::UInt32(1)
     );
     assert_eq!(
-        df.column("payload.value").unwrap().get(0).unwrap(),
+        df.column("payload").unwrap().get(0).unwrap(),
         AnyValue::Float64(3.5)
     );
 
@@ -218,7 +184,7 @@ fn test_primitive_instantiation() {
         AnyValue::UInt32(3)
     );
     assert_eq!(
-        batch_df.column("payload.value").unwrap().get(2).unwrap(),
+        batch_df.column("payload").unwrap().get(2).unwrap(),
         AnyValue::Float64(3.0)
     );
 
@@ -480,7 +446,7 @@ fn test_option_wrapped_generic() {
         schema,
         vec![
             ("id".into(), DataType::UInt32),
-            ("payload.value".into(), DataType::Float64),
+            ("payload".into(), DataType::Float64),
         ]
     );
 
@@ -493,14 +459,14 @@ fn test_option_wrapped_generic() {
     let df_some = some_w.to_dataframe().unwrap();
     assert_eq!(df_some.shape(), (1, 2));
     assert_eq!(
-        df_some.column("payload.value").unwrap().get(0).unwrap(),
+        df_some.column("payload").unwrap().get(0).unwrap(),
         AnyValue::Float64(3.5)
     );
 
     let df_none = none_w.to_dataframe().unwrap();
     assert_eq!(df_none.shape(), (1, 2));
     assert!(matches!(
-        df_none.column("payload.value").unwrap().get(0).unwrap(),
+        df_none.column("payload").unwrap().get(0).unwrap(),
         AnyValue::Null
     ));
 
@@ -522,15 +488,15 @@ fn test_option_wrapped_generic() {
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape(), (3, 2));
     assert_eq!(
-        batch.column("payload.value").unwrap().get(0).unwrap(),
+        batch.column("payload").unwrap().get(0).unwrap(),
         AnyValue::Float64(1.0)
     );
     assert!(matches!(
-        batch.column("payload.value").unwrap().get(1).unwrap(),
+        batch.column("payload").unwrap().get(1).unwrap(),
         AnyValue::Null
     ));
     assert_eq!(
-        batch.column("payload.value").unwrap().get(2).unwrap(),
+        batch.column("payload").unwrap().get(2).unwrap(),
         AnyValue::Float64(2.0)
     );
 
@@ -602,7 +568,7 @@ fn test_vec_wrapped_generic() {
         vec![
             ("id".into(), DataType::UInt32),
             (
-                "payload.value".into(),
+                "payload".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -625,14 +591,14 @@ fn test_vec_wrapped_generic() {
     let df = items.as_slice().to_dataframe().unwrap();
     assert_eq!(df.shape(), (3, 2));
     assert_eq!(
-        df.column("payload.value").unwrap().dtype(),
+        df.column("payload").unwrap().dtype(),
         &DataType::List(Box::new(DataType::Float64))
     );
 
-    // Each row's "payload.value" is itself a list. Materialize and check.
-    let row0 = df.column("payload.value").unwrap().get(0).unwrap();
-    let row1 = df.column("payload.value").unwrap().get(1).unwrap();
-    let row2 = df.column("payload.value").unwrap().get(2).unwrap();
+    // Each row's "payload" is itself a list. Materialize and check.
+    let row0 = df.column("payload").unwrap().get(0).unwrap();
+    let row1 = df.column("payload").unwrap().get(1).unwrap();
+    let row2 = df.column("payload").unwrap().get(2).unwrap();
     assert!(matches!(row0, AnyValue::List(_)));
     assert!(matches!(row1, AnyValue::List(_)));
     assert!(matches!(row2, AnyValue::List(_)));
@@ -701,7 +667,7 @@ fn test_vec_wrapped_generic() {
     };
     let single_df = single.to_dataframe().unwrap();
     assert_eq!(single_df.shape(), (1, 2));
-    if let AnyValue::List(s) = single_df.column("payload.value").unwrap().get(0).unwrap() {
+    if let AnyValue::List(s) = single_df.column("payload").unwrap().get(0).unwrap() {
         assert_eq!(s.len(), 3);
     } else {
         panic!("expected List AnyValue");
@@ -724,7 +690,7 @@ fn test_doubly_wrapped_generic() {
         schema,
         vec![
             ("id".into(), DataType::UInt32),
-            ("payload.value".into(), DataType::Float64),
+            ("payload".into(), DataType::Float64),
         ]
     );
 
@@ -745,15 +711,15 @@ fn test_doubly_wrapped_generic() {
     let batch = items.as_slice().to_dataframe().unwrap();
     assert_eq!(batch.shape(), (3, 2));
     assert_eq!(
-        batch.column("payload.value").unwrap().get(0).unwrap(),
+        batch.column("payload").unwrap().get(0).unwrap(),
         AnyValue::Float64(7.5)
     );
     assert!(matches!(
-        batch.column("payload.value").unwrap().get(1).unwrap(),
+        batch.column("payload").unwrap().get(1).unwrap(),
         AnyValue::Null
     ));
     assert!(matches!(
-        batch.column("payload.value").unwrap().get(2).unwrap(),
+        batch.column("payload").unwrap().get(2).unwrap(),
         AnyValue::Null
     ));
 }
@@ -768,7 +734,7 @@ fn test_depth2_combos() {
         vec![
             ("id".into(), DataType::UInt32),
             (
-                "payload.value".into(),
+                "payload".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -786,9 +752,9 @@ fn test_depth2_combos() {
     ];
     let df_ov = items_ov.as_slice().to_dataframe().unwrap();
     assert_eq!(df_ov.shape(), (3, 2));
-    let row0 = df_ov.column("payload.value").unwrap().get(0).unwrap();
-    let row1 = df_ov.column("payload.value").unwrap().get(1).unwrap();
-    let row2 = df_ov.column("payload.value").unwrap().get(2).unwrap();
+    let row0 = df_ov.column("payload").unwrap().get(0).unwrap();
+    let row1 = df_ov.column("payload").unwrap().get(1).unwrap();
+    let row2 = df_ov.column("payload").unwrap().get(2).unwrap();
     if let AnyValue::List(s) = row0 {
         assert_eq!(s.len(), 2);
     } else {
@@ -808,7 +774,7 @@ fn test_depth2_combos() {
         vec![
             ("id".into(), DataType::UInt32),
             (
-                "payload.value".into(),
+                "payload".into(),
                 DataType::List(Box::new(DataType::Float64)),
             ),
         ]
@@ -825,7 +791,7 @@ fn test_depth2_combos() {
     ];
     let df_vo = items_vo.as_slice().to_dataframe().unwrap();
     assert_eq!(df_vo.shape(), (2, 2));
-    let row0 = df_vo.column("payload.value").unwrap().get(0).unwrap();
+    let row0 = df_vo.column("payload").unwrap().get(0).unwrap();
     if let AnyValue::List(s) = row0 {
         assert_eq!(s.len(), 3);
         // Middle element of the inner list should be null.
@@ -842,7 +808,7 @@ fn test_depth2_combos() {
     assert_eq!(
         schema_vv[1],
         (
-            "payload.value".into(),
+            "payload".into(),
             DataType::List(Box::new(DataType::List(Box::new(DataType::Float64))))
         )
     );
@@ -858,7 +824,7 @@ fn test_depth2_combos() {
     ];
     let df_vv = items_vv.as_slice().to_dataframe().unwrap();
     assert_eq!(df_vv.shape(), (2, 2));
-    let row0 = df_vv.column("payload.value").unwrap().get(0).unwrap();
+    let row0 = df_vv.column("payload").unwrap().get(0).unwrap();
     if let AnyValue::List(s) = row0 {
         // Outer list has 2 inner lists.
         assert_eq!(s.len(), 2);
@@ -896,11 +862,11 @@ fn test_propagated_type_parameter() {
     let names: Vec<&str> = schema.iter().map(|(n, _)| n.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"direct.label"));
-    assert!(names.contains(&"direct.payload.value"));
+    assert!(names.contains(&"direct.payload"));
     assert!(names.contains(&"optional.label"));
-    assert!(names.contains(&"optional.payload.value"));
+    assert!(names.contains(&"optional.payload"));
     assert!(names.contains(&"listed.label"));
-    assert!(names.contains(&"listed.payload.value"));
+    assert!(names.contains(&"listed.payload"));
 
     let df = item_f64.to_dataframe().unwrap();
     assert_eq!(df.shape().0, 1);

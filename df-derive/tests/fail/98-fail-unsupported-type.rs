@@ -1,13 +1,14 @@
 use df_derive::ToDataFrame;
-use std::collections::HashMap;
+use std::net::IpAddr;
 #[path = "../common.rs"]
 mod core;
 
 #[derive(ToDataFrame)]
 struct Unsupported {
     id: i32,
-    // HashMap is not a supported type for conversion to a Polars Series
-    metadata: HashMap<String, String>,
+    // `IpAddr` has no column encoding of its own; it needs `as_string` or a
+    // `Columnar` impl.
+    address: IpAddr,
 }
 
 fn main() {}

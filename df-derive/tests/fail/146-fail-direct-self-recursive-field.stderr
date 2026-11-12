@@ -1,53 +1,53 @@
-error: field `child` recursively references `Node` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
- --> tests/fail/146-fail-direct-self-recursive-field.rs:8:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+ --> tests/fail/146-fail-direct-self-recursive-field.rs:8:12
   |
 8 |     child: Option<Box<Node>>,
-  |                       ^^^^
+  |            ^^^^^^
 
-error: field `child` recursively references `SelfNamed` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:14:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:14:12
    |
 14 |     child: Option<Box<Self>>,
-   |                       ^^^^
+   |            ^^^^^^
 
-error: field `child` recursively references `CrateQualified` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:20:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:20:12
    |
 20 |     child: Option<Box<crate::CrateQualified>>,
-   |                       ^^^^^^^^^^^^^^^^^^^^^
+   |            ^^^^^^
 
-error: field `child` recursively references `SelfQualified` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:26:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:26:12
    |
 26 |     child: Option<Box<self::SelfQualified>>,
-   |                       ^^^^^^^^^^^^^^^^^^^
+   |            ^^^^^^
 
-error: field `nested` recursively references `TupleField` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:31:30
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:31:13
    |
 31 |     nested: (u64, Option<Box<TupleField>>),
-   |                              ^^^^^^^^^^
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-error: field `field_1` recursively references `TupleStruct` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:35:36
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:35:25
    |
 35 | struct TupleStruct(u64, Option<Box<TupleStruct>>);
-   |                                    ^^^^^^^^^^^
+   |                         ^^^^^^
 
-error: field `child` recursively references `GenericNode` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:42:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:42:12
    |
 42 |     child: Option<Box<GenericNode<T>>>,
-   |                       ^^^^^^^^^^^^^^
+   |            ^^^^^^
 
-error: field `child` recursively references `CrateQualifiedGeneric` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:50:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:50:12
    |
 50 |     child: Option<Box<crate::CrateQualifiedGeneric<T>>>,
-   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |            ^^^^^^
 
-error: field `child` recursively references `SelfQualifiedGeneric` after transparent wrapper peeling; recursive nested DataFrame schemas are not supported. Store an identifier or foreign key, flatten the structure before deriving, or mark the field `#[df_derive(skip)]`.
-  --> tests/fail/146-fail-direct-self-recursive-field.rs:58:23
+error: a row type cannot contain itself: a DataFrame has a fixed set of columns, so recursive data needs an id field or a separate flat type
+  --> tests/fail/146-fail-direct-self-recursive-field.rs:58:12
    |
 58 |     child: Option<Box<self::SelfQualifiedGeneric<T>>>,
-   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |            ^^^^^^

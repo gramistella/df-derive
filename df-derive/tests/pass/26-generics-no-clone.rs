@@ -9,42 +9,22 @@ use df_derive::ToDataFrame;
 use polars::prelude::*;
 #[path = "../common.rs"]
 mod core;
-use crate::core::dataframe::{Columnar, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{ToDataFrame, ToDataFrameVec};
 
 // Nested-path payload: implements `ToDataFrame` + `Columnar`, deliberately
 // NOT `Clone`. Used as the generic argument for fields without a transform
 // (which route through the nested-struct encoder path).
 #[derive(Debug)]
+#[derive(ToDataFrame)]
 struct NoClonePayload {
     value: i64,
-}
-
-impl ToDataFrame for NoClonePayload {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &[self.value]).into()])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("value".into(), &DataType::Int64).into(),
-        ])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("value".to_string(), DataType::Int64)])
-    }
-}
-
-impl Columnar for NoClonePayload {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let vals: Vec<i64> = items.iter().map(|i| i.value).collect();
-        DataFrame::new_infer_height(vec![Series::new("value".into(), &vals).into()])
-    }
 }
 
 // Primitive-path payload: also NOT `Clone`, also implements `AsRef<str>` so
 // it can be used with `#[df_derive(as_str)]`. The `as_str` transform routes
 // the field through the primitive encoder path, which was the path containing
 // the `(*elem).clone()` that this test locks in as gone.
-#[derive(Debug)]
+#[derive(Debug, ToDataFrame)]
 struct NoCloneTag {
     label: String,
 }
@@ -52,29 +32,6 @@ struct NoCloneTag {
 impl AsRef<str> for NoCloneTag {
     fn as_ref(&self) -> &str {
         &self.label
-    }
-}
-
-impl ToDataFrame for NoCloneTag {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new("label".into(), &[self.label.as_str()]).into(),
-        ])
-    }
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("label".into(), &DataType::String).into(),
-        ])
-    }
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![("label".to_string(), DataType::String)])
-    }
-}
-
-impl Columnar for NoCloneTag {
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        DataFrame::new_infer_height(vec![Series::new("label".into(), &labels).into()])
     }
 }
 

@@ -109,9 +109,9 @@ impl Unit for Us {
     #[cfg(feature = "chrono")]
     #[inline(always)]
     fn from_delta(value: &chrono::TimeDelta) -> PolarsResult<i64> {
-        value.num_microseconds().ok_or_else(|| {
-            out_of_range("df-derive: chrono::Duration value out of i64 us range")
-        })
+        value
+            .num_microseconds()
+            .ok_or_else(|| out_of_range("df-derive: chrono::Duration value out of i64 us range"))
     }
 }
 
@@ -147,9 +147,9 @@ impl Unit for Ns {
     #[cfg(feature = "chrono")]
     #[inline(always)]
     fn from_delta(value: &chrono::TimeDelta) -> PolarsResult<i64> {
-        value.num_nanoseconds().ok_or_else(|| {
-            out_of_range("df-derive: chrono::Duration value out of i64 ns range")
-        })
+        value
+            .num_nanoseconds()
+            .ok_or_else(|| out_of_range("df-derive: chrono::Duration value out of i64 ns range"))
     }
 }
 
@@ -246,7 +246,8 @@ mod chrono_impls {
 
         #[inline(always)]
         fn push(&mut self, value: &NaiveDate) -> PolarsResult<()> {
-            self.0.push(value.num_days_from_ce() - UNIX_EPOCH_DAY_FROM_CE);
+            self.0
+                .push(value.num_days_from_ce() - UNIX_EPOCH_DAY_FROM_CE);
             Ok(())
         }
 

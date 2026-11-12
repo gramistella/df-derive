@@ -1,6 +1,28 @@
-error: field `at` has `time_unit = "..."` but its base type is `chrono::NaiveTime`, which has a fixed encoding (i64 nanoseconds since midnight) and offers no unit choice — remove the attribute
-  --> tests/fail/118-fail-time-unit-on-naive-time.rs:9:5
+error[E0277]: `NaiveTime` cannot be encoded with `TemporalBuilder<Us>`
+  --> tests/fail/118-fail-time-unit-on-naive-time.rs:10:9
    |
- 9 | /     #[df_derive(time_unit = "us")]
-10 | |     at: NaiveTime,
-   | |_________________^
+10 |     at: NaiveTime,
+   |         ^^^^^^^^^ this encoding does not apply to `NaiveTime`
+   |
+   = help: the trait `ColumnBuilder<NaiveTime>` is not implemented for `TemporalBuilder<Us>`
+   = note: the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = "..."`) does not support the field's type
+help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/temporal.rs
+   |
+   |         impl<U: Unit $(, $tz: chrono::TimeZone)?> ColumnBuilder<$ty> for TemporalBuilder<U> {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         `ColumnBuilder<DateTime<Tz>>`
+   |         `ColumnBuilder<Duration>`
+   |         `ColumnBuilder<NaiveDateTime>`
+   |         `ColumnBuilder<TimeDelta>`
+...
+   | temporal!(std::time::Duration => Duration, from_std, Ns);
+   | -------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Datetime, from_instant, Ms);
+   | -------------------------------------------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
+   | --------------------------------------------------------------------------------------- in this macro invocation
+   | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
+   | ----------------------------------------------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `temporal` (in Nightly builds, run with -Z macro-backtrace for more info)

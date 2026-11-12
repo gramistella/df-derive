@@ -1,5 +1,149 @@
-error: df-derive does not support `HashMap` fields. Convert to `Vec<(K, V)>` or pre-flatten into named columns before assignment.
-  --> tests/fail/98-fail-unsupported-type.rs:10:15
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+  --> tests/fail/98-fail-unsupported-type.rs:11:14
    |
-10 |     metadata: HashMap<String, String>,
-   |               ^^^^^^^^^^^^^^^^^^^^^^^
+11 |     address: IpAddr,
+   |              ^^^^^^ no column encoding for `IpAddr`
+   |
+   = help: the trait `Columnar` is not implemented for `IpAddr`
+   = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+   = help: the following other types implement trait `Columnar`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `IpAddr`
+  |
+  = help: within `__DfDeriveBuilder`, the trait `Columnar` is not implemented for `IpAddr`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `__DfDeriveBuilder`
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `ColumnBuilder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  | pub trait ColumnBuilder<T: ?Sized>: Sized {
+  |                                     ^^^^^ required by this bound in `ColumnBuilder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `IpAddr`
+  |
+  = help: within `__DfDeriveBuilder`, the trait `Columnar` is not implemented for `IpAddr`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `__DfDeriveBuilder`
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+note: required by a bound in `df_derive::prelude::Columnar::Builder`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  |     type Builder: ColumnBuilder<Self>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Columnar::Builder`
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `IpAddr`
+  |
+  = help: within `__DfDeriveBuilder`, the trait `Columnar` is not implemented for `IpAddr`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `__DfDeriveBuilder`
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: the return type of a function must have a statically known size
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `IpAddr`
+  |
+  = help: the trait `Columnar` is not implemented for `IpAddr`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `IpAddr` cannot be stored in a DataFrame column
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^ no column encoding for `IpAddr`
+  |
+  = help: within `__DfDeriveBuilder`, the trait `Columnar` is not implemented for `IpAddr`
+  = note: derive `ToDataFrame` on the type, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`
+  = help: the following other types implement trait `Columnar`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required because it appears within the type `__DfDeriveBuilder`
+ --> tests/fail/98-fail-unsupported-type.rs:6:10
+  |
+6 | #[derive(ToDataFrame)]
+  |          ^^^^^^^^^^^
+  = note: this error originates in the derive macro `ToDataFrame` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -28,6 +28,11 @@ pub type Fields = Vec<(PlSmallStr, DataType)>;
 /// [`push_null`](ColumnBuilder::push_null). Null tracking belongs to the
 /// nearest enclosing [`builders::OptionBuilder`], which hands a validity
 /// bitmap down at [`finish`](ColumnBuilder::finish).
+#[diagnostic::on_unimplemented(
+    message = "`{T}` cannot be encoded with `{Self}`",
+    label = "this encoding does not apply to `{T}`",
+    note = "the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = \"...\"`) does not support the field's type"
+)]
 pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// Appends this builder's columns to `out`. `name` is the dotted path of
     /// the field being described; leaves use it verbatim.
@@ -90,11 +95,24 @@ pub trait Columnar {
     type Builder: ColumnBuilder<Self>;
 }
 
+/// A type whose columns are named after its own fields.
+///
+/// Derived structs and tuples are records, and so is any `Option`, `Vec` or
+/// pointer around one. A leaf such as `f64` is not: it takes the name of the
+/// field that holds it. `#[df_derive(flatten)]` requires a record, because
+/// flattening drops the field's own name.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no named columns of its own",
+    label = "not a struct or tuple of columns",
+    note = "`#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields"
+)]
+pub trait Record: Columnar {}
+
 /// A row type: each value becomes one `DataFrame` row.
 ///
 /// `#[derive(ToDataFrame)]` implements this. Every method has a default that
 /// runs the type's [`Columnar`] builder.
-pub trait ToDataFrame: Columnar + Sized {
+pub trait ToDataFrame: Record + Sized {
     /// Converts this value into a one-row `DataFrame`.
     ///
     /// # Errors
@@ -147,12 +165,16 @@ impl<T: ToDataFrame> ToDataFrameVec for [T] {
     }
 }
 
+impl Record for () {}
 impl ToDataFrame for () {}
 
 /// Items generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use super::frame::{child, in_field};
+    pub use super::frame::{child, conversion_error, in_field};
+
+    /// Compile-time check that a flattened field is a record.
+    pub const fn assert_record<T: ?Sized + super::Record>() {}
     pub use polars;
     pub use polars_arrow;
 }

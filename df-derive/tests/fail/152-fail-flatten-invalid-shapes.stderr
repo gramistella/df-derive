@@ -1,41 +1,72 @@
-error: field `primitive` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:10:5
-   |
-10 | /     #[df_derive(flatten)]
-11 | |     primitive: i32,
-   | |__________________^
+error[E0277]: `i32` has no named columns of its own
+ --> tests/fail/152-fail-flatten-invalid-shapes.rs:9:16
+  |
+9 |     primitive: i32,
+  |                ^^^ not a struct or tuple of columns
+  |
+  = help: the trait `Record` is not implemented for `i32`
+  = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+  = help: the following other types implement trait `Record`:
+            &'a T
+            ()
+            (T0,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+          and $N others
+note: required by a bound in `df_derive::dataframe::__private::assert_record`
+ --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+  |
+  |     pub const fn assert_record<T: ?Sized + super::Record>() {}
+  |                                            ^^^^^^^^^^^^^ required by this bound in `assert_record`
 
-error: field `optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:16:5
+error[E0277]: `String` has no named columns of its own
+  --> tests/fail/152-fail-flatten-invalid-shapes.rs:15:12
    |
-16 | /     #[df_derive(flatten)]
-17 | |     optional: Option<Inner>,
-   | |___________________________^
+15 |     label: String,
+   |            ^^^^^^ not a struct or tuple of columns
+   |
+   = help: the trait `Record` is not implemented for `String`
+   = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+   = help: the following other types implement trait `Record`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required by a bound in `df_derive::dataframe::__private::assert_record`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
+   |
+   |     pub const fn assert_record<T: ?Sized + super::Record>() {}
+   |                                            ^^^^^^^^^^^^^ required by this bound in `assert_record`
 
-error: field `boxed_optional` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:22:5
+error[E0277]: `i32` has no named columns of its own
+  --> tests/fail/152-fail-flatten-invalid-shapes.rs:21:15
    |
-22 | /     #[df_derive(flatten)]
-23 | |     boxed_optional: Box<Option<Inner>>,
-   | |______________________________________^
-
-error: field `optional_boxed` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:28:5
+21 |     optional: Option<i32>,
+   |               ^^^^^^^^^^^ not a struct or tuple of columns
    |
-28 | /     #[df_derive(flatten)]
-29 | |     optional_boxed: Option<Box<Inner>>,
-   | |______________________________________^
-
-error: field `vector` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:34:5
+   = help: the trait `Record` is not implemented for `i32`
+   = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+   = help: the following other types implement trait `Record`:
+             &'a T
+             ()
+             (T0,)
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+   = note: required for `Option<i32>` to implement `Record`
+note: required by a bound in `df_derive::dataframe::__private::assert_record`
+  --> $WORKSPACE/df-derive-core/src/dataframe/mod.rs
    |
-34 | /     #[df_derive(flatten)]
-35 | |     vector: Vec<Inner>,
-   | |______________________^
-
-error: field `tuple` has `flatten`, but flatten is only supported for bare nested row fields after transparent pointer peeling. Use a concrete struct or generic row payload that implements `ToDataFrame + Columnar`; nullable, list, tuple, primitive, and conversion-shaped fields must remain prefixed.
-  --> tests/fail/152-fail-flatten-invalid-shapes.rs:40:5
-   |
-40 | /     #[df_derive(flatten)]
-41 | |     tuple: (i32, String),
-   | |________________________^
+   |     pub const fn assert_record<T: ?Sized + super::Record>() {}
+   |                                            ^^^^^^^^^^^^^ required by this bound in `assert_record`

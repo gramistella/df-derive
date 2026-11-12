@@ -126,57 +126,6 @@ fn cargo_tree_fixture_with_files(
     String::from_utf8(output.stdout).expect("cargo tree stdout is valid UTF-8")
 }
 
-fn paft_like_runtime_lib() -> &'static str {
-    r#"
-pub use df_derive_macros::ToDataFrame;
-
-pub mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    #[doc(hidden)]
-    pub mod __private {
-        pub use polars;
-        pub use pa as polars_arrow;
-    }
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::rows_to_dataframe(refs.iter().copied())
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as ToDataFrame>::rows_to_dataframe(self)
-        }
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-"#
-}
-
 fn polars_deps() -> &'static str {
     r#"
 polars = { version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }
@@ -376,496 +325,7 @@ df-derive = {{ path = "{}", default-features = false }}
 }
 
 #[test]
-fn facade_runtime_wins_over_paft_dependencies() {
-    let root = package_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "facade-wins-over-paft"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive = {{ path = "{}" }}
-paft = {{ path = "paft" }}
-paft-utils = {{ path = "paft-utils" }}
-{}
-"#,
-        toml_path(root),
-        polars_deps(),
-    );
-
-    check_fixture_with_files(
-        "facade-wins-over-paft",
-        &manifest,
-        r#"
-use df_derive::prelude::*;
-
-#[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-}
-
-fn assert_facade_runtime<T: df_derive::dataframe::ToDataFrame + df_derive::dataframe::Columnar>() {}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    assert_facade_runtime::<Row>();
-    let df = Row { id: 1 }.to_dataframe()?;
-    assert_eq!(df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-        &[
-            (
-                "paft/Cargo.toml",
-                r#"
-[package]
-name = "paft"
-version = "0.0.0"
-edition = "2024"
-publish = false
-"#,
-            ),
-            (
-                "paft/src/lib.rs",
-                r#"
-pub mod dataframe {
-    pub trait ToDataFrame {
-        fn incompatible_paft_marker(&self);
-    }
-
-    pub trait Columnar {}
-    pub trait Decimal128Encode {}
-}
-"#,
-            ),
-            (
-                "paft-utils/Cargo.toml",
-                r#"
-[package]
-name = "paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-"#,
-            ),
-            (
-                "paft-utils/src/lib.rs",
-                r#"
-pub mod dataframe {
-    pub trait ToDataFrame {
-        fn incompatible_paft_utils_marker(&self);
-    }
-
-    pub trait Columnar {}
-    pub trait Decimal128Encode {}
-}
-"#,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn core_runtime_wins_over_paft_utils_dependency() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "core-wins-over-paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-core = {{ path = "{}" }}
-df-derive-macros = {{ path = "{}" }}
-paft-utils = {{ path = "paft-utils" }}
-{}
-"#,
-        toml_path(&root.join("df-derive-core")),
-        toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
-    );
-
-    check_fixture_with_files(
-        "core-wins-over-paft-utils",
-        &manifest,
-        r#"
-use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
-use df_derive_macros::ToDataFrame;
-
-#[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-}
-
-fn assert_core_runtime<T: df_derive_core::dataframe::ToDataFrame + df_derive_core::dataframe::Columnar>() {}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    assert_core_runtime::<Row>();
-    let rows = vec![Row { id: 1 }];
-    let df = rows.as_slice().to_dataframe()?;
-    assert_eq!(df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-        &[
-            (
-                "paft-utils/Cargo.toml",
-                r#"
-[package]
-name = "paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-"#,
-            ),
-            (
-                "paft-utils/src/lib.rs",
-                r#"
-pub mod dataframe {
-    pub trait ToDataFrame {
-        fn incompatible_paft_utils_marker(&self);
-    }
-
-    pub trait Columnar {}
-    pub trait Decimal128Encode {}
-}
-"#,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn macros_direct_with_paft_utils_runtime_works_without_facade_or_core() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "macros-direct-paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-paft-utils = {{ path = "paft-utils" }}
-{}
-"#,
-        toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
-    );
-
-    check_fixture_with_files(
-        "macros-direct-paft-utils",
-        &manifest,
-        r#"
-use df_derive_macros::ToDataFrame;
-use paft_utils::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
-
-#[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-    label: String,
-}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    let row = Row { id: 7, label: "paft-utils".into() };
-    let df = row.to_dataframe()?;
-    assert_eq!(df.shape(), (1, 2));
-
-    let rows = vec![row];
-    let batch = rows.as_slice().to_dataframe()?;
-    assert_eq!(batch.shape(), (1, 2));
-    Ok(())
-}
-"#,
-        &[
-            (
-                "paft-utils/Cargo.toml",
-                r#"
-[package]
-name = "paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-polars = { version = "0.55", default-features = false }
-polars-arrow = { version = "0.55", default-features = false }
-"#,
-            ),
-            (
-                "paft-utils/src/lib.rs",
-                r#"
-pub mod dataframe {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    #[doc(hidden)]
-    pub mod __private {
-        pub use polars;
-        pub use polars_arrow;
-    }
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::rows_to_dataframe(refs.iter().copied())
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait ToDataFrameVec {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-    }
-
-    impl<T> ToDataFrameVec for [T]
-    where
-        T: Columnar + ToDataFrame,
-    {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-            if self.is_empty() {
-                return <T as ToDataFrame>::empty_dataframe();
-            }
-            <T as ToDataFrame>::rows_to_dataframe(self)
-        }
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-"#,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn paft_package_examples_use_library_runtime_path() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "paft"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.55" }}
-
-[[example]]
-name = "unannotated"
-"#,
-        toml_path(&root.join("df-derive-macros")),
-    );
-
-    check_fixture_with_files_and_args(
-        "paft-package-example-runtime",
-        &manifest,
-        "fn main() {}",
-        &[
-            ("src/lib.rs", paft_like_runtime_lib()),
-            (
-                "examples/unannotated.rs",
-                r#"
-#[derive(Clone, paft::ToDataFrame)]
-struct Row {
-    id: u32,
-}
-
-fn assert_runtime<T: paft::dataframe::ToDataFrame + paft::dataframe::Columnar>() {}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    assert_runtime::<Row>();
-    let df = paft::dataframe::ToDataFrame::to_dataframe(&Row { id: 1 })?;
-    assert_eq!(df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-            ),
-        ],
-        &["--example", "unannotated"],
-    );
-}
-
-#[test]
-fn paft_utils_package_examples_use_library_runtime_path() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "paft-utils"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.55" }}
-
-[[example]]
-name = "unannotated"
-"#,
-        toml_path(&root.join("df-derive-macros")),
-    );
-
-    check_fixture_with_files_and_args(
-        "paft-utils-package-example-runtime",
-        &manifest,
-        "fn main() {}",
-        &[
-            ("src/lib.rs", paft_like_runtime_lib()),
-            (
-                "examples/unannotated.rs",
-                r#"
-#[derive(Clone, paft_utils::ToDataFrame)]
-struct Row {
-    id: u32,
-}
-
-fn assert_runtime<T: paft_utils::dataframe::ToDataFrame + paft_utils::dataframe::Columnar>() {}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    assert_runtime::<Row>();
-    let df = paft_utils::dataframe::ToDataFrame::to_dataframe(&Row { id: 1 })?;
-    assert_eq!(df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-            ),
-        ],
-        &["--example", "unannotated"],
-    );
-}
-
-#[test]
-fn macros_direct_with_core_runtime_works_without_facade() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "macros-direct-core"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-core = {{ path = "{}" }}
-df-derive-macros = {{ path = "{}" }}
-{}
-"#,
-        toml_path(&root.join("df-derive-core")),
-        toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
-    );
-
-    check_fixture(
-        "macros-direct-core",
-        &manifest,
-        r#"
-use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
-use df_derive_macros::ToDataFrame;
-
-#[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-    label: String,
-}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    let row = Row { id: 7, label: "ok".into() };
-    let df = row.to_dataframe()?;
-    assert_eq!(df.shape(), (1, 2));
-
-    let rows = vec![row];
-    let batch = rows.as_slice().to_dataframe()?;
-    assert_eq!(batch.shape(), (1, 2));
-    Ok(())
-}
-"#,
-    );
-}
-
-#[test]
-fn explicit_core_runtime_path_uses_hidden_dependency_reexports() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "explicit-core-runtime-hidden-deps"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-core = {{ path = "{}" }}
-df-derive-macros = {{ path = "{}" }}
-{}
-"#,
-        toml_path(&root.join("df-derive-core")),
-        toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
-    );
-
-    check_fixture(
-        "explicit-core-runtime-hidden-deps",
-        &manifest,
-        r#"
-use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
-use df_derive_macros::ToDataFrame;
-
-#[derive(ToDataFrame)]
-#[df_derive(
-    trait = "df_derive_core::dataframe::ToDataFrame",
-    columnar = "df_derive_core::dataframe::Columnar"
-)]
-struct Row {
-    labels: Vec<String>,
-}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    let rows = vec![Row {
-        labels: vec!["bid".to_owned(), "ask".to_owned()],
-    }];
-    let df = rows.as_slice().to_dataframe()?;
-    assert_eq!(df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-    );
-}
-
-#[test]
-fn core_runtime_enables_supported_numeric_dtype_features_without_downstream_polars_flags() {
+fn core_runtime_with_crate_attribute_enables_numeric_dtype_features() {
     let root = repo_root();
     let manifest = format!(
         r#"
@@ -895,6 +355,7 @@ use df_derive_macros::ToDataFrame;
 use polars::prelude::{DataType, PolarsResult};
 
 #[derive(ToDataFrame)]
+#[df_derive(crate = "::df_derive_core")]
 struct Row {
     i8_v: i8,
     i16_v: i16,
@@ -935,7 +396,86 @@ fn main() -> PolarsResult<()> {
 }
 
 #[test]
-fn renamed_facade_and_polars_dependency_is_respected_without_direct_arrow() {
+fn crate_attribute_targets_a_crate_that_re_exports_the_runtime() {
+    let root = package_root();
+    let wrapper_manifest = format!(
+        r#"
+[package]
+name = "model-kit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+df-derive = {{ path = "{}" }}
+"#,
+        toml_path(root),
+    );
+    let manifest = format!(
+        r#"
+[package]
+name = "re-exported-runtime"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+model-kit = {{ path = "model-kit" }}
+{}
+"#,
+        polars_deps(),
+    );
+
+    // The downstream crate depends only on `model-kit`, never on `df-derive`.
+    // Its derives name the runtime through `model_kit::dataframe`, and its
+    // rows nest a type that `model-kit` derived with the default path.
+    check_fixture_with_files(
+        "re-exported-runtime",
+        &manifest,
+        r#"
+use model_kit::dataframe::ToDataFrameVec as _;
+use model_kit::{Money, ToDataFrame};
+
+#[derive(ToDataFrame)]
+#[df_derive(crate = "::model_kit")]
+struct Trade {
+    symbol: String,
+    notional: Option<Money>,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = vec![Trade {
+        symbol: "AAPL".into(),
+        notional: Some(Money { amount: 1.5, currency: "USD".into() }),
+    }];
+    let df = rows.as_slice().to_dataframe()?;
+    let names: Vec<_> = df.get_column_names().into_iter().map(|name| name.as_str()).collect();
+    assert_eq!(names, ["symbol", "notional.amount", "notional.currency"]);
+    Ok(())
+}
+"#,
+        &[
+            ("model-kit/Cargo.toml", &wrapper_manifest),
+            (
+                "model-kit/src/lib.rs",
+                r#"
+pub use df_derive::{ToDataFrame, dataframe};
+
+#[derive(ToDataFrame)]
+pub struct Money {
+    pub amount: f64,
+    pub currency: String,
+}
+"#,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn renamed_facade_dependency_works_with_the_crate_attribute() {
     let root = package_root();
     let manifest = format!(
         r#"
@@ -949,295 +489,31 @@ publish = false
 
 [dependencies]
 dfd = {{ package = "df-derive", path = "{}" }}
-pl = {{ package = "polars", version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-time_crate = {{ package = "chrono", version = "0.4" }}
+pl = {{ package = "polars", version = "0.55", default-features = false }}
 "#,
         toml_path(root),
     );
 
+    // Generated code reaches Polars through the runtime's own re-export, so a
+    // renamed or absent direct `polars` dependency does not matter.
     check_fixture(
         "renamed-facade",
         &manifest,
         r#"
 use dfd::prelude::*;
-use time_crate::{NaiveDate, NaiveTime};
 
 #[derive(ToDataFrame)]
+#[df_derive(crate = "::dfd")]
 struct Row {
     id: u32,
-    values: Vec<i64>,
-    day: NaiveDate,
-    at: NaiveTime,
-}
-
-#[derive(ToDataFrame)]
-#[df_derive(trait = "dfd::dataframe::ToDataFrame")]
-struct ExplicitRuntimeRow {
-    labels: Vec<String>,
+    tags: Vec<String>,
+    note: Option<String>,
 }
 
 fn main() -> pl::prelude::PolarsResult<()> {
-    let rows = vec![Row {
-        id: 1,
-        values: vec![10, 20],
-        day: NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
-        at: NaiveTime::from_hms_opt(12, 34, 56).unwrap(),
-    }];
+    let rows = vec![Row { id: 1, tags: vec!["a".into()], note: None }];
     let df = rows.as_slice().to_dataframe()?;
-    assert_eq!(df.shape(), (1, 4));
-
-    let explicit_rows = vec![ExplicitRuntimeRow {
-        labels: vec!["bid".to_owned(), "ask".to_owned()],
-    }];
-    let explicit_df = explicit_rows.as_slice().to_dataframe()?;
-    assert_eq!(explicit_df.shape(), (1, 1));
-    Ok(())
-}
-"#,
-    );
-}
-
-#[test]
-fn explicit_scalar_custom_runtime_works_without_direct_arrow() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "explicit-scalar-custom-runtime-no-arrow"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-{}
-"#,
-        toml_path(&root.join("df-derive-macros")),
-        polars_deps(),
-    );
-
-    check_fixture(
-        "explicit-scalar-custom-runtime-no-arrow",
-        &manifest,
-        r#"
-use df_derive_macros::ToDataFrame;
-
-mod runtime {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::rows_to_dataframe(refs.iter().copied())
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-
-#[derive(ToDataFrame)]
-#[df_derive(
-    trait = "crate::runtime::ToDataFrame",
-    columnar = "crate::runtime::Columnar"
-)]
-struct Row {
-    id: u32,
-    qty: i64,
-    active: bool,
-    price: f64,
-}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    let rows = vec![
-        Row { id: 1, qty: 10, active: true, price: 9.5 },
-        Row { id: 2, qty: 20, active: false, price: 19.25 },
-    ];
-
-    let single = runtime::ToDataFrame::to_dataframe(&rows[0])?;
-    assert_eq!(single.shape(), (1, 4));
-
-    let batch = runtime::Columnar::rows_to_dataframe(rows.as_slice())?;
-    assert_eq!(batch.shape(), (2, 4));
-    Ok(())
-}
-"#,
-    );
-}
-
-#[test]
-fn explicit_custom_runtime_decimal_tuple_does_not_need_reference_encode_impl() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "explicit-custom-runtime-decimal-tuple"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.55", default-features = false, features = ["dtype-decimal"] }}
-polars-arrow = {{ version = "0.55", default-features = false }}
-rust_decimal = "1.42"
-"#,
-        toml_path(&root.join("df-derive-macros")),
-    );
-
-    check_fixture(
-        "explicit-custom-runtime-decimal-tuple",
-        &manifest,
-        r#"
-use df_derive_macros::ToDataFrame;
-use polars::prelude::{AnyValue, DataFrame, DataType, PolarsResult};
-use rust_decimal::Decimal;
-
-mod runtime {
-    use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-    pub trait ToDataFrame {
-        fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-        fn empty_dataframe() -> PolarsResult<DataFrame>;
-        fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-    }
-
-    pub trait Columnar: Sized {
-        fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-            let refs: Vec<&Self> = items.iter().collect();
-            Self::rows_to_dataframe(refs.iter().copied())
-        }
-
-        fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-    }
-
-    pub trait Decimal128Encode {
-        fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-    }
-}
-
-impl runtime::Decimal128Encode for Decimal {
-    fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {
-        let source_scale = self.scale();
-        if source_scale > target_scale {
-            return None;
-        }
-        self.mantissa().checked_mul(10i128.pow(target_scale - source_scale))
-    }
-}
-
-#[derive(ToDataFrame, Clone)]
-#[df_derive(
-    trait = "crate::runtime::ToDataFrame",
-    columnar = "crate::runtime::Columnar",
-    decimal128_encode = "crate::runtime::Decimal128Encode",
-)]
-struct Row {
-    maybe: Option<(Decimal,)>,
-}
-
-fn main() -> PolarsResult<()> {
-    let rows = vec![
-        Row {
-            maybe: Some((Decimal::new(123, 2),)),
-        },
-        Row { maybe: None },
-    ];
-    let df = runtime::Columnar::rows_to_dataframe(rows.as_slice())?;
-    assert_eq!(df.shape(), (2, 1));
-    assert_eq!(df.column("maybe.field_0")?.dtype(), &DataType::Decimal(38, 10));
-    assert_eq!(
-        df.column("maybe.field_0")?.get(0)?,
-        AnyValue::Decimal(12_300_000_000, 38, 10),
-    );
-    assert_eq!(df.column("maybe.field_0")?.get(1)?, AnyValue::Null);
-    Ok(())
-}
-"#,
-    );
-}
-
-#[test]
-fn local_fallback_works_without_facade_or_core_dependencies() {
-    let root = repo_root();
-    let manifest = format!(
-        r#"
-[package]
-name = "local-fallback"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
-[workspace]
-
-[dependencies]
-df-derive-macros = {{ path = "{}" }}
-polars = {{ version = "0.55", features = ["timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration"] }}
-pa = {{ package = "polars-arrow", version = "0.55" }}
-"#,
-        toml_path(&root.join("df-derive-macros")),
-    );
-
-    check_fixture(
-        "local-fallback",
-        &manifest,
-        r#"
-use df_derive_macros::ToDataFrame;
-use crate::core::dataframe::ToDataFrame as _;
-
-mod core {
-    pub mod dataframe {
-        use polars::prelude::{DataFrame, DataType, PolarsResult};
-
-        #[doc(hidden)]
-        pub mod __private {
-            pub use polars;
-            pub use pa as polars_arrow;
-        }
-
-        pub trait ToDataFrame {
-            fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-            fn empty_dataframe() -> PolarsResult<DataFrame>;
-            fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-        }
-
-        pub trait Columnar: Sized {
-            fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-                let refs: Vec<&Self> = items.iter().collect();
-                Self::rows_to_dataframe(refs.iter().copied())
-            }
-
-            fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-        }
-
-        pub trait Decimal128Encode {
-            fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-        }
-    }
-}
-
-#[derive(ToDataFrame)]
-struct Local {
-    id: u32,
-    name: String,
-}
-
-fn main() -> polars::prelude::PolarsResult<()> {
-    let df = Local { id: 1, name: "local".into() }.to_dataframe()?;
-    assert_eq!(df.shape(), (1, 2));
+    assert_eq!(df.shape(), (1, 3));
     Ok(())
 }
 "#,

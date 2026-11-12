@@ -1,6 +1,15 @@
-error: field `items` has `as_binary` on `&[T]`, but `as_binary` only supports `&[u8]`; use `Vec<T>` for list columns
- --> tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs:8:5
+error[E0277]: the trait bound `i32: AsRef<[u8]>` is not satisfied
+ --> tests/fail/131-fail-as-binary-borrowed-non-u8-slice.rs:9:12
   |
-8 | /     #[df_derive(as_binary)]
-9 | |     items: &'a [i32],
-  | |____________________^
+9 |     items: &'a [i32],
+  |            ^ the trait `AsRef<[u8]>` is not implemented for `i32`
+  |
+  = help: `PtrBuilder<B>` implements trait `ColumnBuilder<T>`:
+            ColumnBuilder<&T>
+            ColumnBuilder<Arc<T>>
+            ColumnBuilder<Box<T>>
+            ColumnBuilder<Cow<'_, T>>
+            ColumnBuilder<Rc<T>>
+  = note: required for `BinaryBuilder` to implement `ColumnBuilder<i32>`
+  = note: 2 redundant requirements hidden
+  = note: required for `PtrBuilder<ListBuilder<BinaryBuilder>>` to implement `ColumnBuilder<&'a [i32]>`

@@ -1,9 +1,7 @@
 use df_derive::ToDataFrame;
 
-#[derive(ToDataFrame)]
-struct Inner {
-    value: i32,
-}
+// `flatten` drops the field's own name, so the field must be a record: a
+// type whose columns are named by its own fields.
 
 #[derive(ToDataFrame)]
 struct PrimitiveFlatten {
@@ -12,33 +10,15 @@ struct PrimitiveFlatten {
 }
 
 #[derive(ToDataFrame)]
-struct OptionalFlatten {
+struct StringFlatten {
     #[df_derive(flatten)]
-    optional: Option<Inner>,
+    label: String,
 }
 
 #[derive(ToDataFrame)]
-struct BoxedOptionalFlatten {
+struct OptionalPrimitiveFlatten {
     #[df_derive(flatten)]
-    boxed_optional: Box<Option<Inner>>,
-}
-
-#[derive(ToDataFrame)]
-struct OptionalBoxedFlatten {
-    #[df_derive(flatten)]
-    optional_boxed: Option<Box<Inner>>,
-}
-
-#[derive(ToDataFrame)]
-struct VectorFlatten {
-    #[df_derive(flatten)]
-    vector: Vec<Inner>,
-}
-
-#[derive(ToDataFrame)]
-struct TupleFlatten {
-    #[df_derive(flatten)]
-    tuple: (i32, String),
+    optional: Option<i32>,
 }
 
 fn main() {}

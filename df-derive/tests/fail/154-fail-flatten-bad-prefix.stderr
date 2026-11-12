@@ -1,22 +1,16 @@
-error: `flatten(prefix = "...")` requires a non-empty prefix
+error: flatten prefix must not be empty; use plain `flatten` for no prefix
   --> tests/fail/154-fail-flatten-bad-prefix.rs:10:34
    |
 10 |     #[df_derive(flatten(prefix = ""))]
    |                                  ^^
 
-error: `flatten(...)` declares duplicate `prefix` keys with different values; first is `a`, second is `b`; pick one
+error: `prefix` is given more than once
   --> tests/fail/154-fail-flatten-bad-prefix.rs:16:39
    |
 16 |     #[df_derive(flatten(prefix = "a", prefix = "b"))]
    |                                       ^^^^^^
 
-error: first `prefix` key declared here
-  --> tests/fail/154-fail-flatten-bad-prefix.rs:16:25
-   |
-16 |     #[df_derive(flatten(prefix = "a", prefix = "b"))]
-   |                         ^^^^^^
-
-error: unknown key inside `flatten(...)`; expected `prefix = "..."`
+error: expected `prefix = "..."`
   --> tests/fail/154-fail-flatten-bad-prefix.rs:22:25
    |
 22 |     #[df_derive(flatten(name = "a"))]

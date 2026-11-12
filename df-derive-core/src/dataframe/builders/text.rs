@@ -73,8 +73,7 @@ pub struct DisplayBuilder {
 #[inline(never)]
 fn display_error() -> PolarsError {
     PolarsError::ComputeError(
-        "df-derive: as_string Display formatting failed: an error occurred when formatting"
-            .into(),
+        "df-derive: as_string Display formatting failed: an error occurred when formatting".into(),
     )
 }
 

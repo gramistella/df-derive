@@ -18,8 +18,9 @@ df-derive-core = { workspace = true, default-features = false }
 df-derive-macros.workspace = true
 
 [features]
-default = ["rust_decimal"]
+default = ["rust_decimal", "chrono"]
 rust_decimal = ["df-derive-core/rust_decimal"]
+chrono = ["df-derive-core/chrono"]
 bench-instruction-counts = []
 
 [dev-dependencies]
@@ -37,6 +38,10 @@ serde = { version = "1.0", features = ["derive"] }
 name = "instruction_counts"
 harness = false
 required-features = ["bench-instruction-counts"]
+
+[[bench]]
+name = "gate_builders"
+harness = false
 
 [[bench]]
 name = "01_top_level_vec"

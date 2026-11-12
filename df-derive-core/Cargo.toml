@@ -17,7 +17,9 @@ categories = ["data-structures"]
 polars = { workspace = true, features = ["timezones", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration", "dtype-decimal", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
 polars-arrow.workspace = true
 rust_decimal = { workspace = true, optional = true }
+chrono = { version = "0.4", default-features = false, optional = true }
 
 [features]
-default = ["rust_decimal"]
+default = ["rust_decimal", "chrono"]
 rust_decimal = ["dep:rust_decimal"]
+chrono = ["dep:chrono"]

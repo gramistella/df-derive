@@ -61,6 +61,8 @@
 // lint surface stays focused on this crate's own code.
 #![allow(clippy::multiple_crate_versions)]
 
+pub mod encode;
+
 pub mod dataframe {
     use polars::prelude::{DataFrame, DataType, PolarsResult};
 

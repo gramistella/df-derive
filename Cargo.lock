@@ -675,6 +675,7 @@ dependencies = [
 name = "df-derive-core"
 version = "0.5.0"
 dependencies = [
+ "chrono",
  "polars",
  "polars-arrow",
  "rust_decimal",

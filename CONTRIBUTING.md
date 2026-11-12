@@ -24,17 +24,25 @@ You can use either plain `cargo` commands or the `just` recipes.
 
 - Lint (Clippy, warnings as errors):
   - `just lint`
-  - or `cargo clippy --all-features -- -W clippy::all -W clippy::cargo -W clippy::pedantic -W clippy::nursery -D warnings`
+  - or `cargo clippy --workspace --all-features --all-targets -- -W clippy::all -W clippy::cargo -W clippy::pedantic -W clippy::nursery -D warnings`
 
 - Tests (all features):
   - `just test`
   - or `cargo test --workspace --all-features`
+  - A file directly in `df-derive/tests/` is a test target of its own. The
+    workflows run targets by name, so a new one has to be added to
+    `.github/workflows/ci.yml` and `.github/workflows/publish.yml`.
+    `just test` fails until it is.
 
-- Benchmarks (Criterion):
-  - `just bench`
-  - or `cargo bench -p df-derive`
+- Benchmarks:
+  - One Criterion target: `cargo bench -p df-derive --bench <name>`, with the
+    targets listed in `df-derive/Cargo.toml`.
+  - Instruction counts (needs valgrind): `just bench-instructions`.
 
-Benchmark summaries are printed by `just bench-results`.
+Criterion compares against whatever results are already in
+`target/criterion`. To compare two revisions, run the same targets in a
+separate checkout of each and compare the `new/estimates.json` files by
+benchmark name.
 
 #### Commit Style
 

@@ -1,17 +1,10 @@
-//! User-facing facade for deriving Polars `DataFrame` conversions.
-//!
-//! Most users should depend on this crate, import the prelude, and derive
-//! `ToDataFrame` without any runtime-path attributes:
+//! Derive fast conversions from Rust structs into Polars `DataFrame`s.
 //!
 //! ```toml
 //! [dependencies]
-//! df-derive = "0.5"
+//! df-derive = "0.6"
 //! polars = "0.55"
 //! ```
-//!
-//! The default facade hides the macro's `polars-arrow` implementation
-//! dependency behind `df_derive::dataframe`; custom runtimes still need to
-//! provide their own compatible direct dependencies.
 //!
 //! ```ignore
 //! use df_derive::prelude::*;
@@ -20,18 +13,19 @@
 //! struct Trade {
 //!     symbol: String,
 //!     price: f64,
-//!     size: u64,
+//!     size: Option<u64>,
 //! }
+//!
+//! let df = trades.as_slice().to_dataframe()?;
 //! ```
 //!
-//! The derive macro targets [`dataframe`] by default, which is re-exported
-//! from `df-derive-core`. Power users can depend on `df-derive-macros`
-//! directly or use `#[df_derive(trait = "...")]`,
-//! `#[df_derive(columnar = "...")]`, and
-//! `#[df_derive(decimal128_encode = "...")]` to target a custom runtime.
-//! Explicit paths back to `df_derive::dataframe::ToDataFrame` or
-//! `df_derive_core::dataframe::ToDataFrame` still use the default runtime's
-//! hidden dependency re-exports.
+//! The derive targets the runtime in [`dataframe`]. Any field whose type
+//! implements [`dataframe::Columnar`] works without an attribute; see the
+//! derive macro's documentation for the field and container attributes, and
+//! the repository README for the full list of supported types.
+//!
+//! A crate that re-exports this runtime under its own path tells the derive
+//! where to find it with `#[df_derive(crate = "::that_crate")]`.
 
 // `polars` pulls a wide transitive dependency tree where multiple resolved
 // versions are unavoidable. `clippy::multiple_crate_versions` is part of the

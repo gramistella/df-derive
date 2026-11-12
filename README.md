@@ -7,41 +7,16 @@
 [![License](https://img.shields.io/crates/l/df-derive)](LICENSE)
 
 `df-derive` derives fast conversions from Rust structs into Polars
-`DataFrame`s. The normal user-facing crate now includes a default runtime
-trait surface, so most projects can write `#[derive(ToDataFrame)]` without a
-local trait module or `#[df_derive(trait = "...")]` override.
-
-## What This Crate Does
-
-Deriving `ToDataFrame` on structs and tuple structs generates
-allocation-conscious code to:
-
-- Convert a single value to a `polars::prelude::DataFrame`
-- Convert slices through a columnar batch path
-- Inspect generated column names and `DataType`s through `T::schema()`
-
-The derive supports nested structs flattened with dot notation, nullable
-shapes with `Option<T>`, list shapes with `Vec<T>`, tuple structs,
-tuple-typed fields, generic structs, borrowed fields, smart pointers, datetime
-types, duration types, byte blobs, and decimal backends.
+`DataFrame`s. Put `#[derive(ToDataFrame)]` on a struct and its values become
+rows: one value, a slice, or any iterator of references.
 
 ## Quick Start
 
 ```toml
 [dependencies]
-df-derive = "0.5"
+df-derive = "0.6"
 polars = "0.55"
-
-# If your models use these types:
-chrono = { version = "0.4", features = ["serde"] }
-rust_decimal = { version = "1.42", default-features = false, features = ["std"] }
 ```
-
-With the default `df-derive` facade, generated impls use hidden runtime
-re-exports for implementation details such as `polars-arrow`; downstream
-crates do not need to depend on `polars-arrow` directly. Keep `polars` direct
-when your code names Polars types. The default runtime enables the Polars
-dtype features required by the supported matrix below.
 
 ```rust
 use df_derive::prelude::*;
@@ -50,13 +25,13 @@ use df_derive::prelude::*;
 struct Trade {
     symbol: String,
     price: f64,
-    size: u64,
+    size: Option<u64>,
 }
 
 fn main() -> polars::prelude::PolarsResult<()> {
     let rows = vec![
-        Trade { symbol: "AAPL".into(), price: 187.23, size: 100 },
-        Trade { symbol: "MSFT".into(), price: 411.61, size: 200 },
+        Trade { symbol: "AAPL".into(), price: 187.23, size: Some(100) },
+        Trade { symbol: "MSFT".into(), price: 411.61, size: None },
     ];
 
     let df = rows.as_slice().to_dataframe()?;
@@ -65,537 +40,292 @@ fn main() -> polars::prelude::PolarsResult<()> {
 }
 ```
 
-The default runtime API is available as `df_derive::dataframe::*`. The prelude
-exports the derive macro plus `ToDataFrame`, `Columnar`, `ToDataFrameVec`, and
-`Decimal128Encode`; it also exports the trait as `ToDataFrameTrait` for code
-that wants an unambiguous type-namespace alias.
+Generated code reaches Polars through `df_derive`'s own re-export, so you only
+need a direct `polars` dependency for the Polars types your own code names.
+The runtime enables the Polars dtype features in the table below.
 
-## Benchmarks
+## What You Get
 
-A reproducible head-to-head benchmark comparing `df-derive` with hand-written
-Polars, `serde_arrow`, and `polars-row-derive` lives in
-[comparison-bench/README.md](comparison-bench/README.md). The latest generated
-report is [comparison-bench/BENCHMARK.md](comparison-bench/BENCHMARK.md).
+For a derived type `T`, through the `ToDataFrame` trait:
 
-## Crate Layout
+| Call | Result |
+| --- | --- |
+| `value.to_dataframe()` | a one-row `DataFrame` |
+| `slice.to_dataframe()` (also on `Vec<T>`) | one row per element |
+| `T::rows_to_dataframe(iter)` | one row per `&T` the iterator yields |
+| `T::empty_dataframe()` | zero rows, full schema |
+| `T::schema()` | column names and dtypes, in order |
 
-This repository uses a serde-like three-crate architecture:
+Every conversion makes one pass over the rows and writes each field straight
+into its column buffer.
 
-- `df-derive`: the normal facade crate. It re-exports the derive macro from
-  `df-derive-macros` and the runtime API from `df-derive-core`.
-- `df-derive-core`: a normal library crate that owns the shared
-  `dataframe::{ToDataFrame, Columnar, ToDataFrameVec, Decimal128Encode}` trait
-  identity, the `()` impls, and the optional reference
-  `Decimal128Encode for rust_decimal::Decimal` impl.
-- `df-derive-macros`: the proc-macro implementation. Power users can depend
-  on this directly and target `df-derive-core`, `paft`, or a custom runtime.
+## How It Works
 
-Because `df-derive-core` owns the default trait identity, models derived in
-different crates can compose as nested `ToDataFrame` types when they use the
-facade/default runtime.
+The derive does not analyse your field types. Each supported type implements
+the `Columnar` trait, which names a *builder* that owns the buffers for that
+type's columns. A derived struct gets a builder with one member per field, and
+wrappers compose by wrapping the builder of what they contain:
 
-## Generated API
+- `Option<T>` adds a validity bitmap around `T`'s builder.
+- `Vec<T>` adds list offsets around `T`'s builder.
+- A nested struct's builder is simply a member of its parent's builder.
 
-For each struct or tuple struct `T`, the macro generates:
+Because the compiler resolves this through trait impls, type aliases, generic
+parameters and types from other crates all work the same way as the type they
+stand for.
 
-- `impl ToDataFrame for T`
-  - `fn to_dataframe(&self) -> PolarsResult<DataFrame>`
-  - `fn empty_dataframe() -> PolarsResult<DataFrame>`
-  - `fn schema() -> PolarsResult<Vec<(String, DataType)>>`
-- `impl Columnar for T`
-  - `fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame>`
-  - `fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>`
+## Supported Types
 
-The direct `&[Self]` method is generated so top-level slice conversion does
-not allocate a temporary `Vec<&Self>`. The borrowed `&[&Self]` method remains
-for nested and generic composition.
+Any of these works as a field with no attribute, in any nesting:
 
-## Representative Generated Code
+- **Numbers and booleans**: `bool`, `i8`–`i128`, `u8`–`u128`, `isize`,
+  `usize`, `f32`, `f64`, and the `std::num::NonZero*` integers.
+- **Strings**: `String`, `&str`, `Box<str>`, `Cow<'_, str>`.
+- **Dates and times** (`chrono` feature, on by default): `DateTime<Tz>` and
+  `NaiveDateTime` as `Datetime(Milliseconds)`, `NaiveDate` as `Date`,
+  `NaiveTime` as `Time`, `chrono::Duration` / `TimeDelta` as
+  `Duration(Nanoseconds)`. `std::time::Duration` is `Duration(Nanoseconds)`
+  with or without the feature.
+- **Decimals** (`rust_decimal` feature, on by default):
+  `rust_decimal::Decimal` as `Decimal(38, 10)`.
+- **Other derived structs**: flattened into the parent with dot notation.
+- **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
+- **`Option<T>`**: the same columns as `T`, nullable.
+- **`Vec<T>`, `&[T]`, `Box<[T]>`**: the same columns as `T`, each wrapped in a
+  `List`. A list of structs becomes one list column per struct field.
+- **`HashMap<K, V>`, `BTreeMap<K, V>`**: two list columns, `field.key` and
+  `field.value`.
+- **Pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `&T` and `Cow<'_, T>` encode as
+  `T`.
+- **`()`**: no columns. Useful as a generic payload.
 
-For the quick-start `Trade` struct, the derive emits code shaped like this.
-The snippet is abridged for readability: generated dependency paths are
-shortened with imports, rustc's `vec!` expansion is omitted, and
-compiler-generated helper blocks are removed.
+Named structs, tuple structs (`field_0`, `field_1`, …), unit structs and
+generic structs can all derive `ToDataFrame`.
 
-```rust,ignore
-use df_derive::dataframe::{Columnar, ToDataFrame};
-use df_derive::dataframe::__private::{
-    polars::prelude::{
-        Column, DataFrame, DataType, Float64Chunked, IntoSeries, PolarsResult,
-        Series, StringChunked, UInt64Chunked,
-    },
-    polars_arrow::array::MutableBinaryViewArray,
-};
-
-#[automatically_derived]
-impl ToDataFrame for Trade {
-    fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        <Self as Columnar>::columnar_from_refs(&[self])
-    }
-
-    fn empty_dataframe() -> PolarsResult<DataFrame> {
-        DataFrame::new_infer_height(vec![
-            Series::new_empty("symbol".into(), &DataType::String).into(),
-            Series::new_empty("price".into(), &DataType::Float64).into(),
-            Series::new_empty("size".into(), &DataType::UInt64).into(),
-        ])
-    }
-
-    fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        Ok(vec![
-            ("symbol".to_owned(), DataType::String),
-            ("price".to_owned(), DataType::Float64),
-            ("size".to_owned(), DataType::UInt64),
-        ])
-    }
-}
-
-#[automatically_derived]
-impl Columnar for Trade {
-    fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-        if items.is_empty() {
-            return <Self as ToDataFrame>::empty_dataframe();
-        }
-
-        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(items.len());
-        let mut price = Vec::<f64>::with_capacity(items.len());
-        let mut size = Vec::<u64>::with_capacity(items.len());
-
-        for item in items {
-            symbol.push_value_ignore_validity(item.symbol.as_str());
-            price.push(item.price);
-            size.push(item.size);
-        }
-
-        let mut columns = Vec::<Column>::new();
-
-        let s = IntoSeries::into_series(StringChunked::with_chunk(
-            "symbol".into(),
-            symbol.freeze(),
-        ));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(Float64Chunked::from_vec("price".into(), price));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
-        columns.push(s.into());
-
-        DataFrame::new_infer_height(columns)
-    }
-
-    fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame> {
-        if items.is_empty() {
-            return <Self as ToDataFrame>::empty_dataframe();
-        }
-
-        let mut symbol = MutableBinaryViewArray::<str>::with_capacity(items.len());
-        let mut price = Vec::<f64>::with_capacity(items.len());
-        let mut size = Vec::<u64>::with_capacity(items.len());
-
-        for item in items {
-            symbol.push_value_ignore_validity(item.symbol.as_str());
-            price.push(item.price);
-            size.push(item.size);
-        }
-
-        let mut columns = Vec::<Column>::new();
-
-        let s = IntoSeries::into_series(StringChunked::with_chunk(
-            "symbol".into(),
-            symbol.freeze(),
-        ));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(Float64Chunked::from_vec("price".into(), price));
-        columns.push(s.into());
-
-        let s = IntoSeries::into_series(UInt64Chunked::from_vec("size".into(), size));
-        columns.push(s.into());
-
-        DataFrame::new_infer_height(columns)
-    }
-}
-```
-
-## Supported Types And Shapes
-
-Container and wrapper support:
-
-- **Named structs**: each field becomes one or more columns.
-- **Nested structs**: fields flatten recursively with dot notation.
-- **Explicit field flattening**: `#[df_derive(flatten)]` on a bare nested row
-  field splices the child columns into the parent without the field-name
-  prefix.
-- **Vec of primitives and structs**: `Vec<T>` becomes a Polars `List` column;
-  `Vec<Nested>` becomes one list column per nested field.
-- **`Option<T>`**: scalar and list columns carry null validity.
-- **Tuple structs**: unnamed fields become `field_0`, `field_1`, and so on.
-- **Tuple-typed fields**: `pair: (A, B)` flattens to
-  `pair.field_0`, `pair.field_1`; `Option<(A, B)>` and `Vec<(A, B)>`
-  distribute the outer wrapper across the element columns.
-- **Empty structs**: an instance produces shape `(1, 0)` and an empty slice
-  produces shape `(0, 0)`.
-- **Generics**: generic structs are supported; the macro injects the
-  necessary `ToDataFrame + Columnar` bounds, plus `Decimal128Encode` for
-  generic parameters annotated with `decimal(...)`.
-- **Transparent pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, borrowed references
-  `&T`, and `Cow<'_, T>` with a sized inner peel transparently and preserve
-  the bare field's column shape and dtype.
-
-Common leaf types:
-
-- **Primitives**: `String`, `&str`, `bool`, signed and unsigned integer types
-  including `i128`/`u128` and `isize`/`usize`, `std::num::NonZero*` integer
-  types, `f32`, and `f64`.
-- **Time**: `chrono::DateTime<Tz>` and `chrono::NaiveDateTime` encode as
-  `Datetime(Milliseconds, None)` by default; use
-  `#[df_derive(time_unit = "ms" | "us" | "ns")]` to override.
-  `DateTime<Tz>` values are encoded as UTC instants, so use
-  `#[df_derive(as_string)]` if the textual timezone or offset matters.
-- **Date and time-of-day**: `chrono::NaiveDate` encodes as `Date`, and
-  `chrono::NaiveTime` encodes as `Time`. These encodings are fixed and do not
-  accept `time_unit`.
-- **Duration**: `std::time::Duration`, `core::time::Duration`, and
-  `chrono::Duration` encode as `Duration(Nanoseconds)` by default; use
-  `time_unit` to choose milliseconds, microseconds, or nanoseconds. Bare
-  `Duration` is rejected as ambiguous.
-- **Decimal**: bare `Decimal` and `rust_decimal::Decimal` encode as
-  `Decimal(38, 10)` by default. Custom decimal backends opt in with
-  `#[df_derive(decimal(precision = N, scale = S))]`.
-- **Binary blobs**: `#[df_derive(as_binary)]` opts `Vec<u8>`, `&[u8]`, or
-  `Cow<'_, [u8]>` shapes into Polars `Binary`; unannotated `Vec<u8>` remains
-  `List(UInt8)`.
-
-## Dtype Support Matrix
-
-The default `df-derive` facade and `df-derive-core` runtime enable the Polars
-features in this table on their `polars` dependency. If you use
-`df-derive-macros` with a custom runtime and no `df-derive-core` dependency,
-enable the matching features on that runtime's direct `polars` dependency.
-
-| Rust leaf family | Polars dtype emitted | Polars feature for custom runtimes |
+| Rust type | Polars dtype | Polars feature |
 | --- | --- | --- |
 | `bool` | `Boolean` | none |
 | `String`, `&str`, `as_str`, `as_string` | `String` | none |
-| `i8`, `NonZeroI8` | `Int8` | `dtype-i8` |
-| `i16`, `NonZeroI16` | `Int16` | `dtype-i16` |
-| `i32`, `i64`, `isize`, matching `NonZero*` | `Int32` / `Int64` | none |
-| `i128`, `NonZeroI128` | `Int128` | `dtype-i128` |
-| `u8`, `NonZeroU8` | `UInt8` | `dtype-u8` |
-| `u16`, `NonZeroU16` | `UInt16` | `dtype-u16` |
-| `u32`, `u64`, `usize`, matching `NonZero*` | `UInt32` / `UInt64` | none |
-| `u128`, `NonZeroU128` | `UInt128` | `dtype-u128` |
-| `f32`, `f64` | `Float32` / `Float64` | none |
-| `chrono::DateTime<Tz>`, `chrono::NaiveDateTime` | `Datetime` | `dtype-datetime`, plus `timezones` for timezone-aware values |
-| `chrono::NaiveDate` | `Date` | `dtype-date` |
-| `chrono::NaiveTime` | `Time` | `dtype-time` |
-| `std::time::Duration`, `core::time::Duration`, `chrono::Duration` | `Duration` | `dtype-duration` |
-| `Decimal`, `rust_decimal::Decimal`, custom decimal backends | `Decimal` | `dtype-decimal` |
-| `#[df_derive(as_binary)]` byte buffers | `Binary` | none |
+| `i8`, `i16`, `u8`, `u16` | `Int8`, `Int16`, `UInt8`, `UInt16` | `dtype-i8`, `dtype-i16`, `dtype-u8`, `dtype-u16` |
+| `i32`, `i64`, `isize`, `u32`, `u64`, `usize` | `Int32`, `Int64`, `UInt32`, `UInt64` | none |
+| `i128`, `u128` | `Int128`, `UInt128` | `dtype-i128`, `dtype-u128` |
+| `f32`, `f64` | `Float32`, `Float64` | none |
+| `DateTime<Tz>`, `NaiveDateTime` | `Datetime` | `dtype-datetime` |
+| `NaiveDate` | `Date` | `dtype-date` |
+| `NaiveTime` | `Time` | `dtype-time` |
+| `std::time::Duration`, `chrono::Duration` | `Duration` | `dtype-duration` |
+| `rust_decimal::Decimal`, `decimal(...)` | `Decimal` | `dtype-decimal` |
+| `as_binary` | `Binary` | none |
 
-`Option<T>`, `Vec<T>`, tuples, and nested structs preserve the leaf dtype;
-each `Vec` layer wraps the leaf in `List(...)`.
+`isize` and `usize` are stored as 64-bit columns on every platform, so a
+schema does not depend on the build target. `NonZero*` types use the dtype of
+their base integer.
 
-For Polars 0.55, `dtype-decimal` enables the decimal column machinery and its
-internal `Int128` backing path. You only need an explicit `dtype-i128` feature
-when your derived structs expose `i128` / `NonZeroI128` fields as `Int128`
-columns.
+## Field Attributes
 
-Useful field attributes:
+```rust
+#[derive(ToDataFrame)]
+struct Fill {
+    #[df_derive(as_str)]
+    venue: Venue,                      // AsRef<str>    -> String column
+    #[df_derive(as_string)]
+    status: Status,                    // Display       -> String column
+    #[df_derive(as_binary)]
+    payload: Vec<u8>,                  // AsRef<[u8]>   -> Binary column
+    #[df_derive(decimal(precision = 18, scale = 6))]
+    price: Decimal,                    // Decimal(18, 6)
+    #[df_derive(time_unit = "ns")]
+    at: DateTime<Utc>,                 // Datetime(Nanoseconds)
+    #[df_derive(flatten)]
+    key: OrderKey,                     // key's columns, without the `key.` prefix
+    #[df_derive(skip)]
+    cache: Scratch,                    // no column
+}
+```
 
-- `#[df_derive(skip)]`: omit a field from generated schema and DataFrame output.
-- `#[df_derive(flatten)]`: splice a bare nested row field into the parent without the field-name prefix.
-- `#[df_derive(flatten(prefix = "..."))]`: splice a bare nested row field with an explicit output namespace.
-- `#[df_derive(as_string)]`: format values with `Display` into a string column using a reused scratch buffer.
-- `#[df_derive(as_str)]`: borrow via `AsRef<str>` without `Display` formatting or an intermediate scratch buffer.
-- `#[df_derive(as_binary)]`: encode byte-buffer shapes as Binary.
-- `#[df_derive(decimal(precision = N, scale = S))]`: choose a decimal dtype or opt a custom decimal backend into `Decimal128Encode`.
-- `#[df_derive(time_unit = "ms" | "us" | "ns")]`: choose datetime or duration units.
+- **`as_str`**: borrow through `AsRef<str>`. No formatting, no temporary.
+- **`as_string`**: format with `Display` into one reused scratch buffer.
+- **`as_binary`**: borrow through `AsRef<[u8]>`. Without it, `Vec<u8>` is a
+  `List(UInt8)`.
+- **`decimal(precision = P, scale = S)`**: store any `Decimal128Encode` value
+  as `Decimal(P, S)`. Precision is 1 to 38 and scale may not exceed it.
+- **`time_unit = "ms" | "us" | "ns"`**: the unit of a datetime or duration
+  column.
+- **`flatten`** / **`flatten(prefix = "p")`**: splice a nested struct's
+  columns into the parent with no prefix, or under an explicit one. The field
+  must be a struct or tuple of columns; a plain value has no names of its own
+  to keep. Duplicate column names are reported as an error.
+- **`skip`**: leave the field out. Its type does not have to be supported.
+- **`with = "Builder"`**: use your own `ColumnBuilder` for the value.
 
-`skip` is useful for caches, source metadata, handles, or unsupported helper
-fields that should remain on the Rust struct but not become DataFrame columns.
-It is mutually exclusive with conversion attributes because skipped fields are
-not analyzed or emitted. Tuple struct fields can be skipped too; remaining
-tuple columns keep their original `field_{index}` names.
+The encoding attributes apply to the innermost value. `Option`, `Vec`, `Box`,
+`Rc`, `Arc`, `&` and `Cow` written in the field's type are kept around it, so
+`#[df_derive(as_str)]` on `Option<Vec<Venue>>` gives a nullable list of
+strings. A field has at most one encoding, and tuples cannot carry one: move
+the value into a named struct instead.
 
-`flatten` is useful for reusable key/value row structs whose fields should
-appear at the parent table level. It is accepted only for bare nested row
-shapes after transparent pointer peeling, such as `Key`, `Box<Key>`,
-`Arc<Key>`, `&Key`, or a bare generic row payload. `Option<Key>`,
-`Vec<Key>`, and other semantic wrappers remain on the normal prefixed nested
-path. Flattened derives validate duplicate output names when building schema
-and DataFrames. Use `flatten(prefix = "...")` when intentional namespacing is
-needed.
+## Declaring An Encoding Once
 
-`as_string` is useful for enums or validated newtypes that should appear as
-string columns. It formats each value into a reusable `String` scratch buffer
-before pushing the resulting `&str` into the column builder; the builder still
-copies bytes into the output column, and the scratch can grow to fit the
-largest formatted value. If a field already implements `AsRef<str>`, prefer
-`as_str`: it borrows through the same columnar buffer used for bare
-`String`/`&str` fields and skips both `Display` formatting and the scratch
-buffer. The two attributes are mutually exclusive.
+A type that should always be stored the same way can say so itself. Every
+field of that type then needs no attribute.
 
-`as_binary` accepts `Vec<u8>`, `Option<Vec<u8>>`, `Vec<Vec<u8>>`,
-`Vec<Option<Vec<u8>>>`, `Option<Vec<Vec<u8>>>`, and the same shapes over
-`&[u8]` and `Cow<'_, [u8]>`. Bare `u8`, `Option<u8>`,
-`Vec<Option<u8>>`, non-`u8` leaves, and `String` are rejected. The binary
-attribute is mutually exclusive with `as_str`, `as_string`, `decimal(...)`,
-and `time_unit`.
+**A value type** names its builder with one impl:
 
-Enums and unions are not supported as derive targets; use `as_string` or
-`as_str` on enum fields. Direct fields of type `()` are rejected, but `()` is
-supported as a generic payload and contributes zero columns.
+```rust
+use df_derive::dataframe::{Columnar, builders::{DecimalBuilder, StrBuilder}};
 
-Tuple fields cannot carry field-level conversion attributes such as `as_str`,
-`as_binary`, `decimal(...)`, or `time_unit`; hoist that value into a named
-struct when you need an attributed field. Nested tuples inside an outer
-`Option` or `Vec` are rejected for now; use a named struct for those shapes.
+// An enum that is always a string column (needs `AsRef<str>`).
+impl Columnar for Currency {
+    type Builder = StrBuilder;
+}
+
+// A decimal type that is always `Decimal(38, 10)` (needs `Decimal128Encode`).
+impl Columnar for Amount {
+    type Builder = DecimalBuilder<38, 10>;
+}
+```
+
+**A single-field wrapper** can be transparent. It produces exactly its field's
+column, named after whichever field holds the wrapper:
+
+```rust
+#[derive(ToDataFrame)]
+#[df_derive(transparent)]
+struct Price(Decimal);
+
+#[derive(ToDataFrame)]
+struct Candle {
+    close: Price,           // one `close` column, not `close.field_0`
+    high: Option<Price>,
+}
+```
+
+A transparent wrapper is a value, not a row, so it does not get
+`to_dataframe` of its own.
+
+## Projections
+
+When a type's columns are not its fields, convert it to a row struct and
+derive on that. `via` does the conversion one value at a time, with no
+intermediate collection, and the row may borrow from the value:
+
+```rust
+#[derive(ToDataFrame)]
+#[df_derive(via = "InstrumentRow<'_>")]
+struct Instrument { /* ... */ }
+
+#[derive(ToDataFrame)]
+struct InstrumentRow<'a> {
+    symbol: &'a str,
+    exchange: Option<&'a str>,
+    key: String,            // computed at export time
+}
+
+impl<'a> From<&'a Instrument> for InstrumentRow<'a> { /* ... */ }
+```
+
+This is also how an enum becomes several columns: give it a row struct with a
+kind column and optional columns for the variant data. `try_via` uses
+`TryFrom<&T>` instead and turns a failed conversion into an encoding error.
+
+Enums cannot derive `ToDataFrame` directly. Store one as a single string
+column with `as_str` / `as_string` or an `impl Columnar`, or spread it over
+columns with `via`.
+
+## Errors
+
+A value that cannot be stored produces a `PolarsError` naming the row and the
+field path, for example:
+
+```text
+Event[1].stamp.at: df-derive: DateTime<Tz> value is out of range for nanosecond timestamps (chrono supports approximately 1677..2262)
+```
+
+Fallible encodings are nanosecond timestamps, durations that overflow `i64`,
+decimals that do not fit the declared precision and scale, `as_string` values
+whose `Display` fails, and `try_via` conversions.
 
 ## Column Naming
 
-- Named struct fields use the Rust field name, such as `symbol`.
+- A field uses its Rust name; raw identifiers drop the `r#`.
 - Nested structs use dot notation recursively, such as `address.city`.
-- `#[df_derive(flatten)]` nested fields omit the parent field name, such as
-  `city` instead of `address.city`.
-- `#[df_derive(flatten(prefix = "home"))]` nested fields use the explicit
-  prefix, such as `home.city`.
-- `Vec<Nested>` fields use the outer field plus nested field name, such as
-  `quotes.close`.
-- Tuple-typed fields use `field.field_0`, `field.field_1`, and recurse for
-  unwrapped nested tuples.
-- Tuple structs use `field_0`, `field_1`, and so on.
+- Tuple structs and tuple fields use `field_0`, `field_1`, and so on.
+- `flatten` drops the field's own name; `flatten(prefix = "home")` replaces it.
+- Wrappers do not add a segment: `quotes: Vec<Quote>` gives `quotes.close`.
+- Maps add `key` and `value`.
 
-## Limitations And Guidance
+## Limitations
 
-- Maps such as `HashMap<_, _>` and `BTreeMap<_, _>` are not supported; use
-  `Vec<(K, V)>` or a named row struct when you need a tabular representation.
-- Sets such as `HashSet<_>` and `BTreeSet<_>` are not supported; use
-  `Vec<T>` when you need a list representation.
-- Sequence collections such as `VecDeque<T>` and `LinkedList<T>` are not
-  supported; use `Vec<T>` instead.
-- All nested custom structs must also derive `ToDataFrame`.
-- Obvious direct self-recursive nested fields using `Self`, the bare deriving
-  type name, `self::Type`, or `crate::Type` are rejected after transparent
-  wrapper peeling, including shapes such as `Node`, `Box<Node>`,
-  `Option<Box<Node>>`, and tuple fields containing the same. Use identifier
-  fields or a separate flat representation for recursive data structures.
-- Consecutive `Option` layers above a `Vec` collapse to one list-level
-  validity bit, so `None` and `Some(None)` are indistinguishable in the
-  resulting list column.
-- Borrowed byte slices and `Cow<'_, [u8]>` require `#[df_derive(as_binary)]`;
-  other borrowed slice forms are rejected. Use `Vec<T>` for list columns.
+- Sets and `VecDeque` / `LinkedList` are not supported; use `Vec<T>`.
+- A row type cannot contain itself, directly or through wrappers: a
+  `DataFrame` has a fixed set of columns.
+- A type's columns are fixed at compile time. Data whose column set is only
+  known at run time needs a map field or a hand-built frame.
+- Nested `Option` layers collapse to one null, so `None` and `Some(None)` are
+  indistinguishable in the output.
+- `HashMap` pairs are listed in the map's own iteration order.
+- Mutable references are not supported as fields.
+- A struct that has both lifetime and type parameters cannot be the row type
+  of a `via` projection.
 
-## Runtime Discovery And Overrides
+## Crate Layout
 
-Explicit container attributes always win:
+- **`df-derive`**: the crate to depend on. It re-exports the derive macro and
+  the runtime as `df_derive::dataframe`.
+- **`df-derive-core`**: the runtime: the `Columnar`, `ColumnBuilder`,
+  `ToDataFrame` and `Decimal128Encode` traits and the builders.
+- **`df-derive-macros`**: the derive macro.
+
+Generated code refers to the runtime as `::df_derive::dataframe`. A crate that
+re-exports it under another path (or a renamed dependency) says where it is:
 
 ```rust
-#[derive(df_derive::ToDataFrame)]
-#[df_derive(
-    trait = "my_runtime::dataframe::ToDataFrame",
-    columnar = "my_runtime::dataframe::Columnar",
-    decimal128_encode = "my_runtime::dataframe::Decimal128Encode",
-)]
-struct Row {
-    amount: MyDecimal,
-}
-```
-
-If only `trait = "x::ToDataFrame"` is provided, the macro infers
-`x::Columnar` and `x::Decimal128Encode` unless those paths are explicitly
-overridden.
-
-Explicit paths to the built-in facade/core runtimes,
-`df_derive::dataframe::ToDataFrame` or
-`df_derive_core::dataframe::ToDataFrame` (including dependency renames), still
-use the default-runtime dependency roots from that same `dataframe` module's
-hidden `__private` re-exports. They do not require a direct `polars-arrow`
-dependency just because the trait path was written explicitly.
-
-`columnar = "..."` must be paired with `trait = "..."`; a standalone
-`Columnar` override would create mixed runtime impls that are incompatible
-with both runtimes' `ToDataFrameVec` extension traits.
-Explicit `trait` + `columnar` pairs also cannot mix the built-in
-`df_derive`/`df_derive_core` dataframe runtime with a custom runtime. Use the
-matching built-in `Columnar` path, omit `columnar` so it is inferred from the
-built-in `trait`, or provide a fully custom pair.
-
-Without overrides, the macro discovers a `dataframe` module in this order:
-
-1. `df_derive::dataframe`
-2. `df_derive_core::dataframe`
-3. `paft_utils::dataframe`
-4. `paft::dataframe`
-5. `crate::core::dataframe`
-
-Discovery uses `proc_macro_crate::crate_name`, so dependency renames are
-respected. For example, a dependency declared as
-`dfd = { package = "df-derive", version = "0.5" }` is emitted as
-`::dfd::dataframe`.
-
-The final `crate::core::dataframe` fallback is for legacy/local runtimes in
-crates that use `df-derive-macros` directly without `df-derive`,
-`df-derive-core`, `paft-utils`, or `paft`. Any runtime reached by this default
-discovery path must expose `dataframe::__private::{polars, polars_arrow}` for
-generated-code dependency roots.
-
-## Power-User Runtime Choices
-
-Use the facade for the default runtime:
-
-```rust
-use df_derive::prelude::*;
-
 #[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-}
+#[df_derive(crate = "::my_models")]   // uses ::my_models::dataframe
+struct Row { /* ... */ }
 ```
 
-Use the macro crate directly with the shared core runtime:
+Types derived in different crates share one trait identity through
+`df-derive-core`, so they nest in each other freely.
 
-```toml
-[dependencies]
-df-derive-core = "0.5"
-df-derive-macros = "0.5"
-polars = "0.55"
-```
+## Custom Decimal Types
 
-```rust
-use df_derive_core::dataframe::{ToDataFrame as _, ToDataFrameVec as _};
-use df_derive_macros::ToDataFrame;
+`Decimal128Encode` has one method, which returns a value's `i128` mantissa at
+a target scale. Implement it for your decimal type, rounding half-to-even when
+scaling down so the stored value matches Polars' own decimal parsing, and
+return `None` when the value does not fit. Then either annotate fields with
+`decimal(precision = P, scale = S)` or declare the encoding once with
+`impl Columnar` as shown above.
 
-#[derive(ToDataFrame)]
-struct Row {
-    id: u32,
-}
-```
+## Custom Builders
 
-Use a custom runtime by providing compatible traits and overriding paths.
-Outside the built-in facade/core paths described above, custom runtimes
-selected with `#[df_derive(trait = "...")]` must name a compatible direct
-`polars` dependency. They also need a compatible direct `polars-arrow`
-dependency when the derived fields use shapes that require generated Arrow
-array builders, such as list, nullable primitive, string, or binary columns.
-Scalar-only numeric/bool derives do not need `polars-arrow`. The minimum trait
-surface is:
+`ColumnBuilder<T>` is the whole contract between a type and its columns:
+describe the schema, push a value, push a placeholder for a null, and hand the
+finished columns out. Implement it to store a type in a way the built-in
+encodings do not cover, then select it with `with = "..."` or make it the
+type's default with `impl Columnar`. A builder can wrap one of the provided
+builders and delegate to it.
 
-```rust
-mod runtime {
-    pub mod dataframe {
-        use polars::prelude::{DataFrame, DataType, PolarsResult};
+## Features
 
-        pub trait ToDataFrame {
-            fn to_dataframe(&self) -> PolarsResult<DataFrame>;
-            fn empty_dataframe() -> PolarsResult<DataFrame>;
-            fn schema() -> PolarsResult<Vec<(String, DataType)>>;
-        }
-
-        pub trait Columnar: Sized {
-            fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
-                let refs: Vec<&Self> = items.iter().collect();
-                Self::columnar_from_refs(&refs)
-            }
-
-            fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
-        }
-
-        pub trait Decimal128Encode {
-            fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128>;
-        }
-    }
-}
-```
-
-## Decimal Backends
-
-`df-derive-core` provides `Decimal128Encode for rust_decimal::Decimal` behind
-the `rust_decimal` feature, which is enabled by default on both `df-derive`
-and `df-derive-core`.
-
-To disable it:
-
-```toml
-df-derive = { version = "0.5", default-features = false }
-```
-
-Custom decimal backends should implement `Decimal128Encode` and use
-`#[df_derive(decimal(precision = N, scale = S))]` on fields that should be
-encoded as Polars decimal columns. Implementations must return an `i128`
-mantissa rescaled to the requested scale, using round-half-to-even when
-scaling down. Returning `None` surfaces as a Polars compute error. The
-generated code verifies that the returned mantissa fits the declared precision
-before constructing the Polars decimal column.
-
-Unannotated decimal detection is syntax-based. A procedural macro receives
-tokens, not rustc's resolved type information, so bare `Decimal` and canonical
-`rust_decimal::Decimal` are treated as decimals automatically. Qualified paths
-such as `domain::Decimal` are treated as nested custom structs unless you opt
-them into decimal encoding with `decimal(...)`.
-
-Temporal detection is syntax-based for the same reason. Bare or canonical
-`chrono::NaiveDate`, `chrono::NaiveTime`, `chrono::NaiveDateTime`,
-`chrono::DateTime<Tz>`, `chrono::Duration`, and `chrono::TimeDelta` are treated
-as temporal types, along with `std::time::Duration` and
-`core::time::Duration`. Qualified domain paths such as `domain::NaiveDate`
-remain custom structs.
-
-If your decimal trait lives somewhere other than the discovered runtime module,
-point at it explicitly:
-
-```rust
-#[derive(df_derive::ToDataFrame)]
-#[df_derive(
-    trait = "my_runtime::dataframe::ToDataFrame",
-    decimal128_encode = "my_runtime::decimal_backend::Decimal128Encode",
-)]
-struct Tx {
-    #[df_derive(decimal(precision = 38, scale = 10))]
-    amount: MyDecimal,
-}
-```
+- **`rust_decimal`** (default): `rust_decimal::Decimal` support.
+- **`chrono`** (default): `chrono` date and time support.
 
 ## Compatibility
 
 - **Rust edition**: 2024
-- **Minimum supported Rust version**: 1.95. This is above the edition's
-  1.85 floor because the Polars 0.55 dependency graph uses language features
-  that first compile on Rust 1.95.
+- **Minimum supported Rust version**: 1.95, set by the Polars 0.55 dependency
+  graph.
 - **Polars**: 0.55
-- **polars-arrow**: 0.55 through the default runtime facade. Custom runtimes
-  selected with explicit trait overrides need a compatible direct dependency
-  only for derived field shapes that emit public Arrow array builders; explicit
-  facade/core runtime paths keep using the hidden default-runtime re-export.
-- **Polars feature flags**: the default `df-derive` facade and
-  `df-derive-core` runtime enable every Polars dtype flag required by the
-  support matrix above. If you use `df-derive-macros` with a custom runtime
-  and no `df-derive-core` dependency, enable the matching Polars feature
-  flags on that runtime's `polars` dependency.
 
-## Performance Notes
+## Benchmarks
 
-Using `df_derive::dataframe::Columnar` instead of `paft::dataframe::Columnar`
-has no inherent runtime performance penalty. The macro generates the hot
-column-building code at the impl site either way; the runtime path only
-selects which trait receives the impl.
-
-The generated `columnar_to_dataframe(&[Self])` path avoids the old top-level
-`Vec<&Self>` allocation. Nested and generic emitters still use
-`columnar_from_refs(&[&Self])` so borrowed composition remains clone-free.
-
-The generated hot path is shape-dependent. Primitive scalar fields are
-populated in one row loop. Nested fields collect references and call the
-nested type's columnar implementation, so each nested field may add a scan
-over the outer items. Tuple-typed fields are emitted per projection path, so
-tuple elements may each add their own scan; Vec-bearing tuple projections also
-scan the outer items to build offsets, validity, and leaf buffers. This cost
-model matters most for wide nested schemas and tuple-heavy shapes.
-
-Criterion benches in `df-derive/benches/` cover wide rows, nested structs,
-deep Vec shapes, decimals, strings, borrowed data, tuple fields, and targeted
-tuple-heavy / nested-heavy cost-model shapes.
+Criterion benches in `df-derive/benches/` cover flat, wide, nested, optional,
+list, string, decimal, datetime, tuple, generic and smart-pointer shapes.
+A head-to-head comparison with hand-written Polars, `serde_arrow` and
+`polars-row-derive` lives in
+[comparison-bench/README.md](comparison-bench/README.md); its report was
+generated against an earlier release.
 
 Performance is continuously monitored with
 [Bencher](https://bencher.dev/perf/df-derive).

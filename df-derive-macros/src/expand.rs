@@ -157,7 +157,7 @@ fn columns<'a>(
                 quote! { #ty: #root::Columnar },
             ),
             Some((encoding, span)) => {
-                if !matches!(encoding, attrs::Encoding::With(_)) && mirror::leaf_is_tuple(ty) {
+                if mirror::leaf_is_tuple(ty) {
                     return Err(syn::Error::new(
                         *span,
                         "encoding attributes cannot be applied to a tuple; \
@@ -372,6 +372,7 @@ fn expand_struct(
     };
 
     let slots: Vec<_> = columns.iter().map(|column| &column.slot).collect();
+    let members: Vec<_> = columns.iter().map(|column| &column.member).collect();
     let builder_types: Vec<_> = columns
         .iter()
         .map(|column| {
@@ -443,7 +444,7 @@ fn expand_struct(
             }
 
             #[automatically_derived]
-            #[allow(unused_variables, non_snake_case, clippy::inline_always)]
+            #[allow(unused, non_snake_case, clippy::inline_always)]
             impl #impl_generics #root::ColumnBuilder<#name #ty_generics>
                 for __DfDeriveBuilder #arguments
             #where_clause
@@ -453,9 +454,43 @@ fn expand_struct(
                     #(#as_builder::schema(#names, out);)*
                 }
 
+                const LISTS: usize = 0 #(+ #as_builder::LISTS)*;
+
                 fn with_capacity(rows: usize) -> Self {
                     Self {
                         #(#slots: #as_builder::with_capacity(rows),)*
+                        #marker_init
+                    }
+                }
+
+                #[inline(always)]
+                fn measure(value: &#name #ty_generics, counts: &mut [usize]) {
+                    let mut at = 0usize;
+                    #(
+                        if #as_builder::LISTS > 0 {
+                            #as_builder::measure(
+                                &value.#members,
+                                &mut counts[at..at + #as_builder::LISTS],
+                            );
+                        }
+                        at += #as_builder::LISTS;
+                    )*
+                }
+
+                fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+                    let mut at = 0usize;
+                    let mut take = |lists: usize| {
+                        let start = at;
+                        at += lists;
+                        &counts[start..at]
+                    };
+                    Self {
+                        #(
+                            #slots: #as_builder::with_capacities(
+                                rows,
+                                take(#as_builder::LISTS),
+                            ),
+                        )*
                         #marker_init
                     }
                 }

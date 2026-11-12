@@ -115,10 +115,6 @@ fn leaf(encoding: &Encoding, builders: &TokenStream) -> TokenStream {
 
 /// Returns the builder type for `ty` under `encoding`.
 pub fn builder(ty: &Type, encoding: &Encoding, builders: &TokenStream) -> TokenStream {
-    // `with` names the builder for the whole field, wrappers included.
-    if matches!(encoding, Encoding::With(_)) {
-        return leaf(encoding, builders);
-    }
     let ty = peel(ty);
     // A byte sequence is the value `as_binary` encodes, not a list around it.
     let bytes = matches!(encoding, Encoding::AsBinary);

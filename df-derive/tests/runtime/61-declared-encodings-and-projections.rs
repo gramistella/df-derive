@@ -3,12 +3,13 @@
 // types, `via` / `try_via` projections, custom builders through `with`, map
 // fields, and errors that name the row and field they came from.
 
-use crate::core::dataframe::builders::{OptionBuilder, PrimitiveBuilder, StrBuilder};
-use crate::core::dataframe::{ColumnBuilder, Columnar, Fields, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::builders::{PrimitiveBuilder, StrBuilder};
+use crate::core::dataframe::{
+    Bitmap, ColumnBuilder, Columnar, Fields, ToDataFrame, ToDataFrameVec,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
-use polars_arrow::bitmap::Bitmap;
 use std::collections::{BTreeMap, HashMap};
 
 fn names(df: &DataFrame) -> Vec<String> {
@@ -350,7 +351,7 @@ impl ColumnBuilder<f64> for Cents {
 struct Priced {
     #[df_derive(with = "Cents")]
     price: f64,
-    #[df_derive(with = "OptionBuilder<Cents>")]
+    #[df_derive(with = "Cents")]
     limit: Option<f64>,
 }
 

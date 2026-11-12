@@ -10,7 +10,10 @@
 //! adds the conversions users call; all of them run through one encoder.
 
 use polars::prelude::{Column, DataFrame, DataType, PlSmallStr, PolarsResult};
-use polars_arrow::bitmap::Bitmap;
+
+/// The validity bitmap handed to [`ColumnBuilder::finish`], re-exported so a
+/// custom builder does not need its own `polars-arrow` dependency.
+pub use polars_arrow::bitmap::Bitmap;
 
 pub mod builders;
 mod decimal;
@@ -38,8 +41,31 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// the field being described; leaves use it verbatim.
     fn schema(name: PlSmallStr, out: &mut Fields);
 
+    /// How many list-length counters [`measure`](ColumnBuilder::measure)
+    /// fills in: one per list nested anywhere inside this builder.
+    const LISTS: usize = 0;
+
     /// Creates a builder sized for `rows` rows.
     fn with_capacity(rows: usize) -> Self;
+
+    /// Adds the lengths of the lists inside `value` to `counts`, which has
+    /// [`LISTS`](ColumnBuilder::LISTS) slots.
+    ///
+    /// When rows come from a slice they are measured first, so that list
+    /// buffers are allocated once at their final size. A builder without
+    /// nested lists keeps the default, which counts nothing.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn measure(value: &T, counts: &mut [usize]) {
+        let _ = (value, counts);
+    }
+
+    /// Creates a builder for `rows` rows whose lists hold `counts` elements
+    /// in total, as gathered by [`measure`](ColumnBuilder::measure).
+    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+        let _ = counts;
+        Self::with_capacity(rows)
+    }
 
     /// Appends one value.
     ///
@@ -118,7 +144,7 @@ pub trait ToDataFrame: Record + Sized {
     /// # Errors
     /// Returns an error if a field cannot be encoded.
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        frame::encode(::core::iter::once(self))
+        frame::encode_slice(::core::slice::from_ref(self))
     }
 
     /// Converts borrowed rows into a `DataFrame` in one pass.
@@ -138,7 +164,7 @@ pub trait ToDataFrame: Record + Sized {
     /// # Errors
     /// Returns an error if the schema has duplicate column names.
     fn empty_dataframe() -> PolarsResult<DataFrame> {
-        frame::encode(::core::iter::empty::<&Self>())
+        frame::encode_slice::<Self>(&[])
     }
 
     /// Returns this type's column names and dtypes, in column order.
@@ -161,7 +187,7 @@ pub trait ToDataFrameVec {
 
 impl<T: ToDataFrame> ToDataFrameVec for [T] {
     fn to_dataframe(&self) -> PolarsResult<DataFrame> {
-        frame::encode(self)
+        frame::encode_slice(self)
     }
 }
 

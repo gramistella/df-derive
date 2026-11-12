@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+Planned as 0.6.0. The runtime and the derive were rewritten around composable
+column builders. Output frames are unchanged for supported shapes, except
+where noted under "Changed".
+
+### Added
+
+- `Columnar` is now implemented for the supported leaf types and wrappers
+  themselves, so the compiler resolves a field's encoding through trait impls.
+  Type aliases, generic parameters and re-exported types behave exactly like
+  the type they stand for.
+- `ColumnBuilder<T>`, the single contract between a type and its columns, and
+  the public builders in `df_derive::dataframe::builders`.
+- `T::rows_to_dataframe(iter)` accepts any iterator of `&T`.
+- A type can declare its own encoding once with `impl Columnar`, and
+  `#[df_derive(transparent)]` makes a single-field wrapper encode as its field
+  under the holder's column name.
+- `#[df_derive(via = "Row<'_>")]` and `try_via` encode a type through a row
+  struct built from a reference to it, one value at a time. This also covers
+  enums that should spread over several columns.
+- `#[df_derive(with = "Builder")]` selects a custom builder for one field.
+- `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
+  impls.
+- `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and
+  `field.value` list columns.
+- Encoding errors name the row and the field path, for example
+  `Event[1].stamp.at: ...`.
+- A `chrono` feature (on by default) gates the `chrono` impls.
+- Newly accepted shapes: tuples nested inside `Option` and `Vec`, `Box<str>`
+  and other unsized pointer targets, borrowed slices `&[T]` as lists, `()` as
+  a direct field, `flatten` on optional and list-wrapped structs and on
+  tuples, and `as_binary` on anything that borrows as bytes.
+
+### Changed
+
+- **Breaking**: `Columnar` no longer has `columnar_to_dataframe` and
+  `columnar_from_refs`; it has one associated type, `Builder`. Use
+  `slice.to_dataframe()` or `T::rows_to_dataframe(iter)`. Hand-written
+  `ToDataFrame` / `Columnar` impls must be replaced: derive on a row struct
+  and use `via`, or implement `ColumnBuilder`.
+- **Breaking**: `ToDataFrame` now requires `Columnar`, and its methods have
+  default bodies.
+- **Breaking**: the pluggable-runtime attributes `trait = "..."`,
+  `columnar = "..."` and `decimal128_encode = "..."` are removed, along with
+  the runtime discovery order that looked for `df-derive-core`, `paft-utils`,
+  `paft` and `crate::core::dataframe`. Generated code refers to
+  `::df_derive::dataframe`; a crate that re-exports the runtime elsewhere, or
+  renames the dependency, uses `#[df_derive(crate = "::path")]`.
+- **Breaking**: types are no longer recognised by spelling. A type merely
+  named `Decimal`, or an alias to a custom decimal, is not treated as a
+  decimal; give it `decimal(...)` or an `impl Columnar`.
+- **Breaking**: a generic field instantiated with a primitive is a plain
+  column named after the field (`payload`), not a nested one.
+- Unsupported field types are reported by the compiler as a missing
+  `Columnar` impl at the field, instead of by the macro.
+
+### Removed
+
+- The `proc-macro-crate` dependency and its transitive TOML parser.
+- `unsafe` from generated code and from the runtime.
+
+### Performance
+
+- Every conversion is a single pass over the rows. Nested structs, optional
+  structs and lists of structs are written directly into the parent's column
+  buffers; the per-field reference vectors, intermediate `DataFrame`s, gather
+  for partly-null optional structs, and rechunk for lists are gone.
+- Generated code is roughly a tenth of its previous size and is emitted once
+  instead of once per entry point.
+
 ## [0.5.0] - 2026-08-14
 
 ### Changed

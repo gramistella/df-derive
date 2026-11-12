@@ -1,7 +1,7 @@
 use polars::prelude::{Column, DataType, PlSmallStr, PolarsResult, Series};
 use polars_arrow::array::ListArray;
 use polars_arrow::bitmap::Bitmap;
-use polars_arrow::offset::{Offsets, OffsetsBuffer};
+use polars_arrow::offset::OffsetsBuffer;
 
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 
@@ -12,7 +12,44 @@ use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 /// field, all sharing the same offsets.
 pub struct ListBuilder<B> {
     inner: B,
-    offsets: Offsets<i64>,
+    offsets: ListOffsets,
+}
+
+/// End offsets of the lists pushed so far.
+///
+/// The running total lives in the builder instead of being read back from the
+/// last stored offset, which would chain every push to the one before it.
+pub(super) struct ListOffsets {
+    ends: Vec<i64>,
+    total: i64,
+}
+
+impl ListOffsets {
+    pub(super) fn with_capacity(rows: usize) -> Self {
+        let mut ends = Vec::with_capacity(rows.saturating_add(1));
+        ends.push(0);
+        Self { ends, total: 0 }
+    }
+
+    /// Records a list of `len` elements.
+    #[inline(always)]
+    #[allow(clippy::cast_possible_wrap)]
+    pub(super) fn push(&mut self, len: usize) {
+        // A total past `i64::MAX` wraps negative and is rejected as a
+        // non-monotonic offset in `finish`.
+        self.total = self.total.wrapping_add(len as i64);
+        self.ends.push(self.total);
+    }
+
+    /// Records an empty list, the placeholder for a null.
+    #[inline(always)]
+    pub(super) fn push_empty(&mut self) {
+        self.ends.push(self.total);
+    }
+
+    pub(super) fn finish(self) -> PolarsResult<OffsetsBuffer<i64>> {
+        OffsetsBuffer::try_from(self.ends)
+    }
 }
 
 /// Wraps the dtypes of `out[start..]` in `List`.
@@ -27,10 +64,10 @@ pub(super) fn wrap_schema(out: &mut Fields, start: usize) {
 pub(super) fn wrap_columns(
     out: &mut [Column],
     start: usize,
-    offsets: Offsets<i64>,
+    offsets: ListOffsets,
     validity: Option<&Bitmap>,
 ) -> PolarsResult<()> {
-    let offsets: OffsetsBuffer<i64> = offsets.into();
+    let offsets = offsets.finish()?;
     for column in &mut out[start..] {
         let series = column.as_materialized_series().rechunk();
         let values = series.chunks()[0].clone();
@@ -77,22 +114,43 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
         Self::list_schema::<T>(name, out);
     }
 
+    // One counter for this list's total length, then the inner builder's.
+    const LISTS: usize = 1 + B::LISTS;
+
     fn with_capacity(rows: usize) -> Self {
         Self {
             inner: B::with_capacity(rows),
-            offsets: Offsets::with_capacity(rows),
+            offsets: ListOffsets::with_capacity(rows),
+        }
+    }
+
+    #[inline(always)]
+    fn measure(value: &[T], counts: &mut [usize]) {
+        counts[0] += value.len();
+        if B::LISTS > 0 {
+            for element in value {
+                B::measure(element, &mut counts[1..]);
+            }
+        }
+    }
+
+    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+        Self {
+            inner: B::with_capacities(counts[0], &counts[1..]),
+            offsets: ListOffsets::with_capacity(rows),
         }
     }
 
     #[inline(always)]
     fn push(&mut self, value: &[T]) -> PolarsResult<()> {
         self.inner.extend(value)?;
-        self.offsets.try_push(value.len())
+        self.offsets.push(value.len());
+        Ok(())
     }
 
     #[inline(always)]
     fn push_null(&mut self) {
-        self.offsets.extend_constant(1);
+        self.offsets.push_empty();
     }
 
     fn finish(
@@ -110,8 +168,19 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
         Self::list_schema::<T>(name, out);
     }
 
+    const LISTS: usize = <Self as ColumnBuilder<[T]>>::LISTS;
+
     fn with_capacity(rows: usize) -> Self {
         <Self as ColumnBuilder<[T]>>::with_capacity(rows)
+    }
+
+    #[inline(always)]
+    fn measure(value: &Vec<T>, counts: &mut [usize]) {
+        <Self as ColumnBuilder<[T]>>::measure(value.as_slice(), counts);
+    }
+
+    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+        <Self as ColumnBuilder<[T]>>::with_capacities(rows, counts)
     }
 
     #[inline(always)]
@@ -121,7 +190,7 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
 
     #[inline(always)]
     fn push_null(&mut self) {
-        self.offsets.extend_constant(1);
+        self.offsets.push_empty();
     }
 
     fn finish(

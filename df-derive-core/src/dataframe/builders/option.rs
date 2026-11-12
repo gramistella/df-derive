@@ -20,9 +20,25 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
         B::schema(name, out);
     }
 
+    const LISTS: usize = B::LISTS;
+
     fn with_capacity(rows: usize) -> Self {
         Self {
             inner: B::with_capacity(rows),
+            validity: BitmapBuilder::with_capacity(rows),
+        }
+    }
+
+    #[inline(always)]
+    fn measure(value: &Option<T>, counts: &mut [usize]) {
+        if let Some(value) = value {
+            B::measure(value, counts);
+        }
+    }
+
+    fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+        Self {
+            inner: B::with_capacities(rows, counts),
             validity: BitmapBuilder::with_capacity(rows),
         }
     }

@@ -44,8 +44,32 @@ macro_rules! tuple {
                 $($b::schema(child(&name, $field), out);)+
             }
 
+            const LISTS: usize = 0 $(+ $b::LISTS)+;
+
             fn with_capacity(rows: usize) -> Self {
                 ($($b::with_capacity(rows),)+)
+            }
+
+            #[inline(always)]
+            #[allow(unused_assignments)]
+            fn measure(value: &($($t,)+), counts: &mut [usize]) {
+                let mut at = 0usize;
+                $(
+                    if $b::LISTS > 0 {
+                        $b::measure(&value.$index, &mut counts[at..at + $b::LISTS]);
+                    }
+                    at += $b::LISTS;
+                )+
+            }
+
+            #[allow(unused_assignments)]
+            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+                let mut at = 0usize;
+                ($({
+                    let start = at;
+                    at += $b::LISTS;
+                    $b::with_capacities(rows, &counts[start..at])
+                },)+)
             }
 
             #[inline(always)]

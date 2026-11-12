@@ -24,8 +24,19 @@ macro_rules! transparent_pointer {
                 B::schema(name, out);
             }
 
+            const LISTS: usize = B::LISTS;
+
             fn with_capacity(rows: usize) -> Self {
                 Self(B::with_capacity(rows))
+            }
+
+            #[inline(always)]
+            fn measure(value: &$ptr, counts: &mut [usize]) {
+                B::measure(&**value, counts);
+            }
+
+            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+                Self(B::with_capacities(rows, counts))
             }
 
             #[inline(always)]

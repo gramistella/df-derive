@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
-use polars::prelude::{Column, PlSmallStr, PolarsResult};
-use polars_arrow::bitmap::Bitmap;
-use polars_arrow::offset::Offsets;
-
-use super::list::{wrap_columns, wrap_schema};
+use super::list::{ListOffsets, wrap_columns, wrap_schema};
 use crate::dataframe::frame::child;
 use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
+use polars::prelude::{Column, PlSmallStr, PolarsResult};
+use polars_arrow::bitmap::Bitmap;
 
 /// Encodes a map as two list columns, `<field>.key` and `<field>.value`,
 /// with one entry per pair.
@@ -16,7 +14,7 @@ use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 pub struct MapBuilder<K, V> {
     keys: K,
     values: V,
-    offsets: Offsets<i64>,
+    offsets: ListOffsets,
 }
 
 impl<K, V> MapBuilder<K, V> {
@@ -39,7 +37,7 @@ impl<K, V> MapBuilder<K, V> {
         Self {
             keys: K::with_capacity(rows),
             values: V::with_capacity(rows),
-            offsets: Offsets::with_capacity(rows),
+            offsets: ListOffsets::with_capacity(rows),
         }
     }
 
@@ -57,7 +55,8 @@ impl<K, V> MapBuilder<K, V> {
             self.keys.push(key)?;
             self.values.push(value)?;
         }
-        self.offsets.try_push(len)
+        self.offsets.push(len);
+        Ok(())
     }
 
     fn finish_map<KT, VT>(
@@ -89,8 +88,31 @@ macro_rules! map {
                 Self::map_schema::<KT, VT>(&name, out);
             }
 
+            const LISTS: usize = 1 + K::LISTS + V::LISTS;
+
             fn with_capacity(rows: usize) -> Self {
                 Self::with_rows::<KT, VT>(rows)
+            }
+
+            #[inline(always)]
+            fn measure(value: &$map<KT, VT $(, $hasher)?>, counts: &mut [usize]) {
+                counts[0] += value.len();
+                if K::LISTS + V::LISTS > 0 {
+                    let (keys, values) = counts[1..].split_at_mut(K::LISTS);
+                    for (key, value) in value {
+                        K::measure(key, keys);
+                        V::measure(value, values);
+                    }
+                }
+            }
+
+            fn with_capacities(rows: usize, counts: &[usize]) -> Self {
+                let (keys, values) = counts[1..].split_at(K::LISTS);
+                Self {
+                    keys: K::with_capacities(counts[0], keys),
+                    values: V::with_capacities(counts[0], values),
+                    offsets: ListOffsets::with_capacity(rows),
+                }
             }
 
             #[inline(always)]
@@ -100,7 +122,7 @@ macro_rules! map {
 
             #[inline(always)]
             fn push_null(&mut self) {
-                self.offsets.extend_constant(1);
+                self.offsets.push_empty();
             }
 
             fn finish(

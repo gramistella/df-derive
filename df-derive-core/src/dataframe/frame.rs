@@ -8,13 +8,51 @@ use super::{ColumnBuilder, Columnar, Fields};
 /// through nested builders. Replaced before the error reaches the caller.
 const PATH_END: char = '\u{1f}';
 
+/// Encodes rows from any iterator in one pass. List buffers grow as needed.
 pub(super) fn encode<'a, T, I>(rows: I) -> PolarsResult<DataFrame>
 where
     T: Columnar + 'a,
     I: IntoIterator<Item = &'a T>,
 {
     let rows = rows.into_iter();
-    let mut builder = <T::Builder as ColumnBuilder<T>>::with_capacity(rows.size_hint().0);
+    let builder = <T::Builder as ColumnBuilder<T>>::with_capacity(rows.size_hint().0);
+    fill(builder, rows)
+}
+
+/// List counters kept on the stack. A row type with at most this many nested
+/// lists is measured without a heap allocation, and the compiler can keep the
+/// running totals in registers.
+const INLINE_LISTS: usize = 8;
+
+/// Encodes a slice. Rows that contain lists are measured first so every list
+/// buffer is allocated once at its final size.
+pub(super) fn encode_slice<T: Columnar>(rows: &[T]) -> PolarsResult<DataFrame> {
+    let lists = <T::Builder as ColumnBuilder<T>>::LISTS;
+    let builder = if lists == 0 {
+        <T::Builder as ColumnBuilder<T>>::with_capacity(rows.len())
+    } else if lists <= INLINE_LISTS {
+        let mut counts = [0usize; INLINE_LISTS];
+        for row in rows {
+            <T::Builder as ColumnBuilder<T>>::measure(row, &mut counts[..lists]);
+        }
+        <T::Builder as ColumnBuilder<T>>::with_capacities(rows.len(), &counts[..lists])
+    } else {
+        let mut counts = vec![0usize; lists];
+        for row in rows {
+            <T::Builder as ColumnBuilder<T>>::measure(row, &mut counts);
+        }
+        <T::Builder as ColumnBuilder<T>>::with_capacities(rows.len(), &counts)
+    };
+    fill(builder, rows.iter())
+}
+
+#[inline(always)]
+#[allow(clippy::inline_always)]
+fn fill<'a, T, I>(mut builder: T::Builder, rows: I) -> PolarsResult<DataFrame>
+where
+    T: Columnar + 'a,
+    I: Iterator<Item = &'a T>,
+{
     let mut height = 0usize;
     for row in rows {
         if let Err(error) = builder.push(row) {

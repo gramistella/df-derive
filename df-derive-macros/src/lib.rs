@@ -42,7 +42,7 @@ use syn::{DeriveInput, parse_macro_input};
 ///   `Decimal(P, S)`.
 /// - `time_unit = "ms" | "us" | "ns"`: choose the unit of a datetime or
 ///   duration column.
-/// - `with = "Builder"`: encode the field with a custom `ColumnBuilder`.
+/// - `with = "Builder"`: encode the value with a custom `ColumnBuilder`.
 ///
 /// The encoding attributes apply to the innermost value, through any
 /// `Option`, `Vec` and pointer layers written in the field's type.

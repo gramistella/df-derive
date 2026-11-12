@@ -23,7 +23,7 @@ mod my_traits {
         /// Returns an error if `DataFrame` construction fails.
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
         /// # Errors
         /// Returns an error if `DataFrame` construction fails.
@@ -43,7 +43,7 @@ mod my_traits {
             if self.is_empty() {
                 return <T as MyToDataFrame>::empty_dataframe();
             }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as ToDataFrame>::rows_to_dataframe(self)
         }
     }
 }

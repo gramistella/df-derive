@@ -148,7 +148,7 @@ pub mod dataframe {
     pub trait Columnar: Sized {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
@@ -166,7 +166,7 @@ pub mod dataframe {
             if self.is_empty() {
                 return <T as ToDataFrame>::empty_dataframe();
             }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as ToDataFrame>::rows_to_dataframe(self)
         }
     }
 
@@ -625,7 +625,7 @@ pub mod dataframe {
     pub trait Columnar: Sized {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
@@ -643,7 +643,7 @@ pub mod dataframe {
             if self.is_empty() {
                 return <T as ToDataFrame>::empty_dataframe();
             }
-            <T as Columnar>::columnar_to_dataframe(self)
+            <T as ToDataFrame>::rows_to_dataframe(self)
         }
     }
 
@@ -1036,7 +1036,7 @@ mod runtime {
     pub trait Columnar: Sized {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
@@ -1068,7 +1068,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
     let single = runtime::ToDataFrame::to_dataframe(&rows[0])?;
     assert_eq!(single.shape(), (1, 4));
 
-    let batch = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    let batch = runtime::Columnar::rows_to_dataframe(rows.as_slice())?;
     assert_eq!(batch.shape(), (2, 4));
     Ok(())
 }
@@ -1118,7 +1118,7 @@ mod runtime {
     pub trait Columnar: Sized {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;
@@ -1156,7 +1156,7 @@ fn main() -> PolarsResult<()> {
         },
         Row { maybe: None },
     ];
-    let df = runtime::Columnar::columnar_to_dataframe(rows.as_slice())?;
+    let df = runtime::Columnar::rows_to_dataframe(rows.as_slice())?;
     assert_eq!(df.shape(), (2, 1));
     assert_eq!(df.column("maybe.field_0")?.dtype(), &DataType::Decimal(38, 10));
     assert_eq!(
@@ -1217,7 +1217,7 @@ mod core {
         pub trait Columnar: Sized {
             fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
                 let refs: Vec<&Self> = items.iter().collect();
-                Self::columnar_from_refs(&refs)
+                Self::rows_to_dataframe(refs.iter().copied())
             }
 
             fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;

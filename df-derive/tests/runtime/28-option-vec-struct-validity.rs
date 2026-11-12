@@ -14,7 +14,7 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
-use crate::core::dataframe::Columnar;
+use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
@@ -69,7 +69,7 @@ fn test_all_none() {
         })
         .collect();
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 
@@ -124,7 +124,7 @@ fn test_mixed_some_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 
@@ -189,7 +189,7 @@ fn test_some_empty_vs_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), EXPECTED_HEIGHT);
     assert_inner_columns_are_null_lists(&df);
 

@@ -13,7 +13,7 @@ mod custom_runtime {
     pub trait MyColumnar: Sized {
         fn columnar_to_dataframe(items: &[Self]) -> PolarsResult<DataFrame> {
             let refs: Vec<&Self> = items.iter().collect();
-            Self::columnar_from_refs(&refs)
+            Self::rows_to_dataframe(refs.iter().copied())
         }
 
         fn columnar_from_refs(items: &[&Self]) -> PolarsResult<DataFrame>;

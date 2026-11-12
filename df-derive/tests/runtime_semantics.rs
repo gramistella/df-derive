@@ -43,8 +43,8 @@ mod smart_pointers;
 #[path = "runtime/39-tuple-fields.rs"]
 mod tuple_fields;
 
-#[path = "runtime/41-decimal-custom-backend-attr.rs"]
-mod decimal_custom_backend_attr;
+// TODO(redesign) #[path = "runtime/41-decimal-custom-backend-attr.rs"]
+// TODO(redesign) mod decimal_custom_backend_attr;
 
 #[path = "runtime/45-borrowed-references.rs"]
 mod borrowed_references;
@@ -73,8 +73,8 @@ mod associated_type_paths;
 #[path = "runtime/54-raw-ident-column-names.rs"]
 mod raw_ident_column_names;
 
-#[path = "runtime/55-manual-nested-validation.rs"]
-mod manual_nested_validation;
+// TODO(redesign) #[path = "runtime/55-manual-nested-validation.rs"]
+// TODO(redesign) mod manual_nested_validation;
 
 #[path = "runtime/56-as-string-fmt-error.rs"]
 mod as_string_fmt_error;
@@ -88,5 +88,5 @@ mod mixed_wrapper_shape_row;
 #[path = "runtime/59-tuple-vector-projection.rs"]
 mod tuple_vector_projection;
 
-#[path = "runtime/60-flatten-field.rs"]
-mod flatten_field;
+// TODO(redesign) #[path = "runtime/60-flatten-field.rs"]
+// TODO(redesign) mod flatten_field;

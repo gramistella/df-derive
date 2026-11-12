@@ -98,28 +98,28 @@ fn assert_compute_error_contains(result: PolarsResult<DataFrame>, expected: &str
 #[test]
 fn runtime_semantics() {
     assert_compute_error_contains(
-        <DirectHeightOuter as Columnar>::columnar_to_dataframe(&[DirectHeightOuter {
+        <DirectHeightOuter as ToDataFrame>::rows_to_dataframe(&[DirectHeightOuter {
             inner: BadHeightInner { _value: 1 },
         }]),
         "returned height",
     );
 
     assert_compute_error_contains(
-        <DirectDtypeOuter as Columnar>::columnar_to_dataframe(&[DirectDtypeOuter {
+        <DirectDtypeOuter as ToDataFrame>::rows_to_dataframe(&[DirectDtypeOuter {
             inner: BadDtypeInner { _value: 1 },
         }]),
         "dtype mismatch",
     );
 
     assert_compute_error_contains(
-        <TupleHeightOuter as Columnar>::columnar_to_dataframe(&[TupleHeightOuter {
+        <TupleHeightOuter as ToDataFrame>::rows_to_dataframe(&[TupleHeightOuter {
             payload: vec![(BadHeightInner { _value: 1 },)],
         }]),
         "returned height",
     );
 
     assert_compute_error_contains(
-        <TupleDtypeOuter as Columnar>::columnar_to_dataframe(&[TupleDtypeOuter {
+        <TupleDtypeOuter as ToDataFrame>::rows_to_dataframe(&[TupleDtypeOuter {
             payload: vec![(BadDtypeInner { _value: 1 },)],
         }]),
         "dtype mismatch",

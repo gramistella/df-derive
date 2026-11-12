@@ -1,4 +1,4 @@
-use crate::core::dataframe::{Decimal128Encode, ToDataFrame, ToDataFrameVec};
+use crate::core::dataframe::{Columnar, Decimal128Encode, ToDataFrame, ToDataFrameVec};
 use chrono::{NaiveDate, NaiveTime};
 use df_derive::ToDataFrame;
 use polars::prelude::*;
@@ -217,18 +217,19 @@ impl Decimal128Encode for MyDecimal {
     }
 }
 
+// A custom decimal type declares its column encoding once; every field of
+// that type, including tuple elements, then needs no attribute.
+impl Columnar for MyDecimal {
+    type Builder = df_derive::dataframe::builders::DecimalBuilder<38, 10>;
+}
+
 mod custom_decimal_tuple_backend {
     use super::*;
 
-    type Decimal = MyDecimal;
-
-    // 31. Parent Option tuple with a custom backend routed through the
-    // default Decimal128Encode trait. Tuple elements cannot carry field-level
-    // decimal attrs, so the syntactic `Decimal` alias exercises the implicit
-    // decimal backend path while the impl lives on the custom type.
+    // 31. Parent Option tuple with a custom decimal backend.
     #[derive(ToDataFrame, Clone)]
     pub(super) struct OptTupleWithCustomDecimal {
-        pair: Option<(Decimal,)>,
+        pair: Option<(MyDecimal,)>,
     }
 
     pub(super) fn row(mantissa: Option<i128>) -> OptTupleWithCustomDecimal {

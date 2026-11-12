@@ -39,6 +39,9 @@
 // focused on this crate's own code.
 #![allow(clippy::multiple_crate_versions)]
 
+// Lets the derive's default `::df_derive` path resolve inside this crate.
+extern crate self as df_derive;
+
 pub use df_derive_core::dataframe;
 pub use df_derive_macros::ToDataFrame;
 
@@ -50,7 +53,8 @@ pub use df_derive_macros::ToDataFrame;
 pub mod prelude {
     pub use crate::ToDataFrame;
     pub use crate::dataframe::{
-        Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait, ToDataFrameVec,
+        ColumnBuilder, Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait,
+        ToDataFrameVec,
     };
 }
 

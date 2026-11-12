@@ -108,7 +108,7 @@ fn main() {
     let empty_via_slice = <[OptOptInner] as ToDataFrameVec>::to_dataframe(&[]).unwrap();
     assert_eq!(empty_via_slice.shape(), (0, 3));
 
-    let empty_via_columnar = <OptOptInner as Columnar>::columnar_to_dataframe(&[]).unwrap();
+    let empty_via_columnar = <OptOptInner as ToDataFrame>::rows_to_dataframe(&[]).unwrap();
     assert_eq!(empty_via_columnar.shape(), (0, 3));
 
     let empty_direct = OptOptInner::empty_dataframe().unwrap();

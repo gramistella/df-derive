@@ -40,10 +40,6 @@ harness = false
 required-features = ["bench-instruction-counts"]
 
 [[bench]]
-name = "gate_builders"
-harness = false
-
-[[bench]]
 name = "01_top_level_vec"
 harness = false
 

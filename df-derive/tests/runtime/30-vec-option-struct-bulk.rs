@@ -14,7 +14,7 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
-use crate::core::dataframe::Columnar;
+use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
@@ -64,7 +64,7 @@ fn runtime_semantics() {
 // correct typed schema. The bulk emitter never enters its scan loop.
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 0);
     assert_inner_columns_typed(&df, 0);
 }
@@ -79,7 +79,7 @@ fn test_all_some_but_empty_vec() {
             payload: Vec::new(),
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_typed(&df, 4);
 
@@ -118,7 +118,7 @@ fn test_all_none_elements() {
     ];
     let expected_lens = [3usize, 1, 2];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 3);
     assert_inner_columns_typed(&df, 3);
 
@@ -216,7 +216,7 @@ fn test_mixed_some_none() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 6);
     assert_inner_columns_typed(&df, 6);
 

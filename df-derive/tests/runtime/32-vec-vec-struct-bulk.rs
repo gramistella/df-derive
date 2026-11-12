@@ -19,7 +19,7 @@
 // emitters are invoked from that path; the per-row pipeline takes a
 // different code path that this test is not trying to cover.
 
-use crate::core::dataframe::Columnar;
+use crate::core::dataframe::ToDataFrame;
 use df_derive::ToDataFrame;
 use polars::prelude::*;
 use pretty_assertions::assert_eq;
@@ -89,7 +89,7 @@ fn runtime_semantics() {
 // the schema generator only wraps once for `has_vec`).
 fn test_empty_parent_slice() {
     let rows: Vec<Outer> = Vec::new();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 0);
     assert_inner_columns_empty_path(&df, 0);
 }
@@ -104,7 +104,7 @@ fn test_all_outer_empty() {
             payload: Vec::new(),
         })
         .collect();
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 4);
     assert_inner_columns_populated(&df, 4);
 
@@ -142,7 +142,7 @@ fn test_outer_with_empty_inner_vecs() {
     ];
     let expected_inner_lens = [2usize, 1, 3];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 3);
     assert_inner_columns_populated(&df, 3);
 
@@ -232,7 +232,7 @@ fn test_all_populated() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 2);
     assert_inner_columns_populated(&df, 2);
 
@@ -315,7 +315,7 @@ fn test_mixed_shapes() {
         },
     ];
 
-    let df = <Outer as Columnar>::columnar_to_dataframe(&rows).unwrap();
+    let df = <Outer as ToDataFrame>::rows_to_dataframe(&rows).unwrap();
     assert_eq!(df.height(), 6);
     assert_inner_columns_populated(&df, 6);
 

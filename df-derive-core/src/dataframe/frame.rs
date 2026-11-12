@@ -1,0 +1,117 @@
+//! The single row loop and frame assembly shared by every conversion.
+
+use polars::prelude::{DataFrame, DataType, PlSmallStr, PolarsError, PolarsResult};
+
+use super::{ColumnBuilder, Columnar, Fields};
+
+/// Separates the field path from the message while an error travels up
+/// through nested builders. Replaced before the error reaches the caller.
+const PATH_END: char = '\u{1f}';
+
+pub(super) fn encode<'a, T, I>(rows: I) -> PolarsResult<DataFrame>
+where
+    T: Columnar + 'a,
+    I: IntoIterator<Item = &'a T>,
+{
+    let rows = rows.into_iter();
+    let mut builder = <T::Builder as ColumnBuilder<T>>::with_capacity(rows.size_hint().0);
+    let mut height = 0usize;
+    for row in rows {
+        if let Err(error) = builder.push(row) {
+            return Err(at_row::<T>(&error, height));
+        }
+        height += 1;
+    }
+    let mut columns = Vec::new();
+    builder.finish(PlSmallStr::EMPTY, None, &mut columns)?;
+    if columns.is_empty() {
+        return Ok(DataFrame::empty_with_height(height));
+    }
+    DataFrame::new(height, columns).map_err(|error| duplicate_columns::<T>(error))
+}
+
+pub(super) fn schema<T: Columnar>() -> PolarsResult<Vec<(String, DataType)>> {
+    let mut fields = Fields::new();
+    <T::Builder as ColumnBuilder<T>>::schema(PlSmallStr::EMPTY, &mut fields);
+    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+    for (name, _) in &fields {
+        if !seen.insert(name.as_str()) {
+            return Err(duplicate_column::<T>(name));
+        }
+    }
+    Ok(fields
+        .into_iter()
+        .map(|(name, dtype)| (name.into_string(), dtype))
+        .collect())
+}
+
+/// Joins a parent column path and a field name with a dot.
+#[must_use]
+pub fn child(parent: &PlSmallStr, field: &'static str) -> PlSmallStr {
+    if parent.is_empty() {
+        return PlSmallStr::from_static(field);
+    }
+    let mut joined = String::with_capacity(parent.len() + 1 + field.len());
+    joined.push_str(parent);
+    joined.push('.');
+    joined.push_str(field);
+    joined.into()
+}
+
+/// Prefixes an encoding error with the field it came from.
+#[cold]
+#[inline(never)]
+#[must_use]
+pub fn in_field(error: PolarsError, field: &'static str) -> PolarsError {
+    error.wrap_msg(|message| {
+        if message.contains(PATH_END) {
+            format!("{field}.{message}")
+        } else {
+            format!("{field}{PATH_END}{message}")
+        }
+    })
+}
+
+fn short_type_name<T: ?Sized>() -> &'static str {
+    let full = std::any::type_name::<T>();
+    let head = full.split('<').next().unwrap_or(full);
+    let start = head.rfind("::").map_or(0, |index| index + 2);
+    &full[start..]
+}
+
+#[cold]
+#[inline(never)]
+fn at_row<T: ?Sized>(error: &PolarsError, row: usize) -> PolarsError {
+    let type_name = short_type_name::<T>();
+    error.wrap_msg(|message| match message.split_once(PATH_END) {
+        Some((path, message)) => format!("{type_name}[{row}].{path}: {message}"),
+        None => format!("{type_name}[{row}]: {message}"),
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn duplicate_column<T: ?Sized>(name: &str) -> PolarsError {
+    PolarsError::ComputeError(
+        format!(
+            "df-derive: duplicate column `{name}` in the DataFrame schema of {}",
+            std::any::type_name::<T>()
+        )
+        .into(),
+    )
+}
+
+#[cold]
+#[inline(never)]
+fn duplicate_columns<T: ?Sized>(error: PolarsError) -> PolarsError {
+    if let PolarsError::Duplicate(message) = &error {
+        return PolarsError::ComputeError(
+            format!(
+                "df-derive: duplicate column in the DataFrame output of {}: {message}",
+                std::any::type_name::<T>()
+            )
+            .into(),
+        );
+    }
+    error
+}

@@ -5,7 +5,7 @@
 //!   field is decoded by calling `payload.to_dataframe()` once per item and
 //!   extracting `AnyValues` into per-column accumulators.
 //! - `_bulk`: the macro-generated path that collects `Vec<T>` once and calls
-//!   `T::columnar_to_dataframe(&slice)` exactly once, then prefix-renames the
+//!   `T::rows_to_dataframe(&slice)` exactly once, then prefix-renames the
 //!   resulting columns onto the parent `DataFrame`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -307,7 +307,7 @@ fn benchmark_generics(c: &mut Criterion) {
     c.bench_function("generics_unit_bulk", |b| {
         b.iter(|| {
             let df =
-                <Wrapper<()> as Columnar>::columnar_to_dataframe(std::hint::black_box(&unit_data))
+                <Wrapper<()> as ToDataFrame>::rows_to_dataframe(std::hint::black_box(&unit_data))
                     .unwrap();
             std::hint::black_box(df)
         });
@@ -323,7 +323,7 @@ fn benchmark_generics(c: &mut Criterion) {
     c.bench_function("generics_primitive_bulk", |b| {
         b.iter(|| {
             let df =
-                <Wrapper<f64> as Columnar>::columnar_to_dataframe(std::hint::black_box(&prim_data))
+                <Wrapper<f64> as ToDataFrame>::rows_to_dataframe(std::hint::black_box(&prim_data))
                     .unwrap();
             std::hint::black_box(df)
         });
@@ -338,7 +338,7 @@ fn benchmark_generics(c: &mut Criterion) {
     });
     c.bench_function("generics_struct_bulk", |b| {
         b.iter(|| {
-            let df = <Wrapper<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(
+            let df = <Wrapper<Meta> as ToDataFrame>::rows_to_dataframe(std::hint::black_box(
                 &struct_data,
             ))
             .unwrap();
@@ -357,7 +357,7 @@ fn benchmark_generics(c: &mut Criterion) {
     c.bench_function("opt_struct_bulk", |b| {
         b.iter(|| {
             let df =
-                <OptWrap<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(&opt_data))
+                <OptWrap<Meta> as ToDataFrame>::rows_to_dataframe(std::hint::black_box(&opt_data))
                     .unwrap();
             std::hint::black_box(df)
         });
@@ -374,7 +374,7 @@ fn benchmark_generics(c: &mut Criterion) {
     c.bench_function("vec_struct_bulk", |b| {
         b.iter(|| {
             let df =
-                <VecWrap<Meta> as Columnar>::columnar_to_dataframe(std::hint::black_box(&vec_data))
+                <VecWrap<Meta> as ToDataFrame>::rows_to_dataframe(std::hint::black_box(&vec_data))
                     .unwrap();
             std::hint::black_box(df)
         });

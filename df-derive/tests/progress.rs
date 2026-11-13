@@ -88,4 +88,5 @@ fn tests() {
     t.compile_fail("tests/fail/157-fail-via-row-is-not-a-row.rs");
     t.compile_fail("tests/fail/158-fail-via-inner-attributes.rs");
     t.compile_fail("tests/fail/159-fail-rename-conflicts.rs");
+    t.compile_fail("tests/fail/160-fail-item-named-like-a-parameter.rs");
 }

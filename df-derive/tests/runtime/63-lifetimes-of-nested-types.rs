@@ -306,8 +306,10 @@ fn a_projected_type_with_a_lifetime_nests_in_a_type_with_only_a_lifetime() {
 
 // --- a projection whose row has a lifetime and a type parameter ------------------
 
+// What the row type needs of `T` to be a row type is taken from the row type.
+// Only what the conversion needs is said here.
 #[derive(ToDataFrame)]
-#[df_derive(via = "ReadingRow<'_, T>", bound = "T: Columnar + Copy")]
+#[df_derive(via = "ReadingRow<'_, T>", bound = "T: Copy")]
 struct Reading<T> {
     sensor: String,
     value: T,
@@ -767,4 +769,67 @@ fn a_map_key_of_generic_type_needs_no_bound_from_the_user() {
     );
     assert_eq!(strings(&df, "by_name.kinds.key", 0), ["btc"]);
     assert_eq!(strings(&df, "by_id.kinds.value", 0), ["spot", "future"]);
+}
+
+// --- a lifetime that a field's type binds itself is not the row's ----------------
+
+/// A count and something that is not stored.
+struct Counted<F>(u32, F);
+
+struct CountedBuilder(<u32 as Columnar>::Builder);
+
+impl<F> ColumnBuilder<Counted<F>> for CountedBuilder {
+    fn schema(name: PlSmallStr, out: &mut Fields) {
+        <<u32 as Columnar>::Builder as ColumnBuilder<u32>>::schema(name, out);
+    }
+
+    fn new() -> Self {
+        Self(ColumnBuilder::<u32>::new())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        ColumnBuilder::<u32>::reserve(&mut self.0, additional);
+    }
+
+    fn push(&mut self, value: Option<&Counted<F>>) -> PolarsResult<()> {
+        self.0.push(value.map(|counted| &counted.0))
+    }
+
+    fn finish(
+        self,
+        name: PlSmallStr,
+        validity: Option<&Bitmap>,
+        out: &mut Vec<Column>,
+    ) -> PolarsResult<()> {
+        ColumnBuilder::<u32>::finish(self.0, name, validity, out)
+    }
+}
+
+impl<F> Columnar for Counted<F> {
+    type Builder = CountedBuilder;
+}
+
+#[derive(ToDataFrame)]
+struct Hooks<'r> {
+    name: &'r str,
+    // `'a` is bound by the function type, so it stays as it is where the
+    // row's own lifetime is written out of the builder.
+    length: Counted<for<'a> fn(&'a str) -> usize>,
+}
+
+#[test]
+fn a_lifetime_bound_inside_a_field_type_is_left_alone() {
+    let name = String::from("len");
+    let rows = [Hooks {
+        name: &name,
+        length: Counted(3, str::len),
+    }];
+
+    let df = rows.as_slice().to_dataframe().unwrap();
+    assert_eq!(string(&df, "name", 0), "len");
+    assert_eq!(
+        df.column("length").unwrap().get(0).unwrap(),
+        AnyValue::UInt32(3)
+    );
+    assert_eq!((rows[0].length.1)("four"), 4);
 }

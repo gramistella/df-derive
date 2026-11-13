@@ -61,10 +61,11 @@ intermediate frames or per-field copies of the rows.
 
 ## How It Works
 
-The derive does not analyse your field types. Each supported type implements
-the `Columnar` trait, which names a *builder* that owns the buffers for that
-type's columns. A derived struct gets a builder with one member per field, and
-wrappers compose by wrapping the builder of what they contain:
+The derive does not analyse the type of a field that has no attribute. Each
+supported type implements the `Columnar` trait, which names a *builder* that
+owns the buffers for that type's columns. A derived struct gets a builder
+with one member per field, and wrappers compose by wrapping the builder of
+what they contain:
 
 - `Option<T>` adds a validity bitmap around `T`'s builder.
 - `Vec<T>` adds list offsets around `T`'s builder.
@@ -88,7 +89,10 @@ Any of these works as a field with no attribute, in any nesting:
   `std::time::Duration` is `Duration(Nanoseconds)` with or without the
   feature.
 - **Decimals** (`rust_decimal` feature, on by default):
-  `rust_decimal::Decimal` as `Decimal(38, 10)`.
+  `rust_decimal::Decimal` as `Decimal(38, 10)`. A column has one scale, so a
+  value with more than 10 digits after the point is rounded to 10, half to
+  even, and a value with more than 28 digits before it is an error. Choose
+  another precision and scale for a field with `decimal(...)`.
 - **Other derived structs**: flattened into the parent with dot notation.
 - **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
 - **`Option<T>`**: the same columns as `T`, nullable.
@@ -161,7 +165,9 @@ struct Fill {
 - **`as_binary`**: borrow through `AsRef<[u8]>`. Without it, `Vec<u8>` and
   `[u8; N]` are a `List(UInt8)`.
 - **`decimal(precision = P, scale = S)`**: store any `Decimal128Encode` value
-  as `Decimal(P, S)`. Precision is 1 to 38 and scale may not exceed it.
+  as `Decimal(P, S)`. Precision is 1 to 38 and scale may not exceed it. A
+  value with more than `S` digits after the point is rounded half to even; a
+  value that then needs more than `P` digits is an error.
 - **`time_unit = "ms" | "us" | "ns"`**: the unit of a datetime or duration
   column.
 - **`flatten`** / **`flatten(prefix = "p")`**: splice a nested struct's
@@ -184,6 +190,11 @@ values. The keys keep the encoding of their own type, so a key type that is
 not supported as it stands needs an `impl Columnar`. A field has at most one
 encoding, and tuples cannot carry one: move the value into a named struct
 instead.
+
+This is the one place where the derive reads a type instead of asking the
+compiler: the wrappers around an encoded value are taken from the type as it
+is written. An alias that hides one, such as `type Tags = Vec<Tag>`, is taken
+as the value itself.
 
 ## Declaring An Encoding Once
 

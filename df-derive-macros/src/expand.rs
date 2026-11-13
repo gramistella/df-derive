@@ -99,6 +99,33 @@ fn respan(tokens: TokenStream, span: Span) -> TokenStream {
         .collect()
 }
 
+/// Adds to `bound` the lifetimes that `tokens` introduce with `for<...>`.
+/// Those belong to the type they are written in and are left as they are.
+fn bound_lifetimes(tokens: TokenStream, bound: &mut HashSet<String>) {
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        match token {
+            TokenTree::Group(group) => bound_lifetimes(group.stream(), bound),
+            TokenTree::Ident(ident) if ident == "for" => {
+                let opens = matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '<');
+                if !opens {
+                    continue;
+                }
+                for token in tokens.by_ref() {
+                    match token {
+                        TokenTree::Punct(punct) if punct.as_char() == '>' => break,
+                        TokenTree::Ident(name) => {
+                            bound.insert(name.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Rewrites the name of every lifetime in `tokens` that `rename` has a new
 /// name for.
 fn rename_lifetimes(
@@ -135,7 +162,11 @@ fn rename_lifetimes(
 /// its type does not need the row's lifetimes. Naming a member with `'static`
 /// makes one type serve every lifetime of the field.
 fn erase_lifetimes(tokens: TokenStream) -> TokenStream {
-    rename_lifetimes(tokens, &mut |_| Some("static".to_owned()))
+    let mut bound = HashSet::new();
+    bound_lifetimes(tokens.clone(), &mut bound);
+    rename_lifetimes(tokens, &mut |ident| {
+        (!bound.contains(&ident.to_string())).then(|| "static".to_owned())
+    })
 }
 
 /// Gives every `'_` in `tokens` a name of its own and returns the names, so
@@ -167,19 +198,26 @@ fn parameters(generics: &syn::Generics) -> HashSet<String> {
 }
 
 /// Whether `tokens` name one of `params`. A lifetime is not one of them,
-/// even when it has the name of one.
+/// even when it has the name of one, and neither is a name that follows
+/// `::`, which is an item in a path.
 fn mentions(tokens: TokenStream, params: &HashSet<String>) -> bool {
-    let mut after_quote = false;
+    // The two characters before the token at hand, when they are punctuation.
+    let mut before = [' ', ' '];
     for token in tokens {
         let found = match &token {
-            TokenTree::Ident(ident) => !after_quote && params.contains(&ident.to_string()),
+            TokenTree::Ident(ident) => {
+                before[1] != '\'' && before != [':', ':'] && params.contains(&ident.to_string())
+            }
             TokenTree::Group(group) => mentions(group.stream(), params),
             TokenTree::Punct(_) | TokenTree::Literal(_) => false,
         };
         if found {
             return true;
         }
-        after_quote = matches!(&token, TokenTree::Punct(punct) if punct.as_char() == '\'');
+        before = match &token {
+            TokenTree::Punct(punct) => [before[1], punct.as_char()],
+            _ => [' ', ' '],
+        };
     }
     false
 }
@@ -742,13 +780,25 @@ fn expand_via(
     let vis = &input.vis;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let own = own_predicates(&input.generics, container);
-    let where_clause = quote! { where #(#own,)* };
 
     let row = respan(via.row.to_token_stream(), via.span);
     let stored = erase_lifetimes(row.clone());
     // The builder of the row type is this builder's one member. Like any
     // member, it is written out unless it depends on a parameter.
     let per_instance = mentions(row.clone(), &parameters(&input.generics));
+    // The builder has to encode the row whatever the row borrows.
+    let (any_row, borrows) = name_borrows(row.clone());
+    let for_any_borrow = (!borrows.is_empty()).then(|| quote! { for<#(#borrows),*> });
+    // What a projected type needs of a row type that depends on a parameter:
+    // that it is a row type, and that its builder encodes it. For any other
+    // row type both are checked where the builder is used, below.
+    let row_bounds = per_instance.then(|| {
+        quote! {
+            #stored: #root::Record,
+            #for_any_borrow <#stored as #root::Columnar>::Builder: #root::ColumnBuilder<#any_row>,
+        }
+    });
+    let where_clause = quote! { where #(#own,)* #row_bounds };
     let naming = Naming::new(
         &input.generics,
         per_instance.then(|| quote! { __DfDeriveVia }),
@@ -781,10 +831,9 @@ fn expand_via(
         }
     });
     let (inner, encoder_where) = if per_instance {
-        // The member has to encode the row whatever the row borrows.
+        // Whichever instance named the builder, its member has to encode the
+        // row of the value at hand.
         let inner = quote! { <__DfDeriveFor as __DfDeriveVia>::Row };
-        let (any_row, borrows) = name_borrows(row.clone());
-        let for_any_borrow = (!borrows.is_empty()).then(|| quote! { for<#(#borrows),*> });
         let encodes = quote! { #for_any_borrow #inner: #root::ColumnBuilder<#any_row> };
         (inner, quote! { where #(#own,)* #encodes })
     } else {
@@ -794,6 +843,9 @@ fn expand_via(
         )
     };
     let as_inner = quote! { <#inner as #root::ColumnBuilder<#row>> };
+    // A projection is a row type because the type it encodes as is one.
+    let record_check =
+        (!per_instance).then(|| quote! { #root::__private::assert_record::<#row>(); });
     let convert = if via.fallible {
         quote! {
             match ::core::convert::TryFrom::try_from(value) {
@@ -838,9 +890,7 @@ fn expand_via(
                     <#inner as #root::ColumnBuilder<#stored>>::ROW_AT_A_TIME;
 
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
-                    // A projection is a row type because the type it encodes
-                    // as is one.
-                    #root::__private::assert_record::<#row>();
+                    #record_check
                     #as_inner::schema(name, out);
                 }
 

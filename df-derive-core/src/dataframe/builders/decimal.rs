@@ -37,6 +37,14 @@ fn precision_error(mantissa: i128, precision: usize, scale: usize) -> PolarsErro
 }
 
 impl<const P: usize, const S: usize> DecimalBuilder<P, S> {
+    /// Fails to compile for a `P` or `S` that Polars has no decimal type
+    /// for. Every way into the builder evaluates it, so that the schema
+    /// cannot name a type the columns could not have.
+    const SUPPORTED: () = assert!(
+        0 < P && P <= 38 && S <= P,
+        "`Decimal(P, S)` needs 1 <= P <= 38 and S <= P"
+    );
+
     /// The value's mantissa at scale `S`, if it fits in `P` digits.
     #[inline(always)]
     #[allow(clippy::cast_possible_truncation)]
@@ -56,16 +64,12 @@ where
     T: Decimal128Encode + ?Sized,
 {
     fn schema(name: PlSmallStr, out: &mut Fields) {
+        let () = Self::SUPPORTED;
         out.push((name, DataType::Decimal(P, S)));
     }
 
     fn new() -> Self {
-        const {
-            assert!(
-                0 < P && P <= 38 && S <= P,
-                "`Decimal(P, S)` needs 1 <= P <= 38 and S <= P"
-            );
-        }
+        let () = Self::SUPPORTED;
         Self(Vec::new())
     }
 

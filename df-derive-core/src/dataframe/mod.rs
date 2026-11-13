@@ -218,6 +218,12 @@ pub trait ToDataFrame: Record + Sized {
     /// filtered view, a map's values. A slice or `Vec` of rows converts
     /// directly with [`ToDataFrameVec::to_dataframe`].
     ///
+    /// The references are gathered into a vector first. The encoder for them
+    /// is compiled in the crate that calls this, unlike the encoder for a
+    /// slice, which the derive writes into the crate that defines the row
+    /// type: a second one there would nearly double what every derived type
+    /// costs to compile, for the sake of the types this is called on.
+    ///
     /// # Errors
     /// Returns an error naming the row and field that could not be encoded.
     fn rows_to_dataframe<'a, I>(rows: I) -> PolarsResult<DataFrame>

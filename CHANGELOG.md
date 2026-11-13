@@ -32,6 +32,8 @@ exceptions are listed under "Changed".
   struct built from a reference to it, one value at a time. This also covers
   enums that should spread over several columns.
 - `#[df_derive(with = "Builder")]` selects a custom builder for one field.
+- `#[df_derive(rename = "name")]` names a field's column, or the prefix of a
+  nested struct's columns.
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and

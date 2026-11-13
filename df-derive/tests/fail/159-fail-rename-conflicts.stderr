@@ -1,0 +1,41 @@
+error: `skip` cannot be combined with other attributes: a skipped field produces no column
+  --> tests/fail/159-fail-rename-conflicts.rs:11:34
+   |
+11 |     #[df_derive(rename = "kept", skip)]
+   |                                  ^^^^
+
+error: `rename` cannot be combined with `flatten`: a flattened field adds no name of its own. To put its columns under a name, use `flatten(prefix = "...")`
+  --> tests/fail/159-fail-rename-conflicts.rs:18:17
+   |
+18 |     #[df_derive(rename = "inner", flatten)]
+   |                 ^^^^^^
+
+error: `rename` cannot be combined with `flatten`: a flattened field adds no name of its own. To put its columns under a name, use `flatten(prefix = "...")`
+  --> tests/fail/159-fail-rename-conflicts.rs:24:40
+   |
+24 |     #[df_derive(flatten(prefix = "a"), rename = "b")]
+   |                                        ^^^^^^
+
+error: a column name must not be empty
+  --> tests/fail/159-fail-rename-conflicts.rs:30:26
+   |
+30 |     #[df_derive(rename = "")]
+   |                          ^^
+
+error: duplicate `rename` attribute
+  --> tests/fail/159-fail-rename-conflicts.rs:36:31
+   |
+36 |     #[df_derive(rename = "a", rename = "b")]
+   |                               ^^^^^^
+
+error: expected string literal
+  --> tests/fail/159-fail-rename-conflicts.rs:42:26
+   |
+42 |     #[df_derive(rename = 5)]
+   |                          ^
+
+error: `rename` has no effect in a `transparent` type: its one field already takes the name of the field that holds the wrapper
+  --> tests/fail/159-fail-rename-conflicts.rs:49:40
+   |
+49 | struct RenameInTransparent(#[df_derive(rename = "inner")] i32);
+   |                                        ^^^^^^

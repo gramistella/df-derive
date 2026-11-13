@@ -96,3 +96,6 @@ mod lifetimes_of_nested_types;
 
 #[path = "runtime/64-row-at-a-time.rs"]
 mod row_at_a_time;
+
+#[path = "runtime/65-rename.rs"]
+mod rename;

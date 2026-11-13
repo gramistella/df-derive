@@ -68,6 +68,8 @@ pub enum Flatten {
 #[derive(Default)]
 pub struct FieldAttrs {
     pub skip: Option<Span>,
+    /// The name the field's columns take instead of the field's own.
+    pub rename: Option<(LitStr, Span)>,
     pub flatten: Option<(Flatten, Span)>,
     pub encoding: Option<(Encoding, Span)>,
 }
@@ -270,6 +272,20 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 parsed.skip = Some(span);
                 return Ok(());
             }
+            if meta.path.is_ident("rename") {
+                if parsed.rename.is_some() {
+                    return Err(meta.error("duplicate `rename` attribute"));
+                }
+                let name: LitStr = meta.value()?.parse()?;
+                if name.value().is_empty() {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        "a column name must not be empty",
+                    ));
+                }
+                parsed.rename = Some((name, span));
+                return Ok(());
+            }
             if meta.path.is_ident("flatten") {
                 if parsed.flatten.is_some() {
                     return Err(meta.error("duplicate `flatten` attribute"));
@@ -292,8 +308,9 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 Encoding::With(Box::new(literal.parse()?))
             } else {
                 return Err(meta.error(
-                    "unknown field attribute; expected one of `skip`, `flatten`, `as_str`, \
-                     `as_string`, `as_binary`, `decimal(...)`, `time_unit = \"...\"`, `with = \"...\"`",
+                    "unknown field attribute; expected one of `skip`, `rename = \"...\"`, \
+                     `flatten`, `as_str`, `as_string`, `as_binary`, `decimal(...)`, \
+                     `time_unit = \"...\"`, `with = \"...\"`",
                 ));
             };
             if let Some((existing, _)) = &parsed.encoding {
@@ -309,11 +326,18 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     }
 
     if let Some(skip) = parsed.skip
-        && (parsed.flatten.is_some() || parsed.encoding.is_some())
+        && (parsed.rename.is_some() || parsed.flatten.is_some() || parsed.encoding.is_some())
     {
         return Err(syn::Error::new(
             skip,
             "`skip` cannot be combined with other attributes: a skipped field produces no column",
+        ));
+    }
+    if let (Some((_, rename)), Some(_)) = (&parsed.rename, &parsed.flatten) {
+        return Err(syn::Error::new(
+            *rename,
+            "`rename` cannot be combined with `flatten`: a flattened field adds no name of its \
+             own. To put its columns under a name, use `flatten(prefix = \"...\")`",
         ));
     }
     if let (Some((_, flatten)), Some((encoding, _))) = (&parsed.flatten, &parsed.encoding) {

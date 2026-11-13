@@ -264,12 +264,20 @@ fn columns<'a>(
                  the name of the field that holds the wrapper",
             ));
         }
+        if let (true, Some((_, span))) = (transparent, &attrs.rename) {
+            return Err(syn::Error::new(
+                *span,
+                "`rename` has no effect in a `transparent` type: its one field already takes \
+                 the name of the field that holds the wrapper",
+            ));
+        }
         let flattened = attrs.flatten.is_some();
-        let segment = match attrs.flatten {
+        let segment = match (attrs.flatten, attrs.rename) {
             _ if transparent => None,
-            None => Some(syn::LitStr::new(&label, field.span())),
-            Some((Flatten::Bare, _)) => None,
-            Some((Flatten::Prefix(prefix), _)) => Some(prefix),
+            (None, Some((name, _))) => Some(name),
+            (None, None) => Some(syn::LitStr::new(&label, field.span())),
+            (Some((Flatten::Bare, _)), _) => None,
+            (Some((Flatten::Prefix(prefix), _)), _) => Some(prefix),
         };
 
         columns.push(Column {

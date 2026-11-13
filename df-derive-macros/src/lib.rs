@@ -41,6 +41,8 @@ use syn::{DeriveInput, parse_macro_input};
 /// # Field attributes
 ///
 /// - `skip`: leave the field out.
+/// - `rename = "name"`: use `name` in place of the field's own name, as the
+///   column's name or as the prefix of a nested struct's columns.
 /// - `flatten` / `flatten(prefix = "p")`: splice a nested struct's columns in
 ///   without the field-name prefix, or under an explicit prefix.
 /// - `as_str`: borrow the value through `AsRef<str>` into a string column.

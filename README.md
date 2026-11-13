@@ -147,6 +147,8 @@ struct Fill {
     at: DateTime<Utc>,                 // Datetime(Nanoseconds, UTC)
     #[df_derive(flatten)]
     key: OrderKey,                     // key's columns, without the `key.` prefix
+    #[df_derive(rename = "qty")]
+    quantity: u32,                     // a column named `qty`
     #[df_derive(skip)]
     cache: Scratch,                    // no column
 }
@@ -164,6 +166,9 @@ struct Fill {
   columns into the parent with no prefix, or under an explicit one. The field
   must be a struct or tuple of columns; a plain value has no names of its own
   to keep. Duplicate column names are reported as an error.
+- **`rename = "name"`**: use `name` in place of the field's own name. On a
+  nested struct it is the prefix of the struct's columns. It combines with an
+  encoding attribute, not with `flatten`.
 - **`skip`**: leave the field out. Its type does not have to be supported.
 - **`with = "Builder"`**: use your own `ColumnBuilder` for the value.
 
@@ -267,6 +272,7 @@ whose `Display` fails, and `try_via` conversions.
 - A field uses its Rust name; raw identifiers drop the `r#`.
 - Nested structs use dot notation recursively, such as `address.city`.
 - Tuple structs and tuple fields use `field_0`, `field_1`, and so on.
+- `rename = "qty"` replaces the field's own name.
 - `flatten` drops the field's own name; `flatten(prefix = "home")` replaces it.
 - Wrappers do not add a segment: `quotes: Vec<Quote>` gives `quotes.close`.
 - Maps add `key` and `value`.

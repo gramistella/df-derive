@@ -4,6 +4,7 @@ name: Run Benchmarks
 
 # Controls when the action will run.
 on:
+  # From CI, which calls this workflow for pull requests and pushes to `main`.
   workflow_call:
     inputs:
       event_name:
@@ -12,6 +13,11 @@ on:
       ref:
         required: true
         type: string
+  # By hand, for any branch: `gh workflow run bench.yml --ref <branch>`, or the
+  # "Run workflow" button on the Actions tab once this version of the file is
+  # on the default branch. A run started by hand does not deploy the Pages
+  # report: those steps are for pushes to `main` only.
+  workflow_dispatch:
 
 # Avoid overlapping benchmark runs on the same ref.
 concurrency:

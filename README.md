@@ -525,6 +525,16 @@ than the cache are slower across the board. Without the 32-row floor,
 blocks of 16 rows were erratic: 35% faster than 64 rows on one wide shape
 and 30% slower on another.
 
+On x86 the gain is the same while a frame fits the caches: 2,000 rows of 32
+numeric columns take 0.29 to 0.41 times as long as with 0.5.0 on five server
+processors. Past the caches 0.6 gives part of that back, and how much depends
+on the processor. 100,000 such rows, 26 MB of columns, take 0.42 to 0.50
+times as long on an Intel Xeon 8573C, 0.70 on a Xeon 8370C and 0.80 to 0.86
+on an AMD EPYC 7763. On the two newest AMD models measured, EPYC 9V74 and
+9V45, they take 1.1 to 1.4 times as long. Blocks of fewer rows bring the
+EPYC 9V45 back to 0.83 to 0.93 and cost every processor 15% to 30% on frames
+that fit the caches, so the block stays as it is.
+
 **String fields are appended a row at a time.** A string is reached through a
 pointer and appended with a call, so a loop of its own gains it nothing, and
 a row with several strings would be walked once for each of them. The fields

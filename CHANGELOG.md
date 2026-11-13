@@ -122,6 +122,13 @@ including where 0.6 is slower.
   reached through a pointer and appended with a call, so those fields of a
   row are appended together, one row after the other, and an optional one
   records only its empty slots.
+- An empty slot of an optional number or boolean gets its placeholder
+  without a branch on whether the slot is empty: it is read from a spare
+  value, and the choice between the result and the placeholder is marked as
+  one that cannot be predicted. A float column is built as its bits for
+  this, and becomes floats at the end without a copy. Rows of optional
+  numbers whose nulls follow no pattern take half the time on the laptop,
+  and 0.63 to 0.83 times as long on four x86 server processors.
 - Nested structs, optional structs and lists of structs are written directly
   into the parent's column buffers; the per-field reference vectors,
   intermediate `DataFrame`s, gather for partly-null optional structs, and

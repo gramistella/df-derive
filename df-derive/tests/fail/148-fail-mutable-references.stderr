@@ -18,7 +18,7 @@ help: the trait `Columnar` is implemented for `i32`
   | |     i16 => Int16, Int16Chunked;
   | |     i32 => Int32, Int32Chunked;
 ... |
-  | |     f64 => Float64, Float64Chunked;
+  | |     u128 => UInt128, UInt128Chunked;
   | | }
   | |_- in this macro invocation
   = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
@@ -61,7 +61,7 @@ help: the trait `Columnar` is implemented for `u32`
    | |     i16 => Int16, Int16Chunked;
    | |     i32 => Int32, Int32Chunked;
 ...  |
-   | |     f64 => Float64, Float64Chunked;
+   | |     u128 => UInt128, UInt128Chunked;
    | | }
    | |_- in this macro invocation
    = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`
@@ -104,7 +104,7 @@ help: the trait `Columnar` is implemented for `i32`
   | |     i16 => Int16, Int16Chunked;
   | |     i32 => Int32, Int32Chunked;
 ... |
-  | |     f64 => Float64, Float64Chunked;
+  | |     u128 => UInt128, UInt128Chunked;
   | | }
   | |_- in this macro invocation
   = note: `Columnar` is implemented for `&'static i32`, but not for `&'static mut i32`
@@ -148,7 +148,7 @@ help: the trait `Columnar` is implemented for `u32`
    | |     i16 => Int16, Int16Chunked;
    | |     i32 => Int32, Int32Chunked;
 ...  |
-   | |     f64 => Float64, Float64Chunked;
+   | |     u128 => UInt128, UInt128Chunked;
    | | }
    | |_- in this macro invocation
    = note: `Columnar` is implemented for `&'static u32`, but not for `&'static mut u32`

@@ -452,8 +452,10 @@ Performance is continuously monitored with
 [Bencher](https://bencher.dev/perf/df-derive).
 
 Every figure in this section comes from one machine, an Apple Silicon
-laptop. The times belong to that machine. The ratios should carry over to
-other hardware only roughly, and have not been checked on x86.
+laptop, unless it names another. The times belong to that machine, and the
+ratios should carry over to other hardware only roughly. Where a figure is
+for x86, it was measured on GitHub's hosted runners with both sides of the
+comparison timed in turns on the same machine.
 
 ### 0.6 against 0.5.0
 
@@ -536,6 +538,24 @@ column at a time, rows of five strings took 1.06 to 1.96 times as long as
 0.5.0 on five x86 server processors; a row at a time they take 0.99 to 1.08
 times as long. A string column that is entirely null is the one case that
 pays, by up to 30%.
+
+**An empty slot is not guessed at.** A null is recorded apart from the
+values, and the values buffer gets a zero in its place. Which of the two a
+slot stores is data, and a processor that has to guess it is wrong wherever
+nulls follow no pattern. For numbers and booleans nothing depends on the
+guess: an empty slot is read from a spare zero, so that there is always a
+value to read, and the choice between that value and the placeholder is
+marked as one that cannot be predicted, which makes the compiler choose
+without a branch. A float is built as its bits and becomes a float column at
+the end without a copy, because x86 chooses between two integers in one
+instruction and has no such instruction for floats.
+With a branch, 50,000 rows of eight optional numbers whose nulls follow no
+pattern take twice as long (357 µs against 177 µs). On four x86 server
+processors, rows of ten such columns take 1.2 to 1.6 times as long with a
+branch, and lists of two to five optional integers 1.4 to 1.5 times as long.
+The other benchmarks leave slots empty at regular intervals, which a branch
+predictor largely learns; `24_irregular_nulls` takes its nulls from a hash
+of the position.
 
 **Lists are appended one at a time.** The elements of a list sit together in
 memory, so each list is handed to the inner builder as one run per buffer,

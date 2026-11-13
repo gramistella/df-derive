@@ -16,8 +16,21 @@ pub trait Primitive: NativeType {
     /// The Polars dtype of a column of this type.
     const DTYPE: DataType;
 
-    /// Wraps a finished array as a named series of [`Primitive::DTYPE`].
-    fn series(name: PlSmallStr, array: PrimitiveArray<Self>) -> Series;
+    /// What a column's buffer holds while it is being built: the type itself,
+    /// or for a float the unsigned integer with the same bits.
+    ///
+    /// A buffer of bits becomes the floats it stands for when the column is
+    /// finished, which copies nothing. Until then a float is an integer, so
+    /// that the placeholder of an empty slot can be chosen without a branch
+    /// on every processor, as it is for the other numbers.
+    type Stored: NativeType + Default;
+
+    /// What a slot stores: its value as the buffer holds it, or a zero as
+    /// the placeholder of an empty slot.
+    fn stored(slot: Option<&Self>) -> Self::Stored;
+
+    /// Wraps a finished buffer as a named series of [`Primitive::DTYPE`].
+    fn series(name: PlSmallStr, array: PrimitiveArray<Self::Stored>) -> Series;
 }
 
 /// Builds a native array, reporting a length mismatch as an error.
@@ -58,14 +71,36 @@ where
     failure.map_or(Ok(()), Err)
 }
 
-/// The value a slot stores: its own, or the default as a placeholder.
+/// What a slot stores: its value as `convert` reads it, or the default as a
+/// placeholder for an empty slot.
+///
+/// Which slots are empty is data. A processor that has to guess it guesses
+/// wrong wherever nulls follow no pattern, and a wrong guess costs more than
+/// appending a value does. So nothing here depends on the guess. An empty slot
+/// is read from `spare` instead, so that there is always a value to read and
+/// convert, and the choice between the result and the placeholder is marked
+/// as one that cannot be predicted, which has the compiler choose without a
+/// branch. Left unmarked, the choice is usually compiled as a branch around
+/// the read.
+///
+/// The read comes first for a reason. Marking a choice between "the value, if
+/// there is one" and the placeholder does nothing: the read then sits behind
+/// a test of its own, and the compiler folds the marked choice into that test.
+///
+/// A processor chooses between two integers in one instruction. For floats
+/// x86 has no such instruction, which is why a float is read as its bits
+/// ([`Primitive::Stored`]).
 #[inline(always)]
-fn stored<P: Copy + Default>(slot: Option<&P>) -> P {
-    slot.copied().unwrap_or_default()
+fn stored<T, V>(slot: Option<&T>, spare: &'static T, convert: impl Fn(&T) -> V) -> V
+where
+    V: Copy + Default,
+{
+    let value = convert(slot.unwrap_or(spare));
+    core::hint::select_unpredictable(slot.is_some(), value, V::default())
 }
 
 /// Builder for a column of native numeric values.
-pub struct PrimitiveBuilder<P>(Vec<P>);
+pub struct PrimitiveBuilder<P: Primitive>(Vec<P::Stored>);
 
 impl<P: Primitive> PrimitiveBuilder<P> {
     fn finish_column(
@@ -94,7 +129,7 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
 
     #[inline(always)]
     fn push(&mut self, value: Option<&P>) -> PolarsResult<()> {
-        self.0.push(stored(value));
+        self.0.push(P::stored(value));
         Ok(())
     }
 
@@ -104,7 +139,7 @@ impl<P: Primitive> ColumnBuilder<P> for PrimitiveBuilder<P> {
         P: 'a,
         I: Iterator<Item = Option<&'a P>> + Clone,
     {
-        self.0.extend(values.map(stored));
+        self.0.extend(values.map(P::stored));
         Ok(())
     }
 
@@ -122,9 +157,41 @@ macro_rules! primitive {
     ($($ty:ty => $dtype:ident, $chunked:ident);* $(;)?) => {$(
         impl Primitive for $ty {
             const DTYPE: DataType = DataType::$dtype;
+            type Stored = Self;
+
+            #[inline(always)]
+            fn stored(slot: Option<&Self>) -> Self {
+                stored(slot, &0, |value| *value)
+            }
 
             fn series(name: PlSmallStr, array: PrimitiveArray<Self>) -> Series {
                 polars::prelude::$chunked::with_chunk(name, array).into_series()
+            }
+        }
+
+        impl Columnar for $ty {
+            type Builder = PrimitiveBuilder<$ty>;
+        }
+    )*};
+}
+
+/// A float, built as the unsigned integer `$bits` that holds its bits.
+macro_rules! float {
+    ($($ty:ty => $dtype:ident, $chunked:ident, $bits:ty);* $(;)?) => {$(
+        impl Primitive for $ty {
+            const DTYPE: DataType = DataType::$dtype;
+            type Stored = $bits;
+
+            #[inline(always)]
+            fn stored(slot: Option<&Self>) -> $bits {
+                stored(slot, &0.0, |value| value.to_bits())
+            }
+
+            fn series(name: PlSmallStr, array: PrimitiveArray<$bits>) -> Series {
+                // The same buffer, read as the floats its integers are the
+                // bits of. The two types have one size and one alignment.
+                let floats = array.transmute::<$ty>();
+                polars::prelude::$chunked::with_chunk(name, floats).into_series()
             }
         }
 
@@ -145,13 +212,17 @@ primitive! {
     u32 => UInt32, UInt32Chunked;
     u64 => UInt64, UInt64Chunked;
     u128 => UInt128, UInt128Chunked;
-    f32 => Float32, Float32Chunked;
-    f64 => Float64, Float64Chunked;
+}
+
+float! {
+    f32 => Float32, Float32Chunked, u32;
+    f64 => Float64, Float64Chunked, u64;
 }
 
 /// A type stored as the native type `$as` after an infallible conversion.
+/// `$spare` is a value of the type to read where a slot is empty.
 macro_rules! stored_as {
-    ($ty:ty => $as:ty, |$value:ident| $convert:expr) => {
+    ($ty:ty => $as:ty, $spare:expr, |$value:ident| $convert:expr) => {
         impl ColumnBuilder<$ty> for PrimitiveBuilder<$as> {
             fn schema(name: PlSmallStr, out: &mut Fields) {
                 out.push((name, <$as as Primitive>::DTYPE));
@@ -167,8 +238,7 @@ macro_rules! stored_as {
 
             #[inline(always)]
             fn push(&mut self, value: Option<&$ty>) -> PolarsResult<()> {
-                self.0
-                    .push(value.map(|$value| $convert).unwrap_or_default());
+                self.0.push(stored(value, &$spare, |$value| $convert));
                 Ok(())
             }
 
@@ -178,7 +248,7 @@ macro_rules! stored_as {
                 I: Iterator<Item = Option<&'a $ty>> + Clone,
             {
                 self.0
-                    .extend(values.map(|value| value.map(|$value| $convert).unwrap_or_default()));
+                    .extend(values.map(|value| stored(value, &$spare, |$value| $convert)));
                 Ok(())
             }
 
@@ -200,7 +270,7 @@ macro_rules! stored_as {
 
 macro_rules! non_zero {
     ($($ty:ty),* $(,)?) => {$(
-        stored_as!(NonZero<$ty> => $ty, |value| value.get());
+        stored_as!(NonZero<$ty> => $ty, NonZero::<$ty>::MIN, |value| value.get());
     )*};
 }
 
@@ -212,13 +282,13 @@ non_zero!(i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
 mod pointer_sized {
     use super::{
         Bitmap, Column, ColumnBuilder, Columnar, Fields, NonZero, PlSmallStr, PolarsResult,
-        Primitive, PrimitiveBuilder,
+        Primitive, PrimitiveBuilder, stored,
     };
 
-    stored_as!(isize => i64, |value| *value as i64);
-    stored_as!(usize => u64, |value| *value as u64);
-    stored_as!(NonZero<isize> => i64, |value| value.get() as i64);
-    stored_as!(NonZero<usize> => u64, |value| value.get() as u64);
+    stored_as!(isize => i64, 0, |value| *value as i64);
+    stored_as!(usize => u64, 0, |value| *value as u64);
+    stored_as!(NonZero<isize> => i64, NonZero::<isize>::MIN, |value| value.get() as i64);
+    stored_as!(NonZero<usize> => u64, NonZero::<usize>::MIN, |value| value.get() as u64);
 }
 
 /// Builder for a boolean column.
@@ -242,7 +312,7 @@ impl ColumnBuilder<bool> for BoolBuilder {
 
     #[inline(always)]
     fn push(&mut self, value: Option<&bool>) -> PolarsResult<()> {
-        self.0.push(stored(value));
+        self.0.push(stored(value, &false, |value| *value));
         Ok(())
     }
 
@@ -251,7 +321,8 @@ impl ColumnBuilder<bool> for BoolBuilder {
     where
         I: Iterator<Item = Option<&'a bool>> + Clone,
     {
-        self.0.extend(values.map(stored));
+        self.0
+            .extend(values.map(|value| stored(value, &false, |value| *value)));
         Ok(())
     }
 

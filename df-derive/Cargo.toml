@@ -131,3 +131,7 @@ harness = false
 [[bench]]
 name = "23_projection"
 harness = false
+
+[[bench]]
+name = "24_irregular_nulls"
+harness = false

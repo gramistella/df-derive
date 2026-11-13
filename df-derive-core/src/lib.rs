@@ -13,13 +13,22 @@
 //!   columns. [`dataframe::builders`] has the provided ones.
 //! - [`dataframe::ToDataFrame`] and [`dataframe::ToDataFrameVec`]: the
 //!   conversions users call on row types and on slices of them.
-//! - [`dataframe::Decimal128Encode`]: how a decimal type reports its `i128`
-//!   mantissa at a target scale. The `rust_decimal` feature (on by default)
-//!   provides the impl for `rust_decimal::Decimal`.
 //!
-//! The `chrono` feature (on by default) provides the `chrono` date and time
-//! impls. A `chrono::DateTime<Tz>` is an instant and becomes a `Datetime`
-//! column marked as UTC; a `NaiveDateTime` becomes one with no time zone.
+//! # Features
+//!
+//! - `chrono` (on by default): `chrono` dates and times as field types. A
+//!   `chrono::DateTime<Tz>` is an instant and becomes a `Datetime` column
+//!   marked as UTC; a `NaiveDateTime` becomes one with no time zone.
+//! - `rust_decimal` (on by default): `rust_decimal::Decimal` as a field
+//!   type. It turns `decimal` on.
+//! - `decimal`: `Decimal` columns for any decimal type. A type says how to
+//!   read its `i128` mantissa at a target scale by implementing
+//!   `dataframe::Decimal128Encode`, and `dataframe::builders::DecimalBuilder`
+//!   stores it.
+//!
+//! A feature also turns on the Polars features its columns need. With none
+//! of them, Polars is asked only for the types that the standard library's
+//! own types are stored as.
 
 // `polars` pulls a wide transitive dependency tree (ahash, foldhash,
 // hashbrown, windows-sys variants, …) where multiple resolved versions are

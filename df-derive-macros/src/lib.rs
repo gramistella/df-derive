@@ -49,7 +49,8 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `as_string`: format the value with `Display` into a string column.
 /// - `as_binary`: borrow the value through `AsRef<[u8]>` into a binary column.
 /// - `decimal(precision = P, scale = S)`: store a `Decimal128Encode` value as
-///   `Decimal(P, S)`.
+///   `Decimal(P, S)`. It needs the runtime's `decimal` feature, which
+///   `rust_decimal` turns on.
 /// - `time_unit = "ms" | "us" | "ns"`: choose the unit of a datetime or
 ///   duration column. Without it a datetime is stored in microseconds and a
 ///   duration in nanoseconds.

@@ -19,7 +19,8 @@ df-derive-macros.workspace = true
 
 [features]
 default = ["rust_decimal", "chrono"]
-rust_decimal = ["df-derive-core/rust_decimal"]
+decimal = ["df-derive-core/decimal"]
+rust_decimal = ["decimal", "df-derive-core/rust_decimal"]
 chrono = ["df-derive-core/chrono"]
 bench-instruction-counts = []
 

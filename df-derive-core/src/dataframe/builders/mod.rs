@@ -10,6 +10,7 @@
 #![allow(clippy::inline_always)]
 
 mod bits;
+#[cfg(feature = "decimal")]
 mod decimal;
 mod list;
 mod map;
@@ -20,6 +21,7 @@ mod temporal;
 mod text;
 mod tuple;
 
+#[cfg(feature = "decimal")]
 pub use decimal::DecimalBuilder;
 pub use list::ListBuilder;
 pub use map::MapBuilder;

@@ -16,9 +16,11 @@ use polars::prelude::{Column, DataFrame, DataType, PlSmallStr, PolarsResult};
 pub use polars_arrow::bitmap::Bitmap;
 
 pub mod builders;
+#[cfg(feature = "decimal")]
 mod decimal;
 mod frame;
 
+#[cfg(feature = "decimal")]
 pub use decimal::Decimal128Encode;
 
 /// Output schema fragment: column names and logical dtypes, in column order.
@@ -179,6 +181,20 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     label = "no column encoding for `{Self}`",
     note = "derive `ToDataFrame` on the type, implement `Columnar` for it, or choose an encoding on the field with an attribute such as `#[df_derive(as_str)]`, `#[df_derive(as_string)]`, or `#[df_derive(as_binary)]`",
     note = "the key type of a map needs one of the first two: a field attribute applies to the map's values"
+)]
+// Without the feature that covers it, a type looks like any other type with
+// no encoding. The error then says which features are off.
+#[cfg_attr(
+    not(feature = "chrono"),
+    diagnostic::on_unimplemented(
+        note = "df-derive's `chrono` feature is off: turn it on if `{Self}` is a `chrono` type"
+    )
+)]
+#[cfg_attr(
+    not(feature = "rust_decimal"),
+    diagnostic::on_unimplemented(
+        note = "df-derive's `rust_decimal` feature is off: turn it on if `{Self}` is `rust_decimal::Decimal`"
+    )
 )]
 pub trait Columnar {
     /// The builder used when no field-level encoding is chosen.

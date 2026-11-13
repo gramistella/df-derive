@@ -44,7 +44,9 @@ results. The exceptions are listed under "Changed".
 - Encoding errors say where the value is: the row, every field on the way to
   it and the position inside a list, as in `Order[222].legs[3].price: ...`.
   With several bad values the error is about the first bad row.
-- A `chrono` feature (on by default) gates the `chrono` impls.
+- A `chrono` feature (on by default) gates the `chrono` impls, and a
+  `decimal` feature (part of `rust_decimal`, which is on by default) gates
+  `Decimal128Encode`, `DecimalBuilder` and the `decimal(...)` attribute.
 - Newly accepted shapes: tuples nested inside `Option` and `Vec`, `Box<str>`
   and other unsized pointer targets, borrowed slices `&[T]` and fixed-size
   arrays `[T; N]` as lists, `()` as a direct field, `flatten` on optional and
@@ -84,6 +86,13 @@ results. The exceptions are listed under "Changed".
   every date `chrono` has, so the default still cannot fail.
   `#[df_derive(time_unit = "ms")]` on the field gives the previous column.
   Durations keep their default, nanoseconds.
+- **Breaking**: with `default-features = false`, `chrono` fields need the
+  `chrono` feature and a decimal type of your own needs `decimal`. The
+  Polars features for dates, times, time zones and decimals are no longer
+  always on either: `dtype-date`, `dtype-datetime`, `dtype-time` and
+  `timezones` come with `chrono`, and `dtype-decimal` with `decimal`.
+  Nothing changes with the default features. When a field's type has no
+  encoding, the error names the features that are off.
 - Unsupported field types are reported by the compiler as a missing
   `Columnar` impl at the field, instead of by the macro.
 - A `DecimalBuilder<P, S>` with a precision or scale that Polars has no

@@ -14,12 +14,19 @@ keywords = ["polars", "dataframe", "df-derive", "decimal"]
 categories = ["data-structures"]
 
 [dependencies]
-polars = { workspace = true, features = ["timezones", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration", "dtype-decimal", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
+# The Polars types that the standard library's own types are stored as. The
+# types behind a feature of this crate are turned on by that feature.
+polars = { workspace = true, features = ["dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }
 polars-arrow.workspace = true
 rust_decimal = { workspace = true, optional = true }
 chrono = { version = "0.4", default-features = false, optional = true }
 
 [features]
 default = ["rust_decimal", "chrono"]
-rust_decimal = ["dep:rust_decimal"]
-chrono = ["dep:chrono"]
+# `Decimal` columns, for any decimal type: `Decimal128Encode` and
+# `DecimalBuilder`.
+decimal = ["polars/dtype-decimal"]
+# `rust_decimal::Decimal` as a field type.
+rust_decimal = ["decimal", "dep:rust_decimal"]
+# `chrono` dates and times as field types.
+chrono = ["dep:chrono", "polars/dtype-date", "polars/dtype-datetime", "polars/dtype-time", "polars/timezones"]

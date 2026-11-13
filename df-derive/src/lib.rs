@@ -34,6 +34,19 @@
 //!
 //! A crate that re-exports this runtime under its own path tells the derive
 //! where to find it with `#[df_derive(crate = "::that_crate")]`.
+//!
+//! # Features
+//!
+//! - `chrono` (on by default): `chrono` dates and times as field types.
+//! - `rust_decimal` (on by default): `rust_decimal::Decimal` as a field
+//!   type. It turns `decimal` on.
+//! - `decimal`: `Decimal` columns for a decimal type of your own, through
+//!   `dataframe::Decimal128Encode` and the `decimal(...)` field attribute.
+//!
+//! A feature also turns on the Polars features its columns need, so a
+//! `polars` dependency needs none of them for df-derive's sake. With
+//! `default-features = false`, Polars is asked only for the types that the
+//! standard library's own types are stored as.
 
 // `polars` pulls a wide transitive dependency tree where multiple resolved
 // versions are unavoidable. `clippy::multiple_crate_versions` is part of the
@@ -54,9 +67,10 @@ pub use df_derive_macros::ToDataFrame;
 /// an unambiguous type-namespace name.
 pub mod prelude {
     pub use crate::ToDataFrame;
+    #[cfg(feature = "decimal")]
+    pub use crate::dataframe::Decimal128Encode;
     pub use crate::dataframe::{
-        ColumnBuilder, Columnar, Decimal128Encode, ToDataFrame, ToDataFrame as ToDataFrameTrait,
-        ToDataFrameVec,
+        ColumnBuilder, Columnar, ToDataFrame, ToDataFrame as ToDataFrameTrait, ToDataFrameVec,
     };
 }
 

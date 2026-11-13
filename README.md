@@ -129,6 +129,11 @@ generic structs can all derive `ToDataFrame`.
 schema does not depend on the build target. `NonZero*` types use the dtype of
 their base integer.
 
+df-derive turns these Polars features on itself, so your own `polars`
+dependency does not have to: the date, time and time-zone ones with its
+`chrono` feature, `dtype-decimal` with `decimal` (which `rust_decimal`
+includes), and the others always.
+
 A `DateTime<Tz>` is an instant, so its column is marked as UTC, whatever zone
 or offset the value was built with: the instant is kept, the label is not. A
 `NaiveDateTime` names no zone, and neither does its column. Polars treats the
@@ -344,6 +349,10 @@ checked by the column builder. Then either annotate fields with
 `decimal(precision = P, scale = S)` or declare the encoding once with
 `impl Columnar` as shown above.
 
+This needs the `decimal` feature. `rust_decimal` turns it on, so with the
+default features there is nothing to do; with `default-features = false`,
+ask for `decimal` alone to leave `rust_decimal` out of the build.
+
 ## Custom Builders
 
 `ColumnBuilder<T>` is the whole contract between a type and its columns.
@@ -412,8 +421,16 @@ keeps one builder for the field and feeds it values of any lifetime.
 
 ## Features
 
-- **`rust_decimal`** (default): `rust_decimal::Decimal` support.
-- **`chrono`** (default): `chrono` date and time support.
+- **`chrono`** (default): `chrono` dates and times as field types.
+- **`rust_decimal`** (default): `rust_decimal::Decimal` as a field type.
+  Turns `decimal` on.
+- **`decimal`**: `Decimal` columns for a decimal type of your own:
+  `Decimal128Encode`, `DecimalBuilder` and the `decimal(...)` attribute.
+
+A feature also turns on the Polars features its columns need. With
+`default-features = false`, df-derive asks Polars only for the types that the
+standard library's own types are stored as: `dtype-duration` and the 8-, 16-
+and 128-bit integers.
 
 ## Compatibility
 

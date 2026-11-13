@@ -93,3 +93,6 @@ mod instants_and_naive_datetimes;
 
 #[path = "runtime/63-lifetimes-of-nested-types.rs"]
 mod lifetimes_of_nested_types;
+
+#[path = "runtime/64-row-at-a-time.rs"]
+mod row_at_a_time;

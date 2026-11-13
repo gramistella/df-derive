@@ -369,10 +369,15 @@ impl ColumnBuilder<f64> for Cents {
 }
 ```
 
-Two more methods have defaults that are always correct, and exist to be
-overridden for speed: `extend` appends many slots at once, and `measure`
+Three more items have defaults that are always correct, and exist to be
+overridden for speed. `extend` appends many slots at once, and `measure`
 lets a builder that holds lists size their buffer before anything is
-appended.
+appended. `ROW_AT_A_TIME` asks a row's builder to push to this builder one
+row at a time, together with the row's other builders that ask the same,
+instead of handing it a block of rows as one run. The builders that borrow
+a string or bytes set it, because such a value is reached through a pointer
+and appended with a call, so a run of its own gains it nothing. A builder
+that wraps another one passes the inner builder's answer on.
 
 A builder borrows nothing from the values it reads, so keep their lifetimes
 out of its type. The builder for a `Code<'a>` has no lifetime of its own, and
@@ -476,10 +481,19 @@ than the cache are slower across the board. Without the 32-row floor,
 blocks of 16 rows were erratic: 35% faster than 64 rows on one wide shape
 and 30% slower on another.
 
-Rows that are all strings are the exception. A string column gains nothing
-from short runs and each block restarts one loop per column, so they would
-rather have long blocks, by about 5%. That is the difference between 0.6
-and 0.5.0 on such rows.
+**String fields are appended a row at a time.** A string is reached through a
+pointer and appended with a call, so a loop of its own gains it nothing, and
+a row with several strings would be walked once for each of them. The fields
+of a row that borrow a string or bytes are fed together instead: one walk
+over the rows of the block, before the other fields get their runs. (A value
+formatted with `as_string` is not borrowed, and keeps its own run.) For these
+fields an `Option` records only the empty slots, in a bitmap that starts out
+all set.
+This is how 0.5.0 appended every field, and for strings it was right. Fed a
+column at a time, rows of five strings took 1.06 to 1.96 times as long as
+0.5.0 on five x86 server processors; a row at a time they take 0.99 to 1.08
+times as long. A string column that is entirely null is the one case that
+pays, by up to 30%.
 
 **Lists are appended one at a time.** The elements of a list sit together in
 memory, so each list is handed to the inner builder as one run per buffer,

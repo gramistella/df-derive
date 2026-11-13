@@ -47,15 +47,32 @@ pub type Fields = Vec<(PlSmallStr, DataType)>;
 /// fills.
 ///
 /// `schema`, `new`, `reserve`, `push` and `finish` are required and describe
-/// an encoding completely. `measure` and `extend` have defaults that are
-/// always correct; builders override them to be exact about memory and fast.
-/// Whether a value can be appended must not depend on the slots before it.
+/// an encoding completely. `measure`, `extend` and `ROW_AT_A_TIME` have
+/// defaults that are always correct; builders override them to be exact about
+/// memory and fast. Whether a value can be appended must not depend on the
+/// slots before it.
 #[diagnostic::on_unimplemented(
     message = "`{T}` cannot be encoded with `{Self}`",
     label = "this encoding does not apply to `{T}`",
     note = "the encoding chosen for this field (by a `#[df_derive(...)]` attribute or `with = \"...\"`) does not support the field's type"
 )]
 pub trait ColumnBuilder<T: ?Sized>: Sized {
+    /// Whether a row's builder should feed this one a row at a time, with
+    /// [`push`](ColumnBuilder::push), instead of a block at a time with
+    /// [`extend`](ColumnBuilder::extend).
+    ///
+    /// A block at a time suits a builder that turns a run of values into one
+    /// tight loop over a buffer, and it is the default. A builder that reaches
+    /// each value through a pointer and appends it with a call, as the
+    /// builders that borrow a string or bytes do, gains nothing from a run of
+    /// its own, and a row with several such fields is then walked once for
+    /// each of them. The builders of a row that set this are fed together
+    /// instead: one walk over the block, in which each row's values are read
+    /// side by side.
+    ///
+    /// It is a hint. The columns come out the same either way.
+    const ROW_AT_A_TIME: bool = false;
+
     /// Appends this builder's columns to `out`. `name` is the dotted path of
     /// the field being described; leaves use it verbatim.
     fn schema(name: PlSmallStr, out: &mut Fields);
@@ -100,7 +117,9 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// row of the block, so a column is filled by one tight loop instead of
     /// one push per row. The iterator is `Clone` because a builder with
     /// several buffers walks it once per buffer; the blocks are small enough
-    /// to stay in cache while it does.
+    /// to stay in cache while it does. Builders that set
+    /// [`ROW_AT_A_TIME`](ColumnBuilder::ROW_AT_A_TIME) are the exception: a
+    /// row's builder pushes to those, one row after the other.
     ///
     /// # Errors
     /// Returns an error when any of the values cannot be represented. Which

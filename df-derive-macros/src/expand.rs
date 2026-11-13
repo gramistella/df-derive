@@ -559,6 +559,7 @@ fn expand_struct(
                     },
                 )
             });
+    let has_members = !columns.is_empty();
     let rows = quote! {
         #name #ty_generics: '__df_derive_rows,
         __DfDeriveRows: ::core::iter::Iterator<
@@ -608,6 +609,9 @@ fn expand_struct(
                 for __DfDeriveBuilder #arguments
             #encoder_where
             {
+                // A row is fed a row at a time when every member is.
+                const ROW_AT_A_TIME: bool = #has_members #(&& #as_builder::ROW_AT_A_TIME)*;
+
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
                     #(#record_checks)*
                     #(#as_builder::schema(#names, out);)*
@@ -641,7 +645,6 @@ fn expand_struct(
                     ::core::result::Result::Ok(())
                 }
 
-                // One loop per field over the rows of a block.
                 #[inline(always)]
                 fn extend<'__df_derive_rows, __DfDeriveRows>(
                     &mut self,
@@ -650,7 +653,24 @@ fn expand_struct(
                 where
                     #rows
                 {
-                    #(#as_builder::extend(&mut self.#slots, #field_of_each)?;)*
+                    // The members that take a row at a time are fed first,
+                    // together, in one walk over the rows of the block.
+                    if false #(|| #as_builder::ROW_AT_A_TIME)* {
+                        for value in ::core::clone::Clone::clone(&values) {
+                            #(
+                                if #as_builder::ROW_AT_A_TIME {
+                                    #as_builder::push(&mut self.#slots, #field_of)?;
+                                }
+                            )*
+                        }
+                    }
+                    // Each of the others gets the block as a run of its own:
+                    // one loop per field.
+                    #(
+                        if !#as_builder::ROW_AT_A_TIME {
+                            #as_builder::extend(&mut self.#slots, #field_of_each)?;
+                        }
+                    )*
                     ::core::result::Result::Ok(())
                 }
 
@@ -806,6 +826,9 @@ fn expand_via(
                 for __DfDeriveBuilder #arguments
             #encoder_where
             {
+                const ROW_AT_A_TIME: bool =
+                    <#inner as #root::ColumnBuilder<#stored>>::ROW_AT_A_TIME;
+
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
                     // A projection is a row type because the type it encodes
                     // as is one.

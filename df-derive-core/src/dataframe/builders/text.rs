@@ -22,6 +22,8 @@ impl StrBuilder {
 }
 
 impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for StrBuilder {
+    const ROW_AT_A_TIME: bool = true;
+
     fn schema(name: PlSmallStr, out: &mut Fields) {
         out.push((name, DataType::String));
     }
@@ -130,6 +132,8 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for DisplayBuilder {
 pub struct BinaryBuilder(MutableBinaryViewArray<[u8]>);
 
 impl<T: AsRef<[u8]> + ?Sized> ColumnBuilder<T> for BinaryBuilder {
+    const ROW_AT_A_TIME: bool = true;
+
     fn schema(name: PlSmallStr, out: &mut Fields) {
         out.push((name, DataType::Binary));
     }

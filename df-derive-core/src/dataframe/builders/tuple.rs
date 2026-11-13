@@ -39,6 +39,9 @@ impl Columnar for () {
 macro_rules! tuple {
     ($(($($index:tt $t:ident $b:ident $field:literal),+))*) => {$(
         impl<$($t, $b: ColumnBuilder<$t>),+> ColumnBuilder<($($t,)+)> for ($($b,)+) {
+            // A tuple is fed a row at a time when every element is.
+            const ROW_AT_A_TIME: bool = true $(&& $b::ROW_AT_A_TIME)+;
+
             fn schema(name: PlSmallStr, out: &mut Fields) {
                 $($b::schema(child(&name, $field), out);)+
             }
@@ -79,9 +82,23 @@ macro_rules! tuple {
                 ($($t,)+): 'a,
                 I: Iterator<Item = Option<&'a ($($t,)+)>> + Clone,
             {
+                // The elements that take a row at a time are fed first,
+                // together, in one walk over the block.
+                if false $(|| $b::ROW_AT_A_TIME)+ {
+                    for value in values.clone() {
+                        $(
+                            if $b::ROW_AT_A_TIME {
+                                self.$index.push(value.map(|value| &value.$index))?;
+                            }
+                        )+
+                    }
+                }
+                // Each of the others gets the block as a run of its own.
                 $(
-                    self.$index
-                        .extend(values.clone().map(|value| value.map(|value| &value.$index)))?;
+                    if !$b::ROW_AT_A_TIME {
+                        self.$index
+                            .extend(values.clone().map(|value| value.map(|value| &value.$index)))?;
+                    }
                 )+
                 Ok(())
             }

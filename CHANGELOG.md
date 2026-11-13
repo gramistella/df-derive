@@ -21,8 +21,9 @@ exceptions are listed under "Changed".
 - `ColumnBuilder<T>`, the single contract between a type and its columns, and
   the public builders in `df_derive::dataframe::builders`. A builder is filled
   one slot at a time, a slot being a value or a null: five required methods
-  (`schema`, `new`, `reserve`, `push`, `finish`) and two with defaults that
-  exist for speed (`measure`, `extend`).
+  (`schema`, `new`, `reserve`, `push`, `finish`), and three items with
+  defaults that exist for speed (`measure`, `extend`, and the `ROW_AT_A_TIME`
+  hint).
 - `T::rows_to_dataframe(iter)` accepts any iterator of `&T`.
 - A type can declare its own encoding once with `impl Columnar`, and
   `#[df_derive(transparent)]` makes a single-field wrapper encode as its field
@@ -97,6 +98,10 @@ including where 0.6 is slower.
   rows, and never fewer than 32 rows), and within a block each column buffer
   is filled by its own loop. This avoids the cache contention of feeding
   dozens of column buffers from one loop over all rows.
+- Fields that borrow a string or bytes are the exception. Such a value is
+  reached through a pointer and appended with a call, so those fields of a
+  row are appended together, one row after the other, and an optional one
+  records only its empty slots.
 - Nested structs, optional structs and lists of structs are written directly
   into the parent's column buffers; the per-field reference vectors,
   intermediate `DataFrame`s, gather for partly-null optional structs, and

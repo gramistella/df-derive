@@ -1,7 +1,7 @@
 // `rust_decimal::Decimal` and `chrono::DateTime<Tz>` fields need no attribute.
 //
 // A decimal is stored as `Decimal(38, 10)`. A `DateTime<Tz>` is an instant,
-// so its column is `Datetime(Milliseconds, UTC)`; a `NaiveDateTime` would
+// so its column is `Datetime(Microseconds, UTC)`; a `NaiveDateTime` would
 // give the same column with no time zone.
 
 use chrono::{DateTime, Utc};
@@ -27,7 +27,7 @@ fn main() -> polars::prelude::PolarsResult<()> {
 
     // Show schema to demonstrate data types
     let schema = <TxRecord as dataframe::ToDataFrame>::schema()?;
-    println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Milliseconds, UTC)):");
+    println!("\nSchema (amount = Decimal(38, 10), ts = Datetime(Microseconds, UTC)):");
     for (name, dtype) in schema {
         println!("  {name}: {dtype:?}");
     }

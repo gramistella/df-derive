@@ -1,6 +1,7 @@
 // A `DateTime<Tz>` is an instant, and its column is marked as UTC. A
-// `NaiveDateTime` names no zone, and neither does its column. The tests here
-// state that rule once, for every place a datetime can sit.
+// `NaiveDateTime` names no zone, and neither does its column. Both count
+// microseconds unless the field chooses another unit. The tests here state
+// those rules once, for every place a datetime can sit.
 
 #![allow(dead_code)]
 
@@ -36,7 +37,7 @@ struct Times {
     at_ns: DateTime<Utc>,
     offset: DateTime<FixedOffset>,
     maybe: Option<DateTime<Utc>>,
-    #[df_derive(time_unit = "us")]
+    #[df_derive(time_unit = "ms")]
     log: Vec<Option<DateTime<Utc>>>,
     boxed: Box<DateTime<Utc>>,
     by_instant: BTreeMap<DateTime<Utc>, DateTime<FixedOffset>>,
@@ -110,21 +111,21 @@ fn an_instant_column_is_utc_and_a_naive_one_has_no_zone() {
     use TimeUnit::{Microseconds, Milliseconds, Nanoseconds};
 
     let expected: Vec<(String, DataType)> = [
-        ("at", instant(Milliseconds)),
+        ("at", instant(Microseconds)),
         ("at_ns", instant(Nanoseconds)),
-        ("offset", instant(Milliseconds)),
-        ("maybe", instant(Milliseconds)),
-        ("log", list(instant(Microseconds))),
-        ("boxed", instant(Milliseconds)),
-        ("by_instant.key", list(instant(Milliseconds))),
-        ("by_instant.value", list(instant(Milliseconds))),
-        ("wall", naive(Milliseconds)),
+        ("offset", instant(Microseconds)),
+        ("maybe", instant(Microseconds)),
+        ("log", list(instant(Milliseconds))),
+        ("boxed", instant(Microseconds)),
+        ("by_instant.key", list(instant(Microseconds))),
+        ("by_instant.value", list(instant(Microseconds))),
+        ("wall", naive(Microseconds)),
         ("wall_ns", naive(Nanoseconds)),
-        ("walls", list(naive(Milliseconds))),
-        ("stamp.at", instant(Milliseconds)),
-        ("stamp.wall", naive(Milliseconds)),
-        ("stamps.at", list(instant(Milliseconds))),
-        ("stamps.wall", list(naive(Milliseconds))),
+        ("walls", list(naive(Microseconds))),
+        ("stamp.at", instant(Microseconds)),
+        ("stamp.wall", naive(Microseconds)),
+        ("stamps.at", list(instant(Microseconds))),
+        ("stamps.wall", list(naive(Microseconds))),
     ]
     .into_iter()
     .map(|(name, dtype)| (name.to_owned(), dtype))
@@ -142,7 +143,7 @@ fn an_instant_column_is_utc_and_a_naive_one_has_no_zone() {
 #[test]
 fn an_offset_is_not_kept_but_the_instant_is() {
     let row = times(1);
-    let utc = row.at.timestamp_millis();
+    let utc = row.at.timestamp_micros();
     let df = row.to_dataframe().unwrap();
     let first = |name: &str| counts(df.column(name).unwrap())[0].unwrap();
 
@@ -152,15 +153,15 @@ fn an_offset_is_not_kept_but_the_instant_is() {
     assert_eq!(first("at"), utc);
     assert_eq!(
         df.column("offset").unwrap().get(0).unwrap(),
-        AnyValue::Datetime(utc, TimeUnit::Milliseconds, Some(&TimeZone::UTC))
+        AnyValue::Datetime(utc, TimeUnit::Microseconds, Some(&TimeZone::UTC))
     );
 
     // A wall-clock time is stored as written, with no zone to convert from:
     // noon stays noon, two hours after the instant's reading in UTC.
-    assert_eq!(first("wall") - utc, 2 * 3_600_000);
+    assert_eq!(first("wall") - utc, 2 * 3_600_000_000);
     assert_eq!(
         df.column("wall").unwrap().get(0).unwrap(),
-        AnyValue::Datetime(utc + 2 * 3_600_000, TimeUnit::Milliseconds, None)
+        AnyValue::Datetime(utc + 2 * 3_600_000_000, TimeUnit::Microseconds, None)
     );
 }
 
@@ -172,9 +173,9 @@ fn casting_drops_the_zone_and_keeps_the_values() {
     let df = rows.to_dataframe().unwrap();
 
     for (name, unit) in [
-        ("at", TimeUnit::Milliseconds),
+        ("at", TimeUnit::Microseconds),
         ("at_ns", TimeUnit::Nanoseconds),
-        ("maybe", TimeUnit::Milliseconds),
+        ("maybe", TimeUnit::Microseconds),
     ] {
         let zoned = df.column(name).unwrap();
         assert_eq!(zoned.dtype(), &instant(unit));
@@ -183,4 +184,105 @@ fn casting_drops_the_zone_and_keeps_the_values() {
         assert_eq!(counts(&zoneless), counts(zoned));
     }
     assert_eq!(df.column("maybe").unwrap().null_count(), 3);
+}
+
+// --- what the default unit keeps, and what it holds --------------------------------
+
+#[derive(ToDataFrame)]
+struct Tick {
+    at: DateTime<Utc>,
+    wall: NaiveDateTime,
+    #[df_derive(time_unit = "ms")]
+    coarse: DateTime<Utc>,
+    #[df_derive(time_unit = "ns")]
+    fine: DateTime<Utc>,
+}
+
+#[test]
+fn the_default_unit_keeps_microseconds() {
+    // 1.234567891 seconds after the epoch.
+    let at = DateTime::<Utc>::from_timestamp(1, 234_567_891).unwrap();
+    let row = Tick {
+        at,
+        wall: at.naive_utc(),
+        coarse: at,
+        fine: at,
+    };
+    let df = row.to_dataframe().unwrap();
+    let first = |name: &str| counts(df.column(name).unwrap())[0].unwrap();
+
+    // Digits finer than the unit are dropped, whatever the unit.
+    assert_eq!(first("at"), 1_234_567);
+    assert_eq!(first("wall"), 1_234_567);
+    assert_eq!(first("coarse"), 1_234);
+    assert_eq!(first("fine"), 1_234_567_891);
+
+    // The digits are those of the date, so before 1970 the count moves away
+    // from zero: 23:59:59.998_765_4 on the last day of 1969.
+    let at = DateTime::<Utc>::from_timestamp(-1, 998_765_400).unwrap();
+    let row = Tick {
+        at,
+        wall: at.naive_utc(),
+        coarse: at,
+        fine: at,
+    };
+    let df = row.to_dataframe().unwrap();
+    let first = |name: &str| counts(df.column(name).unwrap())[0].unwrap();
+    assert_eq!(first("at"), -1_235);
+    assert_eq!(first("wall"), -1_235);
+    assert_eq!(first("coarse"), -2);
+    assert_eq!(first("fine"), -1_234_600);
+}
+
+#[derive(ToDataFrame)]
+struct Far {
+    at: DateTime<Utc>,
+    wall: NaiveDateTime,
+}
+
+#[derive(ToDataFrame)]
+struct FarInNanoseconds {
+    #[df_derive(time_unit = "ns")]
+    at: DateTime<Utc>,
+}
+
+#[test]
+fn the_default_unit_holds_every_date_chrono_has() {
+    // The ends of chrono's range, and two dates data sets use to mean "never".
+    let year = |year: i32| {
+        NaiveDate::from_ymd_opt(year, 12, 31)
+            .unwrap()
+            .and_hms_opt(23, 59, 59)
+            .unwrap()
+            .and_utc()
+    };
+    for at in [
+        DateTime::<Utc>::MIN_UTC,
+        year(1),
+        year(9999),
+        DateTime::<Utc>::MAX_UTC,
+    ] {
+        let df = Far {
+            at,
+            wall: at.naive_utc(),
+        }
+        .to_dataframe()
+        .unwrap();
+        assert_eq!(
+            counts(df.column("at").unwrap()),
+            [Some(at.timestamp_micros())]
+        );
+        assert_eq!(
+            counts(df.column("wall").unwrap()),
+            [Some(at.timestamp_micros())]
+        );
+    }
+
+    // Nanoseconds reach from 1677 to 2262. A field that asks for them says so
+    // when a value is outside.
+    let error = FarInNanoseconds { at: year(9999) }
+        .to_dataframe()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("out of range for nanosecond"), "{error}");
 }

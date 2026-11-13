@@ -232,9 +232,12 @@ macro_rules! temporal {
     };
 }
 
+// A point in time defaults to microseconds: the finest unit that holds every
+// date `chrono` has, so the default never fails. Nanoseconds reach only from
+// 1677 to 2262. A span of time is short, so it keeps every digit.
 temporal!(std::time::Duration => Duration, from_std, Ns);
-temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
-temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
+temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Us);
+temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Us);
 temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
 
 #[cfg(feature = "chrono")]

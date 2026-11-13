@@ -11,6 +11,8 @@ struct NaiveDateTimeRow {
     dt_log: Vec<NaiveDateTime>,
     nullable_dt_log: Vec<Option<NaiveDateTime>>,
     maybe_dt_log: Option<Vec<NaiveDateTime>>,
+    #[df_derive(time_unit = "ms")]
+    millis: NaiveDateTime,
     #[df_derive(time_unit = "us")]
     micros: NaiveDateTime,
     #[df_derive(time_unit = "ns")]
@@ -75,6 +77,7 @@ fn main() {
         dt_log: vec![epoch, plus_ms],
         nullable_dt_log: vec![Some(plus_ms), None, Some(minus_ms)],
         maybe_dt_log: Some(vec![minus_ms, epoch]),
+        millis: plus_us,
         micros: plus_us,
         nanos: plus_ns,
         tuple_dt: (epoch, plus_ms),
@@ -83,23 +86,27 @@ fn main() {
     let schema = NaiveDateTimeRow::schema().unwrap();
     assert_eq!(
         schema_dtype(&schema, "default_dt"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
     assert_eq!(
         schema_dtype(&schema, "optional_dt"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
     assert_eq!(
         schema_dtype(&schema, "dt_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Milliseconds, None)))
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Microseconds, None)))
     );
     assert_eq!(
         schema_dtype(&schema, "nullable_dt_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Milliseconds, None)))
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Microseconds, None)))
     );
     assert_eq!(
         schema_dtype(&schema, "maybe_dt_log"),
-        DataType::List(Box::new(DataType::Datetime(TimeUnit::Milliseconds, None)))
+        DataType::List(Box::new(DataType::Datetime(TimeUnit::Microseconds, None)))
+    );
+    assert_eq!(
+        schema_dtype(&schema, "millis"),
+        DataType::Datetime(TimeUnit::Milliseconds, None)
     );
     assert_eq!(
         schema_dtype(&schema, "micros"),
@@ -111,30 +118,35 @@ fn main() {
     );
     assert_eq!(
         schema_dtype(&schema, "tuple_dt.field_0"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
     assert_eq!(
         schema_dtype(&schema, "tuple_dt.field_1"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
 
     let df = row.to_dataframe().unwrap();
-    assert_eq!(df.shape(), (1, 9));
+    assert_eq!(df.shape(), (1, 10));
     assert_eq!(
         dtype(&df, "default_dt"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
     assert_eq!(
-        datetime_value(df.column("default_dt").unwrap().get(0).unwrap(), TimeUnit::Milliseconds),
-        Some(plus_ms.and_utc().timestamp_millis())
+        datetime_value(df.column("default_dt").unwrap().get(0).unwrap(), TimeUnit::Microseconds),
+        Some(plus_ms.and_utc().timestamp_micros())
     );
     assert_eq!(
-        datetime_value(df.column("optional_dt").unwrap().get(0).unwrap(), TimeUnit::Milliseconds),
-        Some(minus_ms.and_utc().timestamp_millis())
+        datetime_value(df.column("optional_dt").unwrap().get(0).unwrap(), TimeUnit::Microseconds),
+        Some(minus_ms.and_utc().timestamp_micros())
+    );
+    // 0.987654 s in a coarser unit: the digits finer than the unit are dropped.
+    assert_eq!(
+        datetime_value(df.column("millis").unwrap().get(0).unwrap(), TimeUnit::Milliseconds),
+        Some(987)
     );
     assert_eq!(
         datetime_value(df.column("micros").unwrap().get(0).unwrap(), TimeUnit::Microseconds),
-        Some(plus_us.and_utc().timestamp_micros())
+        Some(987_654)
     );
     assert_eq!(
         datetime_value(df.column("nanos").unwrap().get(0).unwrap(), TimeUnit::Nanoseconds),
@@ -143,37 +155,37 @@ fn main() {
     assert_eq!(
         datetime_value(
             df.column("tuple_dt.field_0").unwrap().get(0).unwrap(),
-            TimeUnit::Milliseconds,
+            TimeUnit::Microseconds,
         ),
-        Some(epoch.and_utc().timestamp_millis())
+        Some(epoch.and_utc().timestamp_micros())
     );
     assert_eq!(
         datetime_value(
             df.column("tuple_dt.field_1").unwrap().get(0).unwrap(),
-            TimeUnit::Milliseconds,
+            TimeUnit::Microseconds,
         ),
-        Some(plus_ms.and_utc().timestamp_millis())
+        Some(plus_ms.and_utc().timestamp_micros())
     );
     assert_list_datetimes(
         &df,
         "dt_log",
         0,
         &[
-            Some(epoch.and_utc().timestamp_millis()),
-            Some(plus_ms.and_utc().timestamp_millis()),
+            Some(epoch.and_utc().timestamp_micros()),
+            Some(plus_ms.and_utc().timestamp_micros()),
         ],
-        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
     );
     assert_list_datetimes(
         &df,
         "nullable_dt_log",
         0,
         &[
-            Some(plus_ms.and_utc().timestamp_millis()),
+            Some(plus_ms.and_utc().timestamp_micros()),
             None,
-            Some(minus_ms.and_utc().timestamp_millis()),
+            Some(minus_ms.and_utc().timestamp_micros()),
         ],
-        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
     );
 
     let batch = vec![
@@ -184,31 +196,32 @@ fn main() {
             dt_log: vec![],
             nullable_dt_log: vec![None],
             maybe_dt_log: None,
+            millis: epoch,
             micros: epoch,
             nanos: epoch,
             tuple_dt: (minus_ms, epoch),
         },
     ];
     let df_batch = batch.as_slice().to_dataframe().unwrap();
-    assert_eq!(df_batch.shape(), (2, 9));
+    assert_eq!(df_batch.shape(), (2, 10));
     assert_eq!(
         datetime_value(
             df_batch.column("optional_dt").unwrap().get(1).unwrap(),
-            TimeUnit::Milliseconds,
+            TimeUnit::Microseconds,
         ),
         None
     );
-    assert_list_datetimes(&df_batch, "dt_log", 1, &[], TimeUnit::Milliseconds);
+    assert_list_datetimes(&df_batch, "dt_log", 1, &[], TimeUnit::Microseconds);
     assert!(matches!(
         df_batch.column("maybe_dt_log").unwrap().get(1).unwrap(),
         AnyValue::Null
     ));
 
     let empty = NaiveDateTimeRow::empty_dataframe().unwrap();
-    assert_eq!(empty.shape(), (0, 9));
+    assert_eq!(empty.shape(), (0, 10));
     assert_eq!(
         dtype(&empty, "default_dt"),
-        DataType::Datetime(TimeUnit::Milliseconds, None)
+        DataType::Datetime(TimeUnit::Microseconds, None)
     );
     assert_eq!(
         dtype(&empty, "nanos"),

@@ -83,11 +83,11 @@ Any of these works as a field with no attribute, in any nesting:
   `usize`, `f32`, `f64`, and the `std::num::NonZero*` integers.
 - **Strings**: `String`, `&str`, `Box<str>`, `Cow<'_, str>`.
 - **Dates and times** (`chrono` feature, on by default): `DateTime<Tz>` as
-  `Datetime(Milliseconds, UTC)`, `NaiveDateTime` as `Datetime(Milliseconds)`
+  `Datetime(Microseconds, UTC)`, `NaiveDateTime` as `Datetime(Microseconds)`
   with no time zone, `NaiveDate` as `Date`, `NaiveTime` as `Time`,
   `chrono::Duration` / `TimeDelta` as `Duration(Nanoseconds)`.
   `std::time::Duration` is `Duration(Nanoseconds)` with or without the
-  feature.
+  feature. Choose another unit for a field with `time_unit`.
 - **Decimals** (`rust_decimal` feature, on by default):
   `rust_decimal::Decimal` as `Decimal(38, 10)`. A column has one scale, so a
   value with more than 10 digits after the point is rounded to 10, half to
@@ -136,6 +136,12 @@ two as different types. Code that needs a zone-less column from instants casts
 it, `column.cast(&DataType::Datetime(unit, None))`, which leaves the stored
 values as they are.
 
+A datetime is stored in microseconds unless its field names another unit.
+Microseconds hold every date `chrono` has, so the default cannot fail, and
+digits finer than a microsecond are dropped. `time_unit = "ns"` keeps them,
+but nanoseconds reach only from the year 1677 to 2262, and a datetime outside
+that range is an error. A duration is stored in nanoseconds.
+
 ## Field Attributes
 
 ```rust
@@ -169,7 +175,7 @@ struct Fill {
   value with more than `S` digits after the point is rounded half to even; a
   value that then needs more than `P` digits is an error.
 - **`time_unit = "ms" | "us" | "ns"`**: the unit of a datetime or duration
-  column.
+  column. Digits finer than the unit are dropped.
 - **`flatten`** / **`flatten(prefix = "p")`**: splice a nested struct's
   columns into the parent with no prefix, or under an explicit one. The field
   must be a struct or tuple of columns; a plain value has no names of its own

@@ -6,10 +6,12 @@ All notable changes to this project will be documented in this file.
 
 Planned as 0.6.0. The runtime and the derive were rewritten around composable
 column builders. For every shape 0.5.0 supports, the frames hold the same
-values, and they are the same frames once the UTC time zone that
-`DateTime<Tz>` columns now carry is cast away; this was checked by encoding
-the same generated rows with both versions and comparing the results. The
-exceptions are listed under "Changed".
+values, except that a datetime column is typed differently in two ways: a
+`DateTime<Tz>` column carries the UTC time zone, and a datetime field with no
+`time_unit` is stored in microseconds. With the time zone cast away and
+`time_unit = "ms"` on those fields they are the same frames; this was checked
+by encoding the same generated rows with both versions and comparing the
+results. The exceptions are listed under "Changed".
 
 ### Added
 
@@ -72,10 +74,16 @@ exceptions are listed under "Changed".
   column named after the field (`payload`), not a nested one.
 - **Breaking**: the column of a `chrono::DateTime<Tz>` field is
   `Datetime(unit, UTC)` instead of a `Datetime` with no time zone. The value
-  is an instant and the column now says so; the stored values are the same.
-  A `NaiveDateTime` column still has no time zone. Polars treats the two as
-  different types, so code that needs the previous type casts the column:
-  `column.cast(&DataType::Datetime(unit, None))`.
+  is an instant and the column now says so; the label does not change the
+  stored values. A `NaiveDateTime` column still has no time zone. Polars
+  treats the two as different types, so code that needs the previous type
+  casts the column: `column.cast(&DataType::Datetime(unit, None))`.
+- **Breaking**: a `chrono::DateTime<Tz>` or `NaiveDateTime` field with no
+  `time_unit` is stored in microseconds instead of milliseconds, so the
+  default no longer drops the digits between the two. Microseconds still hold
+  every date `chrono` has, so the default still cannot fail.
+  `#[df_derive(time_unit = "ms")]` on the field gives the previous column.
+  Durations keep their default, nanoseconds.
 - Unsupported field types are reported by the compiler as a missing
   `Columnar` impl at the field, instead of by the macro.
 - A `DecimalBuilder<P, S>` with a precision or scale that Polars has no

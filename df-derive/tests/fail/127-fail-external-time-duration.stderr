@@ -19,9 +19,9 @@ help: `TemporalBuilder<U>` implements trait `ColumnBuilder<T>`
 ...
    | temporal!(std::time::Duration => Duration, from_std, Ns);
    | -------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Ms);
+   | temporal!(#[cfg(feature = "chrono")] chrono::DateTime<Tz>, Tz => Instant, from_instant, Us);
    | ------------------------------------------------------------------------------------------- in this macro invocation
-   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Ms);
+   | temporal!(#[cfg(feature = "chrono")] chrono::NaiveDateTime => Datetime, from_naive, Us);
    | --------------------------------------------------------------------------------------- in this macro invocation
    | temporal!(#[cfg(feature = "chrono")] chrono::TimeDelta => Duration, from_delta, Ns);
    | ----------------------------------------------------------------------------------- in this macro invocation

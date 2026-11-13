@@ -44,7 +44,7 @@ fn main() {
     println!("  - amount: {:?}", amount_dtype);
     println!("  - ts: {:?}", ts_dtype);
     assert_eq!(amount_dtype, DataType::Decimal(38, 10));
-    assert_eq!(ts_dtype, instant(TimeUnit::Milliseconds));
+    assert_eq!(ts_dtype, instant(TimeUnit::Microseconds));
 
     // Convert to DataFrame and validate columns
     let df = tx.to_dataframe().unwrap();
@@ -55,11 +55,11 @@ fn main() {
     println!("\n📊 Resulting DataFrame:");
     println!("{}", df);
 
-    // A chrono::DateTime<Tz> is an instant: Datetime(Milliseconds, UTC)
+    // A chrono::DateTime<Tz> is an instant: Datetime(Microseconds, UTC)
     let ts_runtime_dtype = df.column("ts").unwrap().dtype().clone();
     println!("\n🧪 Runtime dtype checks:");
     println!("  - ts runtime dtype: {:?}", ts_runtime_dtype);
-    assert_eq!(ts_runtime_dtype, instant(TimeUnit::Milliseconds));
+    assert_eq!(ts_runtime_dtype, instant(TimeUnit::Microseconds));
 
     // Decimal should materialize as Decimal; verify dtype
     let amount_runtime_dtype = df.column("amount").unwrap().dtype().clone();

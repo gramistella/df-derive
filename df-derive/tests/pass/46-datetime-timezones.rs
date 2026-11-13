@@ -15,8 +15,8 @@ struct ZonedTimes {
     fixed_log: Vec<DateTime<FixedOffset>>,
     nullable_fixed_log: Vec<Option<DateTime<FixedOffset>>>,
     local_default: DateTime<Local>,
-    #[df_derive(time_unit = "us")]
-    local_us: DateTime<Local>,
+    #[df_derive(time_unit = "ms")]
+    local_ms: DateTime<Local>,
 }
 
 fn dtype(df: &DataFrame, col: &str) -> DataType {
@@ -96,7 +96,7 @@ fn main() {
         fixed_log: vec![fixed, fixed_later],
         nullable_fixed_log: vec![Some(fixed), None, Some(fixed_later)],
         local_default: local,
-        local_us: local,
+        local_ms: local,
     };
     let missing = ZonedTimes {
         fixed_default: fixed_later,
@@ -106,13 +106,13 @@ fn main() {
         fixed_log: vec![],
         nullable_fixed_log: vec![None],
         local_default: fixed_later.with_timezone(&Local),
-        local_us: fixed_later.with_timezone(&Local),
+        local_ms: fixed_later.with_timezone(&Local),
     };
 
     let schema = ZonedTimes::schema().unwrap();
     assert_eq!(
         schema_dtype(&schema, "fixed_default"),
-        instant(TimeUnit::Milliseconds)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         schema_dtype(&schema, "fixed_us"),
@@ -124,25 +124,25 @@ fn main() {
     );
     assert_eq!(
         schema_dtype(&schema, "fixed_log"),
-        DataType::List(Box::new(instant(TimeUnit::Milliseconds)))
+        DataType::List(Box::new(instant(TimeUnit::Microseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "nullable_fixed_log"),
-        DataType::List(Box::new(instant(TimeUnit::Milliseconds)))
+        DataType::List(Box::new(instant(TimeUnit::Microseconds)))
     );
     assert_eq!(
         schema_dtype(&schema, "local_default"),
-        instant(TimeUnit::Milliseconds)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
-        schema_dtype(&schema, "local_us"),
-        instant(TimeUnit::Microseconds)
+        schema_dtype(&schema, "local_ms"),
+        instant(TimeUnit::Milliseconds)
     );
 
     let df = row.clone().to_dataframe().unwrap();
     assert_eq!(
         dtype(&df, "fixed_default"),
-        instant(TimeUnit::Milliseconds)
+        instant(TimeUnit::Microseconds)
     );
     assert_eq!(
         dtype(&df, "fixed_us"),
@@ -150,13 +150,13 @@ fn main() {
     );
     assert_eq!(
         dtype(&df, "local_default"),
-        instant(TimeUnit::Milliseconds)
+        instant(TimeUnit::Microseconds)
     );
     assert_datetime(
         &df,
         "fixed_default",
-        TimeUnit::Milliseconds,
-        base.timestamp_millis(),
+        TimeUnit::Microseconds,
+        base.timestamp_micros(),
     );
     assert_datetime(
         &df,
@@ -173,29 +173,29 @@ fn main() {
     assert_datetime(
         &df,
         "maybe_fixed",
-        TimeUnit::Milliseconds,
-        later.timestamp_millis(),
+        TimeUnit::Microseconds,
+        later.timestamp_micros(),
     );
     assert_datetime(
         &df,
         "local_default",
-        TimeUnit::Milliseconds,
-        base.timestamp_millis(),
+        TimeUnit::Microseconds,
+        base.timestamp_micros(),
     );
-    assert_datetime(&df, "local_us", TimeUnit::Microseconds, base.timestamp_micros());
+    assert_datetime(&df, "local_ms", TimeUnit::Milliseconds, base.timestamp_millis());
     assert_datetime_list(
         &df,
         "fixed_log",
         0,
-        TimeUnit::Milliseconds,
-        &[Some(base.timestamp_millis()), Some(later.timestamp_millis())],
+        TimeUnit::Microseconds,
+        &[Some(base.timestamp_micros()), Some(later.timestamp_micros())],
     );
     assert_datetime_list(
         &df,
         "nullable_fixed_log",
         0,
-        TimeUnit::Milliseconds,
-        &[Some(base.timestamp_millis()), None, Some(later.timestamp_millis())],
+        TimeUnit::Microseconds,
+        &[Some(base.timestamp_micros()), None, Some(later.timestamp_micros())],
     );
 
     let batch = vec![row, missing];
@@ -204,21 +204,21 @@ fn main() {
     assert_datetime(
         &batch_df,
         "fixed_default",
-        TimeUnit::Milliseconds,
-        base.timestamp_millis(),
+        TimeUnit::Microseconds,
+        base.timestamp_micros(),
     );
     assert_datetime_list(
         &batch_df,
         "fixed_log",
         1,
-        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
         &[],
     );
     assert_datetime_list(
         &batch_df,
         "nullable_fixed_log",
         1,
-        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
         &[None],
     );
     assert!(matches!(

@@ -51,7 +51,8 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `decimal(precision = P, scale = S)`: store a `Decimal128Encode` value as
 ///   `Decimal(P, S)`.
 /// - `time_unit = "ms" | "us" | "ns"`: choose the unit of a datetime or
-///   duration column.
+///   duration column. Without it a datetime is stored in microseconds and a
+///   duration in nanoseconds.
 /// - `with = "Builder"`: encode the value with a custom `ColumnBuilder`.
 ///
 /// The encoding attributes apply to the innermost value, through any

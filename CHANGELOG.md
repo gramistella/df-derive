@@ -41,7 +41,8 @@ results. The exceptions are listed under "Changed".
   `Display`. Every such column shares Polars's global set of categories. A
   type can also declare it once, with `CategoricalBuilder` as its builder.
   This is behind a `categorical` feature, which is off by default and turns
-  on Polars's `dtype-categorical`.
+  on Polars's `dtype-categorical`. Building such a column takes a little
+  over twice as long as building a string column of the same text.
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and

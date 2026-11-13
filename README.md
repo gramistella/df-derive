@@ -561,6 +561,12 @@ column at a time, rows of five strings took 1.06 to 1.96 times as long as
 times as long. A string column that is entirely null is the one case that
 pays, by up to 30%.
 
+**A category is looked up.** A categorical column finds each value in the
+set of categories, where a string column only appends it. 100,000 rows with
+four text columns take 3.1 ms as categories and 1.4 ms as strings
+(`25_categorical`). What that buys is the column: four bytes a row whatever
+the text is, and one set of categories shared with every other such column.
+
 **An empty slot is not guessed at.** A null is recorded apart from the
 values, and the values buffer gets a zero in its place. Which of the two a
 slot stores is data, and a processor that has to guess it is wrong wherever

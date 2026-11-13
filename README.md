@@ -92,8 +92,10 @@ Any of these works as a field with no attribute, in any nesting:
 - **Other derived structs**: flattened into the parent with dot notation.
 - **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
 - **`Option<T>`**: the same columns as `T`, nullable.
-- **`Vec<T>`, `&[T]`, `Box<[T]>`**: the same columns as `T`, each wrapped in a
-  `List`. A list of structs becomes one list column per struct field.
+- **`Vec<T>`, `&[T]`, `Box<[T]>`, `[T; N]`**: the same columns as `T`, each
+  wrapped in a `List`. A list of structs becomes one list column per struct
+  field. A fixed-size array is a list like the others: its length is not
+  part of the column's type.
 - **`HashMap<K, V>`, `BTreeMap<K, V>`**: two list columns, `field.key` and
   `field.value`.
 - **Pointers**: `Box<T>`, `Rc<T>`, `Arc<T>`, `&T` and `Cow<'_, T>` encode as
@@ -156,8 +158,8 @@ struct Fill {
 
 - **`as_str`**: borrow through `AsRef<str>`. No formatting, no temporary.
 - **`as_string`**: format with `Display` into one reused scratch buffer.
-- **`as_binary`**: borrow through `AsRef<[u8]>`. Without it, `Vec<u8>` is a
-  `List(UInt8)`.
+- **`as_binary`**: borrow through `AsRef<[u8]>`. Without it, `Vec<u8>` and
+  `[u8; N]` are a `List(UInt8)`.
 - **`decimal(precision = P, scale = S)`**: store any `Decimal128Encode` value
   as `Decimal(P, S)`. Precision is 1 to 38 and scale may not exceed it.
 - **`time_unit = "ms" | "us" | "ns"`**: the unit of a datetime or duration
@@ -172,8 +174,9 @@ struct Fill {
 - **`skip`**: leave the field out. Its type does not have to be supported.
 - **`with = "Builder"`**: use your own `ColumnBuilder` for the value.
 
-The encoding attributes apply to the innermost value. `Option`, `Vec`, `Box`,
-`Rc`, `Arc`, `&` and `Cow` written in the field's type are kept around it, so
+The encoding attributes apply to the innermost value. `Option`, `Vec`,
+slices, arrays, `Box`, `Rc`, `Arc`, `&` and `Cow` written in the field's type
+are kept around it, so
 `#[df_derive(as_str)]` on `Option<Vec<Venue>>` gives a nullable list of
 strings. For a `HashMap` or `BTreeMap` the innermost value is the map's
 value: `#[df_derive(as_string)]` on `BTreeMap<String, Json>` formats the
@@ -289,7 +292,6 @@ whose `Display` fails, and `try_via` conversions.
 - `HashMap` pairs are listed in the map's own iteration order.
 - The zone or offset of a `DateTime<Tz>` is not kept. Its column is UTC, and
   a column has one zone for all of its rows.
-- Fixed-size arrays `[T; N]` are not supported as fields.
 - Mutable references are not supported as fields.
 - A `via` row that holds a reference to a value of generic type, such as
   `&'_ T`, needs `T: 'static`.

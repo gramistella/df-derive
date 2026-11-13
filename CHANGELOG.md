@@ -44,9 +44,10 @@ exceptions are listed under "Changed".
   With several bad values the error is about the first bad row.
 - A `chrono` feature (on by default) gates the `chrono` impls.
 - Newly accepted shapes: tuples nested inside `Option` and `Vec`, `Box<str>`
-  and other unsized pointer targets, borrowed slices `&[T]` as lists, `()` as
-  a direct field, `flatten` on optional and list-wrapped structs and on
-  tuples, and `as_binary` on anything that borrows as bytes.
+  and other unsized pointer targets, borrowed slices `&[T]` and fixed-size
+  arrays `[T; N]` as lists, `()` as a direct field, `flatten` on optional and
+  list-wrapped structs and on tuples, and `as_binary` on anything that
+  borrows as bytes.
 - Examples for `via` projections and for a hand-written builder.
 
 ### Changed

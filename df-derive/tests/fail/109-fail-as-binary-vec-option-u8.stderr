@@ -12,6 +12,9 @@ help: `ListBuilder<B>` implements trait `ColumnBuilder<T>`
 ...
   | impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ColumnBuilder<Vec<T>>`
+...
+  | impl<T, B: ColumnBuilder<T>, const N: usize> ColumnBuilder<[T; N]> for ListBuilder<B> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ColumnBuilder<[T; N]>`
   = note: required for `BinaryBuilder` to implement `ColumnBuilder<u8>`
   = note: 2 redundant requirements hidden
   = note: required for `ListBuilder<OptionBuilder<BinaryBuilder>>` to implement `ColumnBuilder<Vec<Option<u8>>>`

@@ -99,6 +99,7 @@ fn wrapper(ty: &Type) -> Option<Wrapper<'_>> {
             Some(Wrapper::Pointer(&reference.elem))
         }
         Type::Slice(slice) => Some(Wrapper::Slice(&slice.elem)),
+        Type::Array(array) => Some(Wrapper::Slice(&array.elem)),
         Type::Path(path) if path.qself.is_none() => {
             let path = &path.path;
             if let Some(inner) =

@@ -99,3 +99,6 @@ mod row_at_a_time;
 
 #[path = "runtime/65-rename.rs"]
 mod rename;
+
+#[path = "runtime/66-fixed-size-arrays.rs"]
+mod fixed_size_arrays;

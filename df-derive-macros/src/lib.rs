@@ -55,7 +55,8 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `with = "Builder"`: encode the value with a custom `ColumnBuilder`.
 ///
 /// The encoding attributes apply to the innermost value, through any
-/// `Option`, `Vec` and pointer layers written in the field's type. For a
+/// `Option`, `Vec`, slice, array and pointer layers written in the field's
+/// type. For a
 /// `HashMap` or `BTreeMap` that is the map's value; its keys keep the
 /// encoding of their own type.
 #[proc_macro_derive(ToDataFrame, attributes(df_derive))]

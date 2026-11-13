@@ -317,12 +317,13 @@ polars = {{ version = "0.55", default-features = false }}
 }
 
 /// The features of the `polars` crate that one of our features turns on.
-const TIED_POLARS_FEATURES: [&str; 5] = [
+const TIED_POLARS_FEATURES: [&str; 6] = [
     "dtype-date",
     "dtype-datetime",
     "dtype-time",
     "timezones",
     "dtype-decimal",
+    "dtype-categorical",
 ];
 
 /// Checks which of the tied Polars features a set of our features turns on,
@@ -362,7 +363,7 @@ fn each_feature_turns_on_the_polars_features_it_needs_and_no_other() {
         !tree.contains("rust_decimal v"),
         "rust_decimal should not appear in the resolved dependency tree\n\n{tree}"
     );
-    for feature in ["rust_decimal", "decimal", "chrono"] {
+    for feature in ["rust_decimal", "decimal", "chrono", "categorical"] {
         assert!(
             !tree.contains(&format!("df-derive-core feature \"{feature}\"")),
             "core feature `{feature}` should stay disabled\n\n{tree}"
@@ -389,6 +390,12 @@ fn each_feature_turns_on_the_polars_features_it_needs_and_no_other() {
     assert!(
         tree.contains("rust_decimal v"),
         "`rust_decimal` should bring rust_decimal in\n\n{tree}"
+    );
+
+    assert_polars_features(
+        "features-categorical",
+        &["categorical"],
+        &["dtype-categorical"],
     );
 }
 
@@ -539,6 +546,54 @@ fn main() -> polars::prelude::PolarsResult<()> {
     let rows = vec![Row { amount: Cents(12345), fees: vec![Some(Cents(5)), None] }];
     let df = rows.as_slice().to_dataframe()?;
     assert_eq!(df.shape(), (1, 2));
+    Ok(())
+}
+"#,
+    );
+}
+
+#[test]
+fn categorical_alone_covers_categorical_columns() {
+    check_fixture(
+        "features-categorical-build",
+        &feature_manifest("features-categorical-build", &["categorical"], ""),
+        r#"
+use df_derive::dataframe::builders::CategoricalBuilder;
+use df_derive::prelude::*;
+
+/// A type that is a category wherever it is a field.
+struct Venue(&'static str);
+
+impl AsRef<str> for Venue {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+impl Columnar for Venue {
+    type Builder = CategoricalBuilder;
+}
+
+#[derive(ToDataFrame)]
+struct Row {
+    #[df_derive(categorical)]
+    currency: String,
+    #[df_derive(as_string, categorical)]
+    lot: u8,
+    venue: Option<Venue>,
+    #[df_derive(categorical)]
+    tags: Vec<&'static str>,
+}
+
+fn main() -> polars::prelude::PolarsResult<()> {
+    let rows = vec![Row {
+        currency: "USD".into(),
+        lot: 1,
+        venue: Some(Venue("XNYS")),
+        tags: vec!["a", "b"],
+    }];
+    let df = rows.as_slice().to_dataframe()?;
+    assert_eq!(df.shape(), (1, 4));
     Ok(())
 }
 "#,

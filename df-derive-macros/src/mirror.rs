@@ -137,6 +137,10 @@ fn leaf(encoding: &Encoding, builders: &TokenStream) -> TokenStream {
         Encoding::AsStr => quote! { #builders::StrBuilder },
         Encoding::AsString => quote! { #builders::DisplayBuilder },
         Encoding::AsBinary => quote! { #builders::BinaryBuilder },
+        Encoding::Categorical { display: false } => quote! { #builders::CategoricalBuilder },
+        Encoding::Categorical { display: true } => {
+            quote! { #builders::CategoricalDisplayBuilder }
+        }
         Encoding::Decimal { precision, scale } => {
             let precision = usize::from(*precision);
             let scale = usize::from(*scale);

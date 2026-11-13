@@ -105,3 +105,7 @@ mod fixed_size_arrays;
 
 #[path = "runtime/67-floats-bit-for-bit.rs"]
 mod floats_bit_for_bit;
+
+#[cfg(feature = "categorical")]
+#[path = "runtime/68-categorical.rs"]
+mod categorical;

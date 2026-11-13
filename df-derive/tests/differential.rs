@@ -310,6 +310,20 @@ struct Everything<'a> {
     #[df_derive(as_binary)]
     bytes: Vec<u8>,
 
+    // Text stored as categories.
+    #[cfg(feature = "categorical")]
+    #[df_derive(categorical)]
+    cat_side: Side,
+    #[cfg(feature = "categorical")]
+    #[df_derive(as_string, categorical)]
+    cat_shown: Side,
+    #[cfg(feature = "categorical")]
+    #[df_derive(categorical)]
+    o_cat: Option<&'a str>,
+    #[cfg(feature = "categorical")]
+    #[df_derive(categorical)]
+    l_o_cat: Vec<Option<String>>,
+
     // Options.
     o_i64: Option<i64>,
     o_bool: Option<bool>,
@@ -427,6 +441,15 @@ impl Gen {
             side: self.side(),
             shown: self.side(),
             bytes: self.list(|g| g.next() as u8),
+
+            #[cfg(feature = "categorical")]
+            cat_side: self.side(),
+            #[cfg(feature = "categorical")]
+            cat_shown: self.side(),
+            #[cfg(feature = "categorical")]
+            o_cat: self.option(Self::word),
+            #[cfg(feature = "categorical")]
+            l_o_cat: self.list(|g| g.option(Self::text)),
 
             o_i64: self.option(Self::int),
             o_bool: self.option(|g| g.chance(50)),

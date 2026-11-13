@@ -25,6 +25,8 @@
 //!   read its `i128` mantissa at a target scale by implementing
 //!   `dataframe::Decimal128Encode`, and `dataframe::builders::DecimalBuilder`
 //!   stores it.
+//! - `categorical`: `Categorical` columns for text that repeats, built by
+//!   `dataframe::builders::CategoricalBuilder`.
 //!
 //! A feature also turns on the Polars features its columns need. With none
 //! of them, Polars is asked only for the types that the standard library's

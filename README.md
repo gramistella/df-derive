@@ -124,6 +124,7 @@ generic structs can all derive `ToDataFrame`.
 | `std::time::Duration`, `chrono::Duration` | `Duration` | `dtype-duration` |
 | `rust_decimal::Decimal`, `decimal(...)` | `Decimal` | `dtype-decimal` |
 | `as_binary` | `Binary` | none |
+| `categorical` | `Categorical` | `dtype-categorical` |
 
 `isize` and `usize` are stored as 64-bit columns on every platform, so a
 schema does not depend on the build target. `NonZero*` types use the dtype of
@@ -132,7 +133,7 @@ their base integer.
 df-derive turns these Polars features on itself, so your own `polars`
 dependency does not have to: the date, time and time-zone ones with its
 `chrono` feature, `dtype-decimal` with `decimal` (which `rust_decimal`
-includes), and the others always.
+includes), `dtype-categorical` with `categorical`, and the others always.
 
 A `DateTime<Tz>` is an instant, so its column is marked as UTC, whatever zone
 or offset the value was built with: the instant is kept, the label is not. A
@@ -158,6 +159,8 @@ struct Fill {
     status: Status,                    // Display       -> String column
     #[df_derive(as_binary)]
     payload: Vec<u8>,                  // AsRef<[u8]>   -> Binary column
+    #[df_derive(categorical)]
+    currency: Currency,                // AsRef<str>    -> Categorical column
     #[df_derive(decimal(precision = 18, scale = 6))]
     price: Decimal,                    // Decimal(18, 6)
     #[df_derive(time_unit = "ns")]
@@ -175,6 +178,13 @@ struct Fill {
 - **`as_string`**: format with `Display` into one reused scratch buffer.
 - **`as_binary`**: borrow through `AsRef<[u8]>`. Without it, `Vec<u8>` and
   `[u8; N]` are a `List(UInt8)`.
+- **`categorical`** (`categorical` feature): store text as a `Categorical`
+  column: a 32-bit code per row, and each distinct string once. The text is
+  read through `AsRef<str>`, or with `as_string, categorical` formatted with
+  `Display`. Every such column shares Polars's global set of categories, so
+  they compare and join with each other as they are. It suits text that
+  repeats, such as a currency or a venue; text that differs in nearly every
+  row is better left a string column.
 - **`decimal(precision = P, scale = S)`**: store any `Decimal128Encode` value
   as `Decimal(P, S)`. Precision is 1 to 38 and scale may not exceed it. A
   value with more than `S` digits after the point is rounded half to even; a
@@ -271,9 +281,9 @@ This is also how an enum becomes several columns: give it a row struct with a
 kind column and optional columns for the variant data. `try_via` uses
 `TryFrom<&T>` instead and turns a failed conversion into an encoding error.
 
-Enums cannot derive `ToDataFrame` directly. Store one as a single string
-column with `as_str` / `as_string` or an `impl Columnar`, or spread it over
-columns with `via`.
+Enums cannot derive `ToDataFrame` directly. Store one as a single column of
+its name, with `as_str` / `as_string`, `categorical` or an `impl Columnar`,
+or spread it over columns with `via`.
 
 ## Errors
 
@@ -426,6 +436,8 @@ keeps one builder for the field and feeds it values of any lifetime.
   Turns `decimal` on.
 - **`decimal`**: `Decimal` columns for a decimal type of your own:
   `Decimal128Encode`, `DecimalBuilder` and the `decimal(...)` attribute.
+- **`categorical`**: `Categorical` columns: the `categorical` attribute,
+  `CategoricalBuilder` and `CategoricalDisplayBuilder`.
 
 A feature also turns on the Polars features its columns need. With
 `default-features = false`, df-derive asks Polars only for the types that the

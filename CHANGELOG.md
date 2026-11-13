@@ -36,6 +36,12 @@ results. The exceptions are listed under "Changed".
 - `#[df_derive(with = "Builder")]` selects a custom builder for one field.
 - `#[df_derive(rename = "name")]` names a field's column, or the prefix of a
   nested struct's columns.
+- `#[df_derive(categorical)]` stores a field's text as a `Categorical`
+  column, read through `AsRef<str>` or, with `as_string`, formatted with
+  `Display`. Every such column shares Polars's global set of categories. A
+  type can also declare it once, with `CategoricalBuilder` as its builder.
+  This is behind a `categorical` feature, which is off by default and turns
+  on Polars's `dtype-categorical`.
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and

@@ -42,6 +42,8 @@
 //!   type. It turns `decimal` on.
 //! - `decimal`: `Decimal` columns for a decimal type of your own, through
 //!   `dataframe::Decimal128Encode` and the `decimal(...)` field attribute.
+//! - `categorical`: `Categorical` columns for text that repeats, through the
+//!   `categorical` field attribute.
 //!
 //! A feature also turns on the Polars features its columns need, so a
 //! `polars` dependency needs none of them for df-derive's sake. With

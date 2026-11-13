@@ -38,7 +38,15 @@ pub enum Encoding {
     AsStr,
     AsString,
     AsBinary,
-    Decimal { precision: u8, scale: u8 },
+    /// A categorical column of the text the value borrows as, or with
+    /// `display` of the text it formats as.
+    Categorical {
+        display: bool,
+    },
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
     TimeUnit(TimeUnit),
     With(Box<syn::Type>),
 }
@@ -49,6 +57,7 @@ impl Encoding {
             Self::AsStr => "as_str",
             Self::AsString => "as_string",
             Self::AsBinary => "as_binary",
+            Self::Categorical { .. } => "categorical",
             Self::Decimal { .. } => "decimal",
             Self::TimeUnit(_) => "time_unit",
             Self::With(_) => "with",
@@ -262,9 +271,19 @@ fn flatten(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Flatten> {
 
 pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut parsed = FieldAttrs::default();
+    // `categorical` says how text is stored, and goes with either way of
+    // reading it, so it is joined with the encoding once both are known.
+    let mut categorical: Option<Span> = None;
     for attr in df_derive_attrs(attrs) {
         attr.parse_nested_meta(|meta| {
             let span = meta.path.span();
+            if meta.path.is_ident("categorical") {
+                if categorical.is_some() {
+                    return Err(meta.error("duplicate `categorical` attribute"));
+                }
+                categorical = Some(span);
+                return Ok(());
+            }
             if meta.path.is_ident("skip") {
                 if parsed.skip.is_some() {
                     return Err(meta.error("duplicate `skip` attribute"));
@@ -309,8 +328,8 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             } else {
                 return Err(meta.error(
                     "unknown field attribute; expected one of `skip`, `rename = \"...\"`, \
-                     `flatten`, `as_str`, `as_string`, `as_binary`, `decimal(...)`, \
-                     `time_unit = \"...\"`, `with = \"...\"`",
+                     `flatten`, `as_str`, `as_string`, `as_binary`, `categorical`, \
+                     `decimal(...)`, `time_unit = \"...\"`, `with = \"...\"`",
                 ));
             };
             if let Some((existing, _)) = &parsed.encoding {
@@ -325,6 +344,34 @@ pub fn field(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         })?;
     }
 
+    if let Some(span) = categorical {
+        parsed.encoding = Some((as_categories(parsed.encoding.as_ref(), span)?, span));
+    }
+    without_conflicts(parsed)
+}
+
+/// The encoding of a field marked `categorical`, given the encoding its
+/// other attributes chose: the text is read as that one reads it.
+fn as_categories(encoding: Option<&(Encoding, Span)>, span: Span) -> syn::Result<Encoding> {
+    let display = match encoding {
+        None | Some((Encoding::AsStr, _)) => false,
+        Some((Encoding::AsString, _)) => true,
+        Some((other, _)) => {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`categorical` cannot be combined with `{}`: a categorical column holds \
+                     text, read as `as_str` reads it or, with `as_string`, as `Display` writes it",
+                    other.attribute()
+                ),
+            ));
+        }
+    };
+    Ok(Encoding::Categorical { display })
+}
+
+/// Rejects attributes that contradict each other.
+fn without_conflicts(parsed: FieldAttrs) -> syn::Result<FieldAttrs> {
     if let Some(skip) = parsed.skip
         && (parsed.rename.is_some() || parsed.flatten.is_some() || parsed.encoding.is_some())
     {

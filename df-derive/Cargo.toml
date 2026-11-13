@@ -22,6 +22,7 @@ default = ["rust_decimal", "chrono"]
 decimal = ["df-derive-core/decimal"]
 rust_decimal = ["decimal", "df-derive-core/rust_decimal"]
 chrono = ["df-derive-core/chrono"]
+categorical = ["df-derive-core/categorical"]
 bench-instruction-counts = []
 
 [dev-dependencies]
@@ -135,3 +136,8 @@ harness = false
 [[bench]]
 name = "24_irregular_nulls"
 harness = false
+
+[[bench]]
+name = "25_categorical"
+harness = false
+required-features = ["categorical"]

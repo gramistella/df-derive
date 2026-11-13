@@ -83,7 +83,7 @@ jobs:
           --testbed ubuntu-22.04-criterion \
           --adapter rust_criterion \
           --github-actions '${{ secrets.GITHUB_TOKEN }}' \
-          "taskset -c 0 cargo bench --locked -p df-derive"
+          "taskset -c 0 cargo bench --locked -p df-derive --features categorical"
 
       # 5. Upload the HTML report as an artifact (only on `main` branch)
       # This prepares the report for deployment to GitHub Pages.

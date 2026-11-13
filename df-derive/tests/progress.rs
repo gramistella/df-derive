@@ -89,4 +89,8 @@ fn tests() {
     t.compile_fail("tests/fail/158-fail-via-inner-attributes.rs");
     t.compile_fail("tests/fail/159-fail-rename-conflicts.rs");
     t.compile_fail("tests/fail/160-fail-item-named-like-a-parameter.rs");
+    // The cases below are about a feature, and exist only with it.
+    if cfg!(feature = "categorical") {
+        t.compile_fail("tests/fail/161-fail-categorical-conflicts.rs");
+    }
 }

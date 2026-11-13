@@ -10,6 +10,8 @@
 #![allow(clippy::inline_always)]
 
 mod bits;
+#[cfg(feature = "categorical")]
+mod categorical;
 #[cfg(feature = "decimal")]
 mod decimal;
 mod list;
@@ -21,6 +23,8 @@ mod temporal;
 mod text;
 mod tuple;
 
+#[cfg(feature = "categorical")]
+pub use categorical::{CategoricalBuilder, CategoricalDisplayBuilder};
 #[cfg(feature = "decimal")]
 pub use decimal::DecimalBuilder;
 pub use list::ListBuilder;

@@ -1,0 +1,70 @@
+error: `categorical` cannot be combined with `as_binary`: a categorical column holds text, read as `as_str` reads it or, with `as_string`, as `Display` writes it
+ --> tests/fail/161-fail-categorical-conflicts.rs:7:28
+  |
+7 |     #[df_derive(as_binary, categorical)]
+  |                            ^^^^^^^^^^^
+
+error: `categorical` cannot be combined with `decimal`: a categorical column holds text, read as `as_str` reads it or, with `as_string`, as `Display` writes it
+  --> tests/fail/161-fail-categorical-conflicts.rs:13:17
+   |
+13 |     #[df_derive(categorical, decimal(precision = 10, scale = 2))]
+   |                 ^^^^^^^^^^^
+
+error: `categorical` cannot be combined with `time_unit`: a categorical column holds text, read as `as_str` reads it or, with `as_string`, as `Display` writes it
+  --> tests/fail/161-fail-categorical-conflicts.rs:19:35
+   |
+19 |     #[df_derive(time_unit = "ms", categorical)]
+   |                                   ^^^^^^^^^^^
+
+error: duplicate `categorical` attribute
+  --> tests/fail/161-fail-categorical-conflicts.rs:25:30
+   |
+25 |     #[df_derive(categorical, categorical)]
+   |                              ^^^^^^^^^^^
+
+error: `skip` cannot be combined with other attributes: a skipped field produces no column
+  --> tests/fail/161-fail-categorical-conflicts.rs:31:17
+   |
+31 |     #[df_derive(skip, categorical)]
+   |                 ^^^^
+
+error: `flatten` cannot be combined with `categorical`: it applies to nested rows, not to leaf values
+  --> tests/fail/161-fail-categorical-conflicts.rs:43:17
+   |
+43 |     #[df_derive(flatten, categorical)]
+   |                 ^^^^^^^
+
+error[E0277]: the trait bound `u32: AsRef<str>` is not satisfied
+  --> tests/fail/161-fail-categorical-conflicts.rs:51:12
+   |
+51 |     count: u32,
+   |            ^^^ the trait `AsRef<str>` is not implemented for `u32`
+   |
+help: the trait `ColumnBuilder<T>` is conditionally implemented for `CategoricalBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/categorical.rs
+   |
+   | impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for CategoricalBuilder {
+   | ^^^^^^^^----------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         unsatisfied requirement introduced here: `u32: AsRef<str>`
+   = note: required for `CategoricalBuilder` to implement `ColumnBuilder<u32>`
+
+error[E0277]: `Opaque` doesn't implement `std::fmt::Display`
+  --> tests/fail/161-fail-categorical-conflicts.rs:59:12
+   |
+59 |     value: Opaque,
+   |            ^^^^^^ unsatisfied trait bound
+   |
+help: the trait `std::fmt::Display` is not implemented for `Opaque`
+  --> tests/fail/161-fail-categorical-conflicts.rs:54:1
+   |
+54 | struct Opaque;
+   | ^^^^^^^^^^^^^
+help: the trait `ColumnBuilder<T>` is conditionally implemented for `CategoricalDisplayBuilder`
+  --> $WORKSPACE/df-derive-core/src/dataframe/builders/categorical.rs
+   |
+   | impl<T: Display + ?Sized> ColumnBuilder<T> for CategoricalDisplayBuilder {
+   | ^^^^^^^^-------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         unsatisfied requirement introduced here: `Opaque: std::fmt::Display`
+   = note: required for `CategoricalDisplayBuilder` to implement `ColumnBuilder<Opaque>`

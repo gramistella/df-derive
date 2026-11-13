@@ -48,6 +48,9 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `as_str`: borrow the value through `AsRef<str>` into a string column.
 /// - `as_string`: format the value with `Display` into a string column.
 /// - `as_binary`: borrow the value through `AsRef<[u8]>` into a binary column.
+/// - `categorical`: store the value's text as a categorical column. The text
+///   is read as `as_str` reads it, or with `as_string, categorical` as
+///   `Display` writes it. It needs the runtime's `categorical` feature.
 /// - `decimal(precision = P, scale = S)`: store a `Decimal128Encode` value as
 ///   `Decimal(P, S)`. It needs the runtime's `decimal` feature, which
 ///   `rust_decimal` turns on.

@@ -1,4 +1,4 @@
-error: unknown field attribute; expected one of `skip`, `rename = "..."`, `flatten`, `as_str`, `as_string`, `as_binary`, `decimal(...)`, `time_unit = "..."`, `with = "..."`
+error: unknown field attribute; expected one of `skip`, `rename = "..."`, `flatten`, `as_str`, `as_string`, `as_binary`, `categorical`, `decimal(...)`, `time_unit = "..."`, `with = "..."`
  --> tests/fail/100-fail-unknown-field-attribute.rs:5:17
   |
 5 |     #[df_derive(as_strg)]

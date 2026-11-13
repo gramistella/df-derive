@@ -285,8 +285,8 @@ whose `Display` fails, and `try_via` conversions.
   a column has one zone for all of its rows.
 - Fixed-size arrays `[T; N]` are not supported as fields.
 - Mutable references are not supported as fields.
-- A struct that has both lifetime and type parameters cannot be the row type
-  of a `via` projection.
+- A `via` row that holds a reference to a value of generic type, such as
+  `&'_ T`, needs `T: 'static`.
 
 ## Crate Layout
 
@@ -373,6 +373,12 @@ Two more methods have defaults that are always correct, and exist to be
 overridden for speed: `extend` appends many slots at once, and `measure`
 lets a builder that holds lists size their buffer before anything is
 appended.
+
+A builder borrows nothing from the values it reads, so keep their lifetimes
+out of its type. The builder for a `Code<'a>` has no lifetime of its own, and
+the builder for a generic `Wrapper<T>` is generic over the builder of `T`, as
+`OptionBuilder<B>` is, not over `T`. A derived type that holds such a value
+keeps one builder for the field and feeds it values of any lifetime.
 
 ## Features
 

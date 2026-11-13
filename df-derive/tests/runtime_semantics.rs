@@ -90,3 +90,6 @@ mod declared_encodings_and_projections;
 
 #[path = "runtime/62-instants-and-naive-datetimes.rs"]
 mod instants_and_naive_datetimes;
+
+#[path = "runtime/63-lifetimes-of-nested-types.rs"]
+mod lifetimes_of_nested_types;

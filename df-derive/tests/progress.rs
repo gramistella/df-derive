@@ -85,4 +85,6 @@ fn tests() {
     t.compile_fail("tests/fail/154-fail-flatten-bad-prefix.rs");
     t.compile_fail("tests/fail/155-fail-map-value-encoding.rs");
     t.compile_fail("tests/fail/156-fail-encoding-on-map-of-tuples.rs");
+    t.compile_fail("tests/fail/157-fail-via-row-is-not-a-row.rs");
+    t.compile_fail("tests/fail/158-fail-via-inner-attributes.rs");
 }

@@ -5,7 +5,7 @@ error[E0277]: `i32` has no named columns of its own
   |                ^^^ not a struct or tuple of columns
   |
   = help: the trait `Record` is not implemented for `i32`
-  = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+  = note: `#[df_derive(flatten)]`, `via` and `ToDataFrame` need a type whose columns are named by its fields
   = help: the following other types implement trait `Record`:
             &'a T
             ()
@@ -29,7 +29,7 @@ error[E0277]: `String` has no named columns of its own
    |            ^^^^^^ not a struct or tuple of columns
    |
    = help: the trait `Record` is not implemented for `String`
-   = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+   = note: `#[df_derive(flatten)]`, `via` and `ToDataFrame` need a type whose columns are named by its fields
    = help: the following other types implement trait `Record`:
              &'a T
              ()
@@ -53,7 +53,7 @@ error[E0277]: `i32` has no named columns of its own
    |               ^^^^^^^^^^^ not a struct or tuple of columns
    |
    = help: the trait `Record` is not implemented for `i32`
-   = note: `#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields
+   = note: `#[df_derive(flatten)]`, `via` and `ToDataFrame` need a type whose columns are named by its fields
    = help: the following other types implement trait `Record`:
              &'a T
              ()

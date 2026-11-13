@@ -1,9 +1,28 @@
-//! Code generation: one builder struct per derived type.
+//! Code generation.
+//!
+//! A derived type gets one builder struct, with a member for every field
+//! that produces columns. A builder borrows nothing from the rows it reads,
+//! so its type is not tied to one instance of the row type:
+//!
+//! - A member whose type names no type or const parameter of the row type is
+//!   written out, with `'static` in place of every lifetime. The builder of
+//!   a `&'a str` is the same type whatever `'a` is, so that member encodes
+//!   the field for every `'a`.
+//! - A member whose type names such a parameter cannot be written without an
+//!   instance of the row type in hand. The builder struct then takes that
+//!   instance as its one parameter, `__DfDeriveFor`, and gets the member's
+//!   type from it through a hidden trait. Such a builder encodes every
+//!   instance whose field the member encodes, not only the one that named
+//!   it.
+//!
+//! So the builder that `Row<'static, &'static str>` names also encodes a
+//! `Row<'a, &'a str>`. A projection depends on this: its row borrows from
+//! each value in turn, and no type can name that borrow.
 
 use std::collections::HashSet;
 
 use proc_macro2::{Span, TokenStream, TokenTree};
-use quote::{ToTokens as _, format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::{Data, DeriveInput, Fields, GenericParam, Index, Member};
@@ -42,14 +61,19 @@ struct Column<'a> {
     /// The matching field of the generated builder struct.
     slot: syn::Ident,
     ty: &'a syn::Type,
+    /// The builder of the field, as the row type itself would name it.
     builder: TokenStream,
-    /// What must hold for `builder` to encode `ty`.
-    bound: TokenStream,
-    /// Whether `ty` names one of the type's generic type parameters. Only
-    /// then does `bound` go in the where-clause; a bound on a concrete type
-    /// is checked where the builder struct is declared, so a field that
-    /// cannot be encoded is reported at the derive instead of at first use.
+    /// What must hold for `builder` to encode `ty`: one or more predicates.
+    bounds: TokenStream,
+    /// Whether `ty` or `builder` names a type or const parameter of the row
+    /// type. Only then do `bounds` go in the where-clause. A field that does
+    /// not depend on a parameter is checked where the builder is declared
+    /// and used, so one that cannot be encoded is reported where the type is
+    /// defined instead of at first use.
     generic: bool,
+    /// Whether `builder` names such a parameter, which makes it a different
+    /// type for different instances of the row type.
+    per_instance: bool,
     /// The column path segment this field adds, if any.
     segment: Option<syn::LitStr>,
     /// Set when the field is flattened and so must be a record.
@@ -75,46 +99,96 @@ fn respan(tokens: TokenStream, span: Span) -> TokenStream {
         .collect()
 }
 
-/// Rewrites every lifetime to `'static`.
-///
-/// A builder owns its buffers and borrows nothing from the rows it reads, so
-/// its type does not need the row's lifetimes. Naming it with `'static` makes
-/// one builder type serve every lifetime of the row type.
-fn erase_lifetimes(tokens: TokenStream) -> TokenStream {
-    let mut erased = Vec::new();
+/// Rewrites the name of every lifetime in `tokens` that `rename` has a new
+/// name for.
+fn rename_lifetimes(
+    tokens: TokenStream,
+    rename: &mut impl FnMut(&proc_macro2::Ident) -> Option<String>,
+) -> TokenStream {
+    let mut renamed = Vec::new();
     let mut after_quote = false;
     for token in tokens {
         let token = match token {
             TokenTree::Group(group) => {
-                let mut inner =
-                    proc_macro2::Group::new(group.delimiter(), erase_lifetimes(group.stream()));
+                let mut inner = proc_macro2::Group::new(
+                    group.delimiter(),
+                    rename_lifetimes(group.stream(), rename),
+                );
                 inner.set_span(group.span());
                 TokenTree::Group(inner)
             }
-            TokenTree::Ident(ident) if after_quote => {
-                TokenTree::Ident(proc_macro2::Ident::new("static", ident.span()))
-            }
+            TokenTree::Ident(ident) if after_quote => match rename(&ident) {
+                Some(name) => TokenTree::Ident(proc_macro2::Ident::new(&name, ident.span())),
+                None => TokenTree::Ident(ident),
+            },
             other => other,
         };
         after_quote = matches!(&token, TokenTree::Punct(punct) if punct.as_char() == '\'');
-        erased.push(token);
+        renamed.push(token);
     }
-    erased.into_iter().collect()
+    renamed.into_iter().collect()
 }
 
+/// Rewrites every lifetime to `'static`.
+///
+/// A builder owns its buffers and borrows nothing from the rows it reads, so
+/// its type does not need the row's lifetimes. Naming a member with `'static`
+/// makes one type serve every lifetime of the field.
+fn erase_lifetimes(tokens: TokenStream) -> TokenStream {
+    rename_lifetimes(tokens, &mut |_| Some("static".to_owned()))
+}
+
+/// Gives every `'_` in `tokens` a name of its own and returns the names, so
+/// that a bound can be written that holds whatever each of them is.
+fn name_borrows(tokens: TokenStream) -> (TokenStream, Vec<syn::Lifetime>) {
+    let mut borrows = Vec::new();
+    let renamed = rename_lifetimes(tokens, &mut |ident| {
+        (ident == "_").then(|| {
+            let name = format!("__df_derive_borrow_{}", borrows.len());
+            borrows.push(syn::Lifetime::new(&format!("'{name}"), ident.span()));
+            name
+        })
+    });
+    (renamed, borrows)
+}
+
+/// The parameters that make an instance of a type a different type: its type
+/// and const parameters.
+fn parameters(generics: &syn::Generics) -> HashSet<String> {
+    generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            GenericParam::Type(param) => Some(param.ident.to_string()),
+            GenericParam::Const(param) => Some(param.ident.to_string()),
+            GenericParam::Lifetime(_) => None,
+        })
+        .collect()
+}
+
+/// Whether `tokens` name one of `params`. A lifetime is not one of them,
+/// even when it has the name of one.
 fn mentions(tokens: TokenStream, params: &HashSet<String>) -> bool {
-    tokens.into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => params.contains(&ident.to_string()),
-        TokenTree::Group(group) => mentions(group.stream(), params),
-        TokenTree::Punct(_) | TokenTree::Literal(_) => false,
-    })
+    let mut after_quote = false;
+    for token in tokens {
+        let found = match &token {
+            TokenTree::Ident(ident) => !after_quote && params.contains(&ident.to_string()),
+            TokenTree::Group(group) => mentions(group.stream(), params),
+            TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+        };
+        if found {
+            return true;
+        }
+        after_quote = matches!(&token, TokenTree::Punct(punct) if punct.as_char() == '\'');
+    }
+    false
 }
 
 fn columns<'a>(
     name: &syn::Ident,
     fields: &'a Fields,
     transparent: bool,
-    type_params: &HashSet<String>,
+    params: &HashSet<String>,
     runtime: &Runtime,
 ) -> syn::Result<Vec<Column<'a>>> {
     let root = &runtime.root;
@@ -151,7 +225,7 @@ fn columns<'a>(
             ));
         }
 
-        let (builder, bound) = match &attrs.encoding {
+        let (builder, bounds) = match &attrs.encoding {
             None => (
                 quote! { <#ty as #root::Columnar>::Builder },
                 quote! { #ty: #root::Columnar },
@@ -164,11 +238,23 @@ fn columns<'a>(
                          move the value into a named struct and annotate its field",
                     ));
                 }
-                let builder = mirror::builder(ty, encoding, root, &runtime.builders);
-                let bound = quote! { #builder: #root::ColumnBuilder<#ty> };
-                (builder, bound)
+                let mut keys = Vec::new();
+                let builder = mirror::builder(ty, encoding, root, &runtime.builders, &mut keys);
+                // The builder names the builder of every map key, and a key
+                // that depends on a parameter has one only if the
+                // where-clause says so.
+                let keys = keys
+                    .into_iter()
+                    .filter(|key| mentions(key.to_token_stream(), params));
+                let bounds = quote! {
+                    #(#keys: #root::Columnar,)*
+                    #builder: #root::ColumnBuilder<#ty>
+                };
+                (builder, bounds)
             }
         };
+        let per_instance = mentions(builder.clone(), params);
+        let generic = per_instance || mentions(ty.to_token_stream(), params);
         let builder = respan(builder, ty.span());
 
         if let (true, Some((_, span))) = (transparent, &attrs.flatten) {
@@ -191,8 +277,9 @@ fn columns<'a>(
             slot,
             ty,
             builder,
-            bound,
-            generic: mentions(ty.to_token_stream(), type_params),
+            bounds,
+            generic,
+            per_instance,
             segment,
             flattened,
         });
@@ -200,66 +287,57 @@ fn columns<'a>(
     Ok(columns)
 }
 
-/// The generic parameters of the builder struct, and how they are written.
-struct BuilderGenerics {
-    /// `<...>` on the builder's declaration.
-    declaration: TokenStream,
-    /// `<...>` where the builder type is named.
-    arguments: TokenStream,
-    /// The type of the builder's last member; see [`marker`].
-    marker: TokenStream,
-    /// True when the row's lifetimes are left off the builder.
-    erased: bool,
-}
-
-/// The type of the member every builder struct ends with.
-///
-/// It keeps the struct's generic parameters in use. It also comes last for a
-/// reason: whether a struct is `Sized` is decided by its last member alone.
-/// If that member were the builder of a field that cannot be encoded, the
-/// compiler would report the field again at every place that needs the
-/// builder's size. With this member last, such a field is reported at the
-/// field and once at the derive.
-fn marker(generics: &syn::Generics) -> TokenStream {
-    let lifetimes = generics.lifetimes().map(|param| &param.lifetime);
-    let type_idents = generics.type_params().map(|param| &param.ident);
-    quote! { ::core::marker::PhantomData<(#(&#lifetimes (),)* #(fn(&#type_idents),)*)> }
-}
-
-/// A type whose only generic parameters are lifetimes (and consts) gets a
-/// builder without those lifetimes. That is what lets another type encode
-/// through it with `via`, where the row borrows from each value in turn.
-fn builder_generics(generics: &syn::Generics) -> BuilderGenerics {
-    let erased = generics.type_params().next().is_none() && generics.lifetimes().next().is_some();
-    let mut kept = generics.clone();
-    if erased {
-        kept.params = kept
-            .params
-            .into_iter()
-            .filter(|param| !matches!(param, GenericParam::Lifetime(_)))
-            .collect();
-        kept.where_clause = None;
-    }
-    let (declaration, arguments, _) = kept.split_for_impl();
-    BuilderGenerics {
-        declaration: declaration.to_token_stream(),
-        arguments: arguments.to_token_stream(),
-        marker: marker(&kept),
-        erased,
-    }
-}
-
-fn where_clause(
-    generics: &syn::Generics,
-    container: &ContainerAttrs,
-    extra: impl Iterator<Item = TokenStream>,
-) -> TokenStream {
+/// What every generated impl requires whatever the fields are: the type's
+/// own where-clause and the bounds asked for with `bound = "..."`.
+fn own_predicates(generics: &syn::Generics, container: &ContainerAttrs) -> Vec<TokenStream> {
     let declared = generics
         .where_clause
         .iter()
-        .flat_map(|clause| &clause.predicates);
-    let requested = &container.bounds;
-    quote! { where #(#declared,)* #(#requested,)* #(#extra,)* }
+        .flat_map(|clause| &clause.predicates)
+        .map(ToTokens::to_token_stream);
+    let requested = container.bounds.iter().map(ToTokens::to_token_stream);
+    declared.chain(requested).collect()
+}
+
+/// How a builder struct is declared and named.
+///
+/// A builder with a member that depends on a parameter of the derived type
+/// has one parameter of its own: `__DfDeriveFor`, the instance of the type
+/// that named it. Any other builder has none.
+struct Naming {
+    /// The builder's parameter where the struct is declared, if it has one.
+    declaration: TokenStream,
+    /// The same where the impl that encodes rows names the builder.
+    arguments: TokenStream,
+    /// The same where the derived type names its builder: itself.
+    of_self: TokenStream,
+    /// The generic parameters of the impl that encodes rows: the type's own,
+    /// and the builder's.
+    encoder: syn::Generics,
+}
+
+impl Naming {
+    /// `members` is the hidden trait through which the naming instance says
+    /// what the builder's members are, when some member depends on it.
+    fn new(generics: &syn::Generics, members: Option<TokenStream>) -> Self {
+        let mut encoder = generics.clone();
+        let Some(members) = members else {
+            return Self {
+                declaration: TokenStream::new(),
+                arguments: TokenStream::new(),
+                of_self: TokenStream::new(),
+                encoder,
+            };
+        };
+        let parameter = quote! { __DfDeriveFor: #members + ?::core::marker::Sized };
+        encoder.params.push(syn::parse_quote! { #parameter });
+        Self {
+            declaration: quote! { <#parameter> },
+            arguments: quote! { <__DfDeriveFor> },
+            of_self: quote! { <Self> },
+            encoder,
+        }
+    }
 }
 
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -267,6 +345,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let runtime = Runtime::new(&container.krate);
 
     if let Some(via) = &container.via {
+        attrs::none_inside(&input.data)?;
         return Ok(expand_via(input, &container, via, &runtime));
     }
     match &input.data {
@@ -299,16 +378,11 @@ fn expand_struct(
         ..
     } = runtime;
 
-    let type_params: HashSet<String> = input
-        .generics
-        .type_params()
-        .map(|param| param.ident.to_string())
-        .collect();
     let columns = columns(
         &input.ident,
         fields,
         container.transparent.is_some(),
-        &type_params,
+        &parameters(&input.generics),
         runtime,
     )?;
     if let Some(span) = container.transparent
@@ -326,19 +400,22 @@ fn expand_struct(
     let name = &input.ident;
     let vis = &input.vis;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+    let own = own_predicates(&input.generics, container);
+    // What the type needs to be stored in columns: its own predicates, and
+    // what each field that depends on a parameter needs.
     let generic_bounds = columns
         .iter()
         .filter(|column| column.generic)
         .flat_map(|column| {
             let ty = column.ty;
             let record = column.flattened.then(|| quote! { #ty: #root::Record });
-            [Some(column.bound.clone()), record]
+            [Some(column.bounds.clone()), record]
         })
         .flatten();
-    let where_clause = where_clause(&input.generics, container, generic_bounds);
+    let where_clause = quote! { where #(#own,)* #(#generic_bounds,)* };
 
-    // A flattened field of concrete type is checked here; one of generic type
-    // is covered by the where-clause above.
+    // A flattened field of concrete type is checked here; one that depends on
+    // a parameter is covered by the where-clause above.
     let record_checks = columns
         .iter()
         .filter(|column| column.flattened && !column.generic)
@@ -347,28 +424,57 @@ fn expand_struct(
             quote! { #root::__private::assert_record::<#ty>(); }
         });
 
-    let builder = builder_generics(&input.generics);
-    let BuilderGenerics {
+    let per_instance: Vec<_> = columns
+        .iter()
+        .filter(|column| column.per_instance)
+        .collect();
+    let naming = Naming::new(
+        &input.generics,
+        (!per_instance.is_empty()).then(|| quote! { __DfDeriveFields }),
+    );
+    let Naming {
         declaration,
         arguments,
-        marker,
+        of_self,
         ..
-    } = &builder;
-    let builder_where = if builder.erased {
-        TokenStream::new()
-    } else {
-        where_clause.clone()
-    };
+    } = &naming;
+    let (encoder_generics, _, _) = naming.encoder.split_for_impl();
+    // The derived type says which builder each member taken from the naming
+    // instance is. Every token of that has the span of the field's type, so
+    // a field without a builder is reported at the field. The trait is
+    // private because its impl names the builders of fields whose types may
+    // be private, which the impl of a public trait must not do.
+    let named_members = (!per_instance.is_empty()).then(|| {
+        let slots = per_instance.iter().map(|column| &column.slot);
+        let named = per_instance.iter().map(|column| {
+            let (slot, builder) = (&column.slot, &column.builder);
+            respan(quote! { type #slot = #builder; }, column.ty.span())
+        });
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case_types)]
+            trait __DfDeriveFields {
+                #(type #slots;)*
+            }
+
+            #[automatically_derived]
+            #[allow(non_camel_case_types)]
+            impl #impl_generics __DfDeriveFields for #name #ty_generics #where_clause {
+                #(#named)*
+            }
+        }
+    });
 
     let slots: Vec<_> = columns.iter().map(|column| &column.slot).collect();
     let members: Vec<_> = columns.iter().map(|column| &column.member).collect();
     let builder_types: Vec<_> = columns
         .iter()
         .map(|column| {
-            if builder.erased {
-                erase_lifetimes(column.builder.clone())
+            if column.per_instance {
+                let slot = &column.slot;
+                quote! { <__DfDeriveFor as __DfDeriveFields>::#slot }
             } else {
-                column.builder.clone()
+                erase_lifetimes(column.builder.clone())
             }
         })
         .collect();
@@ -380,6 +486,22 @@ fn expand_struct(
             quote! { <#builder as #root::ColumnBuilder<#ty>> }
         })
         .collect();
+    // What the fields that depend on a parameter need where rows are
+    // encoded. A member written out needs what its field needs. A member
+    // taken from the naming instance has to encode the field as this row has
+    // it, whichever instance that was.
+    let encoder_bounds = columns
+        .iter()
+        .filter(|column| column.generic)
+        .map(|column| {
+            if column.per_instance {
+                let (ty, slot) = (column.ty, &column.slot);
+                quote! { <__DfDeriveFor as __DfDeriveFields>::#slot: #root::ColumnBuilder<#ty> }
+            } else {
+                column.bounds.clone()
+            }
+        });
+    let encoder_where = quote! { where #(#own,)* #(#encoder_bounds,)* };
     let names: Vec<_> = columns
         .iter()
         .map(|column| {
@@ -466,18 +588,25 @@ fn expand_struct(
         // spans, so type-shape lints would otherwise fire a second time there.
         #[allow(clippy::all, clippy::pedantic, clippy::nursery)]
         const _: () = {
+            #named_members
+
+            // The last member decides whether a struct is `Sized`. If it were
+            // the builder of a field that cannot be encoded, the compiler
+            // would report that field again wherever the builder's size is
+            // needed. With `()` last, the field is reported at the field and
+            // once at the derive.
             #[doc(hidden)]
-            #[allow(non_snake_case, dead_code)]
-            #vis struct __DfDeriveBuilder #declaration #builder_where {
+            #[allow(private_bounds, non_snake_case, dead_code)]
+            #vis struct __DfDeriveBuilder #declaration {
                 #(#slots: #builder_types,)*
-                __df_derive_marker: #marker,
+                __df_derive_last: (),
             }
 
             #[automatically_derived]
             #[allow(unused, non_snake_case, clippy::inline_always)]
-            impl #impl_generics #root::ColumnBuilder<#name #ty_generics>
+            impl #encoder_generics #root::ColumnBuilder<#name #ty_generics>
                 for __DfDeriveBuilder #arguments
-            #where_clause
+            #encoder_where
             {
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
                     #(#record_checks)*
@@ -487,7 +616,7 @@ fn expand_struct(
                 fn new() -> Self {
                     Self {
                         #(#slots: #as_builder::new(),)*
-                        __df_derive_marker: ::core::marker::PhantomData,
+                        __df_derive_last: (),
                     }
                 }
 
@@ -538,7 +667,7 @@ fn expand_struct(
 
             #[automatically_derived]
             impl #impl_generics #root::Columnar for #name #ty_generics #where_clause {
-                type Builder = __DfDeriveBuilder #arguments;
+                type Builder = __DfDeriveBuilder #of_self;
             }
 
             #row_impls
@@ -568,6 +697,7 @@ fn encode_in_place(runtime: &Runtime) -> TokenStream {
 /// pushed straight into the row type's builder, so no intermediate collection
 /// of rows is built. The row may borrow from the value: write its borrowed
 /// lifetimes as `'_`.
+#[allow(clippy::too_many_lines)]
 fn expand_via(
     input: &DeriveInput,
     container: &ContainerAttrs,
@@ -583,11 +713,59 @@ fn expand_via(
     let name = &input.ident;
     let vis = &input.vis;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
-    let where_clause = where_clause(&input.generics, container, std::iter::empty());
+    let own = own_predicates(&input.generics, container);
+    let where_clause = quote! { where #(#own,)* };
 
     let row = respan(via.row.to_token_stream(), via.span);
     let stored = erase_lifetimes(row.clone());
-    let inner = quote! { <#stored as #root::Columnar>::Builder };
+    // The builder of the row type is this builder's one member. Like any
+    // member, it is written out unless it depends on a parameter.
+    let per_instance = mentions(row.clone(), &parameters(&input.generics));
+    let naming = Naming::new(
+        &input.generics,
+        per_instance.then(|| quote! { __DfDeriveVia }),
+    );
+    let Naming {
+        declaration,
+        arguments,
+        of_self,
+        ..
+    } = &naming;
+    let (encoder_generics, _, _) = naming.encoder.split_for_impl();
+    let named_member = per_instance.then(|| {
+        // Whatever keeps the row type from having a builder is reported at
+        // the attribute that names it. The trait is private because the row
+        // type may be.
+        let named = respan(
+            quote! { type Row = <#stored as #root::Columnar>::Builder; },
+            via.span,
+        );
+        quote! {
+            #[doc(hidden)]
+            trait __DfDeriveVia {
+                type Row;
+            }
+
+            #[automatically_derived]
+            impl #impl_generics __DfDeriveVia for #name #ty_generics #where_clause {
+                #named
+            }
+        }
+    });
+    let (inner, encoder_where) = if per_instance {
+        // The member has to encode the row whatever the row borrows.
+        let inner = quote! { <__DfDeriveFor as __DfDeriveVia>::Row };
+        let (any_row, borrows) = name_borrows(row.clone());
+        let for_any_borrow = (!borrows.is_empty()).then(|| quote! { for<#(#borrows),*> });
+        let encodes = quote! { #for_any_borrow #inner: #root::ColumnBuilder<#any_row> };
+        (inner, quote! { where #(#own,)* #encodes })
+    } else {
+        (
+            quote! { <#stored as #root::Columnar>::Builder },
+            where_clause.clone(),
+        )
+    };
+    let as_inner = quote! { <#inner as #root::ColumnBuilder<#row>> };
     let convert = if via.fallible {
         quote! {
             match ::core::convert::TryFrom::try_from(value) {
@@ -604,36 +782,43 @@ fn expand_via(
     };
 
     let encode = encode_in_place(runtime);
-    let (declaration, arguments, _) = input.generics.split_for_impl();
-    let marker = marker(&input.generics);
+    // Whatever keeps the row type's builder from encoding the row is
+    // reported at the attribute too.
+    let named_builder = respan(
+        quote! { type Builder = __DfDeriveBuilder #of_self; },
+        via.span,
+    );
 
     quote! {
         // Field types are repeated inside the generated items with their original
         // spans, so type-shape lints would otherwise fire a second time there.
         #[allow(clippy::all, clippy::pedantic, clippy::nursery)]
         const _: () = {
+            #named_member
+
             #[doc(hidden)]
-            #vis struct __DfDeriveBuilder #declaration (#inner, #marker) #where_clause;
+            #[allow(private_bounds)]
+            #vis struct __DfDeriveBuilder #declaration (#inner);
 
             #[automatically_derived]
             #[allow(clippy::inline_always)]
-            impl #impl_generics #root::ColumnBuilder<#name #ty_generics>
+            impl #encoder_generics #root::ColumnBuilder<#name #ty_generics>
                 for __DfDeriveBuilder #arguments
-            #where_clause
+            #encoder_where
             {
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
-                    <#inner as #root::ColumnBuilder<#stored>>::schema(name, out);
+                    // A projection is a row type because the type it encodes
+                    // as is one.
+                    #root::__private::assert_record::<#row>();
+                    #as_inner::schema(name, out);
                 }
 
                 fn new() -> Self {
-                    Self(
-                        <#inner as #root::ColumnBuilder<#stored>>::new(),
-                        ::core::marker::PhantomData,
-                    )
+                    Self(#as_inner::new())
                 }
 
                 fn reserve(&mut self, additional: usize) {
-                    <#inner as #root::ColumnBuilder<#stored>>::reserve(&mut self.0, additional);
+                    #as_inner::reserve(&mut self.0, additional);
                 }
 
                 #[inline(always)]
@@ -647,10 +832,7 @@ fn expand_via(
                         }
                         ::core::option::Option::None => ::core::option::Option::None,
                     };
-                    <#inner as #root::ColumnBuilder<#row>>::push(
-                        &mut self.0,
-                        ::core::option::Option::as_ref(&row),
-                    )
+                    #as_inner::push(&mut self.0, ::core::option::Option::as_ref(&row))
                 }
 
                 fn finish(
@@ -659,13 +841,13 @@ fn expand_via(
                     validity: ::core::option::Option<&#bitmap>,
                     out: &mut ::std::vec::Vec<#polars::Column>,
                 ) -> #polars::PolarsResult<()> {
-                    <#inner as #root::ColumnBuilder<#stored>>::finish(self.0, name, validity, out)
+                    #as_inner::finish(self.0, name, validity, out)
                 }
             }
 
             #[automatically_derived]
             impl #impl_generics #root::Columnar for #name #ty_generics #where_clause {
-                type Builder = __DfDeriveBuilder #arguments;
+                #named_builder
             }
 
             #[automatically_derived]

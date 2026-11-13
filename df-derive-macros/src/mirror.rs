@@ -156,31 +156,34 @@ fn leaf(encoding: &Encoding, builders: &TokenStream) -> TokenStream {
 /// Returns the builder type for `ty` under `encoding`.
 ///
 /// `root` is the runtime's `dataframe` module and `builders` its `builders`
-/// module.
-pub fn builder(
-    ty: &Type,
+/// module. Every map key in `ty` is added to `keys`: a key keeps the encoding
+/// of its own type, so the builder returned here names the key's builder.
+pub fn builder<'a>(
+    ty: &'a Type,
     encoding: &Encoding,
     root: &TokenStream,
     builders: &TokenStream,
+    keys: &mut Vec<&'a Type>,
 ) -> TokenStream {
     let ty = peel(ty);
     // A byte sequence is the value `as_binary` encodes, not a list around it.
     let bytes = matches!(encoding, Encoding::AsBinary);
     match wrapper(ty) {
         Some(Wrapper::Option(inner)) => {
-            let inner = builder(inner, encoding, root, builders);
+            let inner = builder(inner, encoding, root, builders, keys);
             quote! { #builders::OptionBuilder<#inner> }
         }
         Some(Wrapper::Vec(inner) | Wrapper::Slice(inner)) if !(bytes && is_u8(inner)) => {
-            let inner = builder(inner, encoding, root, builders);
+            let inner = builder(inner, encoding, root, builders, keys);
             quote! { #builders::ListBuilder<#inner> }
         }
         Some(Wrapper::Pointer(inner)) => {
-            let inner = builder(inner, encoding, root, builders);
+            let inner = builder(inner, encoding, root, builders, keys);
             quote! { #builders::PtrBuilder<#inner> }
         }
         Some(Wrapper::Map { key, value }) => {
-            let value = builder(value, encoding, root, builders);
+            keys.push(key);
+            let value = builder(value, encoding, root, builders, keys);
             quote! { #builders::MapBuilder<<#key as #root::Columnar>::Builder, #value> }
         }
         _ => leaf(encoding, builders),

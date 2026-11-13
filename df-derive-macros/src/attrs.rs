@@ -142,6 +142,42 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     })
 }
 
+/// Rejects `#[df_derive(...)]` inside a type that encodes through `via`.
+///
+/// The columns of such a type are those of its row type. Its own fields and
+/// variants are never read, so an attribute on one would do nothing, and
+/// would not even be checked.
+pub fn none_inside(data: &syn::Data) -> syn::Result<()> {
+    fn of_fields(fields: &syn::Fields) -> impl Iterator<Item = &Attribute> {
+        fields.iter().flat_map(|field| &field.attrs)
+    }
+
+    let attrs: Vec<&Attribute> = match data {
+        syn::Data::Struct(data) => of_fields(&data.fields).collect(),
+        syn::Data::Enum(data) => data
+            .variants
+            .iter()
+            .flat_map(|variant| variant.attrs.iter().chain(of_fields(&variant.fields)))
+            .collect(),
+        syn::Data::Union(data) => data
+            .fields
+            .named
+            .iter()
+            .flat_map(|field| &field.attrs)
+            .collect(),
+    };
+    attrs
+        .into_iter()
+        .find(|attr| attr.path().is_ident("df_derive"))
+        .map_or(Ok(()), |attr| {
+            Err(syn::Error::new_spanned(
+                &attr.meta,
+                "this attribute has no effect: a type with `via` encodes as its row type, \
+                 so annotate that type's fields instead",
+            ))
+        })
+}
+
 fn decimal(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Encoding> {
     let mut precision: Option<u8> = None;
     let mut scale: Option<u8> = None;

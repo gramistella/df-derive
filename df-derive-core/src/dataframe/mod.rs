@@ -140,6 +140,21 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
 /// Implemented for the supported leaf types and wrappers, and by
 /// `#[derive(ToDataFrame)]` for structs. A field of any `Columnar` type works
 /// in a derived struct without attributes.
+///
+/// A builder borrows nothing from the values it reads, so its type must not
+/// be tied to their lifetimes: the builder that `Name<'a>` names has to
+/// encode a `Name<'b>` too. A derived type that holds a `Name<'a>` in a field
+/// relies on this. It keeps one builder for the field, named without the
+/// lifetime, and feeds it values of any lifetime.
+///
+/// - Give the builder of a type with lifetime parameters none of its own:
+///   `impl<'a> ColumnBuilder<Name<'a>> for NameBuilder`.
+/// - Make the builder of a generic wrapper generic over the builder of what
+///   it wraps, not over what it wraps:
+///   `impl<T, B: ColumnBuilder<T>> ColumnBuilder<Wrapper<T>> for WrapperBuilder<B>`,
+///   named by `Wrapper<T>` as `WrapperBuilder<T::Builder>`. A lifetime inside
+///   `T` then does not reach the builder's type. The builders in
+///   [`builders`] are written this way, and so are derived ones.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be stored in a DataFrame column",
     label = "no column encoding for `{Self}`",
@@ -156,11 +171,12 @@ pub trait Columnar {
 /// Derived structs and tuples are records, and so is any `Option`, `Vec` or
 /// pointer around one. A leaf such as `f64` is not: it takes the name of the
 /// field that holds it. `#[df_derive(flatten)]` requires a record, because
-/// flattening drops the field's own name.
+/// flattening drops the field's own name, and so does `via`, because the type
+/// it names is the row a projected type is encoded as.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no named columns of its own",
     label = "not a struct or tuple of columns",
-    note = "`#[df_derive(flatten)]` and `ToDataFrame` need a type whose columns are named by its fields"
+    note = "`#[df_derive(flatten)]`, `via` and `ToDataFrame` need a type whose columns are named by its fields"
 )]
 pub trait Record: Columnar {}
 

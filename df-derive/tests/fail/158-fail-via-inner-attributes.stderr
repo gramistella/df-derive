@@ -1,0 +1,11 @@
+error: this attribute has no effect: a type with `via` encodes as its row type, so annotate that type's fields instead
+  --> tests/fail/158-fail-via-inner-attributes.rs:26:7
+   |
+26 |     #[df_derive(skip)]
+   |       ^^^^^^^^^^^^^^^
+
+error: this attribute has no effect: a type with `via` encodes as its row type, so annotate that type's fields instead
+  --> tests/fail/158-fail-via-inner-attributes.rs:36:11
+   |
+36 |         #[df_derive(as_string)]
+   |           ^^^^^^^^^^^^^^^^^^^^

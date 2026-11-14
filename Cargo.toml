@@ -9,7 +9,6 @@ rust-version = "1.95"
 authors = ["Giovanni Ramistella <letter.brigade_7s@icloud.com>"]
 license = "MIT"
 repository = "https://github.com/gramistella/df-derive"
-homepage = "https://github.com/gramistella/df-derive"
 
 [workspace.dependencies]
 polars = { version = "0.55", default-features = false }

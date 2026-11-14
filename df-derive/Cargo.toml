@@ -7,7 +7,6 @@ authors.workspace = true
 description = "Derive fast conversions from Rust structs into Polars DataFrames."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/df-derive"
 readme = "../README.md"
 keywords = ["polars", "dataframe", "derive", "finance"]

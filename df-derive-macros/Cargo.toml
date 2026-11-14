@@ -7,7 +7,6 @@ authors.workspace = true
 description = "Procedural derive macro implementation for df-derive."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/df-derive-macros"
 readme = "../README.md"
 keywords = ["polars", "dataframe", "proc-macro", "finance"]

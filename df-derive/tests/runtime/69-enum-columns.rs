@@ -634,7 +634,10 @@ fn a_field_can_name_the_builder() {
 }
 
 /// An enum with no variants has no values, so only empty slots hold it.
+/// Clippy would write a type with no values as `!`. What the derive makes of
+/// an enum is what is tested here.
 #[derive(ToDataFrame)]
+#[allow(clippy::empty_enums)]
 enum Never {}
 
 #[derive(ToDataFrame)]

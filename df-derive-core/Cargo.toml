@@ -7,7 +7,6 @@ authors.workspace = true
 description = "Shared dataframe runtime trait identity for df-derive."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/df-derive-core"
 readme = "../README.md"
 keywords = ["polars", "dataframe", "df-derive", "decimal"]

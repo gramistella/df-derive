@@ -33,3 +33,8 @@ chrono = ["dep:chrono", "polars/dtype-date", "polars/dtype-datetime", "polars/dt
 # `CategoricalDisplayBuilder`. `Enum` columns for types that name their
 # variants: `Variants` and `EnumBuilder`.
 categorical = ["polars/dtype-categorical"]
+
+# docs.rs documents a crate with its default features unless told otherwise,
+# and `categorical` is not one of them.
+[package.metadata.docs.rs]
+all-features = true

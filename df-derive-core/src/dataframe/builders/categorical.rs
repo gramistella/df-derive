@@ -32,6 +32,8 @@ use crate::dataframe::{ColumnBuilder, Fields, Variants};
 ///
 /// It suits text that repeats: a currency, a venue, the kind of a thing. Text
 /// that is different in nearly every row is better left a string column.
+///
+/// The builder is part of the `categorical` feature, which is off by default.
 pub struct CategoricalBuilder {
     codes: Vec<u32>,
     categories: Arc<Categories>,
@@ -126,6 +128,8 @@ impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for CategoricalBuilder {
 /// This is the encoding `#[df_derive(as_string, categorical)]` selects. A
 /// value is formatted into one reused scratch buffer and stored as
 /// [`CategoricalBuilder`] stores a string.
+///
+/// The builder is part of the `categorical` feature, which is off by default.
 pub struct CategoricalDisplayBuilder {
     values: CategoricalBuilder,
     scratch: String,
@@ -182,6 +186,8 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for CategoricalDisplayBuilder {
 /// does for every string: a row is the [`position`](Variants::position) of
 /// its value. The price is that the names are fixed. A type that can hold a
 /// value outside its list is text, not an enum.
+///
+/// The builder is part of the `categorical` feature, which is off by default.
 pub struct EnumBuilder<T> {
     /// The position of each slot's value among the names.
     positions: Vec<IdxSize>,

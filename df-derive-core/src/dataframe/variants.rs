@@ -31,6 +31,8 @@ use std::fmt::Display;
 ///     type Builder = EnumBuilder<Self>;
 /// }
 /// ```
+///
+/// The trait is part of the `categorical` feature, which is off by default.
 pub trait Variants: 'static {
     /// The name of every variant, as anything that can be written as text.
     /// No two variants have the same name.

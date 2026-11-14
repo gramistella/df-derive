@@ -255,9 +255,13 @@ mod chrono_impls {
     use crate::dataframe::{ColumnBuilder, Columnar, Fields};
 
     /// Builder for a `Date` column.
+    ///
+    /// The builder is part of the `chrono` feature, which is on by default.
     pub struct DateBuilder(Vec<i32>);
 
     /// Builder for a `Time` column (nanoseconds since midnight).
+    ///
+    /// The builder is part of the `chrono` feature, which is on by default.
     pub struct TimeOfDayBuilder(Vec<i64>);
 
     /// Days between 0001-01-01 (chrono's day 1) and the Unix epoch.

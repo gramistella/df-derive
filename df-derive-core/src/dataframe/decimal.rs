@@ -9,6 +9,9 @@
 /// of the column it is headed for is checked by
 /// [`DecimalBuilder`](super::builders::DecimalBuilder), which knows that
 /// precision.
+///
+/// The trait is part of the `decimal` feature, which `rust_decimal` (on by
+/// default) turns on.
 pub trait Decimal128Encode {
     /// Returns the mantissa after rescaling `self` to `target_scale`, or
     /// `None` when the value has no `i128` mantissa at that scale.

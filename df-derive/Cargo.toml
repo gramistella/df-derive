@@ -24,6 +24,11 @@ chrono = ["df-derive-core/chrono"]
 categorical = ["df-derive-core/categorical"]
 bench-instruction-counts = []
 
+# docs.rs documents a crate with its default features unless told otherwise,
+# and `categorical` is not one of them.
+[package.metadata.docs.rs]
+all-features = true
+
 [dev-dependencies]
 trybuild = "1.0"
 polars = { workspace = true, features = ["fmt", "timezones", "dtype-decimal", "dtype-date", "dtype-datetime", "dtype-time", "dtype-duration", "dtype-i8", "dtype-i16", "dtype-i128", "dtype-u8", "dtype-u16", "dtype-u128"] }

@@ -12,6 +12,9 @@ use crate::dataframe::{ColumnBuilder, Decimal128Encode, Fields};
 /// selects. A value whose mantissa at scale `S` has more than `P` digits is
 /// an error. A `P` or `S` that Polars has no decimal type for does not
 /// compile.
+///
+/// The builder is part of the `decimal` feature, which `rust_decimal` (on by
+/// default) turns on.
 pub struct DecimalBuilder<const P: usize, const S: usize>(Vec<i128>);
 
 #[cold]

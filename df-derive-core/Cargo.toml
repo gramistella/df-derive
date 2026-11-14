@@ -29,5 +29,7 @@ decimal = ["polars/dtype-decimal"]
 rust_decimal = ["decimal", "dep:rust_decimal"]
 # `chrono` dates and times as field types.
 chrono = ["dep:chrono", "polars/dtype-date", "polars/dtype-datetime", "polars/dtype-time", "polars/timezones"]
-# `Categorical` columns: `CategoricalBuilder` and `CategoricalDisplayBuilder`.
+# `Categorical` columns for text: `CategoricalBuilder` and
+# `CategoricalDisplayBuilder`. `Enum` columns for types that name their
+# variants: `Variants` and `EnumBuilder`.
 categorical = ["polars/dtype-categorical"]

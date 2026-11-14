@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/df-derive/badge.svg)](https://docs.rs/df-derive)
 [![CI](https://github.com/gramistella/df-derive/actions/workflows/ci.yml/badge.svg)](https://github.com/gramistella/df-derive/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/crates/d/df-derive)](https://crates.io/crates/df-derive)
-[![License](https://img.shields.io/crates/l/df-derive)](LICENSE)
+[![License](https://img.shields.io/crates/l/df-derive)](https://github.com/gramistella/df-derive/blob/main/LICENSE)
 
 `df-derive` derives fast conversions from Rust structs into Polars
 `DataFrame`s. Put `#[derive(ToDataFrame)]` on a struct and its values become
@@ -551,8 +551,8 @@ Criterion benches in `df-derive/benches/` cover flat, wide, nested, optional,
 list, string, decimal, datetime, tuple, generic, smart-pointer and projected
 shapes. A head-to-head comparison with hand-written Polars, `serde_arrow` and
 `polars-row-derive` lives in
-[comparison-bench/README.md](comparison-bench/README.md); its report was
-generated against an earlier release.
+[comparison-bench/README.md](https://github.com/gramistella/df-derive/blob/main/comparison-bench/README.md);
+its report was generated against an earlier release.
 
 Performance is continuously monitored with
 [Bencher](https://bencher.dev/perf/df-derive).

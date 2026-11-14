@@ -387,6 +387,25 @@ so. There are two ways to store one:
   for the kind and optional columns for what the variants hold. See
   [Projections](#projections).
 
+## Using Categorical And Enum Columns
+
+Both hold a small integer for each row and each text once, and Polars does
+not treat them quite as it treats a string column.
+
+- **Compared with text, they work as they are.**
+  `col("side").eq(lit("Buy"))` filters, as does `is_in` with a list of
+  strings, and they sort and group. A text that no row has, or that an `Enum`
+  does not list, matches nothing.
+- **Put together with a string column, they do not.** A join on one of
+  these columns and a `String` column is an error, and so is a stack of the
+  two. Cast one side: `col("currency").cast(DataType::String)`.
+- **Their text is read after a cast.** `column.str()` is an error on
+  either. `column.cast(&DataType::String)?` gives a string column of the
+  names. Without the cast, `column.cat32()?.iter_str()` reads a `Categorical`
+  column, and `cat8()` an `Enum` column of up to 255 names.
+- **A saved frame keeps them.** Parquet and Arrow IPC files give back the
+  same types, an `Enum` with its list. CSV and JSON hold the text.
+
 ## Projections
 
 When a type's columns are not its fields, convert it to a row struct and

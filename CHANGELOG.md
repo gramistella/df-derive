@@ -43,6 +43,18 @@ results. The exceptions are listed under "Changed".
   This is behind a `categorical` feature, which is off by default and turns
   on Polars's `dtype-categorical`. Building such a column takes a little
   over twice as long as building a string column of the same text.
+- `#[derive(ToDataFrame)]` on an enum whose variants hold no data makes it
+  one `Enum` column. The column's type lists the names of the variants, in
+  the order they are declared in, and a row holds the position of its
+  variant. A variant is named by its identifier or by
+  `#[df_derive(rename = "name")]`; with `#[df_derive(as_str)]` or
+  `#[df_derive(as_string)]` on the enum, every variant is named by what the
+  enum's own `AsRef<str>` gives or its `Display` writes. A type the derive
+  does not fit says its names through the new `Variants` trait and names
+  `EnumBuilder` as its builder. This is part of the `categorical` feature.
+  Building such a column takes about a sixth of the time of a string column
+  of the same names. An enum whose variants hold data is still not one
+  column, and deriving on it says how to store it.
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and

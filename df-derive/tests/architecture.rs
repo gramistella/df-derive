@@ -574,6 +574,13 @@ impl Columnar for Venue {
     type Builder = CategoricalBuilder;
 }
 
+/// An enum that is one `Enum` column.
+#[derive(ToDataFrame)]
+enum Side {
+    Buy,
+    Sell,
+}
+
 #[derive(ToDataFrame)]
 struct Row {
     #[df_derive(categorical)]
@@ -583,6 +590,8 @@ struct Row {
     venue: Option<Venue>,
     #[df_derive(categorical)]
     tags: Vec<&'static str>,
+    side: Side,
+    sides: Vec<Option<Side>>,
 }
 
 fn main() -> polars::prelude::PolarsResult<()> {
@@ -591,12 +600,38 @@ fn main() -> polars::prelude::PolarsResult<()> {
         lot: 1,
         venue: Some(Venue("XNYS")),
         tags: vec!["a", "b"],
+        side: Side::Buy,
+        sides: vec![Some(Side::Sell), None],
     }];
     let df = rows.as_slice().to_dataframe()?;
-    assert_eq!(df.shape(), (1, 4));
+    assert_eq!(df.shape(), (1, 6));
     Ok(())
 }
 "#,
+    );
+}
+
+#[test]
+fn an_enum_without_the_feature_is_reported_with_the_feature() {
+    let errors = failing_fixture(
+        "features-none-enum",
+        &feature_manifest("features-none-enum", &[], ""),
+        r"
+use df_derive::prelude::*;
+
+#[derive(ToDataFrame)]
+enum Side {
+    Buy,
+    Sell,
+}
+
+fn main() {}
+",
+    );
+    // The compiler knows which feature hides what the derive names.
+    assert!(
+        errors.contains("`categorical` feature"),
+        "missing the feature in:\n\n{errors}"
     );
 }
 

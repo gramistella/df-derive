@@ -27,7 +27,7 @@ use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::{Data, DeriveInput, Fields, GenericParam, Index, Member};
 
-use crate::attrs::{self, ContainerAttrs, Flatten, Via};
+use crate::attrs::{self, ContainerAttrs, Flatten, Text, Via};
 use crate::mirror;
 
 /// Paths into the runtime, rooted at the crate the container names.
@@ -396,13 +396,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
     match &input.data {
         Data::Struct(data) => expand_struct(input, &data.fields, &container, &runtime),
-        Data::Enum(data) => Err(syn::Error::new(
-            data.enum_token.span(),
-            "`ToDataFrame` cannot be derived for an enum directly. To use it as one string \
-             column, implement `Columnar` for it or annotate fields with `#[df_derive(as_str)]` \
-             / `#[df_derive(as_string)]`; to spread it over several columns, convert it to a \
-             row struct with `#[df_derive(via = \"...\")]`",
-        )),
+        Data::Enum(data) => expand_enum(input, data, &container, &runtime),
         Data::Union(data) => Err(syn::Error::new(
             data.union_token.span(),
             "`ToDataFrame` cannot be derived for unions",
@@ -423,6 +417,17 @@ fn expand_struct(
         bitmap,
         ..
     } = runtime;
+
+    if let Some((text, span)) = container.names {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{}` on a type names the variants of an enum. To store a field of this \
+                 struct as text, annotate the field",
+                text.attribute()
+            ),
+        ));
+    }
 
     let columns = columns(
         &input.ident,
@@ -739,6 +744,152 @@ fn expand_struct(
             #row_impls
         };
     })
+}
+
+/// An enum whose variants hold no data: one `Enum` column.
+///
+/// The column's categories are the names of the variants, and a value is
+/// stored as the position of its variant among them. Like a transparent
+/// wrapper, such a type is a value, not a row: it takes the name of the field
+/// that holds it, so it is neither a record nor a `ToDataFrame`.
+fn expand_enum(
+    input: &DeriveInput,
+    data: &syn::DataEnum,
+    container: &ContainerAttrs,
+    runtime: &Runtime,
+) -> syn::Result<TokenStream> {
+    let Runtime { root, builders, .. } = runtime;
+
+    if let Some(span) = container.transparent {
+        return Err(syn::Error::new(
+            span,
+            "`transparent` has no effect on an enum: it makes a struct with one field encode \
+             as that field, and an enum is one column already",
+        ));
+    }
+    if let Some(variant) = data
+        .variants
+        .iter()
+        .find(|variant| !variant.fields.is_empty())
+    {
+        return Err(syn::Error::new(
+            variant.fields.span(),
+            "an enum is stored as one `Enum` column when its variants hold no data, and this \
+             variant holds some. To store the enum as text, annotate the fields that hold it \
+             with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` \
+             if the text repeats; to spread it over several columns, convert it to a row \
+             struct with `#[df_derive(via = \"...\")]`",
+        ));
+    }
+
+    let count = data.variants.len();
+    // A variant in a pattern and as a value. The braces stand for its lack of
+    // data however that is written: `A`, `A()` or `A {}`.
+    let patterns = data.variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        quote! { Self::#ident { .. } }
+    });
+    let values = data.variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        quote! { Self::#ident {} }
+    });
+    let returns = quote! { impl ::core::iter::IntoIterator<Item = impl ::core::fmt::Display> };
+    let names = match container.names {
+        None => {
+            let names = own_names(data)?;
+            quote! {
+                fn names() -> #returns {
+                    let names: [&'static str; #count] = [#(#names),*];
+                    names
+                }
+            }
+        }
+        Some((text, span)) => {
+            for variant in &data.variants {
+                if let Some(name) = attrs::variant(&variant.attrs)? {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        format!(
+                            "`rename` cannot be combined with `{}` on the enum, which names \
+                             every variant by its `{}`",
+                            text.attribute(),
+                            text.source()
+                        ),
+                    ));
+                }
+            }
+            let body = match text {
+                Text::AsStr => quote! {
+                    variants.map(|variant| {
+                        ::std::string::String::from(
+                            <Self as ::core::convert::AsRef<str>>::as_ref(&variant),
+                        )
+                    })
+                },
+                // A variant that formats as its name is its name.
+                Text::AsString => quote! { variants },
+            };
+            // Whatever keeps the enum from having the text it is asked for is
+            // reported at the attribute that asks.
+            respan(
+                quote! {
+                    fn names() -> #returns {
+                        let variants: [Self; #count] = [#(#values),*];
+                        #body
+                    }
+                },
+                span,
+            )
+        }
+    };
+
+    let name = &input.ident;
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+    let own = own_predicates(&input.generics, container);
+    let where_clause = quote! { where #(#own,)* };
+    let positions = 0..count;
+
+    Ok(quote! {
+        #[automatically_derived]
+        impl #impl_generics #root::Variants for #name #ty_generics #where_clause {
+            #names
+
+            #[inline]
+            fn position(&self) -> usize {
+                match *self {
+                    #(#patterns => #positions,)*
+                }
+            }
+        }
+
+        #[automatically_derived]
+        impl #impl_generics #root::Columnar for #name #ty_generics #where_clause {
+            type Builder = #builders::EnumBuilder<Self>;
+        }
+    })
+}
+
+/// The names of an enum's variants where the enum says nothing about them:
+/// a variant's identifier, or the name `rename` gives it.
+fn own_names(data: &syn::DataEnum) -> syn::Result<Vec<syn::LitStr>> {
+    let mut names = Vec::with_capacity(data.variants.len());
+    let mut taken = HashSet::with_capacity(data.variants.len());
+    for variant in &data.variants {
+        let name = attrs::variant(&variant.attrs)?.unwrap_or_else(|| {
+            syn::LitStr::new(&variant.ident.unraw().to_string(), variant.ident.span())
+        });
+        if !taken.insert(name.value()) {
+            return Err(syn::Error::new(
+                name.span(),
+                format!(
+                    "two variants are named `{}`: a name stands for one variant only",
+                    name.value()
+                ),
+            ));
+        }
+        names.push(name);
+    }
+    Ok(names)
 }
 
 /// The one `ToDataFrame` method the derive writes out.

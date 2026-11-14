@@ -17,13 +17,25 @@ mod mirror;
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
-/// Derives `ToDataFrame` for a struct or tuple struct.
+/// Derives `ToDataFrame` for a struct or tuple struct, and makes an enum
+/// whose variants hold no data a value that is one column.
 ///
-/// Each field becomes one or more columns. A field of any type that
-/// implements the runtime's `Columnar` trait needs no attribute: numbers,
-/// `bool`, strings, `chrono` dates and times, durations, decimals, other
-/// derived structs (flattened with dot notation), tuples, maps, and any
-/// nesting of `Option`, `Vec`, `Box`, `Rc`, `Arc`, `&` and `Cow` around them.
+/// Each field of a struct becomes one or more columns. A field of any type
+/// that implements the runtime's `Columnar` trait needs no attribute:
+/// numbers, `bool`, strings, `chrono` dates and times, durations, decimals,
+/// other derived structs (flattened with dot notation), derived enums,
+/// tuples, maps, and any nesting of `Option`, `Vec`, `Box`, `Rc`, `Arc`, `&`
+/// and `Cow` around them.
+///
+/// An enum whose variants hold no data becomes an `Enum` column wherever it
+/// is a field: the derive implements the runtime's `Variants` and `Columnar`
+/// for it. The column's type lists the names of the variants in the order
+/// they are declared in, and a row holds the position of its variant. A
+/// variant is named by its identifier unless an attribute says otherwise.
+/// Such an enum is a value, not a row, so it gets no `to_dataframe` of its
+/// own. It needs the runtime's `categorical` feature. An enum whose variants
+/// hold data is stored as text, with a field attribute, or spread over
+/// columns with `via`.
 ///
 /// # Container attributes
 ///
@@ -34,9 +46,11 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `via = "Row"` / `try_via = "Row"`: encode through a row struct built
 ///   from a reference to each value, with `From<&T>` or `TryFrom<&T>`. Write
 ///   the lifetimes the row borrows from the value as `'_`. This is how an
-///   enum becomes several columns.
+///   enum whose variants hold data becomes several columns.
 /// - `bound = "T: Trait, ..."`: extra where-clause predicates for the
 ///   generated impls.
+/// - `as_str` / `as_string`, on an enum: name every variant by what the
+///   enum's `AsRef<str>` gives for it, or by what its `Display` writes.
 ///
 /// # Field attributes
 ///
@@ -64,6 +78,12 @@ use syn::{DeriveInput, parse_macro_input};
 /// type. For a
 /// `HashMap` or `BTreeMap` that is the map's value; its keys keep the
 /// encoding of their own type.
+///
+/// # Variant attributes
+///
+/// - `rename = "name"`: use `name` in place of the variant's identifier as
+///   its name in the column's type. It does not combine with `as_str` or
+///   `as_string` on the enum.
 #[proc_macro_derive(ToDataFrame, attributes(df_derive))]
 pub fn derive_to_dataframe(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

@@ -26,7 +26,9 @@
 //!   `dataframe::Decimal128Encode`, and `dataframe::builders::DecimalBuilder`
 //!   stores it.
 //! - `categorical`: `Categorical` columns for text that repeats, built by
-//!   `dataframe::builders::CategoricalBuilder`.
+//!   `dataframe::builders::CategoricalBuilder`, and `Enum` columns for types
+//!   that name their variants through `dataframe::Variants`, built by
+//!   `dataframe::builders::EnumBuilder`.
 //!
 //! A feature also turns on the Polars features its columns need. With none
 //! of them, Polars is asked only for the types that the standard library's

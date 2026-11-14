@@ -94,6 +94,8 @@ Any of these works as a field with no attribute, in any nesting:
   even, and a value with more than 28 digits before it is an error. Choose
   another precision and scale for a field with `decimal(...)`.
 - **Other derived structs**: flattened into the parent with dot notation.
+- **Derived enums** (`categorical` feature): an enum whose variants hold no
+  data is one `Enum` column. See [Enums](#enums).
 - **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
 - **`Option<T>`**: the same columns as `T`, nullable.
 - **`Vec<T>`, `&[T]`, `Box<[T]>`, `[T; N]`**: the same columns as `T`, each
@@ -107,7 +109,8 @@ Any of these works as a field with no attribute, in any nesting:
 - **`()`**: no columns. Useful as a generic payload.
 
 Named structs, tuple structs (`field_0`, `field_1`, …), unit structs and
-generic structs can all derive `ToDataFrame`.
+generic structs can all derive `ToDataFrame`. So can an enum whose variants
+hold no data, as a value that is one column.
 
 | Rust type | Polars dtype | Polars feature |
 | --- | --- | --- |
@@ -125,6 +128,7 @@ generic structs can all derive `ToDataFrame`.
 | `rust_decimal::Decimal`, `decimal(...)` | `Decimal` | `dtype-decimal` |
 | `as_binary` | `Binary` | none |
 | `categorical` | `Categorical` | `dtype-categorical` |
+| an enum that derives `ToDataFrame` | `Enum` | `dtype-categorical` |
 
 `isize` and `usize` are stored as 64-bit columns on every platform, so a
 schema does not depend on the build target. `NonZero*` types use the dtype of
@@ -227,7 +231,7 @@ field of that type then needs no attribute.
 ```rust
 use df_derive::dataframe::{Columnar, builders::{DecimalBuilder, StrBuilder}};
 
-// An enum that is always a string column (needs `AsRef<str>`).
+// A code that is always a string column (needs `AsRef<str>`).
 impl Columnar for Currency {
     type Builder = StrBuilder;
 }
@@ -256,6 +260,95 @@ struct Candle {
 A transparent wrapper is a value, not a row, so it does not get
 `to_dataframe` of its own.
 
+## Enums
+
+An enum whose variants hold no data is one column of Polars's `Enum` type
+(`categorical` feature):
+
+```rust
+#[derive(ToDataFrame)]
+enum Side {
+    Buy,
+    Sell,
+    #[df_derive(rename = "SHORT")]
+    SellShort,
+}
+
+#[derive(ToDataFrame)]
+struct Fill {
+    side: Side,             // an Enum column of "Buy", "Sell" and "SHORT"
+    hedge: Option<Side>,
+}
+```
+
+The column's type lists the names of the variants, so it says what the
+column can hold before a row is read. The names are in the order the variants
+are declared in, which is also the order the column sorts in.
+
+A variant is named by its identifier, or by `rename = "..."`. An enum that
+already says what its variants are called is named by that instead: with
+`as_str` on the enum the names are what its `AsRef<str>` gives for each
+variant, and with `as_string` what its `Display` writes.
+
+```rust
+#[derive(ToDataFrame)]
+#[df_derive(as_string)]
+enum Interval {
+    Minutes5,               // "5m", as `Display` writes it
+    Hours1,
+    Days1,
+}
+```
+
+A row holds the position of its variant among the names: one byte for an
+enum of up to 255 variants. Nothing is formatted or looked up to store a
+value. Every column of one enum has the same type, in every frame, so such
+columns compare, join and stack as they are.
+
+Like a transparent wrapper, such an enum is a value, not a row. It takes the
+name of the field that holds it and gets no `to_dataframe` of its own.
+
+A type the derive does not fit says its names by hand. `Variants` asks for
+the names and for the position of a value among them, and `EnumBuilder`
+stores any type that answers:
+
+```rust
+use std::fmt::Display;
+
+use df_derive::dataframe::{Columnar, Variants, builders::EnumBuilder};
+
+/// A day of the week, counted from Monday.
+struct Weekday(u8);
+
+impl Variants for Weekday {
+    fn names() -> impl IntoIterator<Item = impl Display> {
+        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    }
+
+    fn position(&self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+impl Columnar for Weekday {
+    type Builder = EnumBuilder<Self>;
+}
+```
+
+The names are asked for once, the first time the type is stored. Names that
+repeat, a name that cannot be formatted and a position past the last name
+are encoding errors.
+
+An enum whose variants hold data is not one column, and deriving on it says
+so. There are two ways to store one:
+
+- **As text.** A field of it takes `as_str` or `as_string`, with
+  `categorical` when the text repeats. This suits an enum that is a list of
+  known values plus one variant for the rest, whose set of names is open.
+- **As several columns.** `via` converts it to a row struct, with a column
+  for the kind and optional columns for what the variants hold. See
+  [Projections](#projections).
+
 ## Projections
 
 When a type's columns are not its fields, convert it to a row struct and
@@ -277,13 +370,10 @@ struct InstrumentRow<'a> {
 impl<'a> From<&'a Instrument> for InstrumentRow<'a> { /* ... */ }
 ```
 
-This is also how an enum becomes several columns: give it a row struct with a
-kind column and optional columns for the variant data. `try_via` uses
-`TryFrom<&T>` instead and turns a failed conversion into an encoding error.
-
-Enums cannot derive `ToDataFrame` directly. Store one as a single column of
-its name, with `as_str` / `as_string`, `categorical` or an `impl Columnar`,
-or spread it over columns with `via`.
+This is also how an enum whose variants hold data becomes several columns:
+give it a row struct with a kind column and optional columns for the variant
+data. `try_via` uses `TryFrom<&T>` instead and turns a failed conversion into
+an encoding error.
 
 ## Errors
 
@@ -300,7 +390,9 @@ it the first field in declaration order.
 
 Fallible encodings are nanosecond timestamps, durations that overflow `i64`,
 decimals that do not fit the declared precision and scale, `as_string` values
-whose `Display` fails, and `try_via` conversions.
+whose `Display` fails, and `try_via` conversions. An `Enum` column fails for
+its type, not for a row: where two variants have one name, a name cannot be
+formatted, or a `position` is past the last name.
 
 ## Column Naming
 
@@ -333,7 +425,7 @@ whose `Display` fails, and `try_via` conversions.
 - **`df-derive`**: the crate to depend on. It re-exports the derive macro and
   the runtime as `df_derive::dataframe`.
 - **`df-derive-core`**: the runtime: the `Columnar`, `ColumnBuilder`,
-  `ToDataFrame` and `Decimal128Encode` traits and the builders.
+  `ToDataFrame`, `Decimal128Encode` and `Variants` traits and the builders.
 - **`df-derive-macros`**: the derive macro.
 
 Generated code refers to the runtime as `::df_derive::dataframe`. A crate that
@@ -436,8 +528,10 @@ keeps one builder for the field and feeds it values of any lifetime.
   Turns `decimal` on.
 - **`decimal`**: `Decimal` columns for a decimal type of your own:
   `Decimal128Encode`, `DecimalBuilder` and the `decimal(...)` attribute.
-- **`categorical`**: `Categorical` columns: the `categorical` attribute,
-  `CategoricalBuilder` and `CategoricalDisplayBuilder`.
+- **`categorical`**: `Categorical` columns for text that repeats (the
+  `categorical` attribute, `CategoricalBuilder` and
+  `CategoricalDisplayBuilder`), and `Enum` columns for enums whose variants
+  hold no data (the derive on an enum, `Variants` and `EnumBuilder`).
 
 A feature also turns on the Polars features its columns need. With
 `default-features = false`, df-derive asks Polars only for the types that the
@@ -566,6 +660,16 @@ set of categories, where a string column only appends it. 100,000 rows with
 four text columns take 3.1 ms as categories and 1.4 ms as strings
 (`25_categorical`). What that buys is the column: four bytes a row whatever
 the text is, and one set of categories shared with every other such column.
+
+**An enum's rows are picked from its variants.** An `Enum` column of a Rust
+type is a selection, by position, from a column that holds each variant of
+the type once. That column is made the first time the type is stored, and
+kept. 100,000 rows with four enum columns take 0.26 ms; with the same
+variants stored as their names they take 1.6 ms as strings and about 5 ms as
+categories (`26_enum_columns`). A column assembled from codes instead would
+have Polars check every code against the names, which takes three times as
+long. One row takes 0.91 µs with the enum columns and 0.83 µs with the
+strings: a selection costs a little to set up.
 
 **An empty slot is not guessed at.** A null is recorded apart from the
 values, and the values buffer gets a zero in its place. Which of the two a

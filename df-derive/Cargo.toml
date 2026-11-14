@@ -141,3 +141,8 @@ harness = false
 name = "25_categorical"
 harness = false
 required-features = ["categorical"]
+
+[[bench]]
+name = "26_enum_columns"
+harness = false
+required-features = ["categorical"]

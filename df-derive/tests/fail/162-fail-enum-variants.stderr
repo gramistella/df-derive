@@ -1,0 +1,65 @@
+error: unknown variant attribute; expected `rename = "..."`
+ --> tests/fail/162-fail-enum-variants.rs:7:17
+  |
+7 |     #[df_derive(skip)]
+  |                 ^^^^
+
+error: unknown variant attribute; expected `rename = "..."`
+  --> tests/fail/162-fail-enum-variants.rs:13:17
+   |
+13 |     #[df_derive(as_str)]
+   |                 ^^^^^^
+
+error: duplicate `rename` attribute
+  --> tests/fail/162-fail-enum-variants.rs:19:33
+   |
+19 |     #[df_derive(rename = "one", rename = "uno")]
+   |                                 ^^^^^^
+
+error: expected `=`
+  --> tests/fail/162-fail-enum-variants.rs:25:23
+   |
+25 |     #[df_derive(rename)]
+   |                       ^
+
+error: expected string literal
+  --> tests/fail/162-fail-enum-variants.rs:31:26
+   |
+31 |     #[df_derive(rename = 1)]
+   |                          ^
+
+error: two variants are named `Buy`: a name stands for one variant only
+  --> tests/fail/162-fail-enum-variants.rs:39:26
+   |
+39 |     #[df_derive(rename = "Buy")]
+   |                          ^^^^^
+
+error: two variants are named `x`: a name stands for one variant only
+  --> tests/fail/162-fail-enum-variants.rs:47:26
+   |
+47 |     #[df_derive(rename = "x")]
+   |                          ^^^
+
+error: `transparent` has no effect on an enum: it makes a struct with one field encode as that field, and an enum is one column already
+  --> tests/fail/162-fail-enum-variants.rs:53:13
+   |
+53 | #[df_derive(transparent)]
+   |             ^^^^^^^^^^^
+
+error: `rename` cannot be combined with `as_str` on the enum, which names every variant by its `AsRef<str>`
+  --> tests/fail/162-fail-enum-variants.rs:63:26
+   |
+63 |     #[df_derive(rename = "one")]
+   |                          ^^^^^
+
+error: `as_string` cannot be combined with `as_str`: a variant has one name
+  --> tests/fail/162-fail-enum-variants.rs:75:21
+   |
+75 | #[df_derive(as_str, as_string)]
+   |                     ^^^^^^^^^
+
+error: `as_string` on a type names the variants of an enum. To store a field of this struct as text, annotate the field
+  --> tests/fail/162-fail-enum-variants.rs:82:13
+   |
+82 | #[df_derive(as_string)]
+   |             ^^^^^^^^^

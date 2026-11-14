@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `Unborrowed: AsRef<str>` is not satisfied
+ --> tests/fail/163-fail-enum-without-its-text.rs:6:13
+  |
+6 | #[df_derive(as_str)]
+  |             ^^^^^^ unsatisfied trait bound
+  |
+help: the trait `AsRef<str>` is not implemented for `Unborrowed`
+ --> tests/fail/163-fail-enum-without-its-text.rs:7:1
+  |
+7 | enum Unborrowed {
+  | ^^^^^^^^^^^^^^^
+
+error[E0277]: `Unformatted` doesn't implement `std::fmt::Display`
+  --> tests/fail/163-fail-enum-without-its-text.rs:12:13
+   |
+12 | #[df_derive(as_string)]
+   |             ^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `std::fmt::Display` is not implemented for `Unformatted`
+  --> tests/fail/163-fail-enum-without-its-text.rs:13:1
+   |
+13 | enum Unformatted {
+   | ^^^^^^^^^^^^^^^^

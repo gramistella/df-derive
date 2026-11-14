@@ -12,8 +12,37 @@ pub struct ContainerAttrs {
     pub transparent: Option<Span>,
     /// Encode through another row type built from a reference to this one.
     pub via: Option<Via>,
+    /// Where an enum's variants get their names, when not from their
+    /// identifiers.
+    pub names: Option<(Text, Span)>,
     /// Extra where-clause predicates for the generated impls.
     pub bounds: Vec<syn::WherePredicate>,
+}
+
+/// The text a type has of its own, which an enum can name its variants by.
+#[derive(Clone, Copy)]
+pub enum Text {
+    /// What the type borrows as, through `AsRef<str>`.
+    AsStr,
+    /// What the type formats as, through `Display`.
+    AsString,
+}
+
+impl Text {
+    pub const fn attribute(self) -> &'static str {
+        match self {
+            Self::AsStr => "as_str",
+            Self::AsString => "as_string",
+        }
+    }
+
+    /// The trait the text is read through.
+    pub const fn source(self) -> &'static str {
+        match self {
+            Self::AsStr => "AsRef<str>",
+            Self::AsString => "Display",
+        }
+    }
 }
 
 /// A projection chosen with `via = "..."` or `try_via = "..."`.
@@ -93,9 +122,28 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     let mut krate: Option<syn::Path> = None;
     let mut transparent: Option<Span> = None;
     let mut via: Option<Via> = None;
+    let mut names: Option<(Text, Span)> = None;
     let mut bounds = Vec::new();
     for attr in df_derive_attrs(attrs) {
         attr.parse_nested_meta(|meta| {
+            let text = if meta.path.is_ident("as_str") {
+                Some(Text::AsStr)
+            } else if meta.path.is_ident("as_string") {
+                Some(Text::AsString)
+            } else {
+                None
+            };
+            if let Some(text) = text {
+                if let Some((existing, _)) = names {
+                    return Err(meta.error(format!(
+                        "`{}` cannot be combined with `{}`: a variant has one name",
+                        text.attribute(),
+                        existing.attribute(),
+                    )));
+                }
+                names = Some((text, meta.path.span()));
+                return Ok(());
+            }
             let fallible = meta.path.is_ident("try_via");
             if fallible || meta.path.is_ident("via") {
                 if via.is_some() {
@@ -135,7 +183,8 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
             }
             Err(meta.error(
                 "unknown container attribute; expected one of `crate = \"...\"`, `transparent`, \
-                 `via = \"...\"`, `try_via = \"...\"`, `bound = \"...\"`",
+                 `via = \"...\"`, `try_via = \"...\"`, `bound = \"...\"`, or on an enum \
+                 `as_str`, `as_string`",
             ))
         })?;
     }
@@ -145,10 +194,20 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
             "`transparent` cannot be combined with `via`: a projected type encodes as its row type",
         ));
     }
+    if let (Some((text, span)), Some(_)) = (names, &via) {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{}` cannot be combined with `via`: a projected type encodes as its row type",
+                text.attribute()
+            ),
+        ));
+    }
     Ok(ContainerAttrs {
         krate: krate.unwrap_or_else(|| syn::parse_quote!(::df_derive)),
         transparent,
         via,
+        names,
         bounds,
     })
 }
@@ -187,6 +246,27 @@ pub fn none_inside(data: &syn::Data) -> syn::Result<()> {
                  so annotate that type's fields instead",
             ))
         })
+}
+
+/// The name a variant is given with `rename = "..."`, if it is given one.
+///
+/// That is the one attribute a variant takes: it is a value of one column,
+/// and its name is all the column keeps of it.
+pub fn variant(attrs: &[Attribute]) -> syn::Result<Option<LitStr>> {
+    let mut rename: Option<LitStr> = None;
+    for attr in df_derive_attrs(attrs) {
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("rename") {
+                return Err(meta.error("unknown variant attribute; expected `rename = \"...\"`"));
+            }
+            if rename.is_some() {
+                return Err(meta.error("duplicate `rename` attribute"));
+            }
+            rename = Some(meta.value()?.parse()?);
+            Ok(())
+        })?;
+    }
+    Ok(rename)
 }
 
 fn decimal(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Encoding> {

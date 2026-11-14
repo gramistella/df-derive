@@ -142,6 +142,15 @@ impl Gen {
         }
     }
 
+    #[cfg(feature = "categorical")]
+    fn phase(&mut self) -> Phase {
+        match self.below(3) {
+            0 => Phase::Open,
+            1 => Phase::Halted,
+            _ => Phase::Closed,
+        }
+    }
+
     fn leaf(&mut self) -> Leaf {
         Leaf {
             id: self.next() as u32,
@@ -207,6 +216,16 @@ impl fmt::Display for Side {
             Self::Sell => "sell",
         })
     }
+}
+
+/// An enum that is one column: its variants hold no data.
+#[cfg(feature = "categorical")]
+#[derive(ToDataFrame, Clone, Copy)]
+enum Phase {
+    Open,
+    #[df_derive(rename = "halted")]
+    Halted,
+    Closed,
 }
 
 /// An enum spread over columns through a row that borrows from it.
@@ -323,6 +342,14 @@ struct Everything<'a> {
     #[cfg(feature = "categorical")]
     #[df_derive(categorical)]
     l_o_cat: Vec<Option<String>>,
+
+    // Variants stored by their place among the names.
+    #[cfg(feature = "categorical")]
+    phase: Phase,
+    #[cfg(feature = "categorical")]
+    o_phase: Option<Phase>,
+    #[cfg(feature = "categorical")]
+    l_o_phase: Vec<Option<Phase>>,
 
     // Options.
     o_i64: Option<i64>,
@@ -450,6 +477,12 @@ impl Gen {
             o_cat: self.option(Self::word),
             #[cfg(feature = "categorical")]
             l_o_cat: self.list(|g| g.option(Self::text)),
+            #[cfg(feature = "categorical")]
+            phase: self.phase(),
+            #[cfg(feature = "categorical")]
+            o_phase: self.option(Self::phase),
+            #[cfg(feature = "categorical")]
+            l_o_phase: self.list(|g| g.option(Self::phase)),
 
             o_i64: self.option(Self::int),
             o_bool: self.option(|g| g.chance(50)),

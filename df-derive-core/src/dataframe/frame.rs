@@ -130,9 +130,19 @@ where
 }
 
 /// Returns a row type's column names and dtypes.
-pub(super) fn schema<T: Columnar>() -> PolarsResult<Vec<(String, DataType)>> {
+///
+/// A builder that could not make the type of a column has named an unknown
+/// type for it. `empty` then encodes no rows, which fails for the same
+/// reason and says what it is.
+pub(super) fn schema<T: Columnar>(
+    empty: fn() -> PolarsResult<DataFrame>,
+) -> PolarsResult<Vec<(String, DataType)>> {
     let schema: SchemaFn = <T::Builder as ColumnBuilder<T>>::schema;
-    Ok(checked_fields(type_name::<T>(), schema)?
+    let fields = checked_fields(type_name::<T>(), schema)?;
+    if !fields.iter().all(|(_, dtype)| dtype.is_known()) {
+        empty()?;
+    }
+    Ok(fields
         .into_iter()
         .map(|(name, dtype)| (name.into_string(), dtype))
         .collect())

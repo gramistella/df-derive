@@ -19,9 +19,13 @@ pub mod builders;
 #[cfg(feature = "decimal")]
 mod decimal;
 mod frame;
+#[cfg(feature = "categorical")]
+mod variants;
 
 #[cfg(feature = "decimal")]
 pub use decimal::Decimal128Encode;
+#[cfg(feature = "categorical")]
+pub use variants::Variants;
 
 /// Output schema fragment: column names and logical dtypes, in column order.
 pub type Fields = Vec<(PlSmallStr, DataType)>;
@@ -77,6 +81,11 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
 
     /// Appends this builder's columns to `out`. `name` is the dotted path of
     /// the field being described; leaves use it verbatim.
+    ///
+    /// Naming a column cannot fail. A builder that may be unable to make the
+    /// type of its column names `DataType::Unknown` for it when that
+    /// happens, and returns the reason from
+    /// [`finish`](ColumnBuilder::finish).
     fn schema(name: PlSmallStr, out: &mut Fields);
 
     /// Creates an empty builder.
@@ -262,9 +271,11 @@ pub trait ToDataFrame: Record + Sized {
     /// Returns this type's column names and dtypes, in column order.
     ///
     /// # Errors
-    /// Returns an error if the schema has duplicate column names.
+    /// Returns an error if the schema has duplicate column names, or if the
+    /// type of a column cannot be made. No frame of this type can be built
+    /// then either, and the error is the one building it returns.
     fn schema() -> PolarsResult<Vec<(String, DataType)>> {
-        frame::schema::<Self>()
+        frame::schema::<Self>(Self::empty_dataframe)
     }
 
     /// Encodes a slice of rows: where the conversions above end up.

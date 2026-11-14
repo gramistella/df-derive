@@ -109,3 +109,7 @@ mod floats_bit_for_bit;
 #[cfg(feature = "categorical")]
 #[path = "runtime/68-categorical.rs"]
 mod categorical;
+
+#[cfg(feature = "categorical")]
+#[path = "runtime/69-enum-columns.rs"]
+mod enum_columns;

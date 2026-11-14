@@ -428,6 +428,13 @@ fn expand_struct(
             ),
         ));
     }
+    if let Some(span) = container.categorical {
+        return Err(syn::Error::new(
+            span,
+            "`categorical` on a type stores an enum whose variants hold no data as a \
+             `Categorical` column. To store a field of this struct as one, annotate the field",
+        ));
+    }
 
     let columns = columns(
         &input.ident,
@@ -746,12 +753,20 @@ fn expand_struct(
     })
 }
 
-/// An enum whose variants hold no data: one `Enum` column.
+/// An enum whose variants hold no data: one column of the names of its
+/// variants.
 ///
-/// The column's categories are the names of the variants, and a value is
-/// stored as the position of its variant among them. Like a transparent
-/// wrapper, such a type is a value, not a row: it takes the name of the field
-/// that holds it, so it is neither a record nor a `ToDataFrame`.
+/// The column is an `Enum` column, whose type lists the names, unless the
+/// enum asks with `categorical` for a `Categorical` one, whose type lists
+/// nothing. Either way a value is stored by the position of its variant
+/// among the names.
+///
+/// An enum that is `#[non_exhaustive]` has to ask. It says it may be given
+/// another variant, and that would change the type of an `Enum` column.
+///
+/// Like a transparent wrapper, such a type is a value, not a row: it takes
+/// the name of the field that holds it, so it is neither a record nor a
+/// `ToDataFrame`.
 fn expand_enum(
     input: &DeriveInput,
     data: &syn::DataEnum,
@@ -774,7 +789,7 @@ fn expand_enum(
     {
         return Err(syn::Error::new(
             variant.fields.span(),
-            "an enum is stored as one `Enum` column when its variants hold no data, and this \
+            "an enum is stored as one column when its variants hold no data, and this \
              variant holds some. To store the enum as text, annotate the fields that hold it \
              with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` \
              if the text repeats; to spread it over several columns, convert it to a row \
@@ -782,72 +797,43 @@ fn expand_enum(
         ));
     }
 
+    // What a derive is handed has had its `cfg_attr`s resolved, so the
+    // attribute is here whenever it is in force.
+    if container.categorical.is_none()
+        && let Some(grows) = input
+            .attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("non_exhaustive"))
+    {
+        return Err(syn::Error::new_spanned(
+            grows,
+            "an `Enum` column lists the variants of its enum in its type, and this enum says \
+             it may be given another: the new variant would change the type of every column \
+             of the enum, and a frame from before could not be put together with one from \
+             after. Add `#[df_derive(categorical)]` to store the enum as a `Categorical` \
+             column of the same names, whose type does not list them",
+        ));
+    }
+
     let count = data.variants.len();
-    // A variant in a pattern and as a value. The braces stand for its lack of
-    // data however that is written: `A`, `A()` or `A {}`.
+    // A variant in a pattern. The braces stand for its lack of data however
+    // that is written: `A`, `A()` or `A {}`.
     let patterns = data.variants.iter().map(|variant| {
         let ident = &variant.ident;
         quote! { Self::#ident { .. } }
     });
-    let values = data.variants.iter().map(|variant| {
-        let ident = &variant.ident;
-        quote! { Self::#ident {} }
-    });
-    let returns = quote! { impl ::core::iter::IntoIterator<Item = impl ::core::fmt::Display> };
-    let names = match container.names {
-        None => {
-            let names = own_names(data)?;
-            quote! {
-                fn names() -> #returns {
-                    let names: [&'static str; #count] = [#(#names),*];
-                    names
-                }
-            }
-        }
-        Some((text, span)) => {
-            for variant in &data.variants {
-                if let Some(name) = attrs::variant(&variant.attrs)? {
-                    return Err(syn::Error::new(
-                        name.span(),
-                        format!(
-                            "`rename` cannot be combined with `{}` on the enum, which names \
-                             every variant by its `{}`",
-                            text.attribute(),
-                            text.source()
-                        ),
-                    ));
-                }
-            }
-            let body = match text {
-                Text::AsStr => quote! {
-                    variants.map(|variant| {
-                        ::std::string::String::from(
-                            <Self as ::core::convert::AsRef<str>>::as_ref(&variant),
-                        )
-                    })
-                },
-                // A variant that formats as its name is its name.
-                Text::AsString => quote! { variants },
-            };
-            // Whatever keeps the enum from having the text it is asked for is
-            // reported at the attribute that asks.
-            respan(
-                quote! {
-                    fn names() -> #returns {
-                        let variants: [Self; #count] = [#(#values),*];
-                        #body
-                    }
-                },
-                span,
-            )
-        }
-    };
+    let names = names_of_variants(data, container.names)?;
 
     let name = &input.ident;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let own = own_predicates(&input.generics, container);
     let where_clause = quote! { where #(#own,)* };
     let positions = 0..count;
+    let builder = if container.categorical.is_some() {
+        quote! { #builders::CategoricalVariantsBuilder<Self> }
+    } else {
+        quote! { #builders::EnumBuilder<Self> }
+    };
 
     Ok(quote! {
         #[automatically_derived]
@@ -864,9 +850,68 @@ fn expand_enum(
 
         #[automatically_derived]
         impl #impl_generics #root::Columnar for #name #ty_generics #where_clause {
-            type Builder = #builders::EnumBuilder<Self>;
+            type Builder = #builder;
         }
     })
+}
+
+/// The `names` function of an enum's `Variants` impl.
+///
+/// The names are the variants' own, or with `as_str` or `as_string` on the
+/// enum what its text is for each variant.
+fn names_of_variants(data: &syn::DataEnum, text: Option<(Text, Span)>) -> syn::Result<TokenStream> {
+    let count = data.variants.len();
+    let returns = quote! { impl ::core::iter::IntoIterator<Item = impl ::core::fmt::Display> };
+    let Some((text, span)) = text else {
+        let names = own_names(data)?;
+        return Ok(quote! {
+            fn names() -> #returns {
+                let names: [&'static str; #count] = [#(#names),*];
+                names
+            }
+        });
+    };
+
+    for variant in &data.variants {
+        if let Some(name) = attrs::variant(&variant.attrs)? {
+            return Err(syn::Error::new(
+                name.span(),
+                format!(
+                    "`rename` cannot be combined with `{}` on the enum, which names every \
+                     variant by its `{}`",
+                    text.attribute(),
+                    text.source()
+                ),
+            ));
+        }
+    }
+    // A variant as a value, whichever way its lack of data is written.
+    let values = data.variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        quote! { Self::#ident {} }
+    });
+    let body = match text {
+        Text::AsStr => quote! {
+            variants.map(|variant| {
+                ::std::string::String::from(
+                    <Self as ::core::convert::AsRef<str>>::as_ref(&variant),
+                )
+            })
+        },
+        // A variant that formats as its name is its name.
+        Text::AsString => quote! { variants },
+    };
+    // Whatever keeps the enum from having the text it is asked for is
+    // reported at the attribute that asks.
+    Ok(respan(
+        quote! {
+            fn names() -> #returns {
+                let variants: [Self; #count] = [#(#values),*];
+                #body
+            }
+        },
+        span,
+    ))
 }
 
 /// The names of an enum's variants where the enum says nothing about them:

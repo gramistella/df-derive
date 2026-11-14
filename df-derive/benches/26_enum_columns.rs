@@ -1,14 +1,24 @@
-//! Enums whose variants hold no data, stored three ways.
+//! Enums whose variants hold no data, stored four ways.
 //!
 //! Such an enum is an `Enum` column by default: a row holds the position of
 //! its variant, and nothing is looked up. A field can ask for the variant's
-//! name instead, as a string or as a category. The first three targets encode
-//! the same rows each way, so that what each costs is on record.
+//! name instead, as a string or as a category. An enum that may be given
+//! variants later is a `Categorical` column of its names: a column of more
+//! rows than the enum has names is selected from a column of the names, as
+//! an `Enum` column is selected from one of the variants, and a shorter one
+//! is the codes of its rows, each found by its name. The first four targets
+//! encode the same rows each way, so that what each costs is on record.
 //!
-//! The last two encode one row. An `Enum` column is selected from a column
-//! of the type's variants, which is made once for a type and kept. A frame of
+//! The others encode one row. An `Enum` column is selected from a column of
+//! the type's variants, which is made once for a type and kept. A frame of
 //! one row is where making it for every column would show, and where what a
 //! selection costs to set up does.
+//!
+//! A frame of one row is also where Polars's set of categories shows. Polars
+//! keeps the set for as long as a categorical column is alive and starts
+//! another after that, so a frame that is built and dropped with no other
+//! such column around begins a set of its own. The targets named `beside`
+//! build the same row while a column is kept alive.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
@@ -16,6 +26,7 @@ use df_derive::ToDataFrame;
 #[path = "support/mod.rs"]
 mod bench_support;
 use crate::bench_support::configure_criterion;
+use df_derive::dataframe::builders::CategoricalVariantsBuilder;
 use df_derive::dataframe::{ToDataFrame as _, ToDataFrameVec};
 
 const N_ROWS: usize = 100_000;
@@ -120,6 +131,21 @@ struct AsCategories {
     state: Option<State>,
 }
 
+/// The names of the variants as categories, a row being the position of its
+/// variant: what an enum that asks with `categorical` is stored as.
+#[derive(ToDataFrame, Clone)]
+struct AsNames {
+    id: u64,
+    #[df_derive(with = "CategoricalVariantsBuilder<Currency>")]
+    currency: Currency,
+    #[df_derive(with = "CategoricalVariantsBuilder<Side>")]
+    side: Side,
+    #[df_derive(with = "CategoricalVariantsBuilder<Kind>")]
+    kind: Kind,
+    #[df_derive(with = "CategoricalVariantsBuilder<State>")]
+    state: Option<State>,
+}
+
 /// A number that looks random, from a row and a place in it.
 const fn mixed(row: usize, place: usize) -> usize {
     let mut x = (row as u64).wrapping_mul(11).wrapping_add(place as u64 + 1);
@@ -172,6 +198,17 @@ fn as_categories(row: usize) -> AsCategories {
     }
 }
 
+fn as_names(row: usize) -> AsNames {
+    let (currency, side, kind, state) = variants(row);
+    AsNames {
+        id: row as u64,
+        currency,
+        side,
+        kind,
+        state,
+    }
+}
+
 fn benchmark_enum_columns(c: &mut Criterion) {
     let enums: Vec<AsEnums> = (0..N_ROWS).map(as_enums).collect();
     c.bench_function("variants_as_enums_conversion", |b| {
@@ -197,6 +234,14 @@ fn benchmark_enum_columns(c: &mut Criterion) {
         });
     });
 
+    let names: Vec<AsNames> = (0..N_ROWS).map(as_names).collect();
+    c.bench_function("variants_as_names_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&names).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
     let one = as_enums(7);
     c.bench_function("one_row_of_enums_conversion", |b| {
         b.iter(|| {
@@ -212,6 +257,41 @@ fn benchmark_enum_columns(c: &mut Criterion) {
             std::hint::black_box(df)
         });
     });
+
+    let one = as_categories(7);
+    c.bench_function("one_row_of_categories_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&one).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
+    let one = as_names(7);
+    c.bench_function("one_row_of_names_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&one).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
+    // The same two while a categorical column is alive, so that Polars
+    // keeps one set of categories from a frame to the next.
+    let alive = as_names(7).to_dataframe().unwrap();
+    let one = as_categories(7);
+    c.bench_function("one_row_of_categories_beside_a_column_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&one).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+    let one = as_names(7);
+    c.bench_function("one_row_of_names_beside_a_column_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&one).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+    drop(alive);
 }
 
 criterion_group! {

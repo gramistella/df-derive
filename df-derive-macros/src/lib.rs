@@ -37,6 +37,11 @@ use syn::{DeriveInput, parse_macro_input};
 /// hold data is stored as text, with a field attribute, or spread over
 /// columns with `via`.
 ///
+/// A variant added to the enum changes the list, and with it the type of
+/// the column. With `categorical` on the enum the column is a `Categorical`
+/// one of the same names, whose type lists nothing. An enum that is
+/// `#[non_exhaustive]` has to ask for that.
+///
 /// # Container attributes
 ///
 /// - `crate = "path"`: the crate that re-exports the runtime as
@@ -51,6 +56,8 @@ use syn::{DeriveInput, parse_macro_input};
 ///   generated impls.
 /// - `as_str` / `as_string`, on an enum: name every variant by what the
 ///   enum's `AsRef<str>` gives for it, or by what its `Display` writes.
+/// - `categorical`, on an enum: store it as a `Categorical` column of the
+///   names of its variants, not as an `Enum` column that lists them.
 ///
 /// # Field attributes
 ///

@@ -72,6 +72,7 @@ jobs:
           cargo test --locked -p df-derive --lib --all-features -- --nocapture &&
           cargo test --locked -p df-derive --doc --all-features -- --nocapture &&
           cargo test --locked -p df-derive
+          --test categories_start_over
           --test clippy_unsafe_derive_deserialize
           --test composite_shapes
           --test differential

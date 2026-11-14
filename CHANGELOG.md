@@ -55,6 +55,15 @@ results. The exceptions are listed under "Changed".
   Building such a column takes about a sixth of the time of a string column
   of the same names. An enum whose variants hold data is still not one
   column, and deriving on it says how to store it.
+- `#[df_derive(categorical)]` on such an enum makes it a `Categorical`
+  column of the same names, built by the new `CategoricalVariantsBuilder`.
+  The type of an `Enum` column is its list of names, and Polars does not
+  stack, compare or join two `Enum` columns whose lists differ, so a variant
+  added to an enum changes the type of its columns. A `Categorical` column
+  lists nothing in its type. An enum that is `#[non_exhaustive]` has to ask
+  for it: deriving on one without `categorical` is an error that says why.
+  A column of more rows than the enum has names takes as long to build as
+  the `Enum` column does.
 - `#[df_derive(bound = "...")]` adds where-clause predicates to the generated
   impls.
 - `HashMap<K, V>` and `BTreeMap<K, V>` fields, as `field.key` and

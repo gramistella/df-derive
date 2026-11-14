@@ -15,6 +15,9 @@ pub struct ContainerAttrs {
     /// Where an enum's variants get their names, when not from their
     /// identifiers.
     pub names: Option<(Text, Span)>,
+    /// An enum's names are stored as categories, not listed in the type of
+    /// an `Enum` column.
+    pub categorical: Option<Span>,
     /// Extra where-clause predicates for the generated impls.
     pub bounds: Vec<syn::WherePredicate>,
 }
@@ -29,6 +32,17 @@ pub enum Text {
 }
 
 impl Text {
+    /// The text an attribute asks for, if that is what it is.
+    fn asked_for_by(attribute: &syn::Path) -> Option<Self> {
+        if attribute.is_ident("as_str") {
+            Some(Self::AsStr)
+        } else if attribute.is_ident("as_string") {
+            Some(Self::AsString)
+        } else {
+            None
+        }
+    }
+
     pub const fn attribute(self) -> &'static str {
         match self {
             Self::AsStr => "as_str",
@@ -123,17 +137,11 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     let mut transparent: Option<Span> = None;
     let mut via: Option<Via> = None;
     let mut names: Option<(Text, Span)> = None;
+    let mut categorical: Option<Span> = None;
     let mut bounds = Vec::new();
     for attr in df_derive_attrs(attrs) {
         attr.parse_nested_meta(|meta| {
-            let text = if meta.path.is_ident("as_str") {
-                Some(Text::AsStr)
-            } else if meta.path.is_ident("as_string") {
-                Some(Text::AsString)
-            } else {
-                None
-            };
-            if let Some(text) = text {
+            if let Some(text) = Text::asked_for_by(&meta.path) {
                 if let Some((existing, _)) = names {
                     return Err(meta.error(format!(
                         "`{}` cannot be combined with `{}`: a variant has one name",
@@ -142,6 +150,13 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
                     )));
                 }
                 names = Some((text, meta.path.span()));
+                return Ok(());
+            }
+            if meta.path.is_ident("categorical") {
+                if categorical.is_some() {
+                    return Err(meta.error("duplicate `categorical` attribute"));
+                }
+                categorical = Some(meta.path.span());
                 return Ok(());
             }
             let fallible = meta.path.is_ident("try_via");
@@ -184,22 +199,25 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
             Err(meta.error(
                 "unknown container attribute; expected one of `crate = \"...\"`, `transparent`, \
                  `via = \"...\"`, `try_via = \"...\"`, `bound = \"...\"`, or on an enum \
-                 `as_str`, `as_string`",
+                 `as_str`, `as_string`, `categorical`",
             ))
         })?;
     }
-    if let (Some(span), Some(_)) = (transparent, &via) {
-        return Err(syn::Error::new(
-            span,
-            "`transparent` cannot be combined with `via`: a projected type encodes as its row type",
-        ));
-    }
-    if let (Some((text, span)), Some(_)) = (names, &via) {
+    // A projected type encodes as its row type, so what it says of its own
+    // columns would say nothing.
+    let of_its_own = [
+        transparent.map(|span| ("transparent", span)),
+        names.map(|(text, span)| (text.attribute(), span)),
+        categorical.map(|span| ("categorical", span)),
+    ];
+    if via.is_some()
+        && let Some((attribute, span)) = of_its_own.into_iter().flatten().next()
+    {
         return Err(syn::Error::new(
             span,
             format!(
-                "`{}` cannot be combined with `via`: a projected type encodes as its row type",
-                text.attribute()
+                "`{attribute}` cannot be combined with `via`: a projected type encodes as its \
+                 row type"
             ),
         ));
     }
@@ -208,6 +226,7 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
         transparent,
         via,
         names,
+        categorical,
         bounds,
     })
 }

@@ -30,8 +30,8 @@ rust_decimal = ["decimal", "dep:rust_decimal"]
 # `chrono` dates and times as field types.
 chrono = ["dep:chrono", "polars/dtype-date", "polars/dtype-datetime", "polars/dtype-time", "polars/timezones"]
 # `Categorical` columns for text: `CategoricalBuilder` and
-# `CategoricalDisplayBuilder`. `Enum` columns for types that name their
-# variants: `Variants` and `EnumBuilder`.
+# `CategoricalDisplayBuilder`. Columns for types that name their variants,
+# through `Variants`: `EnumBuilder` and `CategoricalVariantsBuilder`.
 categorical = ["polars/dtype-categorical"]
 
 # docs.rs documents a crate with its default features unless told otherwise,

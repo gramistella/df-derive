@@ -4,9 +4,11 @@ use std::fmt::Display;
 /// whose variants hold no data.
 ///
 /// This is what [`EnumBuilder`](super::builders::EnumBuilder) needs of a
-/// type to store it in an `Enum` column. `#[derive(ToDataFrame)]` on such an
-/// enum implements it. Implement it by hand for a type the derive does not
-/// fit:
+/// type to store it in an `Enum` column, and what
+/// [`CategoricalVariantsBuilder`](super::builders::CategoricalVariantsBuilder)
+/// needs to store it in a `Categorical` one. `#[derive(ToDataFrame)]` on
+/// such an enum implements it. Implement it by hand for a type the derive
+/// does not fit:
 ///
 /// ```
 /// use std::fmt::Display;
@@ -37,9 +39,9 @@ pub trait Variants: 'static {
     /// The name of every variant, as anything that can be written as text.
     /// No two variants have the same name.
     ///
-    /// The names are the categories of the column, in this order, which is
-    /// also the order the column sorts in. They are asked for once, the
-    /// first time the type is stored.
+    /// The names are the categories of an `Enum` column, in this order,
+    /// which is also the order the column sorts in. They are asked for once,
+    /// the first time the type is stored.
     fn names() -> impl IntoIterator<Item = impl Display>;
 
     /// The position of this value's name among the [`names`](Variants::names).

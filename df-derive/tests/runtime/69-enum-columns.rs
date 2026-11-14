@@ -528,18 +528,21 @@ struct Pair {
 
 #[test]
 fn names_that_repeat_are_an_error() {
+    let expected = format!(
+        "df-derive: two values of `{}` are named `left`: a name stands for one value only",
+        std::any::type_name::<Twin>()
+    );
     let error = [Pair { twin: Twin(0) }]
         .as_slice()
         .to_dataframe()
         .unwrap_err()
         .to_string();
-    assert!(error.contains("duplicate 'left'"), "{error}");
+    assert!(error.ends_with(&expected), "{error}");
 
     // Without a row too: there is no such column type, and asking for it
     // says why.
     assert!(Pair::empty_dataframe().is_err());
-    let error = Pair::schema().unwrap_err().to_string();
-    assert!(error.contains("duplicate 'left'"), "{error}");
+    assert_eq!(Pair::schema().unwrap_err().to_string(), expected);
 }
 
 /// An enum one of whose variants cannot be written as text.

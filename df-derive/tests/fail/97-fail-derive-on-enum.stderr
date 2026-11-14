@@ -1,10 +1,10 @@
-error: an enum is stored as one `Enum` column when its variants hold no data, and this variant holds some. To store the enum as text, annotate the fields that hold it with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` if the text repeats; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
+error: an enum is stored as one column when its variants hold no data, and this variant holds some. To store the enum as text, annotate the fields that hold it with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` if the text repeats; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
  --> tests/fail/97-fail-derive-on-enum.rs:8:15
   |
 8 |     Suspended { reason: String },
   |               ^^^^^^^^^^^^^^^^^^
 
-error: an enum is stored as one `Enum` column when its variants hold no data, and this variant holds some. To store the enum as text, annotate the fields that hold it with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` if the text repeats; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
+error: an enum is stored as one column when its variants hold no data, and this variant holds some. To store the enum as text, annotate the fields that hold it with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` if the text repeats; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
   --> tests/fail/97-fail-derive-on-enum.rs:14:10
    |
 14 |     Value(f64),

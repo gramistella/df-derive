@@ -95,7 +95,8 @@ Any of these works as a field with no attribute, in any nesting:
   another precision and scale for a field with `decimal(...)`.
 - **Other derived structs**: flattened into the parent with dot notation.
 - **Derived enums** (`categorical` feature): an enum whose variants hold no
-  data is one `Enum` column. See [Enums](#enums).
+  data is one `Enum` column, or one `Categorical` column if it asks. See
+  [Enums](#enums).
 - **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
 - **`Option<T>`**: the same columns as `T`, nullable.
 - **`Vec<T>`, `&[T]`, `Box<[T]>`, `[T; N]`**: the same columns as `T`, each
@@ -128,7 +129,7 @@ hold no data, as a value that is one column.
 | `rust_decimal::Decimal`, `decimal(...)` | `Decimal` | `dtype-decimal` |
 | `as_binary` | `Binary` | none |
 | `categorical` | `Categorical` | `dtype-categorical` |
-| an enum that derives `ToDataFrame` | `Enum` | `dtype-categorical` |
+| an enum that derives `ToDataFrame` | `Enum`, or `Categorical` if it asks | `dtype-categorical` |
 
 `isize` and `usize` are stored as 64-bit columns on every platform, so a
 schema does not depend on the build target. `NonZero*` types use the dtype of
@@ -308,6 +309,40 @@ columns compare, join and stack as they are.
 Like a transparent wrapper, such an enum is a value, not a row. It takes the
 name of the field that holds it and gets no `to_dataframe` of its own.
 
+### An enum that will be given variants
+
+The list of names is the type of the column, so the type changes when the
+enum does. Polars takes two `Enum` columns whose lists differ for columns of
+two types, and does not stack, compare or join them. A frame saved before a
+variant was added no longer goes with one built after, until the older column
+is cast to the newer type.
+
+An enum that will grow while frames of it are kept asks for a `Categorical`
+column instead:
+
+```rust
+#[derive(ToDataFrame)]
+#[df_derive(categorical)]
+#[non_exhaustive]
+enum Status {
+    Open,
+    Filled,
+}
+```
+
+The column holds the same names, taken from the same places, and its type
+lists none of them. It is the type of every categorical column, before a
+variant is added and after, so it also goes with text stored through the
+`categorical` field attribute. It sorts by name, not in the order of the
+variants, and a row is a 32-bit code.
+
+An enum that is `#[non_exhaustive]` has to ask. That attribute promises the
+users of the enum that a new variant breaks nothing of theirs, and the type
+of an `Enum` column is something a new variant would break. Without
+`categorical`, deriving on such an enum is an error that says so.
+
+### Names given by hand
+
 A type the derive does not fit says its names by hand. `Variants` asks for
 the names and for the position of a value among them, and `EnumBuilder`
 stores any type that answers:
@@ -337,7 +372,10 @@ impl Columnar for Weekday {
 
 The names are asked for once, the first time the type is stored. Names that
 repeat, a name that cannot be formatted and a position past the last name
-are encoding errors.
+are encoding errors. `CategoricalVariantsBuilder` in the place of
+`EnumBuilder` stores the type as a `Categorical` column of the same names.
+
+### An enum whose variants hold data
 
 An enum whose variants hold data is not one column, and deriving on it says
 so. There are two ways to store one:
@@ -390,9 +428,9 @@ it the first field in declaration order.
 
 Fallible encodings are nanosecond timestamps, durations that overflow `i64`,
 decimals that do not fit the declared precision and scale, `as_string` values
-whose `Display` fails, and `try_via` conversions. An `Enum` column fails for
-its type, not for a row: where two variants have one name, a name cannot be
-formatted, or a `position` is past the last name.
+whose `Display` fails, and `try_via` conversions. A column of an enum's names
+fails for its type, not for a row: where two variants have one name, a name
+cannot be formatted, or a `position` is past the last name.
 
 ## Column Naming
 
@@ -530,8 +568,9 @@ keeps one builder for the field and feeds it values of any lifetime.
   `Decimal128Encode`, `DecimalBuilder` and the `decimal(...)` attribute.
 - **`categorical`**: `Categorical` columns for text that repeats (the
   `categorical` attribute, `CategoricalBuilder` and
-  `CategoricalDisplayBuilder`), and `Enum` columns for enums whose variants
-  hold no data (the derive on an enum, `Variants` and `EnumBuilder`).
+  `CategoricalDisplayBuilder`), and columns for enums whose variants hold no
+  data (the derive on an enum, `Variants`, `EnumBuilder` and
+  `CategoricalVariantsBuilder`).
 
 A feature also turns on the Polars features its columns need. With
 `default-features = false`, df-derive asks Polars only for the types that the
@@ -665,11 +704,22 @@ the text is, and one set of categories shared with every other such column.
 type is a selection, by position, from a column that holds each variant of
 the type once. That column is made the first time the type is stored, and
 kept. 100,000 rows with four enum columns take 0.26 ms; with the same
-variants stored as their names they take 1.6 ms as strings and about 5 ms as
+variants stored as their names they take 1.6 ms as strings and about 4 ms as
 categories (`26_enum_columns`). A column assembled from codes instead would
 have Polars check every code against the names, which takes three times as
-long. One row takes 0.91 µs with the enum columns and 0.83 µs with the
+long. One row takes 0.94 µs with the enum columns and 0.82 µs with the
 strings: a selection costs a little to set up.
+
+**An enum stored as categories is handed to Polars the short way.** With
+`categorical` on the enum, the column is one of categories, and Polars checks
+every code of such a column it is handed. So it is handed the shorter of two
+things. A column of more rows than the enum has names is a selection from a
+column of the names, which is checked once however many rows are selected:
+100,000 rows with four such columns take 0.27 ms, where their own codes
+would take 1.1 ms. A column of no more rows than names is its own codes,
+each found by its name. One row with the four columns takes 0.85 µs while
+another categorical column is alive, and 1.2 µs when the frame starts a set
+of categories of its own: about what the same names stored as text take.
 
 **An empty slot is not guessed at.** A null is recorded apart from the
 values, and the values buffer gets a zero in its place. Which of the two a

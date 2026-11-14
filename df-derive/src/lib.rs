@@ -43,8 +43,8 @@
 //! - `decimal`: `Decimal` columns for a decimal type of your own, through
 //!   `dataframe::Decimal128Encode` and the `decimal(...)` field attribute.
 //! - `categorical`: `Categorical` columns for text that repeats, through the
-//!   `categorical` field attribute, and `Enum` columns for enums whose
-//!   variants hold no data, through the derive on the enum or
+//!   `categorical` field attribute, and `Enum` or `Categorical` columns for
+//!   enums whose variants hold no data, through the derive on the enum or
 //!   `dataframe::Variants`.
 //!
 //! A feature also turns on the Polars features its columns need, so a

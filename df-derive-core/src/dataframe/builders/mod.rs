@@ -24,7 +24,9 @@ mod text;
 mod tuple;
 
 #[cfg(feature = "categorical")]
-pub use categorical::{CategoricalBuilder, CategoricalDisplayBuilder, EnumBuilder};
+pub use categorical::{
+    CategoricalBuilder, CategoricalDisplayBuilder, CategoricalVariantsBuilder, EnumBuilder,
+};
 #[cfg(feature = "decimal")]
 pub use decimal::DecimalBuilder;
 pub use list::ListBuilder;

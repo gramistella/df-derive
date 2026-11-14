@@ -113,3 +113,7 @@ mod categorical;
 #[cfg(feature = "categorical")]
 #[path = "runtime/69-enum-columns.rs"]
 mod enum_columns;
+
+#[cfg(feature = "categorical")]
+#[path = "runtime/70-enums-that-may-grow.rs"]
+mod enums_that_may_grow;

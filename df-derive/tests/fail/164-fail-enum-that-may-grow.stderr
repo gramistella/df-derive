@@ -1,0 +1,41 @@
+error: an `Enum` column lists the variants of its enum in its type, and this enum says it may be given another: the new variant would change the type of every column of the enum, and a frame from before could not be put together with one from after. Add `#[df_derive(categorical)]` to store the enum as a `Categorical` column of the same names, whose type does not list them
+ --> tests/fail/164-fail-enum-that-may-grow.rs:6:1
+  |
+6 | #[non_exhaustive]
+  | ^^^^^^^^^^^^^^^^^
+
+error: an `Enum` column lists the variants of its enum in its type, and this enum says it may be given another: the new variant would change the type of every column of the enum, and a frame from before could not be put together with one from after. Add `#[df_derive(categorical)]` to store the enum as a `Categorical` column of the same names, whose type does not list them
+  --> tests/fail/164-fail-enum-that-may-grow.rs:15:1
+   |
+15 | #[non_exhaustive]
+   | ^^^^^^^^^^^^^^^^^
+
+error: `categorical` on a type stores an enum whose variants hold no data as a `Categorical` column. To store a field of this struct as one, annotate the field
+  --> tests/fail/164-fail-enum-that-may-grow.rs:22:13
+   |
+22 | #[df_derive(categorical)]
+   |             ^^^^^^^^^^^
+
+error: duplicate `categorical` attribute
+  --> tests/fail/164-fail-enum-that-may-grow.rs:28:26
+   |
+28 | #[df_derive(categorical, categorical)]
+   |                          ^^^^^^^^^^^
+
+error: `categorical` cannot be combined with `via`: a projected type encodes as its row type
+  --> tests/fail/164-fail-enum-that-may-grow.rs:35:13
+   |
+35 | #[df_derive(categorical, via = "Flat")]
+   |             ^^^^^^^^^^^
+
+error: an enum is stored as one column when its variants hold no data, and this variant holds some. To store the enum as text, annotate the fields that hold it with `#[df_derive(as_str)]` or `#[df_derive(as_string)]`, and with `categorical` if the text repeats; to spread it over several columns, convert it to a row struct with `#[df_derive(via = "...")]`
+  --> tests/fail/164-fail-enum-that-may-grow.rs:57:9
+   |
+57 |     Full(u8),
+   |         ^^^^
+
+error: unknown container attribute; expected one of `crate = "..."`, `transparent`, `via = "..."`, `try_via = "..."`, `bound = "..."`, or on an enum `as_str`, `as_string`, `categorical`
+  --> tests/fail/164-fail-enum-that-may-grow.rs:62:13
+   |
+62 | #[df_derive(ordered)]
+   |             ^^^^^^^

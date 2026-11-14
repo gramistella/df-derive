@@ -122,6 +122,11 @@ results. The exceptions are listed under "Changed".
 - The `proc-macro-crate` dependency and its transitive TOML parser.
 - `unsafe` from generated code and from the runtime.
 
+### Fixed
+
+- The published crates include the `LICENSE` file. It sits at the root of
+  the repository, outside every crate, so no package carried it.
+
 ### Performance
 
 Measured on one machine (an Apple Silicon laptop), against 0.5.0, with the

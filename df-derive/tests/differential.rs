@@ -666,6 +666,11 @@ fn every_builder_agrees_with_its_definition() {
     // seventy puts the end of the slice everywhere around the first two
     // boundaries, and the longer ones cross several more.
     assert!(size_of::<Everything>() >= 1024);
+    // Every builder says how many columns it makes, and makes that many.
+    assert_eq!(
+        <<Everything<'_> as Columnar>::Builder as ColumnBuilder<Everything<'_>>>::COLUMNS,
+        Everything::schema().unwrap().len()
+    );
     let mut generator = Gen(1);
     let rows: Vec<Everything> = (0..200).map(|_| generator.everything()).collect();
     for len in (0..=70).chain([95, 96, 97, 127, 128, 129, 160, 200]) {

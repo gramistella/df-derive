@@ -32,7 +32,7 @@ use std::sync::Arc;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use df_derive::ToDataFrame;
 use df_derive::dataframe::builders::PrimitiveBuilder;
-use df_derive::dataframe::{Bitmap, ColumnBuilder, Fields, ToDataFrame, ToDataFrameVec};
+use df_derive::dataframe::{Bitmap, ColumnBuilder, Columnar, Fields, ToDataFrame, ToDataFrameVec};
 use polars::prelude::*;
 use rust_decimal::Decimal;
 
@@ -172,6 +172,17 @@ impl Gen {
             _ => Event::Tick,
         }
     }
+
+    fn bar(&mut self) -> Bar {
+        Bar {
+            symbol: self.text(),
+            prices: [self.float(), self.float(), self.float(), self.float()],
+            sizes: [self.next() as u32, self.next() as u32, self.next() as u32],
+            trades: self.option(|g| g.next() as u32),
+            note: self.option(Self::text),
+            fills: self.list(Self::float),
+        }
+    }
 }
 
 // --- row types -----------------------------------------------------------------
@@ -257,6 +268,55 @@ impl<'a> From<&'a Event> for EventRow<'a> {
             price,
             venue,
             reasons: reasons.unwrap_or_default(),
+        }
+    }
+}
+
+/// A type whose row has more columns than are pushed one row at a time: its
+/// rows are made a block at a time and appended in runs. The row borrows,
+/// and a list is among what it borrows.
+#[derive(ToDataFrame, Clone)]
+#[df_derive(via = "BarRow<'_>")]
+struct Bar {
+    symbol: String,
+    prices: [f64; 4],
+    sizes: [u32; 3],
+    trades: Option<u32>,
+    note: Option<String>,
+    fills: Vec<f64>,
+}
+
+#[derive(ToDataFrame)]
+struct BarRow<'a> {
+    symbol: &'a str,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    bid_size: u32,
+    ask_size: u32,
+    volume: u32,
+    trades: Option<u32>,
+    note: Option<&'a str>,
+    fills: &'a [f64],
+}
+
+impl<'a> From<&'a Bar> for BarRow<'a> {
+    fn from(bar: &'a Bar) -> Self {
+        let [open, high, low, close] = bar.prices;
+        let [bid_size, ask_size, volume] = bar.sizes;
+        Self {
+            symbol: &bar.symbol,
+            open,
+            high,
+            low,
+            close,
+            bid_size,
+            ask_size,
+            volume,
+            trades: bar.trades,
+            note: bar.note.as_deref(),
+            fills: &bar.fills,
         }
     }
 }
@@ -430,6 +490,10 @@ struct Everything<'a> {
     event: Event,
     o_event: Option<Event>,
     l_event: Vec<Event>,
+    bar: Bar,
+    o_bar: Option<Bar>,
+    l_bar: Vec<Bar>,
+    l_o_bar: Vec<Option<Bar>>,
     #[df_derive(with = "Cents")]
     cents: f64,
     #[df_derive(with = "Cents")]
@@ -570,6 +634,10 @@ impl Gen {
             event: self.event(),
             o_event: self.option(Self::event),
             l_event: self.list(Self::event),
+            bar: self.bar(),
+            o_bar: self.option(Self::bar),
+            l_bar: self.list(Self::bar),
+            l_o_bar: self.list(|g| g.option(Self::bar)),
             cents: self.float(),
             l_o_cents: self.list(|g| g.option(Self::float)),
         }
@@ -633,7 +701,31 @@ fn lists_longer_than_a_block_agree() {
     giant.l_leaf = generator.list_of(700, Gen::leaf);
     giant.l_o_leaf = generator.list_of(700, |g| g.option(Gen::leaf));
     giant.l_event = generator.list_of(900, Gen::event);
+    giant.l_bar = generator.list_of(900, Gen::bar);
+    giant.l_o_bar = generator.list_of(900, |g| g.option(Gen::bar));
     check(&rows);
+}
+
+#[test]
+fn projected_rows_agree_across_many_blocks() {
+    // More columns than are pushed a row at a time.
+    assert_eq!(
+        <<BarRow<'_> as Columnar>::Builder as ColumnBuilder<BarRow<'_>>>::COLUMNS,
+        11
+    );
+    let mut generator = Gen(5);
+    let bars: Vec<Bar> = (0..700).map(|_| generator.bar()).collect();
+    // A block holds a few dozen of these, as values and as rows.
+    for len in (0..=130).chain([255, 256, 257, 511, 512, 513, 700]) {
+        check(&bars[..len]);
+    }
+    // The frame is the one the rows give when they are made by hand.
+    let rows: Vec<BarRow<'_>> = bars.iter().map(BarRow::from).collect();
+    assert_same(
+        "projected against its rows",
+        &bars.to_dataframe().unwrap(),
+        &rows.to_dataframe().unwrap(),
+    );
 }
 
 #[test]
@@ -898,6 +990,76 @@ impl TryFrom<&Reading> for ReadingRow {
         } else {
             Err(format!("{} °C is below absolute zero", reading.celsius))
         }
+    }
+}
+
+/// The same through a row of more columns than are pushed, whose rows are
+/// made a block at a time.
+#[derive(ToDataFrame)]
+#[df_derive(try_via = "SpectrumRow")]
+struct Spectrum {
+    bands: [f64; 9],
+}
+
+#[derive(ToDataFrame)]
+struct SpectrumRow {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    b3: f64,
+    b4: f64,
+    b5: f64,
+    b6: f64,
+    b7: f64,
+    b8: f64,
+}
+
+impl TryFrom<&Spectrum> for SpectrumRow {
+    type Error = String;
+
+    fn try_from(spectrum: &Spectrum) -> Result<Self, Self::Error> {
+        let [b0, b1, b2, b3, b4, b5, b6, b7, b8] = spectrum.bands;
+        if spectrum.bands.iter().all(|band| band.is_finite()) {
+            Ok(Self {
+                b0,
+                b1,
+                b2,
+                b3,
+                b4,
+                b5,
+                b6,
+                b7,
+                b8,
+            })
+        } else {
+            Err("a band is not finite".to_owned())
+        }
+    }
+}
+
+#[test]
+fn a_failed_conversion_names_the_row_in_a_block_of_rows() {
+    let spectra = |len: usize| -> Vec<Spectrum> {
+        (0..len)
+            .map(|index| Spectrum {
+                bands: [index as f64; 9],
+            })
+            .collect()
+    };
+    assert_eq!(
+        <<SpectrumRow as Columnar>::Builder as ColumnBuilder<SpectrumRow>>::COLUMNS,
+        9
+    );
+    check(&spectra(300));
+    // Around the ends of blocks, of values and of rows, and at both ends.
+    for row in (0..3).chain(50..70).chain(110..116).chain([298, 299]) {
+        let mut rows = spectra(300);
+        rows[row].bands[4] = f64::NAN;
+        // A later bad row changes nothing.
+        rows[299].bands[0] = f64::INFINITY;
+        assert_eq!(first_rejected(&rows), Some(row));
+        let error = rows.to_dataframe().unwrap_err().to_string();
+        assert_eq!(error, format!("Spectrum[{row}]: a band is not finite"));
     }
 }
 

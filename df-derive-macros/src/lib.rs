@@ -51,7 +51,9 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `via = "Row"` / `try_via = "Row"`: encode through a row struct built
 ///   from a reference to each value, with `From<&T>` or `TryFrom<&T>`. Write
 ///   the lifetimes the row borrows from the value as `'_`. This is how an
-///   enum whose variants hold data becomes several columns.
+///   enum whose variants hold data becomes several columns. The conversion
+///   may run twice for a value: a row that holds lists and owns nothing is
+///   made a first time to count the elements of its lists.
 /// - `bound = "T: Trait, ..."`: extra where-clause predicates for the
 ///   generated impls.
 /// - `as_str` / `as_string`, on an enum: name every variant by what the

@@ -432,6 +432,12 @@ give it a row struct with a kind column and optional columns for the variant
 data. `try_via` uses `TryFrom<&T>` instead and turns a failed conversion into
 an encoding error.
 
+Write the conversion as a pure function of the value. A row that holds a
+list and owns nothing is made twice: the first time to count the list's
+elements, so that the list's buffer is allocated once. A row that owns heap
+data, such as a `String` or a `Vec` it built, is made once, and a list in it
+grows as it fills.
+
 ## Errors
 
 A value that cannot be stored produces a `PolarsError` that says where it is:
@@ -562,15 +568,17 @@ impl ColumnBuilder<f64> for Cents {
 }
 ```
 
-Three more items have defaults that are always correct, and exist to be
+Five more items have defaults that are always correct, and exist to be
 overridden for speed. `extend` appends many slots at once, and `measure`
 lets a builder that holds lists size their buffer before anything is
 appended. `ROW_AT_A_TIME` asks a row's builder to push to this builder one
 row at a time, together with the row's other builders that ask the same,
 instead of handing it a block of rows as one run. The builders that borrow
 a string or bytes set it, because such a value is reached through a pointer
-and appended with a call, so a run of its own gains it nothing. A builder
-that wraps another one passes the inner builder's answer on.
+and appended with a call, so a run of its own gains it nothing. `COLUMNS`
+says how many columns a builder makes, and `MEASURES` whether its `measure`
+counts anything: the builder of a projected type goes by both. A builder
+that wraps another one passes the inner builder's three answers on.
 
 A builder borrows nothing from the values it reads, so keep their lifetimes
 out of its type. The builder for a `Code<'a>` has no lifetime of its own, and
@@ -654,7 +662,9 @@ measured: builders that hold lists add up their lengths, and each buffer is
 then reserved at its final size. The pass costs about 0.2 ns per row.
 Without it the buffers behind list columns grow by reallocation, and rows
 whose lists hold 16 elements take 18% to 49% longer, rows whose lists
-hold 64 take 39% to 68% longer.
+hold 64 take 39% to 68% longer. The one list that is not measured is a list
+in a projected row that owns heap data: counting it would mean making the
+row twice.
 
 **Rows are appended in blocks, one column at a time.** Within a block each
 column buffer is filled by its own loop, so only one buffer is being written
@@ -773,11 +783,34 @@ of 40,000 elements, each case timed in a process of its own):
 Lists of two or three scalars are the one shape where the fixed cost of a
 run is not repaid.
 
-**A projection never stores the row.** A type encoded through `via` is
-converted and pushed one value at a time, so the row lives in registers.
+**A projected row is pushed while it is narrow.** A type encoded through
+`via` is converted one value at a time, and a row of up to eight columns is
+pushed straight from the conversion, so the row lives in registers.
 Converting by hand, by collecting the rows into a `Vec` and encoding that,
-takes 8% to 17% longer for flat rows and 112% longer when the
-projected type sits in a list.
+takes 5% to 17% longer for flat rows, 6% to 25% longer for a row that
+borrows a list, and 97% longer when the projected type sits in a list.
+
+A push appends to every column buffer of the row at once. Buffers that grow
+in step share one set of a first-level cache, which has eight ways in the
+smallest caches in common use, so more than eight of them evict each other
+on every row. A row of more than eight columns is therefore made a block at
+a time, in a buffer the builder keeps, and appended in runs, as rows in a
+slice are. Time in milliseconds for 100,000 projected rows of `f64` columns:
+
+| Columns | 4 | 6 | 8 | 9 | 10 | 12 | 16 | 24 | 32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pushed | 0.17 | 0.25 | 0.43 | 0.77 | 1.33 | 2.91 | 4.82 | 10.8 | 8.06 |
+| in blocks | 0.10 | 0.17 | 0.25 | 0.31 | 0.35 | 0.41 | 0.63 | 1.34 | 1.94 |
+
+Columns of two widths grow at two rates: six `f64` and six `u32` columns
+pushed take 0.58 ms, twelve of each 7.1 ms. A row of 24 numeric columns of
+mixed types takes 1.28 ms through `via`, 1.40 ms converted by hand, and
+0.96 ms when the rows are already in a slice.
+
+Rows of plain numbers are faster in blocks at any width. The rows a
+projection usually has are not. In blocks, an enum's row of a kind and
+optional columns takes 10% longer, a row that borrows text 12% longer, and
+rows in short lists 29% longer. So a narrow row is pushed.
 
 **An error is located afterwards.** The fast path does not track where it
 is. When a block fails, its rows are pushed again one at a time into a

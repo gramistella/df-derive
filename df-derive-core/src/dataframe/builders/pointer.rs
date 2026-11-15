@@ -28,6 +28,8 @@ macro_rules! transparent_pointer {
             B: ColumnBuilder<$t>,
         {
             const ROW_AT_A_TIME: bool = B::ROW_AT_A_TIME;
+            const COLUMNS: usize = B::COLUMNS;
+            const MEASURES: bool = B::MEASURES;
 
             fn schema(name: PlSmallStr, out: &mut Fields) {
                 B::schema(name, out);

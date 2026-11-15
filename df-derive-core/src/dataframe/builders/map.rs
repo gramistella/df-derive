@@ -98,6 +98,9 @@ macro_rules! map {
             K: ColumnBuilder<KT>,
             V: ColumnBuilder<VT>,
         {
+            const COLUMNS: usize = K::COLUMNS + V::COLUMNS;
+            const MEASURES: bool = true;
+
             fn schema(name: PlSmallStr, out: &mut Fields) {
                 Self::map_schema::<KT, VT>(&name, out);
             }

@@ -79,6 +79,24 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// It is a hint. The columns come out the same either way.
     const ROW_AT_A_TIME: bool = false;
 
+    /// How many columns [`finish`](ColumnBuilder::finish) appends.
+    ///
+    /// The builder of a projected type pushes a row of few columns straight
+    /// from the conversion, and makes a block of wider rows before it appends
+    /// them in runs.
+    ///
+    /// It is a hint. The columns come out the same either way.
+    const COLUMNS: usize = 1;
+
+    /// Whether [`measure`](ColumnBuilder::measure) counts anything.
+    ///
+    /// The builders that hold lists set this, and wrappers pass it on. The
+    /// builder of a projected type has to make a row to show it, and does
+    /// that only if this says the row's builder would count something.
+    ///
+    /// It is a hint. The columns come out the same either way.
+    const MEASURES: bool = false;
+
     /// Appends this builder's columns to `out`. `name` is the dotted path of
     /// the field being described; leaves use it verbatim.
     ///
@@ -314,7 +332,10 @@ pub mod __private {
     pub use polars;
     pub use polars_arrow;
 
-    pub use super::frame::{child, conversion_error, in_field};
+    pub use super::frame::{
+        child, conversion_error, extend_through, in_field, measure_through, measures_through,
+        push_through,
+    };
 
     /// Compile-time check that a flattened field is a record.
     pub const fn assert_record<T: ?Sized + super::Record>() {}

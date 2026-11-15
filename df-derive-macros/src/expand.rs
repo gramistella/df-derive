@@ -669,6 +669,8 @@ fn expand_struct(
             {
                 // A row is fed a row at a time when every member is.
                 const ROW_AT_A_TIME: bool = #has_members #(&& #as_builder::ROW_AT_A_TIME)*;
+                const COLUMNS: usize = 0 #(+ #as_builder::COLUMNS)*;
+                const MEASURES: bool = false #(|| #as_builder::MEASURES)*;
 
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
                     #(#record_checks)*
@@ -1011,12 +1013,16 @@ fn expand_via(
         // the attribute that names it. The trait is private because the row
         // type may be.
         let named = respan(
-            quote! { type Row = <#stored as #root::Columnar>::Builder; },
+            quote! {
+                type Builder = <#stored as #root::Columnar>::Builder;
+                type Row = #stored;
+            },
             via.span,
         );
         quote! {
             #[doc(hidden)]
             trait __DfDeriveVia {
+                type Builder;
                 type Row;
             }
 
@@ -1026,36 +1032,40 @@ fn expand_via(
             }
         }
     });
-    let (inner, encoder_where) = if per_instance {
+    // The builder's two members: the builder of the row type, and the row
+    // type as the buffer of a block is typed between blocks.
+    let (inner, kept, encoder_where) = if per_instance {
         // Whichever instance named the builder, its member has to encode the
         // row of the value at hand.
-        let inner = quote! { <__DfDeriveFor as __DfDeriveVia>::Row };
+        let inner = quote! { <__DfDeriveFor as __DfDeriveVia>::Builder };
+        let kept = quote! { <__DfDeriveFor as __DfDeriveVia>::Row };
         let encodes = quote! { #for_any_borrow #inner: #root::ColumnBuilder<#any_row> };
-        (inner, quote! { where #(#own,)* #encodes })
+        (inner, kept, quote! { where #(#own,)* #encodes })
     } else {
         (
             quote! { <#stored as #root::Columnar>::Builder },
+            stored.clone(),
             where_clause.clone(),
         )
     };
-    let as_inner = quote! { <#inner as #root::ColumnBuilder<#row>> };
+    let as_inner = quote! { <#inner as #root::ColumnBuilder<#stored>> };
     // A projection is a row type because the type it encodes as is one.
     let record_check =
-        (!per_instance).then(|| quote! { #root::__private::assert_record::<#row>(); });
-    let convert = if via.fallible {
+        (!per_instance).then(|| quote! { #root::__private::assert_record::<#stored>(); });
+    // The conversion, as the runtime calls it for one value.
+    let converted = if via.fallible {
         quote! {
             match ::core::convert::TryFrom::try_from(value) {
-                ::core::result::Result::Ok(row) => row,
-                ::core::result::Result::Err(error) => {
-                    return ::core::result::Result::Err(
-                        #root::__private::conversion_error(&error),
-                    );
-                }
+                ::core::result::Result::Ok(row) => ::core::result::Result::Ok(row),
+                ::core::result::Result::Err(error) => ::core::result::Result::Err(
+                    #root::__private::conversion_error(&error),
+                ),
             }
         }
     } else {
-        quote! { ::core::convert::From::from(value) }
+        quote! { ::core::result::Result::Ok(::core::convert::From::from(value)) }
     };
+    let convert = quote! { |value| -> #polars::PolarsResult<#row> { #converted } };
 
     let encode = encode_in_place(runtime);
     // Whatever keeps the row type's builder from encoding the row is
@@ -1074,7 +1084,11 @@ fn expand_via(
 
             #[doc(hidden)]
             #[allow(private_bounds)]
-            #vis struct __DfDeriveBuilder #declaration (#inner);
+            #vis struct __DfDeriveBuilder #declaration {
+                builder: #inner,
+                // The rows of a block, when rows are appended in runs.
+                block: ::std::vec::Vec<#kept>,
+            }
 
             #[automatically_derived]
             #[allow(clippy::inline_always)]
@@ -1082,8 +1096,9 @@ fn expand_via(
                 for __DfDeriveBuilder #arguments
             #encoder_where
             {
-                const ROW_AT_A_TIME: bool =
-                    <#inner as #root::ColumnBuilder<#stored>>::ROW_AT_A_TIME;
+                const ROW_AT_A_TIME: bool = #as_inner::ROW_AT_A_TIME;
+                const COLUMNS: usize = #as_inner::COLUMNS;
+                const MEASURES: bool = #root::__private::measures_through::<#stored, #inner>();
 
                 fn schema(name: #polars::PlSmallStr, out: &mut #root::Fields) {
                     #record_check
@@ -1091,11 +1106,25 @@ fn expand_via(
                 }
 
                 fn new() -> Self {
-                    Self(#as_inner::new())
+                    Self {
+                        builder: #as_inner::new(),
+                        block: ::std::vec::Vec::new(),
+                    }
+                }
+
+                #[inline(always)]
+                fn measure<'__df_derive_rows, __DfDeriveRows>(&mut self, values: __DfDeriveRows)
+                where
+                    #name #ty_generics: '__df_derive_rows,
+                    __DfDeriveRows: ::core::iter::Iterator<
+                            Item = ::core::option::Option<&'__df_derive_rows #name #ty_generics>,
+                        > + ::core::clone::Clone,
+                {
+                    #root::__private::measure_through(&mut self.builder, values, #convert);
                 }
 
                 fn reserve(&mut self, additional: usize) {
-                    #as_inner::reserve(&mut self.0, additional);
+                    #as_inner::reserve(&mut self.builder, additional);
                 }
 
                 #[inline(always)]
@@ -1103,13 +1132,26 @@ fn expand_via(
                     &mut self,
                     value: ::core::option::Option<&#name #ty_generics>,
                 ) -> #polars::PolarsResult<()> {
-                    let row: ::core::option::Option<#row> = match value {
-                        ::core::option::Option::Some(value) => {
-                            ::core::option::Option::Some(#convert)
-                        }
-                        ::core::option::Option::None => ::core::option::Option::None,
-                    };
-                    #as_inner::push(&mut self.0, ::core::option::Option::as_ref(&row))
+                    #root::__private::push_through(&mut self.builder, value, #convert)
+                }
+
+                #[inline(always)]
+                fn extend<'__df_derive_rows, __DfDeriveRows>(
+                    &mut self,
+                    values: __DfDeriveRows,
+                ) -> #polars::PolarsResult<()>
+                where
+                    #name #ty_generics: '__df_derive_rows,
+                    __DfDeriveRows: ::core::iter::Iterator<
+                            Item = ::core::option::Option<&'__df_derive_rows #name #ty_generics>,
+                        > + ::core::clone::Clone,
+                {
+                    #root::__private::extend_through(
+                        &mut self.builder,
+                        &mut self.block,
+                        values,
+                        #convert,
+                    )
                 }
 
                 fn finish(
@@ -1118,7 +1160,7 @@ fn expand_via(
                     validity: ::core::option::Option<&#bitmap>,
                     out: &mut ::std::vec::Vec<#polars::Column>,
                 ) -> #polars::PolarsResult<()> {
-                    #as_inner::finish(self.0, name, validity, out)
+                    #as_inner::finish(self.builder, name, validity, out)
                 }
             }
 

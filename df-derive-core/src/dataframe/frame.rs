@@ -108,11 +108,151 @@ where
     Ok(())
 }
 
-/// Finds the first of `values` that cannot be appended, and why.
+/// The ways of a first-level data cache, in the smallest one in common use.
+const CACHE_WAYS: usize = 8;
+
+/// Whether a run of a projected type's values is pushed a row at a time,
+/// straight from the conversion.
 ///
-/// `extend` reports that a block failed, not where. The values are pushed
-/// again one at a time, into a builder of their own, and the first error is
-/// the one a caller sees: it names the fields it passed through on the way.
+/// A push writes to every column buffer of the row. Buffers that grow in step
+/// share a cache set, so up to `CACHE_WAYS` columns are safe to push. A wider
+/// row is made into a buffer first and appended in runs.
+const fn pushes_through<R, B: ColumnBuilder<R>>() -> bool {
+    B::ROW_AT_A_TIME || B::COLUMNS <= CACHE_WAYS
+}
+
+/// Whether the builder of a type projected to `R` measures.
+///
+/// `B` has to count something, and making each row a second time has to be
+/// cheap: a row that owns nothing is, one that owns heap data was allocated
+/// for.
+#[must_use]
+pub const fn measures_through<R, B: ColumnBuilder<R>>() -> bool {
+    B::MEASURES && !std::mem::needs_drop::<R>()
+}
+
+/// Empties `buffer` and retypes it, keeping its allocation. `T` and `U` are
+/// one row type with different lifetimes.
+///
+/// Works because `Vec` collects in place when the two layouts match. If std
+/// stopped doing that, this would allocate and nothing else would change.
+#[inline]
+fn recycle<T, U>(mut buffer: Vec<T>) -> Vec<U> {
+    buffer.clear();
+    buffer.into_iter().map(|_| unreachable!()).collect()
+}
+
+/// `measure` of a projected type's builder.
+#[inline(always)]
+#[allow(clippy::inline_always)]
+pub fn measure_through<'a, T, R, B, I>(
+    builder: &mut B,
+    values: I,
+    convert: impl Fn(&'a T) -> PolarsResult<R>,
+) where
+    T: 'a,
+    B: ColumnBuilder<R>,
+    I: Iterator<Item = Option<&'a T>>,
+{
+    if !measures_through::<R, B>() {
+        return;
+    }
+    for value in values.flatten() {
+        // A value that cannot be converted is reported when it is appended.
+        if let Ok(row) = convert(value) {
+            builder.measure(std::iter::once(Some(&row)));
+        }
+    }
+}
+
+/// `push` of a projected type's builder: appends `value` as the row
+/// `convert` makes of it.
+///
+/// # Errors
+/// Returns the conversion's error, or the row builder's.
+#[inline(always)]
+#[allow(clippy::inline_always)]
+pub fn push_through<'a, T, R, B>(
+    builder: &mut B,
+    value: Option<&'a T>,
+    convert: impl Fn(&'a T) -> PolarsResult<R>,
+) -> PolarsResult<()>
+where
+    B: ColumnBuilder<R>,
+{
+    let row = match value {
+        Some(value) => Some(convert(value)?),
+        None => None,
+    };
+    builder.push(row.as_ref())
+}
+
+/// Why the rows of a block stopped being made.
+enum Stopped {
+    /// The block is full, or the values ran out.
+    Not,
+    /// The next slot is empty.
+    AtEmptySlot,
+    /// The next value could not be converted.
+    AtFailure(PolarsError),
+}
+
+/// `extend` of a projected type's builder.
+///
+/// `kept` is the builder's buffer for the rows of a block. Between calls it
+/// is typed `K`, the row type with `'static` lifetimes, because the
+/// builder's type cannot name what the rows borrow.
+///
+/// # Errors
+/// Returns the conversion's error, or the row builder's.
+#[inline(always)]
+#[allow(clippy::inline_always)]
+pub fn extend_through<'a, T, R, K, B, I>(
+    builder: &mut B,
+    kept: &mut Vec<K>,
+    mut values: I,
+    convert: impl Fn(&'a T) -> PolarsResult<R>,
+) -> PolarsResult<()>
+where
+    T: 'a,
+    B: ColumnBuilder<R>,
+    I: Iterator<Item = Option<&'a T>>,
+{
+    if pushes_through::<R, B>() {
+        for value in values {
+            push_through(builder, value, &convert)?;
+        }
+        return Ok(());
+    }
+    let block = block_len::<R>();
+    let mut rows: Vec<R> = recycle(std::mem::take(kept));
+    loop {
+        let mut stopped = Stopped::Not;
+        rows.extend(values.by_ref().take(block).map_while(|value| {
+            let Some(value) = value else {
+                stopped = Stopped::AtEmptySlot;
+                return None;
+            };
+            convert(value)
+                .map_err(|error| stopped = Stopped::AtFailure(error))
+                .ok()
+        }));
+        extend_from_slice(builder, &rows)?;
+        match stopped {
+            Stopped::AtFailure(error) => return Err(error),
+            Stopped::AtEmptySlot => builder.push(None)?,
+            Stopped::Not if rows.len() < block => break,
+            Stopped::Not => {}
+        }
+        rows.clear();
+    }
+    *kept = recycle(rows);
+    Ok(())
+}
+
+/// Finds the first of `values` that cannot be appended, and why, by pushing
+/// them one at a time into a builder of their own. `extend` only reports
+/// that a block failed.
 #[cold]
 #[inline(never)]
 pub(super) fn first_failure<T, R, B>(values: &[R]) -> Option<(usize, PolarsError)>
@@ -256,4 +396,23 @@ fn at_row(error: &PolarsError, row_type: &str, row: usize) -> PolarsError {
 #[must_use]
 pub fn conversion_error(error: &dyn std::fmt::Display) -> PolarsError {
     PolarsError::ComputeError(error.to_string().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recycle;
+
+    /// Pins what `recycle` relies on: the standard library collects in place.
+    #[test]
+    fn a_recycled_buffer_keeps_its_allocation() {
+        let text = String::from("borrowed");
+        let mut buffer: Vec<&str> = Vec::with_capacity(64);
+        buffer.push(text.as_str());
+        let address = buffer.as_ptr().addr();
+
+        let recycled: Vec<&'static str> = recycle(buffer);
+        assert_eq!(recycled.len(), 0);
+        assert_eq!(recycled.capacity(), 64);
+        assert_eq!(recycled.as_ptr().addr(), address);
+    }
 }

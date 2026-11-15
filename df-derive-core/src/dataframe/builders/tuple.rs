@@ -8,6 +8,8 @@ use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 pub struct UnitBuilder;
 
 impl ColumnBuilder<()> for UnitBuilder {
+    const COLUMNS: usize = 0;
+
     fn schema(_name: PlSmallStr, _out: &mut Fields) {}
 
     fn new() -> Self {
@@ -41,6 +43,8 @@ macro_rules! tuple {
         impl<$($t, $b: ColumnBuilder<$t>),+> ColumnBuilder<($($t,)+)> for ($($b,)+) {
             // A tuple is fed a row at a time when every element is.
             const ROW_AT_A_TIME: bool = true $(&& $b::ROW_AT_A_TIME)+;
+            const COLUMNS: usize = 0 $(+ $b::COLUMNS)+;
+            const MEASURES: bool = false $(|| $b::MEASURES)+;
 
             fn schema(name: PlSmallStr, out: &mut Fields) {
                 $($b::schema(child(&name, $field), out);)+

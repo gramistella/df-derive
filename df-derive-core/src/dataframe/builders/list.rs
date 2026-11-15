@@ -122,6 +122,9 @@ fn failed_element<T, B: ColumnBuilder<T>>(list: &[T], error: PolarsError) -> Pol
 }
 
 impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
+    const COLUMNS: usize = B::COLUMNS;
+    const MEASURES: bool = true;
+
     fn schema(name: PlSmallStr, out: &mut Fields) {
         let start = out.len();
         B::schema(name, out);
@@ -190,6 +193,9 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<[T]> for ListBuilder<B> {
 
 /// A `Vec` is encoded as the slice it holds.
 impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
+    const COLUMNS: usize = B::COLUMNS;
+    const MEASURES: bool = true;
+
     fn schema(name: PlSmallStr, out: &mut Fields) {
         <Self as ColumnBuilder<[T]>>::schema(name, out);
     }
@@ -238,6 +244,9 @@ impl<T, B: ColumnBuilder<T>> ColumnBuilder<Vec<T>> for ListBuilder<B> {
 /// So is a fixed-size array: it is a list like any other, and its length is
 /// not part of the column's type.
 impl<T, B: ColumnBuilder<T>, const N: usize> ColumnBuilder<[T; N]> for ListBuilder<B> {
+    const COLUMNS: usize = B::COLUMNS;
+    const MEASURES: bool = true;
+
     fn schema(name: PlSmallStr, out: &mut Fields) {
         <Self as ColumnBuilder<[T]>>::schema(name, out);
     }

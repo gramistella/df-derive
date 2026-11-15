@@ -99,6 +99,8 @@ const fn is_valid<T: ?Sized>(slot: Option<&T>) -> bool {
 
 impl<T, B: ColumnBuilder<T>> ColumnBuilder<Option<T>> for OptionBuilder<B> {
     const ROW_AT_A_TIME: bool = B::ROW_AT_A_TIME;
+    const COLUMNS: usize = B::COLUMNS;
+    const MEASURES: bool = B::MEASURES;
 
     fn schema(name: PlSmallStr, out: &mut Fields) {
         B::schema(name, out);

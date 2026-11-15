@@ -23,16 +23,20 @@ results. The exceptions are listed under "Changed".
 - `ColumnBuilder<T>`, the single contract between a type and its columns, and
   the public builders in `df_derive::dataframe::builders`. A builder is filled
   one slot at a time, a slot being a value or a null: five required methods
-  (`schema`, `new`, `reserve`, `push`, `finish`), and three items with
-  defaults that exist for speed (`measure`, `extend`, and the `ROW_AT_A_TIME`
-  hint).
+  (`schema`, `new`, `reserve`, `push`, `finish`), and five items with
+  defaults that exist for speed (`measure`, `extend`, and the hints
+  `ROW_AT_A_TIME`, `COLUMNS` and `MEASURES`).
 - `T::rows_to_dataframe(iter)` accepts any iterator of `&T`.
 - A type can declare its own encoding once with `impl Columnar`, and
   `#[df_derive(transparent)]` makes a single-field wrapper encode as its field
   under the holder's column name.
 - `#[df_derive(via = "Row<'_>")]` and `try_via` encode a type through a row
-  struct built from a reference to it, one value at a time. This also covers
-  enums that should spread over several columns.
+  struct built from a reference to it, with no collection of all the rows.
+  This also covers enums that should spread over several columns. A row of
+  up to eight columns is pushed straight from the conversion. A wider one is
+  made a block at a time and appended in runs, as rows in a slice are. A row
+  that holds a list and owns nothing is made a first time to count the
+  list's elements, so that the list's buffer is allocated once.
 - `#[df_derive(with = "Builder")]` selects a custom builder for one field.
 - `#[df_derive(rename = "name")]` names a field's column, or the prefix of a
   nested struct's columns.

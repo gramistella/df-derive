@@ -35,12 +35,8 @@
 //! of them, Polars is asked only for the types that the standard library's
 //! own types are stored as.
 
-// `polars` pulls a wide transitive dependency tree (ahash, foldhash,
-// hashbrown, windows-sys variants, …) where multiple resolved versions are
-// unavoidable. `clippy::multiple_crate_versions` is part of the
-// `clippy::cargo` group `just lint` enables, and it would fire ~21 times on
-// dependencies entirely outside this crate's control. Allow it here so the
-// lint surface stays focused on this crate's own code.
+// Polars's dependency tree holds several versions of some crates, which is
+// outside this crate's control.
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod dataframe;

@@ -53,7 +53,7 @@ pub type Fields = Vec<(PlSmallStr, DataType)>;
 /// fills.
 ///
 /// `schema`, `new`, `reserve`, `push` and `finish` are required and describe
-/// an encoding completely. `measure`, `extend` and `ROW_AT_A_TIME` have
+/// an encoding completely. `measure`, `extend` and the three constants have
 /// defaults that are always correct; builders override them to be exact about
 /// memory and fast. Whether a value can be appended must not depend on the
 /// slots before it.
@@ -69,12 +69,10 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     ///
     /// A block at a time suits a builder that turns a run of values into one
     /// tight loop over a buffer, and it is the default. A builder that reaches
-    /// each value through a pointer and appends it with a call, as the
-    /// builders that borrow a string or bytes do, gains nothing from a run of
-    /// its own, and a row with several such fields is then walked once for
-    /// each of them. The builders of a row that set this are fed together
-    /// instead: one walk over the block, in which each row's values are read
-    /// side by side.
+    /// each value through a pointer and appends it with a call, as those that
+    /// borrow a string or bytes do, gains nothing from a run of its own. The
+    /// builders of a row that set this are fed together, in one walk over the
+    /// rows of the block.
     ///
     /// It is a hint. The columns come out the same either way.
     const ROW_AT_A_TIME: bool = false;
@@ -112,9 +110,9 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// Looks at slots that are about to be appended, ahead of
     /// [`reserve`](ColumnBuilder::reserve).
     ///
-    /// A builder that holds lists adds up their lengths here, because the
-    /// number of slots alone does not say how large the buffer behind the
-    /// lists must be. Every other builder keeps the default, which does
+    /// A builder that holds lists adds up their lengths here: the number of
+    /// slots does not say how large the buffer behind the lists must be. It
+    /// also sets [`MEASURES`](ColumnBuilder::MEASURES). The default does
     /// nothing, and wrappers pass the slots on to the builders they wrap.
     #[inline(always)]
     #[allow(clippy::inline_always)]
@@ -135,20 +133,20 @@ pub trait ColumnBuilder<T: ?Sized>: Sized {
     /// # Errors
     /// Returns an error when the value cannot be represented in the column.
     /// A builder made of other builders says which part of the value failed
-    /// by prefixing the error with the field's name.
+    /// by prefixing the error with the field's name. Its columns may then
+    /// differ in length: a builder that returned an error must not be used
+    /// again.
     fn push(&mut self, value: Option<&T>) -> PolarsResult<()>;
 
     /// Appends one slot per item, with the same result as pushing them in
     /// order.
     ///
-    /// This is how rows are encoded. They are handed over a block at a time
-    /// and each field's builder receives an iterator over that field in every
-    /// row of the block, so a column is filled by one tight loop instead of
-    /// one push per row. The iterator is `Clone` because a builder with
-    /// several buffers walks it once per buffer; the blocks are small enough
-    /// to stay in cache while it does. Builders that set
-    /// [`ROW_AT_A_TIME`](ColumnBuilder::ROW_AT_A_TIME) are the exception: a
-    /// row's builder pushes to those, one row after the other.
+    /// This is how rows are encoded: a block at a time, each field's builder
+    /// getting an iterator over that field in every row of the block, so a
+    /// column is filled by one tight loop. The iterator is `Clone` because a
+    /// builder with several buffers walks it once per buffer. Builders that
+    /// set [`ROW_AT_A_TIME`](ColumnBuilder::ROW_AT_A_TIME) are pushed to
+    /// instead.
     ///
     /// # Errors
     /// Returns an error when any of the values cannot be represented. Which
@@ -261,11 +259,10 @@ pub trait ToDataFrame: Record + Sized {
     /// filtered view, a map's values. A slice or `Vec` of rows converts
     /// directly with [`ToDataFrameVec::to_dataframe`].
     ///
-    /// The references are gathered into a vector first. The encoder for them
-    /// is compiled in the crate that calls this, unlike the encoder for a
-    /// slice, which the derive writes into the crate that defines the row
-    /// type: a second one there would nearly double what every derived type
-    /// costs to compile, for the sake of the types this is called on.
+    /// The references are gathered into a vector first. Their encoder is
+    /// compiled in the crate that calls this: a second derive-written one,
+    /// beside the encoder for a slice, would nearly double what every derived
+    /// type costs to compile.
     ///
     /// # Errors
     /// Returns an error naming the row and field that could not be encoded.
@@ -298,10 +295,9 @@ pub trait ToDataFrame: Record + Sized {
 
     /// Encodes a slice of rows: where the conversions above end up.
     ///
-    /// The derive writes this method out instead of inheriting it, for the
-    /// sake of where it is compiled. Written in the impl, the encoder for a
-    /// row type is built once, in the crate that defines the type. Inherited,
-    /// it would be built again in every crate that converts one.
+    /// The derive writes this method out instead of inheriting it: the
+    /// encoder is then compiled once, in the crate that defines the row type,
+    /// not in every crate that converts one.
     #[doc(hidden)]
     fn __encode(rows: &[Self]) -> PolarsResult<DataFrame> {
         frame::encode::<Self, Self>(rows)

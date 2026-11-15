@@ -97,7 +97,8 @@ Any of these works as a field with no attribute, in any nesting:
 - **Derived enums** (`categorical` feature): an enum whose variants hold no
   data is one `Enum` column, or one `Categorical` column if it asks. See
   [Enums](#enums).
-- **Tuples**: `(A, B)` becomes `field.field_0`, `field.field_1`.
+- **Tuples** of up to 12 elements: `(A, B)` becomes `field.field_0`,
+  `field.field_1`.
 - **`Option<T>`**: the same columns as `T`, nullable.
 - **`Vec<T>`, `&[T]`, `Box<[T]>`, `[T; N]`**: the same columns as `T`, each
   wrapped in a `List`. A list of structs becomes one list column per struct

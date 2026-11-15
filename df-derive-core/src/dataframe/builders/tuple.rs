@@ -38,6 +38,7 @@ impl Columnar for () {
 }
 
 // A tuple is a struct whose fields are named `field_0`, `field_1`, ...
+// Up to 12 elements, like the standard library's own impls for tuples.
 macro_rules! tuple {
     ($(($($index:tt $t:ident $b:ident $field:literal),+))*) => {$(
         impl<$($t, $b: ColumnBuilder<$t>),+> ColumnBuilder<($($t,)+)> for ($($b,)+) {

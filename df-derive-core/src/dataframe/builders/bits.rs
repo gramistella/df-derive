@@ -1,17 +1,12 @@
 use polars_arrow::bitmap::Bitmap;
 
-/// Multiplying eight bytes that are each 0 or 1 by this constant gathers
-/// their low bits into the top byte of the product, first byte lowest. Byte
-/// `i` sits at bit `8 * i` and the constant has bit `56 - 7 * i` set, so the
-/// two meet at bit `56 + i`; no other pair of bits lands on the same place,
-/// so nothing carries.
+/// Multiplying eight bytes that are each 0 or 1 by this gathers their low
+/// bits into the top byte of the product, first byte lowest: byte `i` sits at
+/// bit `8 * i` and meets the constant's bit `56 - 7 * i` at bit `56 + i`. No
+/// other pair lands on the same bit, so nothing carries.
 const GATHER: u64 = 0x0102_0408_1020_4080;
 
-/// Packs one flag per byte into one flag per bit.
-///
-/// Flags are kept as bytes while a column is built, which makes appending
-/// them a plain vector push, and packed here once at the end, eight at a
-/// time.
+/// Packs one flag per byte into one flag per bit, eight at a time.
 pub(super) fn pack(flags: &[bool]) -> Bitmap {
     let (words, rest) = flags.as_chunks::<8>();
     let mut bytes = Vec::with_capacity(flags.len().div_ceil(8));

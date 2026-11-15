@@ -16,11 +16,9 @@ pub struct ListBuilder<B> {
     offsets: ListOffsets,
 }
 
-/// Where each list ends in the buffer its elements share.
-///
-/// Arrow's own offsets type does the bookkeeping: it only ever appends an
-/// end that is at or past the one before, so the finished offsets need no
-/// validation.
+/// Where each list ends in the buffer its elements share. Arrow's offsets
+/// type only ever appends an end at or past the one before, so the finished
+/// offsets need no validation.
 pub(super) struct ListOffsets {
     ends: Offsets<i64>,
     /// Elements counted by `measure` that `reserve` has not yet made room for.

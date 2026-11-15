@@ -160,11 +160,10 @@ impl Unit for Ns {
 
 /// Builder for `Datetime` and `Duration` columns in the unit `U`.
 ///
-/// The value type decides whether a `Datetime` column has a time zone. A
-/// `chrono::DateTime<Tz>` is an instant, so its column is
-/// `Datetime(U, UTC)`: the value's own zone or offset is not kept, the
-/// instant is. A `chrono::NaiveDateTime` names no zone and neither does its
-/// column, `Datetime(U, None)`. Polars treats the two as different types.
+/// A `chrono::DateTime<Tz>` is an instant: its column is `Datetime(U, UTC)`
+/// and the value's own zone is not kept. A `chrono::NaiveDateTime` names no
+/// zone and neither does its column, `Datetime(U, None)`. Polars treats the
+/// two as different types.
 pub struct TemporalBuilder<U>(Vec<i64>, PhantomData<U>);
 
 /// How a temporal value maps onto [`TemporalBuilder`].

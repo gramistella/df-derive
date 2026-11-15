@@ -52,10 +52,8 @@
 //! `default-features = false`, Polars is asked only for the types that the
 //! standard library's own types are stored as.
 
-// `polars` pulls a wide transitive dependency tree where multiple resolved
-// versions are unavoidable. `clippy::multiple_crate_versions` is part of the
-// `clippy::cargo` group `just lint` enables; allow it here so linting stays
-// focused on this crate's own code.
+// Polars's dependency tree holds several versions of some crates, which is
+// outside this crate's control.
 #![allow(clippy::multiple_crate_versions)]
 
 // Lets the derive's default `::df_derive` path resolve inside this crate.

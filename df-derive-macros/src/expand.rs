@@ -4,16 +4,11 @@
 //! that produces columns. A builder borrows nothing from the rows it reads,
 //! so its type is not tied to one instance of the row type:
 //!
-//! - A member whose type names no type or const parameter of the row type is
-//!   written out, with `'static` in place of every lifetime. The builder of
-//!   a `&'a str` is the same type whatever `'a` is, so that member encodes
-//!   the field for every `'a`.
-//! - A member whose type names such a parameter cannot be written without an
-//!   instance of the row type in hand. The builder struct then takes that
-//!   instance as its one parameter, `__DfDeriveFor`, and gets the member's
-//!   type from it through a hidden trait. Such a builder encodes every
-//!   instance whose field the member encodes, not only the one that named
-//!   it.
+//! - A member that names no type or const parameter of the row type is
+//!   written out, with `'static` in place of every lifetime.
+//! - A member that names one is taken, through a hidden trait, from the
+//!   instance that named the builder: the struct's one parameter,
+//!   `__DfDeriveFor`.
 //!
 //! So the builder that `Row<'static, &'static str>` names also encodes a
 //! `Row<'a, &'a str>`. A projection depends on this: its row borrows from
@@ -66,10 +61,9 @@ struct Column<'a> {
     /// What must hold for `builder` to encode `ty`: one or more predicates.
     bounds: TokenStream,
     /// Whether `ty` or `builder` names a type or const parameter of the row
-    /// type. Only then do `bounds` go in the where-clause. A field that does
-    /// not depend on a parameter is checked where the builder is declared
-    /// and used, so one that cannot be encoded is reported where the type is
-    /// defined instead of at first use.
+    /// type. Only then do `bounds` go in the where-clause. Any other field is
+    /// checked where the builder is used, so one that cannot be encoded is
+    /// reported where the type is defined, not at first use.
     generic: bool,
     /// Whether `builder` names such a parameter, which makes it a different
     /// type for different instances of the row type.
@@ -156,11 +150,8 @@ fn rename_lifetimes(
     renamed.into_iter().collect()
 }
 
-/// Rewrites every lifetime to `'static`.
-///
-/// A builder owns its buffers and borrows nothing from the rows it reads, so
-/// its type does not need the row's lifetimes. Naming a member with `'static`
-/// makes one type serve every lifetime of the field.
+/// Rewrites every lifetime to `'static`. A builder borrows nothing from the
+/// rows it reads, so one type serves every lifetime of the field.
 fn erase_lifetimes(tokens: TokenStream) -> TokenStream {
     let mut bound = HashSet::new();
     bound_lifetimes(tokens.clone(), &mut bound);
@@ -376,6 +367,7 @@ impl Naming {
             };
         };
         let parameter = quote! { __DfDeriveFor: #members + ?::core::marker::Sized };
+        // After any const parameters: the order is free since Rust 1.59.
         encoder.params.push(syn::parse_quote! { #parameter });
         Self {
             declaration: quote! { <#parameter> },
@@ -497,11 +489,10 @@ fn expand_struct(
         ..
     } = &naming;
     let (encoder_generics, _, _) = naming.encoder.split_for_impl();
-    // The derived type says which builder each member taken from the naming
-    // instance is. Every token of that has the span of the field's type, so
-    // a field without a builder is reported at the field. The trait is
-    // private because its impl names the builders of fields whose types may
-    // be private, which the impl of a public trait must not do.
+    // The derived type says which builder each such member is, with the span
+    // of the field's type, so a field without a builder is reported at the
+    // field. The trait is private because its impl names the builders of
+    // fields whose types may be private.
     let named_members = (!per_instance.is_empty()).then(|| {
         let slots = per_instance.iter().map(|column| &column.slot);
         let named = per_instance.iter().map(|column| {
@@ -545,9 +536,8 @@ fn expand_struct(
         })
         .collect();
     // What the fields that depend on a parameter need where rows are
-    // encoded. A member written out needs what its field needs. A member
-    // taken from the naming instance has to encode the field as this row has
-    // it, whichever instance that was.
+    // encoded: a member written out needs what its field needs, and one taken
+    // from the naming instance has to encode the field as this row has it.
     let encoder_bounds = columns
         .iter()
         .filter(|column| column.generic)
@@ -569,9 +559,8 @@ fn expand_struct(
             )
         })
         .collect();
-    // A field of the row in a slot: where the slot is empty, so is the field.
-    // Written as a `match` rather than with `Option::map`, which would cost
-    // another closure and another instantiation for every field.
+    // A field of the row in a slot. A `match`, because `Option::map` would
+    // cost a closure and an instantiation for every field.
     let field_of: Vec<_> = members
         .iter()
         .map(|member| {
@@ -649,11 +638,10 @@ fn expand_struct(
         const _: () = {
             #named_members
 
-            // The last member decides whether a struct is `Sized`. If it were
-            // the builder of a field that cannot be encoded, the compiler
-            // would report that field again wherever the builder's size is
-            // needed. With `()` last, the field is reported at the field and
-            // once at the derive.
+            // `()` is last because the last member decides whether a struct
+            // is `Sized`: a field that cannot be encoded would otherwise be
+            // reported again wherever the builder's size is needed.
+            // `#[doc(hidden)]` also satisfies `missing_docs`.
             #[doc(hidden)]
             #[allow(private_bounds, non_snake_case, dead_code)]
             #vis struct __DfDeriveBuilder #declaration {
@@ -756,19 +744,13 @@ fn expand_struct(
 }
 
 /// An enum whose variants hold no data: one column of the names of its
-/// variants.
+/// variants, an `Enum` column or, with `categorical`, a `Categorical` one. A
+/// value is stored by the position of its variant among the names.
 ///
-/// The column is an `Enum` column, whose type lists the names, unless the
-/// enum asks with `categorical` for a `Categorical` one, whose type lists
-/// nothing. Either way a value is stored by the position of its variant
-/// among the names.
+/// A `#[non_exhaustive]` enum has to ask for `categorical`: another variant
+/// would change the type of an `Enum` column.
 ///
-/// An enum that is `#[non_exhaustive]` has to ask. It says it may be given
-/// another variant, and that would change the type of an `Enum` column.
-///
-/// Like a transparent wrapper, such a type is a value, not a row: it takes
-/// the name of the field that holds it, so it is neither a record nor a
-/// `ToDataFrame`.
+/// Like a transparent wrapper, such a type is a value, not a row.
 fn expand_enum(
     input: &DeriveInput,
     data: &syn::DataEnum,
@@ -939,12 +921,9 @@ fn own_names(data: &syn::DataEnum) -> syn::Result<Vec<syn::LitStr>> {
     Ok(names)
 }
 
-/// The one `ToDataFrame` method the derive writes out.
-///
-/// Its body is what the trait's default does anyway. Written out in the impl,
-/// it is an ordinary function of the crate that defines the row type, so the
-/// encoder is compiled there once. Left to the default it would be
-/// instantiated in every crate that converts the type.
+/// The one `ToDataFrame` method the derive writes out. Its body is the
+/// trait's default: written in the impl, the encoder is compiled once, in
+/// the crate that defines the row type, not in every crate that converts it.
 fn encode_in_place(runtime: &Runtime) -> TokenStream {
     let Runtime { root, polars, .. } = runtime;
     quote! {
@@ -955,12 +934,10 @@ fn encode_in_place(runtime: &Runtime) -> TokenStream {
     }
 }
 
-/// A type that encodes as another row type built from a reference to it.
-///
-/// Each value is converted to the row with `From<&T>` (or `TryFrom<&T>`) and
-/// pushed straight into the row type's builder, so no intermediate collection
-/// of rows is built. The row may borrow from the value: write its borrowed
-/// lifetimes as `'_`.
+/// A type that encodes as another row type built from a reference to it,
+/// with `From<&T>` or `TryFrom<&T>`. The row may borrow from the value: its
+/// borrowed lifetimes are written `'_`. The runtime's `*_through` functions
+/// do the work.
 #[allow(clippy::too_many_lines)]
 fn expand_via(
     input: &DeriveInput,
@@ -981,8 +958,8 @@ fn expand_via(
 
     let row = respan(via.row.to_token_stream(), via.span);
     let stored = erase_lifetimes(row.clone());
-    // The builder of the row type is this builder's one member. Like any
-    // member, it is written out unless it depends on a parameter.
+    // Like any member, the row type's builder is written out unless it
+    // depends on a parameter.
     let per_instance = mentions(row.clone(), &parameters(&input.generics));
     // The builder has to encode the row whatever the row borrows.
     let (any_row, borrows) = name_borrows(row.clone());
@@ -1082,6 +1059,7 @@ fn expand_via(
         const _: () = {
             #named_member
 
+            // `#[doc(hidden)]` also satisfies `missing_docs`.
             #[doc(hidden)]
             #[allow(private_bounds)]
             #vis struct __DfDeriveBuilder #declaration {

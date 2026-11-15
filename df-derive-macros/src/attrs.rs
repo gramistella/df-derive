@@ -231,11 +231,9 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     })
 }
 
-/// Rejects `#[df_derive(...)]` inside a type that encodes through `via`.
-///
-/// The columns of such a type are those of its row type. Its own fields and
-/// variants are never read, so an attribute on one would do nothing, and
-/// would not even be checked.
+/// Rejects `#[df_derive(...)]` inside a type that encodes through `via`. Its
+/// fields and variants are never read, so an attribute on one would do
+/// nothing and go unchecked.
 pub fn none_inside(data: &syn::Data) -> syn::Result<()> {
     fn of_fields(fields: &syn::Fields) -> impl Iterator<Item = &Attribute> {
         fields.iter().flat_map(|field| &field.attrs)
@@ -267,10 +265,8 @@ pub fn none_inside(data: &syn::Data) -> syn::Result<()> {
         })
 }
 
-/// The name a variant is given with `rename = "..."`, if it is given one.
-///
-/// That is the one attribute a variant takes: it is a value of one column,
-/// and its name is all the column keeps of it.
+/// The name a variant is given with `rename = "..."`, if any. It is the one
+/// attribute a variant takes.
 pub fn variant(attrs: &[Attribute]) -> syn::Result<Option<LitStr>> {
     let mut rename: Option<LitStr> = None;
     for attr in df_derive_attrs(attrs) {

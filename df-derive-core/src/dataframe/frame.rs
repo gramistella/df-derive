@@ -1,10 +1,6 @@
 //! The encoder every conversion runs through, and the error context around
-//! it.
-//!
-//! The functions that are generic over the row type contain only what
-//! depends on it: the calls into its builder. Assembling the frame, checking
-//! a schema and wording an error are ordinary functions, compiled once
-//! rather than once per row type.
+//! it. Only the calls into a builder are generic over the row type; the rest
+//! is compiled once.
 
 use std::any::type_name;
 use std::borrow::Borrow;
@@ -15,28 +11,17 @@ use super::{ColumnBuilder, Columnar, Fields};
 
 /// Bytes of rows encoded per block.
 ///
-/// Within a block every column buffer is filled by its own loop, so only one
-/// buffer is being written at a time, and the block's rows are read from
-/// memory once and from cache afterwards. 4 KiB is one way of a 32 KiB
-/// eight-way first-level data cache, the smallest in common use, so the rows
-/// of a block never compete with each other for a place in it.
-///
-/// Short blocks also keep each column's run of writes short, which is what
-/// lets rows with dozens of columns go fast. The README's benchmark section
-/// records how results vary with this value and with the one below.
+/// 4 KiB is one way of a 32 KiB eight-way first-level data cache, the
+/// smallest in common use, so the rows of a block do not evict each other.
+/// The README records how results vary with this value and the one below.
 const BLOCK_BYTES: usize = 4 * 1024;
 
-/// The fewest rows in a block, however large a row is.
-///
-/// Starting a column's loop has a fixed cost. Below a few dozen rows per
-/// block that cost shows, and timings become erratic.
+/// The fewest rows in a block. Below a few dozen, the fixed cost of starting
+/// each column's loop shows and timings become erratic.
 const MIN_BLOCK_ROWS: usize = 32;
 
-/// How many values of type `T` make one block.
-///
-/// A block is sized in bytes rather than rows so that it fits the cache
-/// whatever the row type: large rows get short blocks, small rows long ones.
-/// Values behind pointers (strings, lists) are not counted.
+/// How many values of type `T` make one block. Values behind pointers
+/// (strings, lists) are not counted.
 const fn block_len<T>() -> usize {
     let rows = match size_of::<T>() {
         0 => return usize::MAX,
@@ -57,10 +42,8 @@ fn slots<'a, T: 'a, R: Borrow<T>>(rows: &'a [R]) -> impl Iterator<Item = Option<
     rows.iter().map(|row| Some(<R as Borrow<T>>::borrow(row)))
 }
 
-/// Encodes rows held in a slice, either by value or by reference.
-///
-/// The rows are measured, every buffer is allocated at its final size, and
-/// the rows are appended, a block at a time in both passes.
+/// Encodes rows held in a slice, by value or by reference: measure, reserve,
+/// append, a block at a time.
 pub(super) fn encode<T, R>(rows: &[R]) -> PolarsResult<DataFrame>
 where
     T: Columnar,
@@ -89,10 +72,8 @@ where
     assemble(rows.len(), columns, type_name::<T>(), schema)
 }
 
-/// Appends every value of a slice: the elements of one list.
-///
-/// A single value is one slot, so it is pushed. Several are handed over a
-/// block at a time, and an empty slice costs nothing.
+/// Appends the values of a slice, such as the elements of one list. A single
+/// value is pushed; more are handed over a block at a time.
 #[inline(always)]
 #[allow(clippy::inline_always)]
 pub(super) fn extend_from_slice<T, B>(builder: &mut B, values: &[T]) -> PolarsResult<()>
@@ -271,14 +252,15 @@ where
 
 /// Returns a row type's column names and dtypes.
 ///
-/// A builder that could not make the type of a column has named an unknown
-/// type for it. `empty` then encodes no rows, which fails for the same
-/// reason and says what it is.
+/// A builder that cannot make its column's type names an unknown one.
+/// `empty` then encodes no rows, which fails and says why.
 pub(super) fn schema<T: Columnar>(
     empty: fn() -> PolarsResult<DataFrame>,
 ) -> PolarsResult<Vec<(String, DataType)>> {
     let schema: SchemaFn = <T::Builder as ColumnBuilder<T>>::schema;
     let fields = checked_fields(type_name::<T>(), schema)?;
+    // `is_known` looks inside lists and structs, so an unknown type is seen
+    // however deep it sits.
     if !fields.iter().all(|(_, dtype)| dtype.is_known()) {
         empty()?;
     }
@@ -317,8 +299,7 @@ fn assemble(
         return Ok(DataFrame::empty_with_height(height));
     }
     DataFrame::new(height, columns).map_err(|error| {
-        // Polars rejects duplicate column names here. Report that the way
-        // `schema` does, which names the column and the row type.
+        // Polars rejects duplicate names here. Report it as `schema` does.
         if matches!(error, PolarsError::Duplicate(_))
             && let Err(duplicate) = checked_fields(row_type, schema)
         {
@@ -342,7 +323,8 @@ pub fn child(parent: &PlSmallStr, field: &'static str) -> PlSmallStr {
 }
 
 /// Separates the path from the message while an error travels up through
-/// nested builders. Replaced before the error reaches the caller.
+/// nested builders. Replaced before the error reaches the caller. A message
+/// that holds this control character itself has its start taken for path.
 const PATH_END: char = '\u{1f}';
 
 /// Puts `step` in front of the path an error has collected so far. A list
@@ -380,10 +362,8 @@ pub(super) fn in_element(error: PolarsError, index: usize) -> PolarsError {
     prefixed(&error, &format_args!("[{index}]"))
 }
 
-/// Finishes an error's context: `Type[row].path: message`.
-///
-/// `row_type` is the type's full name. Its last path segment is what is
-/// shown, with any generic arguments.
+/// Finishes an error's context: `Type[row].path: message`, with the type's
+/// name cut to its last path segment.
 fn at_row(error: &PolarsError, row_type: &str, row: usize) -> PolarsError {
     let head = row_type.split('<').next().unwrap_or(row_type);
     let short = &row_type[head.rfind("::").map_or(0, |index| index + 2)..];

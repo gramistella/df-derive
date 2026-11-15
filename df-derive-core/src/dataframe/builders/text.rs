@@ -36,8 +36,7 @@ impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for StrBuilder {
         self.0.reserve(additional);
     }
 
-    // Two calls rather than one on a chosen string: an empty slot then
-    // appends a constant, which costs less than a value of unknown length.
+    // Two calls, so that an empty slot appends a string of constant length.
     #[inline(always)]
     fn push(&mut self, value: Option<&T>) -> PolarsResult<()> {
         match value {

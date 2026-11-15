@@ -1,14 +1,10 @@
 //! Builders for the two column types that hold text as codes.
 //!
-//! A `Categorical` column takes whatever strings its rows hold and gives each
-//! distinct one a code as it turns up. An `Enum` column has its strings
-//! listed in its type: the names of the variants of a Rust type, which are
-//! known before the first row is read.
-//!
-//! A type that names its variants can be stored either way. The list in the
-//! type of an `Enum` column is the whole of what the column may hold, so it
-//! suits a type that will never be given another variant. One that may be is
-//! a `Categorical` column of the same names.
+//! A `Categorical` column gives each distinct string a code as it turns up.
+//! An `Enum` column lists its strings in its type: the names of the variants
+//! of a Rust type. A type that names its variants can be stored either way.
+//! One that may be given another variant is a `Categorical` column, because
+//! the list is the type of an `Enum` column.
 
 use std::any::{TypeId, type_name};
 use std::collections::BTreeMap;
@@ -30,14 +26,10 @@ use crate::dataframe::{ColumnBuilder, Fields, Variants};
 
 /// Builder for a `Categorical` column from anything that borrows as `str`.
 ///
-/// This is the encoding `#[df_derive(categorical)]` selects. The column holds
-/// a 32-bit code for each row and every distinct string once. The strings are
-/// kept in Polars's global set of categories, which every categorical column
-/// built here shares, so two such columns compare and join without one being
-/// translated into the codes of the other.
-///
-/// It suits text that repeats: a currency, a venue, the kind of a thing. Text
-/// that is different in nearly every row is better left a string column.
+/// This is the encoding `#[df_derive(categorical)]` selects: a 32-bit code
+/// for each row and every distinct string once, in Polars's global set of
+/// categories. Every categorical column built here shares that set, so two of
+/// them compare and join as they are. It suits text that repeats.
 ///
 /// The builder is part of the `categorical` feature, which is off by default.
 pub struct CategoricalBuilder {
@@ -132,7 +124,7 @@ impl<T: AsRef<str> + ?Sized> ColumnBuilder<T> for CategoricalBuilder {
 /// `Display`.
 ///
 /// This is the encoding `#[df_derive(as_string, categorical)]` selects. A
-/// value is formatted into one reused scratch buffer and stored as
+/// value is formatted into one reused buffer and stored as
 /// [`CategoricalBuilder`] stores a string.
 ///
 /// The builder is part of the `categorical` feature, which is off by default.
@@ -180,14 +172,12 @@ impl<T: Display + ?Sized> ColumnBuilder<T> for CategoricalDisplayBuilder {
     }
 }
 
-/// The positions of a column's values among the names of their type: what
-/// either builder of a type that names its variants collects.
+/// The positions of a column's values among the names of their type.
 ///
-/// A column of `T` is then a selection, by position, of the rows of a column
-/// that holds every value of `T` once. Polars selects rows without looking
-/// at the names again. A column assembled from codes has every code checked
-/// against them, which was measured at three to four times the time for 100k
-/// rows.
+/// A column of `T` is a selection, by position, from a column that holds
+/// every value of `T` once. Polars selects rows without checking names; a
+/// column assembled from codes has every code checked, which takes three to
+/// four times as long for 100k rows.
 struct Positions<T> {
     /// What each slot stores: the position of its value as the index of a
     /// row in the column of variants, or a zero as the placeholder of an
@@ -223,9 +213,8 @@ impl<T: Variants> Positions<T> {
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
-        // Positions select rows as they are. Where some slots are empty,
-        // they first become a column that says which. Either way Polars
-        // checks that every position is that of a row, and so of a name.
+        // Polars checks every position against the rows when it selects,
+        // so one past the names is found here, not in `push`.
         let column = if validity.is_some() {
             let positions = primitive_array(self.rows, validity)?;
             let positions = IdxCa::with_chunk(PlSmallStr::EMPTY, positions);
@@ -247,12 +236,9 @@ impl<T: Variants> Positions<T> {
 /// The names of each type stored through [`Variants`] so far, as text.
 static NAMES: RwLock<BTreeMap<TypeId, Arc<[Box<str>]>>> = RwLock::new(BTreeMap::new());
 
-/// The names of `T` as text, in the order `T` gives them.
-///
-/// They are asked for once for a type and kept: the names of a type do not
-/// change, and formatting them for every column would cost more than a small
-/// frame does. Names that repeat or cannot be written are an error here, so
-/// they are one for either kind of column.
+/// The names of `T` as text, in the order `T` gives them, made once and
+/// kept. Names that repeat or cannot be written are an error here, for
+/// either kind of column.
 fn names<T: Variants>() -> PolarsResult<Arc<[Box<str>]>> {
     let key = TypeId::of::<T>();
     let kept = NAMES.read().unwrap_or_else(PoisonError::into_inner);
@@ -351,16 +337,11 @@ fn no_such_variant<T: Variants>(
 ///
 /// This is the builder `#[derive(ToDataFrame)]` gives an enum whose variants
 /// hold no data, and the one to name for a type that implements [`Variants`]
-/// by hand. The column's type lists the names of the variants, so it says
-/// what the column can hold before a row is read, and every column of one
-/// Rust type has the same type.
+/// by hand. The column's type lists the names, and a row is the
+/// [`position`](Variants::position) of its value: nothing is looked up.
 ///
-/// Nothing is looked up to store a value, which a [`CategoricalBuilder`]
-/// does for every string: a row is the [`position`](Variants::position) of
-/// its value. The price is that the names are fixed. A type that can hold a
-/// value outside its list is text, not an enum, and one whose list may be
-/// added to later is better stored by a [`CategoricalVariantsBuilder`]: the
-/// list is the type of the column, and Polars does not put two `Enum`
+/// The names are fixed. A type whose list may be added to later is better
+/// stored by a [`CategoricalVariantsBuilder`]: Polars does not put two `Enum`
 /// columns together whose lists differ.
 ///
 /// The builder is part of the `categorical` feature, which is off by default.
@@ -372,12 +353,8 @@ pub struct EnumBuilder<T>(Positions<T>);
 static KNOWN: RwLock<BTreeMap<TypeId, Series>> = RwLock::new(BTreeMap::new());
 
 /// Every value of `T` once, in the order of its names, as an `Enum` column:
-/// what an `Enum` column of `T` is selected from.
-///
-/// The column is made once for a type and kept. Making it has Polars hash
-/// every name and look for an equal set of names among those in use, which
-/// was measured at half a microsecond: too much for every column of every
-/// frame, when a frame of one row takes a microsecond in all.
+/// what an `Enum` column of `T` is selected from. Made once and kept: making
+/// it takes half a microsecond, half of what a one-row frame takes.
 fn variants<T: Variants>() -> PolarsResult<Series> {
     let key = TypeId::of::<T>();
     let known = KNOWN.read().unwrap_or_else(PoisonError::into_inner);
@@ -400,9 +377,8 @@ fn variants<T: Variants>() -> PolarsResult<Series> {
 
 impl<T: Variants> ColumnBuilder<T> for EnumBuilder<T> {
     fn schema(name: PlSmallStr, out: &mut Fields) {
-        // A type whose names Polars refuses has no column type to name.
-        // Nothing is stored as the one named here: `finish` says why, and
-        // so does a row type asked for its schema.
+        // A type whose names are refused has no column type. `finish` says
+        // why, and so does a row type asked for its schema.
         let dtype = variants::<T>().map_or(DataType::Unknown(UnknownKind::Any), |variants| {
             variants.dtype().clone()
         });
@@ -450,13 +426,10 @@ impl<T: Variants> ColumnBuilder<T> for EnumBuilder<T> {
 /// one to name for a type that implements [`Variants`] by hand and may be
 /// given another value later.
 ///
-/// The type of an `Enum` column is the list of its names, and Polars does
-/// not stack, compare or join two `Enum` columns whose lists differ. A name
-/// added to a type would therefore change the type of its columns, and a
-/// frame saved before could not be used with one built after. A
-/// `Categorical` column lists nothing in its type, so its type stays what it
-/// is, and it shares Polars's global set of categories with every other such
-/// column.
+/// A `Categorical` column lists nothing in its type, so a name added to the
+/// type does not change it. It would change the type of an `Enum` column,
+/// and Polars does not stack, compare or join two of those whose lists
+/// differ.
 ///
 /// As for an [`EnumBuilder`], a row is the [`position`](Variants::position)
 /// of its value, and nothing is formatted to store one.
@@ -466,9 +439,9 @@ pub struct CategoricalVariantsBuilder<T>(Positions<T>);
 
 /// The codes that the names of a type have in one set of categories.
 struct Codes {
-    /// The set the codes are codes in. Polars keeps its global set for as
-    /// long as a column uses it and starts another one afterwards, so the
-    /// codes are good for as long as this is the set in use.
+    /// The set the codes belong to. Polars drops its global set when no
+    /// column uses it and starts another, so the codes are good only while
+    /// this is the set in use.
     mapping: Weak<CategoricalMapping>,
     /// The code of each name, in the order the type gives the names.
     by_position: PrimitiveArray<u32>,
@@ -479,13 +452,10 @@ struct Codes {
 static CODES: RwLock<BTreeMap<TypeId, Arc<Codes>>> = RwLock::new(BTreeMap::new());
 
 /// Every value of `T` once, in the order of its names, as a `Categorical`
-/// column of Polars's global set of categories: what a longer column of `T`
-/// is selected from.
+/// column of the global set: what a longer column of `T` is selected from.
 ///
-/// The codes of the names are kept from one column to the next, so the names
-/// are looked up among the categories once for as long as the set lives, not
-/// once for every column. The column itself is made each time. Kept, it
-/// would hold on to the set, and Polars could never let the set go.
+/// The codes are kept between columns. The column is made each time: kept,
+/// it would hold the global set alive for good.
 fn named<T: Variants>() -> PolarsResult<Series> {
     let categories = Categories::global();
     let mapping = categories.mapping();
@@ -494,8 +464,8 @@ fn named<T: Variants>() -> PolarsResult<Series> {
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&key)
-        // The kept codes hold on to the allocation of their set, so no other
-        // set can be at its address.
+        // Comparing addresses is enough: the `Weak` keeps its allocation
+        // from being reused, so an equal address is the same set.
         .filter(|codes| std::ptr::eq(codes.mapping.as_ptr(), Arc::as_ptr(&mapping)))
         .cloned();
     let codes = if let Some(codes) = kept {
@@ -564,16 +534,14 @@ impl<T: Variants> ColumnBuilder<T> for CategoricalVariantsBuilder<T> {
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
         // Polars checks every code of a categorical column it is handed, so
-        // it is handed the shorter of two things. A column of more rows than
-        // the type has names is selected from a column of the names, which
-        // is checked once however many rows are selected.
+        // it gets the shorter of two things. More rows than names: a
+        // selection from a column of the names, which is checked once.
         let names = names::<T>()?;
         if self.0.rows.len() > names.len() {
             return self.0.select(&named::<T>()?, name, validity, out);
         }
 
-        // A column of no more rows than that is handed as it is: the code of
-        // each row, found by its name as the code of any text is.
+        // No more rows than names: the code of each row, found by its name.
         let mut values = CategoricalBuilder::global();
         values.codes.reserve(self.0.rows.len());
         for (slot, position) in self.0.rows.into_iter().enumerate() {

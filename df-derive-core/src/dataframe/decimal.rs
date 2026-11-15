@@ -28,11 +28,8 @@ where
     }
 }
 
-/// Every power of ten an `i128` can hold: `POWERS_OF_TEN[n]` is `10^n`.
-///
-/// Rescaling multiplies or divides by one of these for every value, so they
-/// are looked up rather than computed. The table also bounds the scale: a
-/// decimal with more than 38 decimals has no place in it.
+/// Every power of ten an `i128` can hold: `POWERS_OF_TEN[n]` is `10^n`. Its
+/// length also bounds the scale.
 #[cfg(feature = "rust_decimal")]
 const POWERS_OF_TEN: [i128; 39] = {
     let mut powers = [1; 39];
@@ -49,9 +46,8 @@ const POWERS_OF_TEN: [i128; 39] = {
 /// Polars' decimal string cast in this crate's tests.
 #[cfg(feature = "rust_decimal")]
 impl Decimal128Encode for rust_decimal::Decimal {
-    // Always inlined: a column of decimals is then one loop. Left to the
-    // compiler's judgement, a few more lines here turn every value into a
-    // call, which was measured at a third more time for such a column.
+    // Always inlined: as a call per value, a column of decimals takes a
+    // third longer.
     #[inline(always)]
     #[allow(clippy::inline_always)]
     fn try_to_i128_mantissa(&self, target_scale: u32) -> Option<i128> {

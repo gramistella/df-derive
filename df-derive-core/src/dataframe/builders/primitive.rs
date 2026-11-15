@@ -16,13 +16,10 @@ pub trait Primitive: NativeType {
     /// The Polars dtype of a column of this type.
     const DTYPE: DataType;
 
-    /// What a column's buffer holds while it is being built: the type itself,
-    /// or for a float the unsigned integer with the same bits.
-    ///
-    /// A buffer of bits becomes the floats it stands for when the column is
-    /// finished, which copies nothing. Until then a float is an integer, so
-    /// that the placeholder of an empty slot can be chosen without a branch
-    /// on every processor, as it is for the other numbers.
+    /// What a column's buffer holds while it is built: the type itself, or
+    /// for a float the unsigned integer with the same bits, so that an empty
+    /// slot's placeholder is chosen without a branch on x86 too. The buffer
+    /// becomes floats at the end without a copy.
     type Stored: NativeType + Default;
 
     /// What a slot stores: its value as the buffer holds it, or a zero as
@@ -41,14 +38,11 @@ pub(super) fn primitive_array<P: NativeType>(
     PrimitiveArray::try_new(P::PRIMITIVE.into(), values.into(), validity.cloned())
 }
 
-/// Appends one converted value per slot, and the default value for a slot
-/// that holds none.
+/// Appends one converted value per slot, and the default for an empty slot.
 ///
-/// The whole run goes through one `Vec::extend`, which sizes the vector
-/// before the loop starts, so an iteration is a conversion and a store. That
-/// only works without an early exit: after a failed conversion the remaining
-/// slots are filled with the default, and the first error is returned once
-/// the loop is done.
+/// One `Vec::extend`, which has no early exit: after a failed conversion the
+/// remaining slots get the default, and the first error is returned at the
+/// end.
 #[inline(always)]
 pub(super) fn try_extend<'a, T, P, I>(
     out: &mut Vec<P>,
@@ -71,24 +65,15 @@ where
     failure.map_or(Ok(()), Err)
 }
 
-/// What a slot stores: its value as `convert` reads it, or the default as a
-/// placeholder for an empty slot.
+/// What a slot stores: its value as `convert` reads it, or the default for
+/// an empty slot, chosen without a branch.
 ///
-/// Which slots are empty is data. A processor that has to guess it guesses
-/// wrong wherever nulls follow no pattern, and a wrong guess costs more than
-/// appending a value does. So nothing here depends on the guess. An empty slot
-/// is read from `spare` instead, so that there is always a value to read and
-/// convert, and the choice between the result and the placeholder is marked
-/// as one that cannot be predicted, which has the compiler choose without a
-/// branch. Left unmarked, the choice is usually compiled as a branch around
-/// the read.
-///
-/// The read comes first for a reason. Marking a choice between "the value, if
-/// there is one" and the placeholder does nothing: the read then sits behind
-/// a test of its own, and the compiler folds the marked choice into that test.
-///
-/// A processor chooses between two integers in one instruction. For floats
-/// x86 has no such instruction, which is why a float is read as its bits
+/// Which slots are empty is data, and a branch on it mispredicts wherever
+/// nulls follow no pattern. An empty slot reads `spare` instead, and the
+/// choice between the result and the default is marked unpredictable, which
+/// compiles to a conditional move. The read has to come first: a hinted
+/// choice around "the value, if any" is folded back into a branch. x86 has
+/// no conditional move for floats, so those are read as their bits
 /// ([`Primitive::Stored`]).
 #[inline(always)]
 fn stored<T, V>(slot: Option<&T>, spare: &'static T, convert: impl Fn(&T) -> V) -> V
@@ -188,8 +173,8 @@ macro_rules! float {
             }
 
             fn series(name: PlSmallStr, array: PrimitiveArray<$bits>) -> Series {
-                // The same buffer, read as the floats its integers are the
-                // bits of. The two types have one size and one alignment.
+                // The same buffer, retyped: the two types have one size and
+                // one alignment.
                 let floats = array.transmute::<$ty>();
                 polars::prelude::$chunked::with_chunk(name, floats).into_series()
             }

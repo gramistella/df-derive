@@ -128,6 +128,8 @@ fn wrapper(ty: &Type) -> Option<Wrapper<'_>> {
     }
 }
 
+// By name only: an alias of `u8` is not seen, and such a field does not
+// compile under `as_binary`.
 fn is_u8(ty: &Type) -> bool {
     matches!(peel(ty), Type::Path(path) if path.qself.is_none() && path.path.is_ident("u8"))
 }

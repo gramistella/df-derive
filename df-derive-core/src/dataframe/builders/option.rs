@@ -8,18 +8,19 @@ use crate::dataframe::{ColumnBuilder, Columnar, Fields, Record};
 /// Adds null tracking on top of another builder.
 ///
 /// Every slot is passed on to the inner builder, which appends a placeholder
-/// when the slot is empty, and whether the slot held a value is recorded
-/// here. At `finish` that record becomes a bitmap, is combined with any
-/// validity handed down from an outer option, and applied to every inner
-/// column, so nested options collapse to one null per slot.
+/// when the slot is empty, and whether it held a value is recorded here. At
+/// `finish` the record becomes a bitmap, is combined with any validity from
+/// an outer option, and applied to every inner column, so nested options
+/// collapse to one null per slot.
 ///
-/// How the record is kept depends on how the inner builder is fed. Slots that
-/// arrive in runs get a flag each, written by a loop of its own over the run
-/// and packed into bits at the end. Slots that arrive one at a time (see
-/// [`ROW_AT_A_TIME`](ColumnBuilder::ROW_AT_A_TIME)) are counted, and only the
-/// empty ones are recorded.
+/// Slots that arrive in runs get a flag each, packed into bits at the end.
+/// Slots that arrive one at a time
+/// ([`ROW_AT_A_TIME`](ColumnBuilder::ROW_AT_A_TIME)) are counted, and only
+/// the empty ones are recorded.
 pub struct OptionBuilder<B> {
     inner: B,
+    // Only one of the two below is used, chosen by `B::ROW_AT_A_TIME`. Both
+    // are fields because stable Rust cannot pick a field's type from a const.
     /// One flag per slot, when the inner builder is fed runs.
     valid: Vec<bool>,
     /// The empty slots, when the inner builder is fed a row at a time.
@@ -28,8 +29,8 @@ pub struct OptionBuilder<B> {
 
 /// Which slots are empty, among slots that arrive one at a time.
 ///
-/// A slot that holds a value costs a count and nothing else: the bitmap
-/// starts out all set, and an empty slot clears its bit.
+/// Pushing a slot that holds a value only counts it: the bitmap is set to
+/// all ones when room is made, and an empty slot clears its bit.
 struct Gaps {
     /// A bit for every slot there is room for so far, clear where a slot is
     /// empty. Slots past its end hold values.
@@ -75,8 +76,8 @@ impl Gaps {
 
     /// The validity of the slots, or `None` when every slot holds a value.
     fn finish(mut self) -> Option<Bitmap> {
-        // The slots after the last one room was made for hold values, and
-        // room that was made for slots that never came is cut off.
+        // Slots past the room that was made hold values; room for slots
+        // that never came is cut off.
         let missing = self.slots.saturating_sub(self.filled.len());
         self.filled.extend_constant(missing, true);
         let validity = Bitmap::from(self.filled).sliced(0, self.slots);

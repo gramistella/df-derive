@@ -229,13 +229,14 @@ impl<T: Variants> Positions<T> {
         let column = if validity.is_some() {
             let positions = primitive_array(self.rows, validity)?;
             let positions = IdxCa::with_chunk(PlSmallStr::EMPTY, positions);
-            variants
-                .take(&positions)
-                .map_err(|error| no_such_variant::<T>(error, positions.max(), variants.len()))
+            variants.take(&positions).map_err(|error| {
+                no_such_variant::<T>(error, positions.max(), variants.len(), &name)
+            })
         } else {
             let positions = &self.rows;
             variants.take_slice(positions).map_err(|error| {
-                no_such_variant::<T>(error, positions.iter().copied().max(), variants.len())
+                let largest = positions.iter().copied().max();
+                no_such_variant::<T>(error, largest, variants.len(), &name)
             })
         }?;
         out.push(column.with_name(name).into());
@@ -311,7 +312,7 @@ fn repeated<T: Variants>(name: &str) -> PolarsError {
 /// The error for a position that is the position of no name.
 #[cold]
 #[inline(never)]
-fn past_the_names<T: Variants>(position: IdxSize, names: usize) -> PolarsError {
+fn past_the_names<T: Variants>(position: IdxSize, names: usize, column: &str) -> PolarsError {
     // A position too large to be stored was stored as the largest there is.
     let or_more = if position == IdxSize::MAX {
         " or more"
@@ -320,8 +321,8 @@ fn past_the_names<T: Variants>(position: IdxSize, names: usize) -> PolarsError {
     };
     PolarsError::ComputeError(
         format!(
-            "df-derive: `{}::position` returned {position}{or_more}, but `names` gives {names} \
-             names",
+            "df-derive: `{}::position` returned {position}{or_more} in column `{column}`, but \
+             `names` gives {names} names",
             type_name::<T>()
         )
         .into(),
@@ -338,11 +339,12 @@ fn no_such_variant<T: Variants>(
     error: PolarsError,
     largest: Option<IdxSize>,
     names: usize,
+    column: &str,
 ) -> PolarsError {
     let (PolarsError::OutOfBounds(_), Some(largest)) = (&error, largest) else {
         return error;
     };
-    past_the_names::<T>(largest, names)
+    past_the_names::<T>(largest, names, column)
 }
 
 /// Builder for an `Enum` column from a type that names its variants.
@@ -582,7 +584,7 @@ impl<T: Variants> ColumnBuilder<T> for CategoricalVariantsBuilder<T> {
                 .ok()
                 .and_then(|position| names.get(position))
             else {
-                return Err(past_the_names::<T>(position, names.len()));
+                return Err(past_the_names::<T>(position, names.len(), &name));
             };
             values.push_str(text)?;
         }

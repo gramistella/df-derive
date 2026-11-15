@@ -455,7 +455,8 @@ Fallible encodings are nanosecond timestamps, durations that overflow `i64`,
 decimals that do not fit the declared precision and scale, `as_string` values
 whose `Display` fails, and `try_via` conversions. A column of an enum's names
 fails for its type, not for a row: where two variants have one name, a name
-cannot be formatted, or a `position` is past the last name.
+cannot be formatted, or a `position` is past the last name. The last of
+these says which column held the value.
 
 ## Column Naming
 

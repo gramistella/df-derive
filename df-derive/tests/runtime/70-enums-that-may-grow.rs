@@ -471,7 +471,7 @@ fn a_type_can_ask_for_the_column_by_hand() {
 #[test]
 fn a_position_past_the_names_is_an_error() {
     let expected = format!(
-        "df-derive: `{}::position` returned 300, but `names` gives 300 names",
+        "df-derive: `{}::position` returned 300 in column `lot`, but `names` gives 300 names",
         std::any::type_name::<Lot>()
     );
     // As the first value of a column and after others, in a column of fewer

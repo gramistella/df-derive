@@ -484,14 +484,17 @@ fn a_position_past_the_names_is_an_error() {
                 })
                 .collect()
         };
-        let expected = format!(
-            "df-derive: `{}::position` returned {reported}, but `names` gives 300 names",
-            std::any::type_name::<Lot>()
-        );
+        let expected = |column: &str| {
+            format!(
+                "df-derive: `{}::position` returned {reported} in column `{column}`, but \
+                 `names` gives 300 names",
+                std::any::type_name::<Lot>()
+            )
+        };
 
-        // In a column that has empty slots, and in one that has none.
+        // In a column of optional values, and in one of plain ones.
         let error = fills(Some(Lot(past))).as_slice().to_dataframe();
-        assert_eq!(error.unwrap_err().to_string(), expected);
+        assert_eq!(error.unwrap_err().to_string(), expected("spare"));
         let rows: Vec<Fill> = fills(Some(Lot(past)))
             .into_iter()
             .map(|fill| Fill {
@@ -500,8 +503,25 @@ fn a_position_past_the_names_is_an_error() {
             })
             .collect();
         let error = rows.as_slice().to_dataframe();
-        assert_eq!(error.unwrap_err().to_string(), expected);
+        assert_eq!(error.unwrap_err().to_string(), expected("lot"));
     }
+
+    // A value inside a list is in the list's column.
+    #[derive(ToDataFrame)]
+    struct Pallet {
+        fills: Vec<Fill>,
+    }
+    let pallet = Pallet {
+        fills: vec![Fill {
+            lot: Lot(300),
+            spare: None,
+        }],
+    };
+    let error = [pallet].as_slice().to_dataframe().unwrap_err();
+    assert!(
+        error.to_string().contains("in column `fills.lot`"),
+        "{error}"
+    );
 }
 
 /// A type that gives two of its values one name.

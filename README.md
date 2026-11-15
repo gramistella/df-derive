@@ -751,6 +751,18 @@ each found by its name. One row with the four columns takes 0.85 µs while
 another categorical column is alive, and 1.2 µs when the frame starts a set
 of categories of its own: about what the same names stored as text take.
 
+**Columns of codes share state between threads.** An `Enum` column shares
+its list of names with every other column of its type, and a categorical
+column shares Polars's set of categories, so every such column that is made
+or dropped updates counters that all threads use. Small frames built on many
+threads at once therefore do not scale. On eight threads, a one-row frame of
+four enum columns takes 6.0 µs on each, against 0.8 µs on one thread alone,
+and with the enums stored as categories 16 µs against 0.7 µs. The same frame
+of four strings takes 1.2 µs against 0.6 µs. About a third of what the enum
+columns lose is this crate's: a lock around the column it keeps for each
+type, and that column's own counter. The rest is in Polars. A frame of many
+rows pays once per column, not once per row.
+
 **An empty slot is not guessed at.** A null is recorded apart from the
 values, and the values buffer gets a zero in its place. Which of the two a
 slot stores is data, and a processor that has to guess it is wrong wherever
@@ -768,6 +780,10 @@ branch, and lists of two to five optional integers 1.4 to 1.5 times as long.
 The other benchmarks leave slots empty at regular intervals, which a branch
 predictor largely learns; `24_irregular_nulls` takes its nulls from a hash
 of the position.
+Dates, times and decimals are converted on the way in, and for them an empty
+slot is still branched over. Without the branch every empty slot converts a
+value, and that measured slower: 50,000 rows of six optional dates and times
+whose nulls follow no pattern take 352 µs, against 269 µs with the branch.
 
 **Lists are appended one at a time.** The elements of a list sit together in
 memory, so each list is handed to the inner builder as one run per buffer,

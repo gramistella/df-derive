@@ -153,6 +153,11 @@ impl Unit for Ns {
     }
 }
 
+// The builders in this file branch over an empty slot, where a number's reads
+// a spare value instead (`primitive::stored`). Without the branch every empty
+// slot converts a value, and irregular nulls took 13% to 37% longer
+// (`24_irregular_nulls`).
+
 /// Builder for `Datetime` and `Duration` columns in the unit `U`.
 ///
 /// The value type decides whether a `Datetime` column has a time zone. A

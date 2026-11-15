@@ -39,6 +39,7 @@ fn tests() {
     t.pass("tests/pass/46-datetime-timezones.rs");
     t.pass("tests/pass/47-option-access-chain-no-clone.rs");
     t.pass("tests/pass/49-flatten-field.rs");
+    t.pass("tests/pass/50-strict-lints.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
@@ -93,6 +94,7 @@ fn tests() {
     t.compile_fail("tests/fail/164-fail-enum-that-may-grow.rs");
     // The cases below are about a feature, and exist only with it.
     if cfg!(feature = "categorical") {
+        t.pass("tests/pass/51-strict-lints-enums.rs");
         t.compile_fail("tests/fail/161-fail-categorical-conflicts.rs");
         t.compile_fail("tests/fail/163-fail-enum-without-its-text.rs");
     }

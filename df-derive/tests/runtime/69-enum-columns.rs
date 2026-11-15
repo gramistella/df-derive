@@ -565,6 +565,32 @@ fn names_that_repeat_are_an_error() {
     assert_eq!(Pair::schema().unwrap_err().to_string(), expected);
 }
 
+/// A row that holds one value of any type.
+#[derive(ToDataFrame)]
+struct Holding<T> {
+    held: T,
+}
+
+#[test]
+fn names_that_repeat_are_an_error_inside_a_list_or_a_map() {
+    use std::collections::BTreeMap;
+
+    fn refused<T: ToDataFrame>(expected: &str) {
+        assert!(T::empty_dataframe().is_err());
+        assert_eq!(T::schema().unwrap_err().to_string(), expected);
+    }
+
+    let expected = format!(
+        "df-derive: two values of `{}` are named `left`: a name stands for one value only",
+        std::any::type_name::<Twin>()
+    );
+    // The column type is then a list of an unknown type. `schema` sees it
+    // because Polars's `DataType::is_known` looks inside lists.
+    refused::<Holding<Vec<Twin>>>(&expected);
+    refused::<Holding<BTreeMap<String, Twin>>>(&expected);
+    refused::<Holding<Option<Vec<Vec<Option<Twin>>>>>>(&expected);
+}
+
 /// An enum one of whose variants cannot be written as text.
 #[derive(ToDataFrame)]
 #[df_derive(as_string)]

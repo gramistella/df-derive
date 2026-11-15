@@ -367,7 +367,8 @@ fn no_such_variant<T: Variants>(
 pub struct EnumBuilder<T>(Positions<T>);
 
 /// The column [`variants`] made for each type stored in an `Enum` column so
-/// far.
+/// far. Read for every column: contended when many threads build small
+/// frames at once (see the README).
 static KNOWN: RwLock<BTreeMap<TypeId, Series>> = RwLock::new(BTreeMap::new());
 
 /// Every value of `T` once, in the order of its names, as an `Enum` column:

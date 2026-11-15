@@ -1,10 +1,11 @@
-//! Optional numbers whose empty slots follow no pattern.
+//! Optional numbers, dates and times whose empty slots follow no pattern.
 //!
 //! The other benchmarks leave a slot empty every so many rows, and a
 //! processor's branch predictor learns a pattern like that. Real columns are
 //! rarely so regular. Here whether a slot is empty comes from a hash of its
 //! position, so an encoder that branches on it pays for every wrong guess.
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 use criterion::{Criterion, criterion_group, criterion_main};
 use df_derive::ToDataFrame;
 
@@ -34,6 +35,24 @@ struct Samples {
     id: u64,
     counts: Vec<Option<i32>>,
     values: Vec<Option<f64>>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct Appointment {
+    id: u64,
+    day: Option<NaiveDate>,
+    start: Option<NaiveTime>,
+    booked: Option<DateTime<Utc>>,
+    local: Option<NaiveDateTime>,
+    length: Option<TimeDelta>,
+    wait: Option<std::time::Duration>,
+}
+
+#[derive(ToDataFrame, Clone)]
+struct Calendar {
+    id: u64,
+    days: Vec<Option<NaiveDate>>,
+    stamps: Vec<Option<DateTime<Utc>>>,
 }
 
 /// A number that looks random, from a row and a place in it.
@@ -89,6 +108,52 @@ fn generate_samples() -> Vec<Samples> {
         .collect()
 }
 
+fn day(row: usize) -> NaiveDate {
+    NaiveDate::from_num_days_from_ce_opt(730_000 + i32::try_from(row % 5_000).unwrap()).unwrap()
+}
+
+fn instant(row: usize) -> DateTime<Utc> {
+    DateTime::from_timestamp(1_600_000_000 + i64::try_from(row).unwrap(), 0).unwrap()
+}
+
+fn generate_appointments() -> Vec<Appointment> {
+    (0..N_ROWS)
+        .map(|row| {
+            let seconds = u32::try_from(row % 86_400).unwrap();
+            Appointment {
+                id: row as u64,
+                day: slot(row, 0, day(row)),
+                start: slot(
+                    row,
+                    1,
+                    NaiveTime::from_num_seconds_from_midnight_opt(seconds, 0).unwrap(),
+                ),
+                booked: slot(row, 2, instant(row)),
+                local: slot(row, 3, instant(row).naive_utc()),
+                length: slot(row, 4, TimeDelta::seconds(i64::from(seconds))),
+                wait: slot(row, 5, std::time::Duration::from_millis(row as u64)),
+            }
+        })
+        .collect()
+}
+
+fn generate_calendars() -> Vec<Calendar> {
+    (0..N_LISTS)
+        .map(|row| {
+            let len = 2 + usize::try_from(mixed(row, 99) % 4).unwrap();
+            Calendar {
+                id: row as u64,
+                days: (0..len)
+                    .map(|item| slot(row, item, day(row + item)))
+                    .collect(),
+                stamps: (0..len)
+                    .map(|item| slot(row, item + 8, instant(row + item)))
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 fn benchmark_irregular_nulls(c: &mut Criterion) {
     let readings = generate_readings();
     c.bench_function("irregular_nulls_numbers_conversion", |b| {
@@ -102,6 +167,22 @@ fn benchmark_irregular_nulls(c: &mut Criterion) {
     c.bench_function("irregular_nulls_number_lists_conversion", |b| {
         b.iter(|| {
             let df = std::hint::black_box(&samples).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
+    let appointments = generate_appointments();
+    c.bench_function("irregular_nulls_dates_and_times_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&appointments).to_dataframe().unwrap();
+            std::hint::black_box(df)
+        });
+    });
+
+    let calendars = generate_calendars();
+    c.bench_function("irregular_nulls_date_lists_conversion", |b| {
+        b.iter(|| {
+            let df = std::hint::black_box(&calendars).to_dataframe().unwrap();
             std::hint::black_box(df)
         });
     });

@@ -117,3 +117,6 @@ mod enum_columns;
 #[cfg(feature = "categorical")]
 #[path = "runtime/70-enums-that-may-grow.rs"]
 mod enums_that_may_grow;
+
+#[path = "runtime/71-byte-totals.rs"]
+mod byte_totals;

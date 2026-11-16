@@ -4,7 +4,7 @@ use polars::prelude::{
     BinaryChunked, Column, DataType, IntoSeries, PlSmallStr, PolarsError, PolarsResult,
     StringChunked,
 };
-use polars_arrow::array::MutableBinaryViewArray;
+use polars_arrow::array::{BinaryViewArrayGeneric, MutableBinaryViewArray, ViewType};
 use polars_arrow::bitmap::Bitmap;
 
 use crate::dataframe::{ColumnBuilder, Columnar, Fields};
@@ -16,8 +16,21 @@ pub struct StrBuilder(MutableBinaryViewArray<str>);
 
 impl StrBuilder {
     fn finish_column(self, name: PlSmallStr, validity: Option<&Bitmap>, out: &mut Vec<Column>) {
-        let array = self.0.freeze().with_validity(validity.cloned());
+        let array = masked(self.0.freeze(), validity);
         out.push(StringChunked::with_chunk(name, array).into_series().into());
+    }
+}
+
+/// `array` with `validity`, if there is one. Setting a validity makes Polars
+/// forget the byte total it kept while the column was built, so none is set
+/// where there is none.
+fn masked<T: ViewType + ?Sized>(
+    array: BinaryViewArrayGeneric<T>,
+    validity: Option<&Bitmap>,
+) -> BinaryViewArrayGeneric<T> {
+    match validity {
+        Some(validity) => array.with_validity(Some(validity.clone())),
+        None => array,
     }
 }
 
@@ -160,7 +173,7 @@ impl<T: AsRef<[u8]> + ?Sized> ColumnBuilder<T> for BinaryBuilder {
         validity: Option<&Bitmap>,
         out: &mut Vec<Column>,
     ) -> PolarsResult<()> {
-        let array = self.0.freeze().with_validity(validity.cloned());
+        let array = masked(self.0.freeze(), validity);
         out.push(BinaryChunked::with_chunk(name, array).into_series().into());
         Ok(())
     }

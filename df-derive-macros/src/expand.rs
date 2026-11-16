@@ -579,6 +579,17 @@ fn expand_struct(
             quote! { <#builder as #root::ColumnBuilder<#ty>> }
         })
         .collect();
+    // A member as `new` makes it, with the span of the field's type: a field
+    // that cannot be encoded is then reported at the field only, not at the
+    // derive as well.
+    let fresh: Vec<_> = columns
+        .iter()
+        .zip(&as_builder)
+        .map(|(column, builder)| {
+            let slot = &column.slot;
+            respan(quote! { #slot: #builder::new() }, column.ty.span())
+        })
+        .collect();
     // What the fields that depend on a parameter need where rows are
     // encoded: a member that is the same for every instance needs what its
     // field needs, and one taken from the naming instance has to encode the
@@ -714,7 +725,7 @@ fn expand_struct(
 
                 fn new() -> Self {
                     Self {
-                        #(#slots: #as_builder::new(),)*
+                        #(#fresh,)*
                         __df_derive_last: (),
                     }
                 }

@@ -4,11 +4,16 @@
 //! that produces columns. A builder borrows nothing from the rows it reads,
 //! so its type is not tied to one instance of the row type:
 //!
-//! - A member that names no type or const parameter of the row type is
-//!   written out, with `'static` in place of every lifetime.
-//! - A member that names one is taken, through a hidden trait, from the
-//!   instance that named the builder: the struct's one parameter,
+//! - A member that names no type or const parameter of the row type is the
+//!   same for every instance. It may hold lifetimes of the row type, which
+//!   the struct cannot name, so it is taken with `'static` for each, through
+//!   a hidden trait over those lifetimes.
+//! - A member that names one is taken, through another hidden trait, from
+//!   the instance that named the builder: the struct's one parameter,
 //!   `__DfDeriveFor`.
+//!
+//! Both traits are implemented with the field types as written. The derive
+//! rewrites no lifetime of a field.
 //!
 //! So the builder that `Row<'static, &'static str>` names also encodes a
 //! `Row<'a, &'a str>`. A projection depends on this: its row borrows from
@@ -93,33 +98,6 @@ fn respan(tokens: TokenStream, span: Span) -> TokenStream {
         .collect()
 }
 
-/// Adds to `bound` the lifetimes that `tokens` introduce with `for<...>`.
-/// Those belong to the type they are written in and are left as they are.
-fn bound_lifetimes(tokens: TokenStream, bound: &mut HashSet<String>) {
-    let mut tokens = tokens.into_iter().peekable();
-    while let Some(token) = tokens.next() {
-        match token {
-            TokenTree::Group(group) => bound_lifetimes(group.stream(), bound),
-            TokenTree::Ident(ident) if ident == "for" => {
-                let opens = matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '<');
-                if !opens {
-                    continue;
-                }
-                for token in tokens.by_ref() {
-                    match token {
-                        TokenTree::Punct(punct) if punct.as_char() == '>' => break,
-                        TokenTree::Ident(name) => {
-                            bound.insert(name.to_string());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 /// Rewrites the name of every lifetime in `tokens` that `rename` has a new
 /// name for.
 fn rename_lifetimes(
@@ -150,13 +128,10 @@ fn rename_lifetimes(
     renamed.into_iter().collect()
 }
 
-/// Rewrites every lifetime to `'static`. A builder borrows nothing from the
-/// rows it reads, so one type serves every lifetime of the field.
-fn erase_lifetimes(tokens: TokenStream) -> TokenStream {
-    let mut bound = HashSet::new();
-    bound_lifetimes(tokens.clone(), &mut bound);
+/// Writes `'static` for every `'_` in `tokens`. No other lifetime is touched.
+fn name_static(tokens: TokenStream) -> TokenStream {
     rename_lifetimes(tokens, &mut |ident| {
-        (!bound.contains(&ident.to_string())).then(|| "static".to_owned())
+        (ident == "_").then(|| "static".to_owned())
     })
 }
 
@@ -324,6 +299,59 @@ fn columns<'a>(
     Ok(columns)
 }
 
+/// A hidden trait that names types which hold lifetimes of the derived type,
+/// where those lifetimes are not in scope.
+///
+/// It has the type's lifetimes as parameters and is implemented for `()`
+/// with the types as written. An associated type named with `'static` for
+/// every lifetime is the type with that substitution: the compiler makes it.
+struct Shared {
+    /// The trait and its impl.
+    items: TokenStream,
+    /// `<() as Trait<'static, ..>>`, which an associated type's name follows.
+    path: TokenStream,
+}
+
+impl Shared {
+    /// `slots` are the trait's associated types and `named` sets them. Of
+    /// `own`, what the derived type requires, the impl keeps what says
+    /// nothing of a type or const parameter, or of `Self`, which is `()`
+    /// there.
+    fn new(
+        name: &str,
+        generics: &syn::Generics,
+        own: &[TokenStream],
+        slots: &[&syn::Ident],
+        named: &TokenStream,
+    ) -> Self {
+        let name = format_ident!("{name}");
+        let mut absent = parameters(generics);
+        absent.insert("Self".to_owned());
+        let kept = own
+            .iter()
+            .filter(|predicate| !mentions((*predicate).clone(), &absent));
+        let declared = generics.lifetimes();
+        let lifetimes: Vec<_> = generics.lifetimes().map(|param| &param.lifetime).collect();
+        let statics = lifetimes.iter().map(|_| quote! { 'static });
+        Self {
+            items: quote! {
+                #[doc(hidden)]
+                #[allow(non_camel_case_types)]
+                trait #name<#(#lifetimes),*> {
+                    #(type #slots;)*
+                }
+
+                #[automatically_derived]
+                #[allow(non_camel_case_types)]
+                impl<#(#declared),*> #name<#(#lifetimes),*> for () where #(#kept,)* {
+                    #named
+                }
+            },
+            path: quote! { <() as #name<#(#statics),*>> },
+        }
+    }
+}
+
 /// What every generated impl requires whatever the fields are: the type's
 /// own where-clause and the bounds asked for with `bound = "..."`.
 fn own_predicates(generics: &syn::Generics, container: &ContainerAttrs) -> Vec<TokenStream> {
@@ -489,16 +517,31 @@ fn expand_struct(
         ..
     } = &naming;
     let (encoder_generics, _, _) = naming.encoder.split_for_impl();
-    // The derived type says which builder each such member is, with the span
-    // of the field's type, so a field without a builder is reported at the
-    // field. The trait is private because its impl names the builders of
-    // fields whose types may be private.
+    // Which builder a member is, with the span of the field's type, so a
+    // field without a builder is reported at the field.
+    let member_type = |column: &&Column<'_>| {
+        let (slot, builder) = (&column.slot, &column.builder);
+        respan(quote! { type #slot = #builder; }, column.ty.span())
+    };
+    // The members that are the same for every instance.
+    let same: Vec<_> = columns
+        .iter()
+        .filter(|column| !column.per_instance)
+        .collect();
+    let shared = Shared::new(
+        "__DfDeriveShared",
+        &input.generics,
+        &own,
+        &same.iter().map(|column| &column.slot).collect::<Vec<_>>(),
+        &same.iter().map(member_type).collect(),
+    );
+    let shared_members = (!same.is_empty()).then_some(&shared.items);
+    // The derived type says which builder each of the others is. The trait is
+    // private because its impl names the builders of fields whose types may
+    // be private.
     let named_members = (!per_instance.is_empty()).then(|| {
         let slots = per_instance.iter().map(|column| &column.slot);
-        let named = per_instance.iter().map(|column| {
-            let (slot, builder) = (&column.slot, &column.builder);
-            respan(quote! { type #slot = #builder; }, column.ty.span())
-        });
+        let named = per_instance.iter().map(member_type);
         quote! {
             #[doc(hidden)]
             #[allow(non_camel_case_types)]
@@ -519,11 +562,12 @@ fn expand_struct(
     let builder_types: Vec<_> = columns
         .iter()
         .map(|column| {
+            let slot = &column.slot;
             if column.per_instance {
-                let slot = &column.slot;
                 quote! { <__DfDeriveFor as __DfDeriveFields>::#slot }
             } else {
-                erase_lifetimes(column.builder.clone())
+                let path = &shared.path;
+                respan(quote! { #path::#slot }, column.ty.span())
             }
         })
         .collect();
@@ -536,8 +580,9 @@ fn expand_struct(
         })
         .collect();
     // What the fields that depend on a parameter need where rows are
-    // encoded: a member written out needs what its field needs, and one taken
-    // from the naming instance has to encode the field as this row has it.
+    // encoded: a member that is the same for every instance needs what its
+    // field needs, and one taken from the naming instance has to encode the
+    // field as this row has it.
     let encoder_bounds = columns
         .iter()
         .filter(|column| column.generic)
@@ -636,6 +681,8 @@ fn expand_struct(
         // spans, so type-shape lints would otherwise fire a second time there.
         #[allow(clippy::all, clippy::pedantic, clippy::nursery)]
         const _: () = {
+            #shared_members
+
             #named_members
 
             // `()` is last because the last member decides whether a struct
@@ -957,9 +1004,11 @@ fn expand_via(
     let own = own_predicates(&input.generics, container);
 
     let row = respan(via.row.to_token_stream(), via.span);
-    let stored = erase_lifetimes(row.clone());
-    // Like any member, the row type's builder is written out unless it
-    // depends on a parameter.
+    // The row as a member's type names it: what it borrows from the value is
+    // `'static` there.
+    let stored = name_static(row.clone());
+    // Like any member, the row type's builder is the same for every instance
+    // unless it depends on a parameter.
     let per_instance = mentions(row.clone(), &parameters(&input.generics));
     // The builder has to encode the row whatever the row borrows.
     let (any_row, borrows) = name_borrows(row.clone());
@@ -985,18 +1034,20 @@ fn expand_via(
         ..
     } = &naming;
     let (encoder_generics, _, _) = naming.encoder.split_for_impl();
-    let named_member = per_instance.then(|| {
-        // Whatever keeps the row type from having a builder is reported at
-        // the attribute that names it. The trait is private because the row
-        // type may be.
-        let named = respan(
-            quote! {
-                type Builder = <#stored as #root::Columnar>::Builder;
-                type Row = #stored;
-            },
-            via.span,
-        );
+    // Whatever keeps the row type from having a builder is reported at the
+    // attribute that names it.
+    let named = respan(
         quote! {
+            type Builder = <#stored as #root::Columnar>::Builder;
+            type Row = #stored;
+        },
+        via.span,
+    );
+    // The builder's two members: the builder of the row type, and the row
+    // type as the buffer of a block is typed between blocks.
+    let (named_members, inner, kept, encoder_where) = if per_instance {
+        // The trait is private because the row type may be.
+        let named_members = quote! {
             #[doc(hidden)]
             trait __DfDeriveVia {
                 type Builder;
@@ -1007,21 +1058,26 @@ fn expand_via(
             impl #impl_generics __DfDeriveVia for #name #ty_generics #where_clause {
                 #named
             }
-        }
-    });
-    // The builder's two members: the builder of the row type, and the row
-    // type as the buffer of a block is typed between blocks.
-    let (inner, kept, encoder_where) = if per_instance {
+        };
         // Whichever instance named the builder, its member has to encode the
         // row of the value at hand.
         let inner = quote! { <__DfDeriveFor as __DfDeriveVia>::Builder };
         let kept = quote! { <__DfDeriveFor as __DfDeriveVia>::Row };
         let encodes = quote! { #for_any_borrow #inner: #root::ColumnBuilder<#any_row> };
-        (inner, kept, quote! { where #(#own,)* #encodes })
-    } else {
         (
-            quote! { <#stored as #root::Columnar>::Builder },
-            stored.clone(),
+            named_members,
+            inner,
+            kept,
+            quote! { where #(#own,)* #encodes },
+        )
+    } else {
+        let slots = [&format_ident!("Builder"), &format_ident!("Row")];
+        let Shared { items, path } =
+            Shared::new("__DfDeriveVia", &input.generics, &own, &slots, &named);
+        (
+            items,
+            quote! { #path::Builder },
+            quote! { #path::Row },
             where_clause.clone(),
         )
     };
@@ -1057,7 +1113,7 @@ fn expand_via(
         // spans, so type-shape lints would otherwise fire a second time there.
         #[allow(clippy::all, clippy::pedantic, clippy::nursery)]
         const _: () = {
-            #named_member
+            #named_members
 
             // `#[doc(hidden)]` also satisfies `missing_docs`.
             #[doc(hidden)]

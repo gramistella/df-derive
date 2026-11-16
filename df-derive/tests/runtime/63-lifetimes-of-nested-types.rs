@@ -833,3 +833,110 @@ fn a_lifetime_bound_inside_a_field_type_is_left_alone() {
     );
     assert_eq!((rows[0].length.1)("four"), 4);
 }
+
+// --- a projection row that keeps a lifetime of the type and has a type parameter --
+
+#[derive(ToDataFrame)]
+struct Kept<'a, 'b, T> {
+    label: &'a str,
+    text: &'b str,
+    value: T,
+}
+
+// Every lifetime of the row is one of the type's.
+#[derive(ToDataFrame)]
+#[df_derive(via = "Tagged<'a, T>", bound = "T: Copy")]
+struct Stamped<'a, T> {
+    name: &'a str,
+    value: T,
+}
+
+impl<'a, T: Copy> From<&Stamped<'a, T>> for Tagged<'a, T> {
+    fn from(stamped: &Stamped<'a, T>) -> Self {
+        Self {
+            name: stamped.name,
+            value: stamped.value,
+        }
+    }
+}
+
+// One is the type's and one is borrowed from the value.
+#[derive(ToDataFrame)]
+#[df_derive(via = "Kept<'a, '_, T>", bound = "T: Copy")]
+struct Noted<'a, T> {
+    label: &'a str,
+    text: String,
+    value: T,
+}
+
+impl<'a, 'b, T: Copy> From<&'b Noted<'a, T>> for Kept<'a, 'b, T> {
+    fn from(noted: &'b Noted<'a, T>) -> Self {
+        Self {
+            label: noted.label,
+            text: &noted.text,
+            value: noted.value,
+        }
+    }
+}
+
+#[derive(ToDataFrame)]
+struct Ledger<'a> {
+    stamped: Stamped<'a, u8>,
+    noted: Vec<Noted<'a, f64>>,
+}
+
+#[test]
+fn a_projection_row_may_keep_a_lifetime_of_the_type_and_have_a_type_parameter() {
+    let label = String::from("id");
+    let rows = [Ledger {
+        stamped: Stamped {
+            name: &label,
+            value: 7,
+        },
+        noted: vec![
+            Noted {
+                label: &label,
+                text: "first".to_owned(),
+                value: 0.5,
+            },
+            Noted {
+                label: &label,
+                text: "second".to_owned(),
+                value: 1.5,
+            },
+        ],
+    }];
+
+    let df = rows.as_slice().to_dataframe().unwrap();
+    assert_eq!(
+        names(&df),
+        [
+            "stamped.name",
+            "stamped.value",
+            "noted.label",
+            "noted.text",
+            "noted.value"
+        ]
+    );
+    assert_eq!(string(&df, "stamped.name", 0), "id");
+    assert_eq!(
+        df.column("stamped.value").unwrap().get(0).unwrap(),
+        AnyValue::UInt8(7)
+    );
+    assert_eq!(strings(&df, "noted.label", 0), ["id", "id"]);
+    assert_eq!(strings(&df, "noted.text", 0), ["first", "second"]);
+
+    // Each is a row type itself, for any lifetime and payload.
+    let direct = [Noted {
+        label: label.as_str(),
+        text: "third".to_owned(),
+        value: 3_i32,
+    }];
+    let df = direct.as_slice().to_dataframe().unwrap();
+    assert_eq!(names(&df), ["label", "text", "value"]);
+    assert_eq!(string(&df, "text", 0), "third");
+    assert_eq!(
+        Stamped::<bool>::schema().unwrap()[1],
+        ("value".to_owned(), DataType::Boolean)
+    );
+}

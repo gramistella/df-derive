@@ -40,6 +40,7 @@ fn tests() {
     t.pass("tests/pass/47-option-access-chain-no-clone.rs");
     t.pass("tests/pass/49-flatten-field.rs");
     t.pass("tests/pass/50-strict-lints.rs");
+    t.pass("tests/pass/52-lifetimes-in-const-expressions.rs");
 
     // These files should fail to compile.
     t.compile_fail("tests/fail/96-fail-derive-on-union.rs");
